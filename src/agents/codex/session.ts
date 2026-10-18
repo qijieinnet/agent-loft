@@ -155,6 +155,8 @@ export class CodexSession implements AgentSession {
   /** 每开一轮加一：迟到的回调据此判断自己是不是已经过时 */
   private turnSeq = 0;
   private queue: UserInput[] = [];
+  /** 启动途中就被叫停（停止或丢弃）的轮次代次：turn/start 迟到返回时，拿它的 id 补一个中断 */
+  private abandoned = new Set<number>();
   /** 已经收尾过的轮次：error 通知之后还可能再来一个 turn/completed，不能收两次尾 */
   private endedTurns = new Set<string>();
   /** thread/start 或 thread/resume 的在途请求，避免并发的两条消息各开一条 thread */
@@ -188,12 +190,23 @@ export class CodexSession implements AgentSession {
   onServerExit(reason: string): void {
     this.markDetached();
     const inFlight = this.phase !== "idle";
+    const dropped = this.queue.length;
     this.endTurn();
     this.queue = [];
-    if (inFlight && !this.disposed) this.events.onError(new Error(`${reason}，这一轮已中断，请重新发送`));
+    if (this.disposed) return;
+    if (inFlight) this.events.onError(new Error(`${reason}，这一轮已中断，请重新发送`));
+    if (dropped > 0) {
+      this.events.onDropped?.(dropped);
+      this.events.onStep("warning", `⚠️ 还有 ${dropped} 条排队的消息没来得及处理，请重新发送`);
+    }
   }
 
   private endTurn(): void {
+    // 还在 starting、没拿到 id 就收尾了：记下来，turn/start 迟到返回时补中断
+    if (this.phase === "starting" && !this.turnId) {
+      this.abandoned.add(this.turnSeq);
+      if (this.abandoned.size > 20) this.abandoned.delete(this.abandoned.values().next().value!);
+    }
     if (this.turnId) {
       this.endedTurns.add(this.turnId);
       if (this.endedTurns.size > 50) this.endedTurns.delete(this.endedTurns.values().next().value!);
@@ -294,10 +307,12 @@ export class CodexSession implements AgentSession {
       : "";
     const text = note ? (input.text ? `${input.text}\n\n${note}` : note) : input.text;
     const images = input.attachments.filter((a) => a.kind === "image").map((a) => a.path);
+    let startedOn: string | undefined;
     void this.open()
       .then((threadId) => {
         if (this.disposed) throw new DisposedError();
         if (token !== this.turnSeq) throw new DisposedError(); // 等 thread 期间被停止了
+        startedOn = threadId;
         return appServer.call<{ turn?: { id?: string } }>("turn/start", {
           threadId,
           input: [
@@ -311,8 +326,18 @@ export class CodexSession implements AgentSession {
         });
       })
       .then((res) => {
-        // turn/start 的响应带着轮次 id（它只是「轮次已开始」，不是结果）
-        if (token === this.turnSeq && res?.turn?.id) this.onTurnId(res.turn.id);
+        const id = res?.turn?.id;
+        if (!id) return;
+        if (token === this.turnSeq) {
+          // turn/start 的响应带着轮次 id（它只是「轮次已开始」，不是结果）
+          this.onTurnId(id);
+          return;
+        }
+        // 这一轮在启动途中被叫停 / 会话被丢弃了，但服务端其实已经开跑：补一个中断，别让它在后台继续干活
+        if (this.abandoned.delete(token) && startedOn) {
+          this.endedTurns.add(id);
+          void appServer.call("turn/interrupt", { threadId: startedOn, turnId: id }).catch(() => {});
+        }
       })
       .catch((err) => {
         // 这一轮已经被别的路径收尾了（停止、进程退出、丢弃）：不再重复报错

@@ -296,15 +296,18 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       // 其余情况（读的过程中有一轮结束了、或者开始了新的一轮）都重读。
       const turnStartSeq = () => hub.liveTurn(key)[0]?.seq ?? 0;
       let messages: Awaited<ReturnType<typeof hub.history>> = [];
-      for (let i = 0; i < 5; i++) {
+      let consistent = false;
+      for (let i = 0; i < 5 && !consistent; i++) {
+        if (i > 0) await new Promise((r) => setTimeout(r, 200));
         const before = hub.currentSeq();
         const startBefore = turnStartSeq();
         messages = await hub.history(key);
         const changed = (hub.eventsSince(key, before) ?? [null]).length > 0;
         const startAfter = turnStartSeq();
-        if (!changed || (startBefore !== 0 && startBefore === startAfter)) break;
-        await new Promise((r) => setTimeout(r, 200));
+        consistent = !changed || (startBefore !== 0 && startBefore === startAfter);
       }
+      // 拿不到一致的快照：宁可让客户端稍后重试，也不能返回一份缺了回复、游标却已越过它的快照
+      if (!consistent) throw new HttpError(503, "这条会话正在快速变化，稍后重试");
       // 以下同步执行：live 和 seq 是同一时刻的，客户端从 seq 往后订阅正好接上
       const live = hub.liveTurn(key);
       const seq = hub.currentSeq();

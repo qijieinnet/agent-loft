@@ -45,6 +45,13 @@ class AsyncQueue<T> {
     else this.items.push(item);
   }
 
+  /** 丢掉还没被消费的项（停止时：排着队的消息不该在中断后接着跑） */
+  clear(): number {
+    const n = this.items.length;
+    this.items = [];
+    return n;
+  }
+
   close(): void {
     this.closed = true;
     for (const waiter of this.waiting.splice(0)) waiter({ value: undefined as never, done: true });
@@ -331,6 +338,8 @@ export class ClaudeSession implements AgentSession {
   }
 
   async interrupt(): Promise<void> {
+    const dropped = this.queue.clear();
+    if (dropped > 0) this.events.onDropped?.(dropped);
     if (!this.q) return;
     try {
       await this.q.interrupt();

@@ -19,10 +19,21 @@ export function ensureUploadsDir(key: string): string {
   return dir;
 }
 
-export function clearUploads(key: string): void {
+/** keep：要保留的文件（绝对路径） */
+export function clearUploads(key: string, keep: string[] = []): void {
   try {
-    fs.rmSync(uploadsDirFor(key), { recursive: true, force: true });
+    const dir = uploadsDirFor(key);
+    if (keep.length === 0) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    }
+    const kept = new Set(keep.map((p) => path.resolve(p)));
+    for (const entry of fs.readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      if (!kept.has(full)) fs.rmSync(full, { recursive: true, force: true });
+    }
   } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     console.warn(`[附件] 清理 ${key} 的上传目录失败:`, err);
   }
 }

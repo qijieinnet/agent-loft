@@ -36,26 +36,63 @@ function load(): string[] {
  * 否则 `ls; rm -rf ~` 的首词也是 ls。
  */
 const SHELL_SYNTAX = /[;&|`<>\n\r\\]|\$[({]|\$[A-Za-z_]/;
-const PREFIX_SAFE = new Set([
-  "ls", "cat", "head", "tail", "wc", "grep", "rg", "pwd", "echo", "stat", "file", "du", "df",
-  "which", "date", "tree", "diff", "sort", "uniq", "cut", "basename", "dirname", "realpath",
-  "readlink", "uname", "whoami", "id", "hostname", "uptime", "ps", "mkdir", "touch",
-]);
-const GIT_SUBCOMMANDS = new Set([
-  "status", "log", "diff", "show", "branch", "add", "commit", "fetch", "pull", "push",
-  "checkout", "switch", "restore", "stash", "tag", "remote", "rev-parse", "blame", "merge", "rebase",
-]);
+
+/**
+ * 可按首词放行的命令，以及它们「哪些参数不行」。
+ *
+ * 入选标准：无论带什么参数，都既不能执行别的程序，也不能写文件。为此去掉了
+ * 看似只读、其实带「后门参数」的：rg（--pre 能把文件当脚本跑）、sort / uniq / tree
+ * （-o 或位置参数能写文件）。剩下的少数命令里，个别参数仍有副作用（date -s 改系统时间），
+ * 单独拦掉。
+ */
+const PREFIX_SAFE: Record<string, (args: string[]) => boolean> = {
+  ls: () => true,
+  cat: () => true,
+  head: () => true,
+  tail: () => true,
+  wc: () => true,
+  grep: () => true,
+  pwd: (a) => a.length === 0,
+  echo: () => true,
+  stat: () => true,
+  file: (a) => !a.some((x) => /^(-m|--magic-file|-C|--compile)/.test(x)),
+  du: () => true,
+  df: () => true,
+  which: () => true,
+  date: (a) => !a.some((x) => /^(-s|--set)/.test(x)),
+  basename: () => true,
+  dirname: () => true,
+  realpath: () => true,
+  readlink: () => true,
+  uname: () => true,
+  whoami: (a) => a.length === 0,
+  id: () => true,
+  hostname: (a) => a.every((x) => /^-[sfidIA]+$/.test(x)), // 带参数就是改主机名
+  uptime: () => true,
+  ps: () => true,
+  mkdir: () => true,
+  touch: () => true,
+};
+
+/**
+ * git 只放行纯查看的子命令；能改仓库的（add / commit / push / checkout…）都只记完整命令。
+ * 这几个子命令里仍要拦掉能写文件或调外部程序的参数。
+ */
+const GIT_READONLY = new Set(["status", "log", "show", "diff"]);
+const GIT_BAD_ARG =
+  /^(-c|--config(-env)?|--exec-path|--output|--ext-diff|--textconv|--upload-pack|--receive-pack|--git-dir|--work-tree|-o$)/;
 
 function prefixSignature(command: string): string | null {
   const trimmed = command.trim();
   if (!trimmed || SHELL_SYNTAX.test(trimmed)) return null;
   const words = trimmed.split(/\s+/);
   const head = words[0] ?? "";
-  if (PREFIX_SAFE.has(head)) return `Bash:${head}`;
+  const args = words.slice(1);
+  const check = Object.hasOwn(PREFIX_SAFE, head) ? PREFIX_SAFE[head] : undefined;
+  if (check) return check(args) ? `Bash:${head}` : null;
   if (head === "git") {
-    const sub = words[1] ?? "";
-    if (!GIT_SUBCOMMANDS.has(sub)) return null;
-    if (words.some((w) => /^(-c|--config(-env)?|--exec-path|--upload-pack|--receive-pack)(=|$)/.test(w))) return null;
+    const sub = args[0] ?? "";
+    if (!GIT_READONLY.has(sub) || args.some((w) => GIT_BAD_ARG.test(w))) return null;
     return `Bash:git ${sub}`;
   }
   return null;

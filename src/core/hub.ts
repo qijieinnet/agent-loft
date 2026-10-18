@@ -350,6 +350,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
         },
+        onDropped: (n) => {
+          if (!alive() || n <= 0) return;
+          this.setInflight(key, (this.inflight.get(key) ?? n) - n);
+        },
         onSessionId: (sessionId) => {
           // 切走之后旧会话晚到的回调不该覆盖新绑定
           if (!alive()) return;
@@ -403,7 +407,16 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    * 提问挂着的时候整轮是阻塞的，这条消息送进去也没人接 —— 所以先拿它当作答。
    * 带附件的不拿来作答：答案只能是文字。
    */
-  send(key: string, input: UserInput, origin: Origin): void {
+  /** 当前的停止代次。渠道在「收到消息」那一刻取，送进 send，见 send() 的 gen 参数 */
+  stopGeneration(key: string): number {
+    return this.stopGen.get(key) ?? 0;
+  }
+
+  /**
+   * gen：这条消息是在哪个停止代次下收到的。渠道自己还要先做点异步的事（飞书下载附件）
+   * 才调到这里时必须传：下载期间点了停止，这条消息就不该再发出去。
+   */
+  send(key: string, input: UserInput, origin: Origin, gen?: number): void {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
     const shown = {
@@ -429,25 +442,33 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       this.emitEvent(key, { type: "meta" });
     }
     this.emitEvent(key, shown);
-    const gen = this.stopGen.get(key) ?? 0;
+    const myGen = gen ?? this.stopGeneration(key);
+    const cancelled = () => {
+      if (this.stopGeneration(key) === myGen) return false;
+      this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
+      return true;
+    };
+    if (gen !== undefined && cancelled()) return;
     void this.serial(key, async () => {
-      if ((this.stopGen.get(key) ?? 0) !== gen) {
-        this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
-        return;
+      if (cancelled()) return;
+      if (expired) {
+        await this.expireNow(key, input.attachments.map((a) => a.path));
+        // 清理要等旧会话 dispose，期间可能又点了停止
+        if (cancelled()) return;
       }
-      if (expired) await this.expireNow(key);
       this.sendNow(key, input);
     });
   }
 
   /** 闲置太久：不再续用上次的会话（活着的也丢掉），开新的 */
-  private async expireNow(key: string): Promise<void> {
+  private async expireNow(key: string, keepFiles: string[] = []): Promise<void> {
     const conv = getConversation(key);
     if (!conv || !agentBinding(conv).sessionId) return;
     console.log(`[会话] ${key} 闲置超过 ${config().sessionTtlMs / 3600000} 小时，开新会话`);
     await this.drop(key, "会话已闲置过期");
     updateAgentBinding(key, conv.agent, { sessionId: undefined, model: undefined, effort: undefined });
-    clearUploads(key);
+    // 本次消息刚上传的附件要留着，否则送进新会话的是一堆已被删掉的路径
+    clearUploads(key, keepFiles);
     this.emitEvent(key, { type: "notice", text: "上次的会话闲置太久，已自动开新会话。" });
     this.emitEvent(key, { type: "meta" });
   }

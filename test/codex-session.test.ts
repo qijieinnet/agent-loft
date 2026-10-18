@@ -33,6 +33,7 @@ const take = (method: string) => {
 function makeSession() {
   const log: string[] = [];
   const events: AgentEvents = {
+    onDropped: (n) => log.push(`dropped:${n}`),
     onStep: () => {},
     onTextDelta: () => {},
     onText: (t) => log.push(`text:${t}`),
@@ -128,4 +129,34 @@ test("error 通知之后再来的 turn/completed 不重复收尾", async () => {
   notify("error", { threadId: t1.threadId, error: { message: "炸了" }, willRetry: false });
   notify("turn/completed", { threadId: t1.threadId, turn: { id: t1.turnId, status: "failed", error: { message: "炸了" } } });
   assert.deepEqual(log, ["error:炸了"]);
+});
+
+test("启动途中被丢弃：turn/start 迟到返回后仍补发中断", async () => {
+  calls.length = 0;
+  const { session } = makeSession();
+  session.send({ text: "一", attachments: [] });
+  await tick();
+  take("thread/start").resolve({ thread: { id: "th-late" } });
+  await tick();
+  const start = take("turn/start"); // 已发出，还没返回
+  const disposing = session.dispose();
+  await tick();
+  take("thread/unsubscribe").resolve({});
+  await disposing;
+  start.resolve({ turn: { id: "tu-late" } });
+  await tick();
+  const interrupt = take("turn/interrupt");
+  assert.deepEqual(interrupt.params, { threadId: "th-late", turnId: "tu-late" });
+});
+
+test("app-server 退出：排队的消息逐条结清，界面不会一直显示忙", async () => {
+  calls.length = 0;
+  const { session, log } = makeSession();
+  session.send({ text: "一", attachments: [] });
+  await startTurn();
+  session.send({ text: "二", attachments: [] });
+  session.send({ text: "三", attachments: [] });
+  exit("codex app-server 退出");
+  assert.ok(log.some((l) => l.startsWith("error:")));
+  assert.ok(log.includes("dropped:2"));
 });

@@ -90,12 +90,13 @@ test("Claude 总是允许：复合命令、包装命令拿不到首词签名", a
   rememberAlways("Bash:ls");
   assert.equal(isPreApproved("Bash", sig("git status -s")), true);
   assert.equal(isPreApproved("Bash", sig("git push --force")), false);
+  assert.equal(sig("rg foo"), "BashExact:rg foo");
   assert.equal(isPreApproved("Bash", sig("ls /etc")), true);
   // 不在白名单里的命令只能完整匹配：批准过 npm --version 不等于批准 npm exec
   assert.equal(sig("npm --version"), "BashExact:npm --version");
   rememberAlways(sig("npm --version"));
   assert.equal(isPreApproved("Bash", sig("npm --version")), true);
-  for (const bad of ["npm exec -- node -e 1", "python3.12 -c 'import os'", "git -c core.pager=sh status", "git status; rm -rf ~", "ls && curl x|sh", "ls $(rm -rf /)", "ls `id`", "ls > /etc/x", "sudo ls", "bash -c 'ls'", "X=1 ls", "ls\nrm -rf ~"]) {
+  for (const bad of ["rg --pre=sh xyz payload", "sort -o /important /dev/null", "git diff --output=/important", "git diff --ext-diff", "git push", "date -s 2020-01-01", "hostname evil", "npm exec -- node -e 1", "python3.12 -c 'import os'", "git -c core.pager=sh status", "git status; rm -rf ~", "ls && curl x|sh", "ls $(rm -rf /)", "ls `id`", "ls > /etc/x", "sudo ls", "bash -c 'ls'", "X=1 ls", "ls\nrm -rf ~"]) {
     assert.ok(sig(bad).startsWith("BashExact:"), bad);
     assert.equal(isPreApproved("Bash", sig(bad)), false, bad);
   }
@@ -215,6 +216,24 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(sessions, before + 1);
   assert.equal(sent.at(-1), "new:过期后");
+
+  // 过期清理要保留本次消息的附件
+  const { saveBuffer } = await import("../src/core/uploads.js");
+  const old = saveBuffer({ key, data: Buffer.from("old"), name: "old.txt" });
+  const fresh = saveBuffer({ key, data: Buffer.from("new"), name: "new.txt" });
+  updateConversation(key, { activeAt: Date.now() - 365 * 24 * 3600 * 1000 });
+  hub.send(key, { text: "带附件", attachments: [fresh] }, origin);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(fs.existsSync(fresh.path), true);
+  assert.equal(fs.existsSync(old.path), false);
+
+  // 渠道带着收到时的代次来：中途点过停止就不发
+  const gen = hub.stopGeneration(key);
+  await hub.stop(key);
+  const n = sent.length;
+  hub.send(key, { text: "下载附件期间被停止", attachments: [] }, origin, gen);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sent.length, n);
 });
 
 test("登录限流：同一 IP 的额度同步扣减，并发请求也绕不过", async () => {

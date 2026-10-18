@@ -70,7 +70,11 @@ async function api(path, opts = {}) {
     showAuth();
     throw new Error("请先登录");
   }
-  if (!res.ok) throw new Error(data?.error ?? `请求失败（${res.status}）`);
+  if (!res.ok) {
+    const err = new Error(data?.error ?? `请求失败（${res.status}）`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -671,11 +675,21 @@ async function openConversation(key) {
   renderSidebar();
   fill(ui.msgInner, h("div", { class: "empty" }, h("span", { class: "spinner" })));
   let data;
-  try {
-    data = await api(`/api/conversations/${encodeURIComponent(key)}/history`);
-  } catch (err) {
-    if (token === S.loadToken) fill(ui.msgInner, h("div", { class: "empty" }, err.message));
-    return;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      data = await api(`/api/conversations/${encodeURIComponent(key)}/history`);
+      break;
+    } catch (err) {
+      if (token !== S.loadToken) return;
+      // 503 = 会话正忙着变化，服务端拿不到一致的快照：等一下再拉
+      if (err.status === 503 && attempt < 10) {
+        await new Promise((r) => setTimeout(r, 500 + attempt * 300));
+        if (token !== S.loadToken) return;
+        continue;
+      }
+      fill(ui.msgInner, h("div", { class: "empty" }, err.message));
+      return;
+    }
   }
   if (token !== S.loadToken) return; // 期间又切到别的会话了
   S.convs.set(key, data.info);

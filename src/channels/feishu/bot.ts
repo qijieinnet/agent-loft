@@ -397,9 +397,11 @@ export class FeishuBot {
 
     void this.markTyping(key, message.message_id);
     const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书" };
+    // 收到消息这一刻的停止代次：下载附件期间点了 /stop，这条就作废
+    const gen = hub.stopGeneration(key);
     this.enqueue(key, async () => {
       if (attachments.length === 0) {
-        hub.send(key, { text: command.text, attachments: [] }, origin);
+        hub.send(key, { text: command.text, attachments: [] }, origin, gen);
         return;
       }
       const { saved, failed } = await this.download(key, message.message_id, attachments);
@@ -413,7 +415,7 @@ export class FeishuBot {
         this.clearTyping(key);
         return;
       }
-      hub.send(key, { text: command.text, attachments: saved }, origin);
+      hub.send(key, { text: command.text, attachments: saved }, origin, gen);
     });
   }
 

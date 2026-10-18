@@ -79,6 +79,8 @@ export type AgentEvents = {
   onError: (err: unknown) => void;
   /** 拿到 / 更新了 agent 侧的会话 id，持久化后用于 resume */
   onSessionId: (id: string) => void;
+  /** 有 n 条排队中的输入被丢弃了（不会再有结果）：调用方据此结清「进行中」的计数 */
+  onDropped?: (n: number) => void;
 };
 
 // ---------- agent ----------
