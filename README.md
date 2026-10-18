@@ -1,0 +1,101 @@
+# agent-im
+
+用飞书（以后还有 Telegram 等）和 Web 页面，驱动本机的 **Claude Code** 和 **Codex**。
+
+由 `feishu-claude-bridge` 和 `feishu-codex-bridge` 合并而来：一个进程、一份配置，飞书和网页共用同一套会话、审批和模型切换。
+
+## 能做什么
+
+- **多个 agent**：Claude Code（官方 Claude Agent SDK）、Codex（官方 `codex app-server`）。在同一条会话里 `/agent` 切换，各 agent 的上下文各自保留。
+- **多个飞书机器人**：一个机器人对应一个 agent，或者一个机器人能切换多个 agent，都在设置页里勾选。机器人能在 Web 上扫码创建，改完配置立即生效，不用重启。
+- **Web 聊天页**：电脑和手机都能用，界面参照 ChatGPT。
+  - 回复逐字显示，markdown 和代码高亮，思考过程和工具调用可以折叠。
+  - 授权卡、提问卡直接在页面上点。
+  - 支持上传附件（粘贴、拖拽，手机上可以拍照）。
+  - 可以「添加到主屏幕」当 App 用。手机切到后台再回来会自动重连，并补上错过的内容。
+- **跨渠道同步**：飞书里的会话在 Web 上也能打开，接着聊。同一个授权请求同时出现在飞书卡片和网页上，哪边先点算哪边，另一边自动变成「已处理」。
+- **设置都在网页上**：工作目录、各 agent 的默认模型和思考程度、Codex 沙箱、飞书机器人、配对批准、Claude 的「总是允许」名单、登录设备管理。
+
+## 安装
+
+```bash
+npm install -g <本仓库>        # 或者在仓库里 npm install 后用 node bin/cli.js
+agent-im start                  # 前台运行，日志里会打印首次登录用的设置码
+agent-im service install        # 注册为开机自启服务（systemd / launchd）
+```
+
+打开 `http://<机器 IP>:8800`：第一次需要输入日志里的设置码，然后设一个登录密码。
+
+### 从旧桥接器迁移
+
+```bash
+agent-im import --dry-run       # 先看会导入什么
+systemctl --user disable --now feishu-claude-bridge feishu-codex-bridge   # 同一个机器人不能被两个程序同时连
+agent-im import                 # 导入机器人凭据、白名单、配对、会话绑定、总是允许名单
+agent-im service install
+```
+
+导入后，飞书群里原来的会话会接着聊。
+
+## 命令
+
+| 命令 | 作用 |
+|---|---|
+| `agent-im start` | 启动 |
+| `agent-im import [--only claude\|codex] [--disabled] [--dry-run]` | 从旧桥接器导入 |
+| `agent-im pair list \| approve <码> \| revoke <机器人id> <open_id>` | 配对管理（Web 设置页里也能做） |
+| `agent-im passwd [新密码]` | 重置 Web 登录密码，所有设备下线 |
+| `agent-im service install \| uninstall \| restart \| status` | 开机自启 |
+| `agent-im doctor` | 体检 |
+
+聊天里的命令（飞书和 Web 通用）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/approve <id> allow-once|allow-always|deny` `/help`
+
+## 安全
+
+这个服务能让 agent 在你的机器上执行命令，等于一个远程 shell。
+
+- Web 登录密码用 scrypt 哈希保存。首次设置必须用启动日志里的一次性设置码，防止「谁先打开页面谁就成了主人」。
+- 登录态通过 HttpOnly cookie 保存，服务端只存它的哈希。同一 IP 连续输错 5 次锁 15 分钟。所有写请求和 WebSocket 都校验 Origin。页面开启了严格的 CSP。
+- 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）访问，并保持 `web.trustProxy = true`。不要直接把 8800 端口映射出去。
+- 审批超时一律按拒绝处理。Codex 默认沙箱为 `workspace-write`，不会因为 `~/.codex/config.toml` 里配了 `never` 或 `danger-full-access` 就绕过审批。
+- agent 子进程拿不到本服务自己的凭据（`FEISHU_*`、`AGENT_IM_*` 等环境变量会被剔除）。
+
+## 结构
+
+```
+src/
+  core/            与渠道、agent 都无关的中枢
+    hub.ts         会话调度：事件广播、命令、切 agent / 模型 / 目录
+    interactions.ts 审批与提问：一个请求，多个渠道都能处理
+    store.ts       会话持久化（每个 agent 的会话 id 各自保存）
+    config.ts      配置（Web 可改，改完热加载）
+    pairing.ts uploads.ts commands.ts …
+  agents/
+    claude/        Claude Agent SDK 驱动
+    codex/         codex app-server 驱动
+  channels/
+    feishu/        飞书：一个 FeishuBot 对应一个机器人，支持多个
+    web/           HTTP + WebSocket + 鉴权
+web/               前端（原生 JS，不需要构建）
+```
+
+### 接入新的消息渠道（比如 Telegram）
+
+参照 `channels/feishu/bot.ts`，做三件事：
+
+1. 收到消息 → `hub.ensure()` 建会话 → `parseCommand()`。是命令就调 `hub.command()`，再把 `CommandReply` 画出来；是聊天就调 `hub.send()`。
+2. 订阅 `hub.on("event")`，挑出自己的会话（键前缀如 `telegram:<botId>:`），把 step / text / result / error 画出来。
+3. 订阅 `interactions` 的 `created / updated / settled`，把授权卡和提问卡画成按钮。用户点击后调 `interactions.decide / select / submit / skip`。
+
+### 接入新的 agent
+
+实现 `core/types.ts` 里的 `AgentDriver`，然后在 `main.ts` 里 `hub.registerDriver()`。`AgentDriver` 包括开会话、发消息、中断、切模型、列历史、读历史，审批通过传入的 `InteractionHost` 发起。以后要接 ACP 协议的 agent（Gemini CLI、OpenCode 等），写一个通用的 ACP 驱动就行。
+
+## 开发
+
+```bash
+npm install
+npm run dev          # AGENT_IM_HOME=./.dev，改代码自动重启
+npm test
+npm run typecheck
+```

@@ -129,6 +129,22 @@ function importOne(kind: "claude" | "codex"): void {
 }
 
 loadConfig();
+
+// 正在运行的实例内存里有一份会话缓存，下次写盘会把这里导入的覆盖掉
+async function instanceRunning(): Promise<boolean> {
+  const { host, port } = config().web;
+  if (!config().web.enabled) return false;
+  try {
+    await fetch(`http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}/api/me`, { signal: AbortSignal.timeout(1500) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+if (!dryRun && !flag("force") && (await instanceRunning())) {
+  throw new Error("agent-im 正在运行。请先停止它再导入（agent-im service 管理的话：systemctl --user stop agent-im），导完再启动。");
+}
+
 console.log(dryRun ? "将要导入（dry-run，不落盘）：" : "导入中：");
 if (!only || only === "claude") importOne("claude");
 if (!only || only === "codex") importOne("codex");
