@@ -1,0 +1,637 @@
+// 中枢：所有渠道共用的「会话 → agent」调度。
+//
+// 渠道只做三件事：把用户的话（和附件）交给 hub.send，把命令交给 hub.command，
+// 订阅 hub 的事件流画到自己的界面上。会话的生命周期、闲置过期、切 agent / 模型 /
+// 目录、取消挂着的审批，全在这里 —— 以前飞书桥接器 index.ts 里那 1000 行流程，
+// 现在只写一遍。
+//
+// 同一条会话可以被多个渠道同时看着：飞书群里的会话也能在 Web 上打开，Web 上
+// 说的话照样回到飞书。所以事件是广播出去的，每个订阅者自己挑感兴趣的会话。
+import { EventEmitter } from "node:events";
+import { config, resolveWorkspacePath } from "./config.js";
+import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
+import {
+  agentBinding,
+  ensureConversation,
+  getConversation,
+  isExpired,
+  listConversations,
+  touchConversation,
+  updateAgentBinding,
+  updateConversation,
+  type Conversation,
+} from "./store.js";
+import { clearUploads, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
+import type {
+  AgentDriver,
+  AgentSession,
+  ApprovalDecision,
+  HistoryMessage,
+  InteractionSpec,
+  ModelInfo,
+  RuntimeInfo,
+  SessionSummary,
+  StepKind,
+  UserInput,
+} from "./types.js";
+import { helpText, type ParsedCommand } from "./commands.js";
+
+// ---------- 事件 ----------
+
+export type Origin = {
+  /** feishu / web / telegram… */
+  channel: string;
+  /** 渠道实例 id（飞书机器人 id；Web 为 web） */
+  channelId: string;
+  /** 显示用的人名 / 设备名 */
+  name?: string;
+};
+
+export type ConvEvent =
+  | { type: "user"; text: string; attachments: string[]; origin: Origin }
+  | { type: "turn_start" }
+  | { type: "step"; kind: StepKind; text: string }
+  | { type: "delta"; text: string }
+  | { type: "text"; text: string }
+  | { type: "result"; text: string; footer: string }
+  | { type: "error"; message: string }
+  | { type: "notice"; text: string }
+  | { type: "state"; busy: boolean }
+  | { type: "meta" };
+
+export type EventEnvelope = { key: string; seq: number; ts: number; ev: ConvEvent };
+
+/** 命令的结构化结果。各渠道自己决定怎么画（飞书画卡片，Web 画列表）。 */
+export type CommandReply =
+  | { type: "text"; text: string }
+  | {
+      type: "sessions";
+      agent: string;
+      sessions: SessionSummary[];
+      current?: string;
+      cwd: string;
+      allDirs: boolean;
+      fellBack: boolean;
+    }
+  | {
+      type: "models";
+      agent: string;
+      models: ModelInfo[];
+      current?: string;
+      currentEffort?: string;
+      effortSupported: boolean;
+    }
+  | { type: "agents"; agents: { id: string; label: string }[]; current: string }
+  | { type: "none" };
+
+export type ConversationInfo = {
+  key: string;
+  title?: string;
+  channel: string;
+  channelId: string;
+  agent: string;
+  cwd: string;
+  sessionId?: string;
+  model?: string;
+  effort?: string;
+  busy: boolean;
+  activeAt: number;
+  createdAt: number;
+  hidden?: boolean;
+};
+
+const BUFFER_MAX = 400;
+
+type Live = { agent: string; session: AgentSession };
+
+class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
+  private drivers = new Map<string, AgentDriver>();
+  private live = new Map<string, Live>();
+  private buffers = new Map<string, EventEnvelope[]>();
+  private seq = 0;
+  /** 每条会话还没收到结果的轮数，> 0 即忙 */
+  private inflight = new Map<string, number>();
+  private announced = new Set<string>();
+
+  constructor() {
+    super();
+    this.setMaxListeners(100);
+  }
+
+  // ---------- agent 注册 ----------
+
+  registerDriver(driver: AgentDriver): void {
+    this.drivers.set(driver.id, driver);
+  }
+
+  driver(id: string): AgentDriver | undefined {
+    return this.drivers.get(id);
+  }
+
+  /** 已注册且在配置里启用的 agent */
+  enabledAgents(): AgentDriver[] {
+    const agents = config().agents as Record<string, { enabled: boolean }>;
+    return [...this.drivers.values()].filter((d) => agents[d.id]?.enabled !== false);
+  }
+
+  private requireDriver(agent: string): AgentDriver {
+    const driver = this.drivers.get(agent);
+    const enabled = (config().agents as Record<string, { enabled: boolean }>)[agent]?.enabled !== false;
+    if (!driver || !enabled) throw new Error(`agent「${agent}」不可用（未启用或未安装）`);
+    return driver;
+  }
+
+  // ---------- 事件 ----------
+
+  emitEvent(key: string, ev: ConvEvent): void {
+    const env: EventEnvelope = { key, seq: ++this.seq, ts: Date.now(), ev };
+    let buf = this.buffers.get(key);
+    if (!buf) this.buffers.set(key, (buf = []));
+    buf.push(env);
+    // 一轮结束后，这轮的流式片段已经被完整文本覆盖，没必要再留着占内存
+    if (ev.type === "result" || ev.type === "error") {
+      const kept = buf.filter((e) => e.ev.type !== "delta");
+      buf.length = 0;
+      buf.push(...kept);
+    }
+    if (buf.length > BUFFER_MAX) buf.splice(0, buf.length - BUFFER_MAX);
+    this.emit("event", env);
+  }
+
+  currentSeq(): number {
+    return this.seq;
+  }
+
+  /**
+   * seq 之后的事件。返回 null 表示缺口已经超出缓冲区（客户端该整页重新拉历史）。
+   */
+  eventsSince(key: string, since: number): EventEnvelope[] | null {
+    const buf = this.buffers.get(key) ?? [];
+    if (since > 0 && buf.length > 0 && buf[0]!.seq > since + 1) {
+      // 缓冲区最早一条之前还有没见过的：补不全了
+      const missed = buf[0]!.seq - since - 1;
+      if (missed > 0 && buf.length >= BUFFER_MAX) return null;
+    }
+    return buf.filter((e) => e.seq > since);
+  }
+
+  /** 正在进行的这一轮（从最后一条用户消息起），给刚打开页面的客户端补画用。 */
+  liveTurn(key: string): EventEnvelope[] {
+    if (!this.isBusy(key)) return [];
+    const buf = this.buffers.get(key) ?? [];
+    let start = buf.length;
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const t = buf[i]!.ev.type;
+      if (t === "user") {
+        start = i;
+        break;
+      }
+      if (t === "result" || t === "error") {
+        start = i + 1;
+        break;
+      }
+      if (i === 0) start = 0;
+    }
+    return buf.slice(start);
+  }
+
+  isBusy(key: string): boolean {
+    return (this.inflight.get(key) ?? 0) > 0;
+  }
+
+  private setInflight(key: string, n: number): void {
+    const before = this.isBusy(key);
+    this.inflight.set(key, Math.max(0, n));
+    const after = this.isBusy(key);
+    if (before !== after) this.emitEvent(key, { type: "state", busy: after });
+  }
+
+  // ---------- 会话 ----------
+
+  ensure(params: {
+    key: string;
+    channel: string;
+    channelId: string;
+    defaultAgent: string;
+    title?: string;
+  }): Conversation {
+    return ensureConversation({
+      key: params.key,
+      channel: params.channel,
+      channelId: params.channelId,
+      agent: params.defaultAgent,
+      ...(params.title ? { title: params.title } : {}),
+    });
+  }
+
+  conversation(key: string): Conversation | undefined {
+    return getConversation(key);
+  }
+
+  info(key: string): ConversationInfo | undefined {
+    const conv = getConversation(key);
+    if (!conv) return undefined;
+    const binding = conv.perAgent[conv.agent] ?? {};
+    return {
+      key: conv.key,
+      ...(conv.title ? { title: conv.title } : {}),
+      channel: conv.channel,
+      channelId: conv.channelId,
+      agent: conv.agent,
+      cwd: conv.cwd,
+      ...(binding.sessionId ? { sessionId: binding.sessionId } : {}),
+      ...(binding.model ? { model: binding.model } : {}),
+      ...(binding.effort ? { effort: binding.effort } : {}),
+      busy: this.isBusy(key),
+      activeAt: conv.activeAt,
+      createdAt: conv.createdAt,
+      ...(conv.hidden ? { hidden: true } : {}),
+    };
+  }
+
+  list(): ConversationInfo[] {
+    return listConversations()
+      .map((c) => this.info(c.key)!)
+      .sort((a, b) => b.activeAt - a.activeAt);
+  }
+
+  /** 取活着的 agent 会话，没有就按绑定拉起（默认续用上次的会话）。 */
+  session(key: string, opts: { resumeId?: string; fork?: boolean } = {}): AgentSession {
+    const conv = getConversation(key);
+    if (!conv) throw new Error(`会话不存在：${key}`);
+    const existing = this.live.get(key);
+    if (existing && existing.agent === conv.agent && !opts.resumeId) return existing.session;
+    if (existing) {
+      this.live.delete(key);
+      void existing.session.dispose();
+    }
+
+    const driver = this.requireDriver(conv.agent);
+    const binding = agentBinding(conv);
+
+    // 闲置太久的会话不再续用，直接开新的
+    if (binding.sessionId && !opts.resumeId && isExpired(conv)) {
+      console.log(`[会话] ${key} 闲置超过 ${config().sessionTtlMs / 3600000} 小时，开新会话`);
+      updateAgentBinding(key, conv.agent, { sessionId: undefined, model: undefined, effort: undefined });
+    }
+
+    const agentDefaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[
+      conv.agent
+    ];
+    const model = binding.model || agentDefaults?.defaultModel || undefined;
+    const effort = binding.effort || agentDefaults?.defaultEffort || undefined;
+    const resumeId = opts.resumeId ?? (opts.fork ? undefined : binding.sessionId);
+    const agent = conv.agent;
+    // 被丢弃的旧会话晚到的事件（dispose 时的中断错误等）不该再出现在这条会话里
+    const holder: { session?: AgentSession } = {};
+    const alive = () => this.live.get(key)?.session === holder.session;
+
+    const session = driver.createSession(
+      {
+        cwd: conv.cwd,
+        uploadsDir: ensureUploadsDir(key),
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        ...(resumeId ? { resumeId } : {}),
+        ...(opts.fork ? { fork: true } : {}),
+      },
+      {
+        onTurnStart: () => alive() && this.emitEvent(key, { type: "turn_start" }),
+        onStep: (kind, text) => alive() && this.emitEvent(key, { type: "step", kind, text }),
+        onTextDelta: (text) => alive() && this.emitEvent(key, { type: "delta", text }),
+        onText: (text) => alive() && this.emitEvent(key, { type: "text", text }),
+        onResult: (result) => {
+          if (!alive()) return;
+          const parts = [`用时 ${(result.durationMs / 1000).toFixed(1)}s`];
+          if (result.costUsd !== undefined) parts.push(`约 $${result.costUsd.toFixed(4)}`);
+          if (result.tokens !== undefined) parts.push(`${result.tokens} tokens`);
+          this.emitEvent(key, { type: "result", text: result.text, footer: parts.join("　") });
+          this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+        },
+        onError: (err) => {
+          if (!alive()) return;
+          const diagnosis = driver.diagnose(err);
+          if (!this.announced.has(diagnosis.kind)) {
+            this.announced.add(diagnosis.kind);
+            console.error(`[${agent}] ${diagnosis.consoleHint}`);
+          }
+          console.error(`[${agent}] ${key} 出错:`, err instanceof Error ? err.message : err);
+          this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
+          this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+        },
+        onSessionId: (sessionId) => {
+          // 切走之后旧会话晚到的回调不该覆盖新绑定
+          if (!alive()) return;
+          updateAgentBinding(key, agent, { sessionId });
+          this.emitEvent(key, { type: "meta" });
+        },
+      },
+      (spec: InteractionSpec) => interactions.create(key, spec, config().approvalTimeoutMs),
+    );
+    holder.session = session;
+    this.live.set(key, { agent, session });
+    return session;
+  }
+
+  /** 丢掉活着的会话（不动绑定）。挂着的审批一并取消，否则阻塞的那一轮永远走不完。 */
+  async drop(key: string, note: string): Promise<void> {
+    interactions.cancelAll(key, note);
+    const existing = this.live.get(key);
+    this.live.delete(key);
+    this.setInflight(key, 0);
+    await existing?.session.dispose();
+  }
+
+  // ---------- 说话 ----------
+
+  /**
+   * 送一句话进会话。
+   *
+   * 提问挂着的时候整轮是阻塞的，这条消息送进去也没人接 —— 所以先拿它当作答。
+   * 带附件的不拿来作答：答案只能是文字。
+   */
+  send(key: string, input: UserInput, origin: Origin): void {
+    const conv = getConversation(key);
+    if (!conv) throw new Error(`会话不存在：${key}`);
+    const shown = {
+      type: "user" as const,
+      text: input.text,
+      attachments: input.attachments.map((a) => `${KIND_LABEL[a.kind]} ${a.name}`),
+      origin,
+    };
+
+    if (input.attachments.length === 0) {
+      const asking = interactions.findQuestion(key);
+      if (asking && interactions.answerWithText(asking.id, input.text, `${origin.name ?? "用户"}以消息作答`)) {
+        this.emitEvent(key, shown);
+        return;
+      }
+    }
+
+    touchConversation(key);
+    if (!conv.title && conv.channel === "web" && input.text.trim()) {
+      updateConversation(key, { title: input.text.trim().replace(/\s+/g, " ").slice(0, 40) });
+      this.emitEvent(key, { type: "meta" });
+    }
+    this.emitEvent(key, shown);
+
+    let session: AgentSession;
+    try {
+      session = this.session(key);
+    } catch (err) {
+      this.emitEvent(key, { type: "error", message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    this.setInflight(key, (this.inflight.get(key) ?? 0) + 1);
+    try {
+      session.send(input);
+    } catch (err) {
+      this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+      this.emitEvent(key, { type: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  notice(key: string, text: string): void {
+    this.emitEvent(key, { type: "notice", text });
+  }
+
+  // ---------- 操作（命令和 Web 按钮共用） ----------
+
+  async runtime(key: string): Promise<RuntimeInfo> {
+    const conv = getConversation(key)!;
+    const driver = this.requireDriver(conv.agent);
+    const binding = agentBinding(conv);
+    let runtime: RuntimeInfo = {};
+    try {
+      runtime = await this.session(key).describeRuntime();
+    } catch (err) {
+      console.error("[会话] 读取模型信息失败:", err);
+    }
+    const defaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[
+      conv.agent
+    ];
+    const fallback = runtime.model && runtime.effort ? {} : await driver.defaults().catch(() => ({}) as RuntimeInfo);
+    const model = runtime.model ?? binding.model ?? (defaults?.defaultModel || undefined) ?? fallback.model;
+    const effort = runtime.effort ?? binding.effort ?? (defaults?.defaultEffort || undefined) ?? fallback.effort;
+    return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+  }
+
+  async newSession(key: string, model?: string): Promise<string> {
+    const conv = getConversation(key)!;
+    await this.drop(key, "已开新会话");
+    updateAgentBinding(key, conv.agent, { sessionId: undefined, model: model || undefined, effort: undefined });
+    clearUploads(key);
+    this.emitEvent(key, { type: "meta" });
+    const runtime = await this.runtime(key);
+    return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
+      runtime.effort ? `，思考 ${runtime.effort}` : ""
+    }）。`;
+  }
+
+  async fork(key: string): Promise<string> {
+    const conv = getConversation(key)!;
+    const current = agentBinding(conv).sessionId;
+    if (!current) return "当前还没有可分叉的会话。";
+    await this.drop(key, "已分叉会话");
+    this.session(key, { resumeId: current, fork: true });
+    return "已分叉，原会话保留。下一条消息起在分叉出来的新会话里继续。";
+  }
+
+  async resume(key: string, sessionId: string, originCwd?: string): Promise<string> {
+    const conv = getConversation(key)!;
+    const driver = this.requireDriver(conv.agent);
+    if (!(await driver.sessionExists(sessionId, conv.cwd))) {
+      return `找不到会话 ${sessionId}。\n发 /sessions 看看有哪些可恢复的。`;
+    }
+    await this.drop(key, "会话已切换");
+    if (sessionId !== agentBinding(conv).sessionId) clearUploads(key);
+    updateAgentBinding(key, conv.agent, { sessionId });
+    this.session(key, { resumeId: sessionId });
+    this.emitEvent(key, { type: "meta" });
+    const note =
+      originCwd && originCwd !== conv.cwd
+        ? `\n\n注意：这条会话原本在 \`${originCwd}\`，恢复后会在 \`${conv.cwd}\` 里继续 —— 上下文都在，但读写范围跟着当前工作目录走。`
+        : "";
+    return `已恢复会话 ${sessionId}，直接接着说就行。${note}`;
+  }
+
+  async sessions(key: string, all: boolean): Promise<Extract<CommandReply, { type: "sessions" }>> {
+    const conv = getConversation(key)!;
+    const driver = this.requireDriver(conv.agent);
+    // 先按当前目录列，一条都没有就自动退回全局 —— 回一句「没有历史」是误导
+    let sessions = all ? [] : await driver.listSessions(conv.cwd, 10);
+    const fellBack = !all && sessions.length === 0;
+    if (all || fellBack) sessions = await driver.listSessions(undefined, 10);
+    const current = agentBinding(conv).sessionId;
+    return {
+      type: "sessions",
+      agent: conv.agent,
+      sessions,
+      ...(current ? { current } : {}),
+      cwd: conv.cwd,
+      allDirs: all || fellBack,
+      fellBack,
+    };
+  }
+
+  async models(key: string): Promise<Extract<CommandReply, { type: "models" }>> {
+    const conv = getConversation(key)!;
+    const driver = this.requireDriver(conv.agent);
+    const models = await driver.listModels(this.session(key));
+    const runtime = await this.runtime(key);
+    return {
+      type: "models",
+      agent: conv.agent,
+      models,
+      ...(runtime.model ? { current: runtime.model } : {}),
+      ...(runtime.effort ? { currentEffort: runtime.effort } : {}),
+      effortSupported: driver.capabilities.effort,
+    };
+  }
+
+  async setModel(key: string, model: string): Promise<string> {
+    const conv = getConversation(key)!;
+    await this.session(key).setModel(model);
+    updateAgentBinding(key, conv.agent, { model });
+    this.emitEvent(key, { type: "meta" });
+    return `模型已切换为 ${model}。`;
+  }
+
+  async setEffort(key: string, effort: string): Promise<string> {
+    const conv = getConversation(key)!;
+    const driver = this.requireDriver(conv.agent);
+    if (!driver.capabilities.effort) return `${driver.label} 不支持切换思考程度。`;
+    await this.session(key).setModel(undefined, effort);
+    updateAgentBinding(key, conv.agent, { effort });
+    this.emitEvent(key, { type: "meta" });
+    return `思考程度已切换为 ${effort}。`;
+  }
+
+  /** 切 agent：各 agent 的会话各自保留，切回来接着聊。 */
+  async setAgent(key: string, agent: string, allowed: string[]): Promise<string> {
+    const conv = getConversation(key)!;
+    if (!allowed.includes(agent)) {
+      return `这里不能用「${agent}」。可选：${allowed.join("、")}`;
+    }
+    this.requireDriver(agent);
+    if (conv.agent === agent) return `当前已经是 ${this.label(agent)}。`;
+    await this.drop(key, `已切换到 ${this.label(agent)}`);
+    updateConversation(key, { agent });
+    this.emitEvent(key, { type: "meta" });
+    const resumed = agentBinding(getConversation(key)!, agent).sessionId;
+    return `已切换到 ${this.label(agent)}${resumed ? "，接着它上次的会话" : ""}。`;
+  }
+
+  async stop(key: string): Promise<string> {
+    interactions.cancelAll(key, "本轮已中断");
+    await this.live.get(key)?.session.interrupt();
+    this.setInflight(key, 0);
+    return "已请求中断。";
+  }
+
+  async cd(key: string, dir: string): Promise<string> {
+    const resolved = resolveWorkspacePath(dir);
+    if (!resolved) return `不允许：目录必须在 ${config().workspaceRoot} 之内。`;
+    const conv = getConversation(key)!;
+    await this.drop(key, "工作目录已切换");
+    // 会话记录是按目录存的，换目录后旧会话 resume 不回来，干脆都清掉
+    const perAgent = Object.fromEntries(
+      Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined }]),
+    );
+    updateConversation(key, { cwd: resolved, cwdExplicit: true, perAgent });
+    clearUploads(key);
+    this.emitEvent(key, { type: "meta" });
+    return `工作目录已切换到 ${resolved}，下条消息将开新会话。`;
+  }
+
+  async status(key: string): Promise<string> {
+    const conv = getConversation(key)!;
+    const driver = this.requireDriver(conv.agent);
+    const runtime = await this.runtime(key);
+    const extra = await driver.statusLines().catch(() => [] as string[]);
+    return [
+      `Agent：${driver.label}`,
+      `会话：${agentBinding(conv).sessionId ?? "(尚未建立)"}`,
+      `目录：${conv.cwd}`,
+      `模型：${runtime.model ?? "默认"}`,
+      ...(runtime.effort ? [`思考程度：${runtime.effort}`] : []),
+      ...(extra.length > 0 ? ["", ...extra] : []),
+    ].join("\n");
+  }
+
+  async history(key: string): Promise<HistoryMessage[]> {
+    const conv = getConversation(key);
+    if (!conv) return [];
+    const sessionId = agentBinding(conv).sessionId;
+    if (!sessionId) return [];
+    const driver = this.requireDriver(conv.agent);
+    try {
+      return await driver.readHistory(sessionId, conv.cwd);
+    } catch (err) {
+      console.error(`[历史] 读取 ${key} 失败:`, err);
+      return [];
+    }
+  }
+
+  label(agent: string): string {
+    return this.drivers.get(agent)?.label ?? agent;
+  }
+
+  /** 执行一条已解析的命令。chat 不在这里处理。 */
+  async command(key: string, cmd: ParsedCommand, ctx: { allowedAgents: string[]; by: string }): Promise<CommandReply> {
+    const text = (t: string): CommandReply => ({ type: "text", text: t });
+    switch (cmd.kind) {
+      case "help":
+        return text(helpText(ctx.allowedAgents));
+      case "pwd":
+        return text(getConversation(key)!.cwd);
+      case "status":
+        return text(await this.status(key));
+      case "cd":
+        return text(await this.cd(key, cmd.dir));
+      case "new":
+        return text(await this.newSession(key, cmd.model));
+      case "fork":
+        return text(await this.fork(key));
+      case "sessions": {
+        const reply = await this.sessions(key, cmd.all);
+        return reply.sessions.length === 0 ? text("还没有任何历史会话。") : reply;
+      }
+      case "resume":
+        return text(await this.resume(key, cmd.sessionId));
+      case "model":
+        return cmd.model ? text(await this.setModel(key, cmd.model)) : await this.models(key);
+      case "effort":
+        if (!cmd.effort) return await this.models(key);
+        return text(await this.setEffort(key, cmd.effort));
+      case "agent": {
+        if (!cmd.agent) {
+          return {
+            type: "agents",
+            agents: ctx.allowedAgents
+              .filter((a) => this.drivers.has(a))
+              .map((id) => ({ id, label: this.label(id) })),
+            current: getConversation(key)!.agent,
+          };
+        }
+        return text(await this.setAgent(key, cmd.agent, ctx.allowedAgents));
+      }
+      case "stop":
+        return text(await this.stop(key));
+      case "approve": {
+        const settled = interactions.decide(cmd.requestId, cmd.decision as ApprovalDecision, ctx.by);
+        if (!settled) return text(`请求 ${cmd.requestId} 不存在或已处理。`);
+        return text(`${SETTLEMENT_LABEL[cmd.decision]}：${cmd.requestId}`);
+      }
+      case "chat":
+        return { type: "none" };
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    for (const key of [...this.live.keys()]) await this.drop(key, "服务正在重启");
+    for (const driver of this.drivers.values()) await driver.stop().catch(() => {});
+  }
+}
+
+export const hub = new Hub();

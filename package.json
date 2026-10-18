@@ -1,0 +1,54 @@
+{
+  "name": "agent-im",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "把飞书（以及以后的 Telegram 等）和 Web 页面桥接到本机 Claude Code / Codex：聊天驱动、卡片审批、会话与模型切换",
+  "keywords": [
+    "feishu",
+    "lark",
+    "claude-code",
+    "codex",
+    "bridge",
+    "agent",
+    "飞书"
+  ],
+  "license": "MIT",
+  "author": "qijieinnet",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "agent-im": "bin/cli.js",
+    "aim": "bin/cli.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "web",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node bin/cli.js start",
+    "dev": "AGENT_IM_HOME=./.dev tsx watch src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.302",
+    "@larksuiteoapi/node-sdk": "^1.73.0",
+    "dompurify": "^3.2.0",
+    "highlight.js": "^11.11.0",
+    "marked": "^16.0.0",
+    "qrcode": "^1.5.4",
+    "tsx": "^4.20.6",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.9.3"
+  }
+}
