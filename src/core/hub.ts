@@ -127,6 +127,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private truncated = new Map<string, number>();
   /** 每条会话的生命周期操作串行执行，见 serial() */
   private locks = new Map<string, Promise<unknown>>();
+  /** 最近一次点停止的时间：紧接着冒出来的「被打断」错误是预期内的，不当错误显示 */
+  private stoppedAt = new Map<string, number>();
   /** 每条会话的「停止代次」：排队中的发送在真正送出前对一下，点过停止的就作废 */
   private stopGen = new Map<string, number>();
 
@@ -347,7 +349,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           console.error(`[${agent}] ${key} 出错:`, err instanceof Error ? err.message : err);
           // 这一轮已经结束了，挂着的审批没人会再等它
           interactions.cancelAll(key, "本轮出错结束");
-          this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
+          if (Date.now() - (this.stoppedAt.get(key) ?? 0) < 15_000) {
+            // 用户自己点的停止：中断导致的「没能正常收尾」不是故障
+            this.emitEvent(key, { type: "notice", text: "已中断。" });
+          } else {
+            this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
+          }
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
         },
         onDropped: (n) => {
@@ -419,6 +426,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   send(key: string, input: UserInput, origin: Origin, gen?: number): void {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
+    const myGen = gen ?? this.stopGeneration(key);
+    const cancelled = () => {
+      if (this.stopGeneration(key) === myGen) return false;
+      this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
+      return true;
+    };
+    // 最先检查：停止之前收到的旧消息，不能去回答停止之后新冒出来的提问
+    if (cancelled()) return;
     const shown = {
       type: "user" as const,
       text: input.text,
@@ -442,17 +457,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       this.emitEvent(key, { type: "meta" });
     }
     this.emitEvent(key, shown);
-    const myGen = gen ?? this.stopGeneration(key);
-    const cancelled = () => {
-      if (this.stopGeneration(key) === myGen) return false;
-      this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
-      return true;
-    };
-    if (gen !== undefined && cancelled()) return;
     void this.serial(key, async () => {
       if (cancelled()) return;
       if (expired) {
-        await this.expireNow(key, input.attachments.map((a) => a.path));
+        await this.expireNow(key);
         // 清理要等旧会话 dispose，期间可能又点了停止
         if (cancelled()) return;
       }
@@ -461,14 +469,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   /** 闲置太久：不再续用上次的会话（活着的也丢掉），开新的 */
-  private async expireNow(key: string, keepFiles: string[] = []): Promise<void> {
+  private async expireNow(key: string): Promise<void> {
     const conv = getConversation(key);
     if (!conv || !agentBinding(conv).sessionId) return;
     console.log(`[会话] ${key} 闲置超过 ${config().sessionTtlMs / 3600000} 小时，开新会话`);
     await this.drop(key, "会话已闲置过期");
     updateAgentBinding(key, conv.agent, { sessionId: undefined, model: undefined, effort: undefined });
-    // 本次消息刚上传的附件要留着，否则送进新会话的是一堆已被删掉的路径
-    clearUploads(key, keepFiles);
+    // 不清上传目录：本次和排在后面的消息可能都带着刚上传的附件。
+    // 旧附件留到 /new 或下次启动的清扫时再删。
     this.emitEvent(key, { type: "notice", text: "上次的会话闲置太久，已自动开新会话。" });
     this.emitEvent(key, { type: "meta" });
   }
@@ -627,6 +635,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   async stop(key: string): Promise<string> {
     // 不进串行队列：停止要立刻生效。排队中还没送出的消息靠代次作废
     this.stopGen.set(key, (this.stopGen.get(key) ?? 0) + 1);
+    this.stoppedAt.set(key, Date.now());
     interactions.cancelAll(key, "本轮已中断");
     await this.live.get(key)?.session.interrupt();
     this.setInflight(key, 0);

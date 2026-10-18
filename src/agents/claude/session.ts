@@ -113,6 +113,14 @@ export class ClaudeSession implements AgentSession {
   private everStarted = false;
   private runtime: RuntimeInfo = {};
   private disposed = false;
+  /**
+   * 消息先留在本地，上一轮出结果了才交给 CLI。
+   *
+   * 一股脑塞给 CLI 的话，它会自己排队；而 interrupt() 只停当前这一轮，排在 CLI 里的
+   * 下一条照样会跑 —— 用户点了停止，agent 却还在干活。留在本地就能在停止时一并丢掉。
+   */
+  private turnBusy = false;
+  private pending: UserInput[] = [];
 
   constructor(
     private readonly opts: SessionOptions,
@@ -159,6 +167,8 @@ export class ClaudeSession implements AgentSession {
         // sessionId 重新拉起来，上下文不丢；不清的话消息会进一个没人消费的队列。
         this.q = null;
         this.pump = null;
+        // CLI 半路退出：这一轮不会再有结果了，排队的下一条会重新拉起 CLI 接着跑
+        if (this.turnBusy) this.onTurnEnd();
       });
   }
 
@@ -218,6 +228,7 @@ export class ClaudeSession implements AgentSession {
       } else {
         this.events.onError(new Error(`运行结束但报错：${message.subtype}`));
       }
+      this.onTurnEnd();
     }
   }
 
@@ -280,6 +291,23 @@ export class ClaudeSession implements AgentSession {
   // ---------- 对外 ----------
 
   send(input: UserInput): void {
+    if (this.disposed) return;
+    if (this.turnBusy) {
+      this.pending.push(input);
+      return;
+    }
+    this.deliver(input);
+  }
+
+  /** 一轮结束（出结果、出错或 CLI 退出）：交出下一条排队的消息 */
+  private onTurnEnd(): void {
+    this.turnBusy = false;
+    const next = this.pending.shift();
+    if (next && !this.disposed) this.deliver(next);
+  }
+
+  private deliver(input: UserInput): void {
+    this.turnBusy = true;
     this.start();
     this.queue.push({
       type: "user",
@@ -338,7 +366,9 @@ export class ClaudeSession implements AgentSession {
   }
 
   async interrupt(): Promise<void> {
-    const dropped = this.queue.clear();
+    // 停止 = 这一轮和排着队的都不要了
+    const dropped = this.pending.length + this.queue.clear();
+    this.pending = [];
     if (dropped > 0) this.events.onDropped?.(dropped);
     if (!this.q) return;
     try {
@@ -350,6 +380,7 @@ export class ClaudeSession implements AgentSession {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.pending = [];
     this.queue.close();
     try {
       await this.q?.interrupt();

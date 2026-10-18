@@ -186,6 +186,18 @@ export class CodexSession implements AgentSession {
     this.detached = true;
   }
 
+  /** thread 被另一条会话接管了。正在跑的这一轮收不到后续通知了，收尾掉 */
+  evict(): void {
+    this.detached = true;
+    if (this.phase !== "idle" && !this.disposed) {
+      const dropped = this.queue.length;
+      this.queue = [];
+      this.endTurn();
+      this.events.onError(new Error("这条 Codex 会话在别处被恢复了，这一轮已中断"));
+      if (dropped > 0) this.events.onDropped?.(dropped);
+    }
+  }
+
   /** app-server 挂了 / 重启了：这一轮不会再有任何通知，必须自己收尾，否则界面一直显示忙。 */
   onServerExit(reason: string): void {
     this.markDetached();
@@ -271,9 +283,14 @@ export class CodexSession implements AgentSession {
 
   private adopt(thread: Thread): void {
     const previous = this.threadId;
-    if (previous && previous !== thread.id) byThread.delete(previous);
+    if (previous && previous !== thread.id && byThread.get(previous) === this) byThread.delete(previous);
     this.threadId = thread.id;
     this.detached = false;
+    // 同一个 thread 被两条会话恢复（比如 Web 上恢复了飞书群里那条）：通知按 threadId 路由，
+    // 只能有一个接收方。所有权交给最后恢复它的这条，原来那条标记为待恢复，
+    // 它下次说话时会重新 resume、再把所有权拿回去 —— 回复不会再串到别的聊天里。
+    const owner = byThread.get(thread.id);
+    if (owner && owner !== this) owner.evict();
     byThread.set(thread.id, this);
     this.runtime = {
       ...(thread.model ? { model: thread.model } : {}),
@@ -391,7 +408,8 @@ export class CodexSession implements AgentSession {
     this.disposed = true;
     this.queue = [];
     await this.interrupt();
-    if (this.threadId) {
+    // 只有当前所有者才清理映射和退订：thread 已经被别的会话接管时，退订会把它的订阅一起断掉
+    if (this.threadId && byThread.get(this.threadId) === this) {
       byThread.delete(this.threadId);
       try {
         await appServer.call("thread/unsubscribe", { threadId: this.threadId });

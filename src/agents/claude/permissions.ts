@@ -35,7 +35,12 @@ function load(): string[] {
  * 无论哪种，命令里只要有 shell 组合语法（; && | $() 重定向……）就只记完整命令：
  * 否则 `ls; rm -rf ~` 的首词也是 ls。
  */
-const SHELL_SYNTAX = /[;&|`<>\n\r\\]|\$[({]|\$[A-Za-z_]/;
+/**
+ * 出现这些字符就不按首词记：shell 组合语法、变量 / 命令替换，以及引号和通配符 ——
+ * 引号能把危险参数藏起来（'--output=/x' 在 shell 去掉引号后才生效），
+ * 通配符和 ~ 会在执行时展开成我们看不到的东西。
+ */
+const SHELL_SYNTAX = /[;&|`<>\n\r\\'"*?[\]{}~#!]|\$/;
 
 /**
  * 可按首词放行的命令，以及它们「哪些参数不行」。
@@ -55,11 +60,11 @@ const PREFIX_SAFE: Record<string, (args: string[]) => boolean> = {
   pwd: (a) => a.length === 0,
   echo: () => true,
   stat: () => true,
-  file: (a) => !a.some((x) => /^(-m|--magic-file|-C|--compile)/.test(x)),
   du: () => true,
   df: () => true,
   which: () => true,
-  date: (a) => !a.some((x) => /^(-s|--set)/.test(x)),
+  // GNU 长选项可以缩写（--se 就是 --set），所以只认明确列出的参数
+  date: (a) => a.every((x) => /^\+/.test(x) || ["-u", "--utc", "-R", "-I", "--iso-8601"].includes(x)),
   basename: () => true,
   dirname: () => true,
   realpath: () => true,
@@ -67,7 +72,7 @@ const PREFIX_SAFE: Record<string, (args: string[]) => boolean> = {
   uname: () => true,
   whoami: (a) => a.length === 0,
   id: () => true,
-  hostname: (a) => a.every((x) => /^-[sfidIA]+$/.test(x)), // 带参数就是改主机名
+  hostname: (a) => a.length === 0, // 带参数就是改主机名
   uptime: () => true,
   ps: () => true,
   mkdir: () => true,
@@ -75,12 +80,24 @@ const PREFIX_SAFE: Record<string, (args: string[]) => boolean> = {
 };
 
 /**
- * git 只放行纯查看的子命令；能改仓库的（add / commit / push / checkout…）都只记完整命令。
- * 这几个子命令里仍要拦掉能写文件或调外部程序的参数。
+ * git 只放行纯查看的子命令，参数也只认白名单 —— git 的长选项同样能缩写
+ * （--outp 就是 --output），用黑名单拦不住。不是选项的参数（路径、提交号）照常放行。
  */
 const GIT_READONLY = new Set(["status", "log", "show", "diff"]);
-const GIT_BAD_ARG =
-  /^(-c|--config(-env)?|--exec-path|--output|--ext-diff|--textconv|--upload-pack|--receive-pack|--git-dir|--work-tree|-o$)/;
+const GIT_SAFE_FLAGS = new Set([
+  "-s", "--short", "-b", "--branch", "--porcelain", "-v", "--verbose", "-u", "--untracked-files",
+  "--oneline", "--graph", "--decorate", "--all", "--stat", "--shortstat", "--name-only", "--name-status",
+  "-p", "--patch", "--cached", "--staged", "--no-color", "--color", "-w", "--ignore-all-space",
+  "--reverse", "--first-parent", "--no-merges", "--merges", "--", "-q", "--quiet",
+]);
+
+function gitArgOk(arg: string): boolean {
+  if (!arg.startsWith("-")) return true;
+  if (/^-\d+$/.test(arg)) return true; // -5：最近 5 条
+  if (/^(-n|--max-count)=?\d*$/.test(arg)) return true;
+  if (/^--(since|until|author|grep)=[^=]+$/.test(arg)) return true;
+  return GIT_SAFE_FLAGS.has(arg);
+}
 
 function prefixSignature(command: string): string | null {
   const trimmed = command.trim();
@@ -92,7 +109,7 @@ function prefixSignature(command: string): string | null {
   if (check) return check(args) ? `Bash:${head}` : null;
   if (head === "git") {
     const sub = args[0] ?? "";
-    if (!GIT_READONLY.has(sub) || args.some((w) => GIT_BAD_ARG.test(w))) return null;
+    if (!GIT_READONLY.has(sub) || !args.slice(1).every(gitArgOk)) return null;
     return `Bash:git ${sub}`;
   }
   return null;

@@ -160,3 +160,38 @@ test("app-server 退出：排队的消息逐条结清，界面不会一直显示
   assert.ok(log.some((l) => l.startsWith("error:")));
   assert.ok(log.includes("dropped:2"));
 });
+
+test("两条会话恢复同一个 thread：回复只进当前所有者，被接管的一方下次说话再取回", async () => {
+  calls.length = 0;
+  const a = makeSession();
+  const b = makeSession();
+  // A 开 thread
+  a.session.send({ text: "a1", attachments: [] });
+  const ta = await startTurn();
+  notify("turn/completed", { threadId: ta.threadId, turn: { id: ta.turnId, status: "completed" } });
+  await tick();
+  // B 恢复同一个 thread（模拟：B 的 open 返回同一个 id）
+  b.session.send({ text: "b1", attachments: [] });
+  await tick();
+  take("thread/start").resolve({ thread: { id: ta.threadId } });
+  await tick();
+  const tb = take("turn/start");
+  tb.resolve({ turn: { id: "tb1" } });
+  await tick();
+  notify("item/completed", { threadId: ta.threadId, item: { type: "agentMessage", id: "x", text: "给B", phase: null } });
+  notify("turn/completed", { threadId: ta.threadId, turn: { id: "tb1", status: "completed" } });
+  await tick();
+  assert.ok(b.log.includes("result:给B"));
+  assert.ok(!a.log.some((l) => l.includes("给B")));
+  // A 再说话：先 resume 取回所有权，回复回到 A
+  a.session.send({ text: "a2", attachments: [] });
+  await tick();
+  take("thread/resume").resolve({ thread: { id: ta.threadId } });
+  await tick();
+  take("turn/start").resolve({ turn: { id: "ta2" } });
+  await tick();
+  notify("item/completed", { threadId: ta.threadId, item: { type: "agentMessage", id: "y", text: "给A", phase: null } });
+  notify("turn/completed", { threadId: ta.threadId, turn: { id: "ta2", status: "completed" } });
+  assert.ok(a.log.includes("result:给A"));
+  assert.ok(!b.log.some((l) => l.includes("给A")));
+});

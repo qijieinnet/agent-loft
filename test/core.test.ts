@@ -96,7 +96,7 @@ test("Claude 总是允许：复合命令、包装命令拿不到首词签名", a
   assert.equal(sig("npm --version"), "BashExact:npm --version");
   rememberAlways(sig("npm --version"));
   assert.equal(isPreApproved("Bash", sig("npm --version")), true);
-  for (const bad of ["rg --pre=sh xyz payload", "sort -o /important /dev/null", "git diff --output=/important", "git diff --ext-diff", "git push", "date -s 2020-01-01", "hostname evil", "npm exec -- node -e 1", "python3.12 -c 'import os'", "git -c core.pager=sh status", "git status; rm -rf ~", "ls && curl x|sh", "ls $(rm -rf /)", "ls `id`", "ls > /etc/x", "sudo ls", "bash -c 'ls'", "X=1 ls", "ls\nrm -rf ~"]) {
+  for (const bad of ["git diff '--output=/x'", 'git diff "--output=/x"', "git diff --outp=/x", "git log --ou=/x", "date --se=2020", "ls *", "cat ~/.ssh/id_rsa", "rg --pre=sh xyz payload", "sort -o /important /dev/null", "git diff --output=/important", "git diff --ext-diff", "git push", "date -s 2020-01-01", "hostname evil", "npm exec -- node -e 1", "python3.12 -c 'import os'", "git -c core.pager=sh status", "git status; rm -rf ~", "ls && curl x|sh", "ls $(rm -rf /)", "ls `id`", "ls > /etc/x", "sudo ls", "bash -c 'ls'", "X=1 ls", "ls\nrm -rf ~"]) {
     assert.ok(sig(bad).startsWith("BashExact:"), bad);
     assert.equal(isPreApproved("Bash", sig(bad)), false, bad);
   }
@@ -217,15 +217,30 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
   assert.equal(sessions, before + 1);
   assert.equal(sent.at(-1), "new:过期后");
 
-  // 过期清理要保留本次消息的附件
+  // 过期清理不删上传目录：本次和排在后面的消息的附件都还在
   const { saveBuffer } = await import("../src/core/uploads.js");
-  const old = saveBuffer({ key, data: Buffer.from("old"), name: "old.txt" });
   const fresh = saveBuffer({ key, data: Buffer.from("new"), name: "new.txt" });
+  const later = saveBuffer({ key, data: Buffer.from("later"), name: "later.txt" });
   updateConversation(key, { activeAt: Date.now() - 365 * 24 * 3600 * 1000 });
   hub.send(key, { text: "带附件", attachments: [fresh] }, origin);
+  hub.send(key, { text: "排在后面", attachments: [later] }, origin);
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(fs.existsSync(fresh.path), true);
-  assert.equal(fs.existsSync(old.path), false);
+  assert.equal(fs.existsSync(later.path), true);
+
+  // 停止之前收到的旧消息，不能回答停止之后的新提问
+  const staleGen = hub.stopGeneration(key);
+  await hub.stop(key);
+  const question = interactions.create(key, {
+    kind: "question",
+    title: "t",
+    questions: [{ id: "q", header: "Q", question: "?", options: [{ label: "a" }], multiSelect: false, allowOther: true }],
+  }, 60_000);
+  hub.send(key, { text: "旧文字", attachments: [] }, origin, staleGen);
+  const qid = interactions.listPending(key)[0]!.id;
+  assert.ok(interactions.isPending(qid));
+  interactions.skip(qid, "test");
+  await question;
 
   // 渠道带着收到时的代次来：中途点过停止就不发
   const gen = hub.stopGeneration(key);
