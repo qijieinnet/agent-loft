@@ -145,3 +145,12 @@ export function watchPairing(onApproved: (channelId: string, userId: string, cha
     // 监听不了就只认本进程里的批准
   }
 }
+
+/** 直接加入已批准名单（迁移旧数据用）。 */
+export function addApproved(channelId: string, userId: string): void {
+  const store = read();
+  const ch = channel(store, channelId);
+  const normalized = userId.trim().toLowerCase();
+  if (!ch.approved.includes(normalized)) ch.approved.push(normalized);
+  writeJsonAtomic(storePath, store);
+}

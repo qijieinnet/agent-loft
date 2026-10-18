@@ -25,9 +25,23 @@ export type WebSession = {
 };
 
 let sessions: Record<string, WebSession> | null = null;
+let loadedMtime = 0;
+
+function mtimeOf(file: string): number {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
 
 function loadSessions(): Record<string, WebSession> {
-  sessions ??= readJson<Record<string, WebSession>>(sessionsPath, {});
+  // 终端里 agent-im passwd 会清空登录态：文件变了就重新读，让被踢的设备立刻失效
+  const mtime = mtimeOf(sessionsPath);
+  if (!sessions || mtime !== loadedMtime) {
+    sessions = readJson<Record<string, WebSession>>(sessionsPath, {});
+    loadedMtime = mtime;
+  }
   const now = Date.now();
   for (const [id, s] of Object.entries(sessions)) if (s.expiresAt < now) delete sessions[id];
   return sessions;
@@ -35,6 +49,7 @@ function loadSessions(): Record<string, WebSession> {
 
 function saveSessions(): void {
   writeJsonAtomic(sessionsPath, sessions ?? {});
+  loadedMtime = mtimeOf(sessionsPath);
 }
 
 function sha256(value: string): string {

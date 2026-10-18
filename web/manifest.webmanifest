@@ -1,0 +1,13 @@
+{
+  "name": "Agent IM",
+  "short_name": "Agent IM",
+  "description": "在手机和电脑上驱动本机的 Claude Code / Codex",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

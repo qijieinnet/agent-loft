@@ -2,6 +2,7 @@
 //
 // 和旧桥接器的 .env 不同，这里的配置在运行中会变（Web 上改完立即生效），
 // 所以对外是「读当前值 + 订阅变化」，而不是一个启动时冻结的常量。
+import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { configPath, ensureDirs, readJson, writeJsonAtomic } from "../home.js";
@@ -123,7 +124,45 @@ export function loadConfig(): AppConfig {
   merged.feishu.bots = merged.feishu.bots.map(normalizeBot);
   current = merged;
   if (!raw) writeJsonAtomic(configPath, merged);
+  watchExternalEdits();
   return current;
+}
+
+/**
+ * 配置文件被别的进程改了（手改、或终端里跑了 agent-im passwd）：重新读进来。
+ * 自己保存触发的变更内容一致，比较后直接跳过。
+ */
+let watching = false;
+function watchExternalEdits(): void {
+  if (watching) return;
+  watching = true;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    fs.watch(path.dirname(configPath), { persistent: false }, (_event, file) => {
+      if (file !== path.basename(configPath)) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const raw = readJson<unknown>(configPath, null);
+        if (!raw || !current) return;
+        const next = mergeDefaults(defaultConfig(), raw);
+        next.workspaceRoot = path.resolve(next.workspaceRoot);
+        next.feishu.bots = next.feishu.bots.map(normalizeBot);
+        if (JSON.stringify(next) === JSON.stringify(current)) return;
+        const prev = current;
+        current = next;
+        console.log("[配置] 检测到配置文件被修改，已重新加载");
+        for (const listener of listeners) {
+          try {
+            listener(next, prev);
+          } catch (err) {
+            console.error("[配置] 变更回调出错:", err);
+          }
+        }
+      }, 200);
+    });
+  } catch {
+    // 监听不了就算了，重启后生效
+  }
 }
 
 /** 当前配置。别缓存返回值里的子对象：保存后整个对象会被换掉。 */
