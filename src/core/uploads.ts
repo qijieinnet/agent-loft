@@ -19,18 +19,23 @@ export function ensureUploadsDir(key: string): string {
   return dir;
 }
 
-/** keep：要保留的文件（绝对路径） */
-export function clearUploads(key: string, keep: string[] = []): void {
+/**
+ * keep：要保留的文件（绝对路径）。
+ * olderThan：只删修改时间早于它的（毫秒时间戳）—— 切换会话时用，保住切换途中刚收到的附件。
+ */
+export function clearUploads(key: string, keep: string[] = [], olderThan?: number): void {
   try {
     const dir = uploadsDirFor(key);
-    if (keep.length === 0) {
+    if (keep.length === 0 && olderThan === undefined) {
       fs.rmSync(dir, { recursive: true, force: true });
       return;
     }
     const kept = new Set(keep.map((p) => path.resolve(p)));
     for (const entry of fs.readdirSync(dir)) {
       const full = path.join(dir, entry);
-      if (!kept.has(full)) fs.rmSync(full, { recursive: true, force: true });
+      if (kept.has(full)) continue;
+      if (olderThan !== undefined && fs.statSync(full).mtimeMs >= olderThan) continue;
+      fs.rmSync(full, { recursive: true, force: true });
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;

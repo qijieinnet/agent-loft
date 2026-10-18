@@ -383,3 +383,58 @@ test("代次：下载附件期间 /cd 或 /new，旧消息作废；关掉的 age
   cfg.agents.codex.enabled = true;
   saveConfig(cfg);
 });
+
+test("切换途中收到的附件不被清掉；改 workspaceRoot 让下载中的旧消息作废", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { saveBuffer } = await import("../src/core/uploads.js");
+  const { saveConfig, config } = await import("../src/core/config.js");
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const sent: string[] = [];
+  hub.registerDriver({
+    id: "claude",
+    label: "S",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: () => ({
+      sessionId: undefined,
+      send: (input) => sent.push(input.text),
+      interrupt: async () => {},
+      setModel: async () => {},
+      describeRuntime: async () => ({}),
+      dispose: () => slow,
+    }),
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
+  });
+  const key = "web:uploadclean";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const origin = { channel: "web", channelId: "web" };
+  const old = saveBuffer({ key, data: Buffer.from("old"), name: "old.txt", subdir: "u1" });
+  hub.send(key, { text: "建立会话", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 5));
+  const pending = hub.newSession(key); // 卡在 dispose 上
+  await new Promise((r) => setTimeout(r, 5));
+  const fresh = saveBuffer({ key, data: Buffer.from("new"), name: "new.txt", subdir: "u2" });
+  release();
+  await pending;
+  assert.equal(fs.existsSync(old.path), false);
+  assert.equal(fs.existsSync(fresh.path), true);
+
+  // 改工作区根目录：之前收到、还在下载的消息作废
+  const gen = hub.generation(key);
+  const next = structuredClone(config());
+  next.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aim-root2-"));
+  saveConfig(next);
+  const before = sent.length;
+  hub.send(key, { text: "下载期间改了根目录", attachments: [] }, origin, gen);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sent.length, before);
+});

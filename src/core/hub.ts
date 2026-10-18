@@ -138,6 +138,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    * 这条消息是冲着旧会话 / 旧目录说的，不能送进新的里去。
    */
   private lifeGen = new Map<string, number>();
+  /** 最近一次生命周期代次变化的时间 */
+  private lifeAt = new Map<string, number>();
   /** 每条会话的「停止代次」：排队中的发送在真正送出前对一下，点过停止的就作废 */
   private stopGen = new Map<string, number>();
 
@@ -158,6 +160,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         }
       }
       if (next.workspaceRoot === prev.workspaceRoot) return;
+      // 工作区根目录变了：没显式 /cd 过的会话目录都会被重置，处理中的旧消息一律作废
+      for (const conv of listConversations()) this.bumpLife(conv.key);
       for (const key of [...this.live.keys()]) {
         void this.serial(key, async () => {
           const conv = getConversation(key);
@@ -454,6 +458,15 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   private bumpLife(key: string): void {
     this.lifeGen.set(key, (this.lifeGen.get(key) ?? 0) + 1);
+    this.lifeAt.set(key, Date.now());
+  }
+
+  /**
+   * 切换类操作清上传目录：只清操作发起之前就有的文件。切换途中刚收到的附件
+   * 属于切换之后的新消息，不能一起删掉。
+   */
+  private clearOldUploads(key: string): void {
+    clearUploads(key, [], this.lifeAt.get(key) ?? Date.now());
   }
 
   /**
@@ -574,7 +587,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const conv = getConversation(key)!;
     await this.drop(key, "已开新会话");
     updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
-    clearUploads(key);
+    this.clearOldUploads(key);
     this.emitEvent(key, { type: "meta" });
     const runtime = await this.runtimeNow(key);
     return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
@@ -601,7 +614,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       return `找不到会话 ${sessionId}。\n发 /sessions 看看有哪些可恢复的。`;
     }
     await this.drop(key, "会话已切换");
-    if (sessionId !== agentBinding(conv).sessionId) clearUploads(key);
+    if (sessionId !== agentBinding(conv).sessionId) this.clearOldUploads(key);
     updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
     this.session(key, { resumeId: sessionId });
     this.emitEvent(key, { type: "meta" });
@@ -699,7 +712,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
     );
     updateConversation(key, { cwd: resolved, cwdExplicit: true, perAgent });
-    clearUploads(key);
+    this.clearOldUploads(key);
     this.emitEvent(key, { type: "meta" });
     return `工作目录已切换到 ${resolved}，下条消息将开新会话。`;
   }
