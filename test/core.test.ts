@@ -229,7 +229,7 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
   assert.equal(fs.existsSync(later.path), true);
 
   // 停止之前收到的旧消息，不能回答停止之后的新提问
-  const staleGen = hub.stopGeneration(key);
+  const staleGen = hub.generation(key);
   await hub.stop(key);
   const question = interactions.create(key, {
     kind: "question",
@@ -243,7 +243,7 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
   await question;
 
   // 渠道带着收到时的代次来：中途点过停止就不发
-  const gen = hub.stopGeneration(key);
+  const gen = hub.generation(key);
   await hub.stop(key);
   const n = sent.length;
   hub.send(key, { text: "下载附件期间被停止", attachments: [] }, origin, gen);
@@ -332,4 +332,54 @@ test("/fork 只记意图并落盘：切走再切回、或重建会话，下一�
   const b = getConversation(key)!.perAgent.claude!;
   assert.equal(b.sessionId, "claude-forked");
   assert.equal(b.forkFrom, undefined);
+});
+
+test("代次：下载附件期间 /cd 或 /new，旧消息作废；关掉的 agent 不能再用", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { loadConfig, saveConfig, config } = await import("../src/core/config.js");
+  const sent: string[] = [];
+  hub.registerDriver({
+    id: "codex",
+    label: "C",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: () => ({
+      sessionId: undefined,
+      send: (input) => sent.push(input.text),
+      interrupt: async () => {},
+      setModel: async () => {},
+      describeRuntime: async () => ({}),
+      dispose: async () => {},
+    }),
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
+  });
+  loadConfig();
+  const key = "feishu:b:gen";
+  hub.ensure({ key, channel: "feishu", channelId: "b", defaultAgent: "codex" });
+  const origin = { channel: "feishu", channelId: "b" };
+  const gen = hub.generation(key);
+  await hub.newSession(key); // 下载附件期间开了新会话
+  hub.send(key, { text: "旧", attachments: [] }, origin, gen);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, []);
+  hub.send(key, { text: "新", attachments: [] }, origin, hub.generation(key));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, ["新"]);
+  // 关掉 codex：活着的会话也不能再用
+  const cfg = structuredClone(config());
+  cfg.agents.codex.enabled = false;
+  saveConfig(cfg);
+  await new Promise((r) => setTimeout(r, 20));
+  hub.send(key, { text: "关了之后", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, ["新"]);
+  cfg.agents.codex.enabled = true;
+  saveConfig(cfg);
 });

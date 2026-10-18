@@ -59,6 +59,9 @@ export type ConvEvent =
   | { type: "state"; busy: boolean }
   | { type: "meta" };
 
+/** 一条输入是在哪个时刻收到的：停止代次 + 生命周期代次 */
+export type InputGen = { stop: number; life: number };
+
 export type EventEnvelope = { key: string; seq: number; ts: number; ev: ConvEvent };
 
 /** 命令的结构化结果。各渠道自己决定怎么画（飞书画卡片，Web 画列表）。 */
@@ -129,6 +132,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private locks = new Map<string, Promise<unknown>>();
   /** 最近一次点停止的时间：紧接着冒出来的「被打断」错误是预期内的，不当错误显示 */
   private stoppedAt = new Map<string, number>();
+  /**
+   * 每条会话的「生命周期代次」：开新会话、分叉、恢复、切 agent、切目录时加一。
+   * 渠道收到消息后还要先做异步的事（飞书下载附件），期间会话被换掉了的话，
+   * 这条消息是冲着旧会话 / 旧目录说的，不能送进新的里去。
+   */
+  private lifeGen = new Map<string, number>();
   /** 每条会话的「停止代次」：排队中的发送在真正送出前对一下，点过停止的就作废 */
   private stopGen = new Map<string, number>();
 
@@ -137,6 +146,17 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     this.setMaxListeners(100);
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
     onConfigChange((next, prev) => {
+      // agent 被禁用：它所有活着的会话立刻停掉
+      const agents = next.agents as Record<string, { enabled: boolean }>;
+      for (const [key, live] of [...this.live]) {
+        if (agents[live.agent]?.enabled === false) {
+          void this.serial(key, async () => {
+            if (this.live.get(key)?.agent !== live.agent) return;
+            await this.drop(key, `${this.label(live.agent)} 已在设置里关闭`);
+            this.emitEvent(key, { type: "notice", text: `${this.label(live.agent)} 已在设置里关闭，这条会话暂时不能用它。` });
+          });
+        }
+      }
       if (next.workspaceRoot === prev.workspaceRoot) return;
       for (const key of [...this.live.keys()]) {
         void this.serial(key, async () => {
@@ -293,6 +313,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   session(key: string, opts: { resumeId?: string; fork?: boolean } = {}): AgentSession {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
+    // 先检查 agent 还启用着：设置里关掉了，已经打开的会话也不能再用
+    const driver = this.requireDriver(conv.agent);
     const existing = this.live.get(key);
     if (existing && existing.agent === conv.agent && existing.cwd === conv.cwd && !opts.resumeId) {
       return existing.session;
@@ -303,7 +325,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       void existing.session.dispose();
     }
 
-    const driver = this.requireDriver(conv.agent);
     const binding = agentBinding(conv);
 
     const agentDefaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[
@@ -421,19 +442,35 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    * 提问挂着的时候整轮是阻塞的，这条消息送进去也没人接 —— 所以先拿它当作答。
    * 带附件的不拿来作答：答案只能是文字。
    */
-  /** 当前的停止代次。渠道在「收到消息」那一刻取，送进 send，见 send() 的 gen 参数 */
+  /** 当前的停止代次 */
   stopGeneration(key: string): number {
     return this.stopGen.get(key) ?? 0;
+  }
+
+  /** 渠道在「收到消息」那一刻取，送进 send 的 gen 参数 */
+  generation(key: string): InputGen {
+    return { stop: this.stopGeneration(key), life: this.lifeGen.get(key) ?? 0 };
+  }
+
+  private bumpLife(key: string): void {
+    this.lifeGen.set(key, (this.lifeGen.get(key) ?? 0) + 1);
   }
 
   /**
    * gen：这条消息是在哪个停止代次下收到的。渠道自己还要先做点异步的事（飞书下载附件）
    * 才调到这里时必须传：下载期间点了停止，这条消息就不该再发出去。
    */
-  send(key: string, input: UserInput, origin: Origin, gen?: number): void {
+  send(key: string, input: UserInput, origin: Origin, gen?: InputGen): void {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
-    const myGen = gen ?? this.stopGeneration(key);
+    if (gen && gen.life !== (this.lifeGen.get(key) ?? 0)) {
+      this.emitEvent(key, {
+        type: "notice",
+        text: "处理这条消息期间会话被切换了（新会话 / 目录 / agent 变了），它没有发出，请重新发送。",
+      });
+      return;
+    }
+    const myGen = gen?.stop ?? this.stopGeneration(key);
     const cancelled = () => {
       if (this.stopGeneration(key) === myGen) return false;
       this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
@@ -703,14 +740,17 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   newSession(key: string, model?: string): Promise<string> {
+    this.bumpLife(key);
     return this.serial(key, () => this.newSessionNow(key, model));
   }
 
   fork(key: string): Promise<string> {
+    this.bumpLife(key);
     return this.serial(key, () => this.forkNow(key));
   }
 
   resume(key: string, sessionId: string, originCwd?: string): Promise<string> {
+    this.bumpLife(key);
     return this.serial(key, () => this.resumeNow(key, sessionId, originCwd));
   }
 
@@ -727,10 +767,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   setAgent(key: string, agent: string, allowed: string[]): Promise<string> {
+    this.bumpLife(key);
     return this.serial(key, () => this.setAgentNow(key, agent, allowed));
   }
 
   cd(key: string, dir: string): Promise<string> {
+    this.bumpLife(key);
     return this.serial(key, () => this.cdNow(key, dir));
   }
 
