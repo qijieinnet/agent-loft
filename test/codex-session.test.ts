@@ -252,3 +252,25 @@ test("等 resume 响应期间原所有者开了新一轮：放弃接管，路由
   assert.ok(a.log.includes("result:给A2"));
   assert.ok(!blog.some((l) => l.includes("给A2")));
 });
+
+test("已丢弃会话的迟到 resume：thread 被别人持有时不退订", async () => {
+  calls.length = 0;
+  const { CodexSession: Session } = await import("../src/agents/codex/session.js");
+  const a = makeSession();
+  a.session.send({ text: "a1", attachments: [] });
+  const ta = await startTurn();
+  notify("turn/completed", { threadId: ta.threadId, turn: { id: ta.turnId, status: "completed" } });
+  await tick();
+  const b = new Session(
+    { cwd: "/tmp", uploadsDir: "/tmp", resumeId: ta.threadId },
+    { onStep: () => {}, onTextDelta: () => {}, onText: () => {}, onResult: () => {}, onError: () => {}, onSessionId: () => {} },
+    async () => ({ settlement: "deny", answers: {} }),
+  );
+  b.send({ text: "b1", attachments: [] });
+  await tick();
+  const resume = take("thread/resume");
+  await b.dispose(); // B 在 resume 返回前被丢弃（/new）
+  resume.resolve({ thread: { id: ta.threadId } });
+  await tick();
+  assert.equal(calls.some((c) => c.method === "thread/unsubscribe" && c.params.threadId === ta.threadId), false);
+});

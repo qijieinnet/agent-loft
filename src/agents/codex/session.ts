@@ -291,7 +291,10 @@ export class CodexSession implements AgentSession {
     }
     // 等待期间会话已被丢弃（切了目录 / 开了新会话）：迟到的 thread 只做清理，绝不再开轮次
     if (this.disposed) {
-      void appServer.call("thread/unsubscribe", { threadId: res.thread.id }).catch(() => {});
+      // 只有没人在用时才退订：这个 thread 可能正被另一条会话持有，退订会断掉它的通知
+      if (!byThread.has(res.thread.id)) {
+        void appServer.call("thread/unsubscribe", { threadId: res.thread.id }).catch(() => {});
+      }
       throw new DisposedError();
     }
     this.adopt(res.thread);

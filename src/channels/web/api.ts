@@ -340,13 +340,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const data = await readBody(req, 50 * 1024 * 1024);
       const name = url.searchParams.get("name") ?? undefined;
       const type = req.headers["content-type"];
+      const id = crypto.randomBytes(8).toString("hex");
       const attachment = saveBuffer({
         key,
         data,
+        subdir: id,
         ...(name ? { name } : {}),
         ...(type && type !== "application/octet-stream" ? { mediaType: type.split(";")[0]! } : {}),
       });
-      const id = crypto.randomBytes(8).toString("hex");
       uploads.set(id, { key, attachment, at: Date.now() });
       sendJson(res, 200, { id, name: attachment.name, kind: attachment.kind, size: attachment.size });
       return;

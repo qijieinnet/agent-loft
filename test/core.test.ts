@@ -272,3 +272,13 @@ test("NotebookEdit 按 notebook_path 的目录记，拿不到路径不给总是�
   rememberAlways("NotebookEdit:.");
   assert.equal(isPreApproved("NotebookEdit", "NotebookEdit:."), false);
 });
+
+test("Web 上传：同名文件每次存到不同路径，重置后旧 id 撞不上新文件", async () => {
+  const { saveBuffer, clearUploads } = await import("../src/core/uploads.js");
+  const a = saveBuffer({ key: "k-up", data: Buffer.from("A"), name: "report.png", subdir: "id1" });
+  clearUploads("k-up");
+  const b = saveBuffer({ key: "k-up", data: Buffer.from("B"), name: "report.png", subdir: "id2" });
+  assert.notEqual(a.path, b.path);
+  assert.equal(fs.existsSync(a.path), false);
+  assert.equal(fs.readFileSync(b.path, "utf8"), "B");
+});

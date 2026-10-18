@@ -109,8 +109,13 @@ export function saveBuffer(params: {
   kind?: AttachmentKind;
   mediaType?: string;
   durationMs?: number;
+  /** 存进上传目录下的这个子目录（Web 用上传 id：每次上传路径唯一，重置后旧 id 不会撞上同名新文件） */
+  subdir?: string;
 }): SavedAttachment {
-  const dir = ensureUploadsDir(params.key);
+  const dir = params.subdir
+    ? path.join(ensureUploadsDir(params.key), safeName(params.subdir))
+    : ensureUploadsDir(params.key);
+  fs.mkdirSync(dir, { recursive: true });
   const sniffed = sniff(params.data);
   const mediaType = sniffed?.mediaType ?? params.mediaType;
   const kind = params.kind ?? kindOf(mediaType);
