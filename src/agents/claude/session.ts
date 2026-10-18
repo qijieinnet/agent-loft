@@ -312,11 +312,23 @@ export class ClaudeSession implements AgentSession {
   }
 
   private deliver(input: UserInput): void {
+    // 先把内容组装出来再标记「忙」：附件读不出来（比如已被别处的 /new 清掉）时，
+    // 这条要明确报错并让会话恢复可用，而不是挂在一个永远等不到结果的「忙」上
+    let content: string | ContentBlock[];
+    try {
+      content = buildContent(input);
+    } catch (err) {
+      const why = (err as NodeJS.ErrnoException).code === "ENOENT" ? "附件文件已不存在，请重新上传" : String(err);
+      this.events.onError(new Error(`这条消息没能发出：${why}`));
+      const next = this.pending.shift();
+      if (next && !this.disposed) this.deliver(next);
+      return;
+    }
     this.turnBusy = true;
     this.start();
     this.queue.push({
       type: "user",
-      message: { role: "user", content: buildContent(input) },
+      message: { role: "user", content },
       parent_tool_use_id: null,
       // 人敲的字必须显式标记来源；缺省会在严格的信任门上 fail closed
       origin: { kind: "human" },

@@ -298,7 +298,16 @@ export class CodexSession implements AgentSession {
     return res.thread.id;
   }
 
+  /**
+   * 接管前最后再看一眼：等 resume 响应的这段时间里，原所有者可能刚好开了新一轮。
+   * 这时放弃接管、路由完全不动 —— 否则它的输出和审批会串到这边来。
+   * 这个检查和下面的 byThread.set 之间没有 await，不存在再插进来的空隙。
+   */
   private adopt(thread: Thread): void {
+    const busyOwner = byThread.get(thread.id);
+    if (busyOwner && busyOwner !== this && busyOwner.busy) {
+      throw new Error("这条 Codex 会话正在另一个聊天里运行，等那边这一轮结束后再试。");
+    }
     const previous = this.threadId;
     if (previous && previous !== thread.id && byThread.get(previous) === this) byThread.delete(previous);
     this.threadId = thread.id;
@@ -307,7 +316,10 @@ export class CodexSession implements AgentSession {
     // 只能有一个接收方。所有权交给最后恢复它的这条，原来那条标记为待恢复，
     // 它下次说话时会重新 resume、再把所有权拿回去 —— 回复不会再串到别的聊天里。
     const owner = byThread.get(thread.id);
-    if (owner && owner !== this) owner.evict();
+    if (owner && owner !== this) {
+      // 原所有者空闲（忙的情况在函数开头已经拒绝，且那里到这里之间没有 await）
+      owner.evict();
+    }
     byThread.set(thread.id, this);
     this.runtime = {
       ...(thread.model ? { model: thread.model } : {}),

@@ -217,3 +217,38 @@ test("thread 正在别的会话里跑：不接管，明确报错", async () => {
   notify("turn/completed", { threadId: ta.threadId, turn: { id: ta.turnId, status: "completed" } });
   assert.ok(a.log.some((l) => l.startsWith("result:")));
 });
+
+test("等 resume 响应期间原所有者开了新一轮：放弃接管，路由不动", async () => {
+  calls.length = 0;
+  const { CodexSession: Session } = await import("../src/agents/codex/session.js");
+  const a = makeSession();
+  a.session.send({ text: "a1", attachments: [] });
+  const ta = await startTurn();
+  notify("turn/completed", { threadId: ta.threadId, turn: { id: ta.turnId, status: "completed" } });
+  await tick();
+  // A 空闲，B 开始恢复（响应先挂着）
+  const blog: string[] = [];
+  const b = new Session(
+    { cwd: "/tmp", uploadsDir: "/tmp", resumeId: ta.threadId },
+    { onStep: () => {}, onTextDelta: () => {}, onText: (t) => blog.push(`text:${t}`), onResult: () => {}, onError: (e) => blog.push(`error:${e}`), onSessionId: () => {} },
+    async () => ({ settlement: "deny", answers: {} }),
+  );
+  b.send({ text: "b1", attachments: [] });
+  await tick();
+  const resume = take("thread/resume");
+  // 这期间 A 开了新一轮
+  a.session.send({ text: "a2", attachments: [] });
+  await tick();
+  take("turn/start").resolve({ turn: { id: "ta2" } });
+  await tick();
+  // B 的 resume 这才回来
+  resume.resolve({ thread: { id: ta.threadId } });
+  await tick();
+  assert.ok(blog.some((l) => /正在另一个聊天里运行/.test(l)));
+  assert.equal(calls.some((c) => c.method === "turn/start"), false);
+  // A 的输出仍然回到 A
+  notify("item/completed", { threadId: ta.threadId, item: { type: "agentMessage", id: "z", text: "给A2", phase: null } });
+  notify("turn/completed", { threadId: ta.threadId, turn: { id: "ta2", status: "completed" } });
+  assert.ok(a.log.includes("result:给A2"));
+  assert.ok(!blog.some((l) => l.includes("给A2")));
+});

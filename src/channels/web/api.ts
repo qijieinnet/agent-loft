@@ -1,5 +1,6 @@
 // Web 的 REST 接口。实时的东西（事件流、发消息、点授权）走 WebSocket，见 server.ts。
 import crypto from "node:crypto";
+import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_IDS, config, saveConfig, type AppConfig } from "../../core/config.js";
 import { hub } from "../../core/hub.js";
@@ -35,16 +36,18 @@ const startedAt = Date.now();
 /** 上传后先存着，发消息时用 id 认领。一小时没人认领就作废 */
 const uploads = new Map<string, { key: string; attachment: SavedAttachment; at: number }>();
 
+/**
+ * 认领上传的附件。有任何一个已失效（id 不认识、不属于这条会话、文件已被删 —— 比如
+ * 另一个浏览器在这期间开了新会话、清掉了上传目录）就整条拒绝，让前端提示重新上传，
+ * 而不是悄悄少发一个附件。
+ */
 export function takeUploads(key: string, ids: unknown): SavedAttachment[] {
   if (!Array.isArray(ids)) return [];
-  const out: SavedAttachment[] = [];
-  for (const id of ids) {
-    const entry = typeof id === "string" ? uploads.get(id) : undefined;
-    if (!entry || entry.key !== key) continue;
-    uploads.delete(id as string);
-    out.push(entry.attachment);
-  }
-  return out;
+  const entries = ids.map((id) => (typeof id === "string" ? uploads.get(id) : undefined));
+  const bad = entries.filter((e) => !e || e.key !== key || !fs.existsSync(e.attachment.path)).length;
+  if (bad > 0) throw new HttpError(410, `有 ${bad} 个附件已失效（可能会话被重置过），请重新上传`);
+  for (const id of ids) uploads.delete(id as string);
+  return entries.map((e) => e!.attachment);
 }
 
 setInterval(() => {
