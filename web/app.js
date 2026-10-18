@@ -251,7 +251,8 @@ async function resync() {
     S.convs = new Map(data.conversations.map((c) => [c.key, c]));
     const live = new Set(data.pending.map((i) => i.id));
     for (const ix of S.pending.values()) {
-      if (!ix.settled && !live.has(ix.id)) markGone(ix);
+      // 快照生成之后才出现的授权，快照里当然没有，不能当成「已在别处处理」
+      if (!ix.settled && !live.has(ix.id) && ix.createdAt <= data.serverTime) markGone(ix);
     }
     for (const ix of data.pending) upsertInteraction(ix);
     renderSidebar();
@@ -889,6 +890,9 @@ function applyEvent(env) {
 // ---------- 交互（授权 / 提问） ----------
 
 function upsertInteraction(ix) {
+  // 只进不退：本地已经知道它处理完了，晚到的旧快照（还写着待处理）不能把它复活
+  const known = S.pending.get(ix.id);
+  if (known?.settled && !ix.settled) return;
   S.pending.set(ix.id, ix);
   if (ix.settled) setTimeout(() => S.pending.get(ix.id)?.settled && S.pending.delete(ix.id), 60000);
   scheduleSidebar();

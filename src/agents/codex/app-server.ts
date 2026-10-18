@@ -261,16 +261,26 @@ export class AppServer {
   /**
    * 发一个请求并等响应。
    *
-   * 刻意不设超时：一个 turn 可能跑十几分钟，而 turn/start 的响应要等这一轮
-   * 真正结束才回来。真正的兜底是进程 exit —— 它会把所有挂着的请求一起 reject。
+   * 带超时：进程活着却不响应时，不能让调用方（以及排在它后面的整条会话操作队列）
+   * 永远等下去。turn/start 的响应只是「轮次已开始」，同样很快返回，不需要例外。
    */
-  request(method: string, params?: unknown): Promise<unknown> {
+  request(method: string, params?: unknown, timeoutMs = 60_000): Promise<unknown> {
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        reject(new Error(`codex app-server 在 ${timeoutMs / 1000} 秒内没有响应 ${method}`));
+      }, timeoutMs);
+      timer.unref?.();
+      const done = <A extends unknown[]>(fn: (...args: A) => void) => (...args: A) => {
+        clearTimeout(timer);
+        fn(...args);
+      };
+      this.pending.set(id, { resolve: done(resolve), reject: done(reject) });
       try {
         this.send({ jsonrpc: "2.0", id, method, params });
       } catch (err) {
+        clearTimeout(timer);
         this.pending.delete(id);
         reject(err instanceof Error ? err : new Error(String(err)));
       }
@@ -308,6 +318,14 @@ export class AppServer {
     child?.removeAllListeners("exit");
     child?.kill();
     this.failAllPending(new Error(reason));
+    // 主动重启同样是「旧连接失效」：在途轮次要收尾、thread 要标记为待恢复
+    for (const handler of this.exitHandlers) {
+      try {
+        handler(reason);
+      } catch (err) {
+        console.error("[codex] 退出回调出错:", err);
+      }
+    }
     this.stopping = false;
     await this.start();
     for (const handler of this.restartHandlers) handler(reason);

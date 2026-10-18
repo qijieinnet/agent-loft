@@ -23,34 +23,48 @@ function load(): string[] {
 }
 
 /**
- * 能不能按「命令首词」放行。
+ * 「总是允许」按多宽记。
  *
- * 只有不含任何 shell 组合语法的单条命令才行：否则批准过 `git status` 之后，
- * `git status; rm -rf ~` 的首词也是 git，会被一并放行。包装类命令（sudo、env、
- * bash -c、xargs…）的首词说明不了它真正要执行什么，同样不行。
+ * 默认只记**完整命令**。只有白名单里的命令才按「首词」记：它们不论带什么参数都
+ * 只是读读看看，放宽了也出不了大事。黑名单的思路试过，不可靠 —— 包装程序数不完
+ * （npm exec、python3.12 -c、各种解释器……），漏一个就是任意命令执行。
+ *
+ * git 单独处理：按「git + 子命令」记（批准过 git status 不等于批准 git push），
+ * 并且带 -c / --config / --exec-path 之类能改行为的全局参数时只记完整命令。
+ *
+ * 无论哪种，命令里只要有 shell 组合语法（; && | $() 重定向……）就只记完整命令：
+ * 否则 `ls; rm -rf ~` 的首词也是 ls。
  */
 const SHELL_SYNTAX = /[;&|`<>\n\r\\]|\$[({]|\$[A-Za-z_]/;
-const WRAPPERS = new Set([
-  "sudo", "su", "doas", "env", "bash", "sh", "zsh", "fish", "dash", "ksh", "xargs", "find", "exec",
-  "eval", "source", ".", "timeout", "nohup", "nice", "ionice", "time", "watch", "command", "builtin",
-  "python", "python3", "node", "perl", "ruby", "php", "npx", "pnpx", "bunx", "ssh", "docker", "kubectl",
-  "awk", "sed", "git-shell", "script", "setsid", "stdbuf", "chroot", "busybox",
+const PREFIX_SAFE = new Set([
+  "ls", "cat", "head", "tail", "wc", "grep", "rg", "pwd", "echo", "stat", "file", "du", "df",
+  "which", "date", "tree", "diff", "sort", "uniq", "cut", "basename", "dirname", "realpath",
+  "readlink", "uname", "whoami", "id", "hostname", "uptime", "ps", "mkdir", "touch",
+]);
+const GIT_SUBCOMMANDS = new Set([
+  "status", "log", "diff", "show", "branch", "add", "commit", "fetch", "pull", "push",
+  "checkout", "switch", "restore", "stash", "tag", "remote", "rev-parse", "blame", "merge", "rebase",
 ]);
 
-function bashHead(command: string): string | null {
+function prefixSignature(command: string): string | null {
   const trimmed = command.trim();
   if (!trimmed || SHELL_SYNTAX.test(trimmed)) return null;
-  const head = trimmed.split(/\s+/)[0] ?? "";
-  if (!head || head.includes("=") || WRAPPERS.has(path.basename(head))) return null;
-  return head;
+  const words = trimmed.split(/\s+/);
+  const head = words[0] ?? "";
+  if (PREFIX_SAFE.has(head)) return `Bash:${head}`;
+  if (head === "git") {
+    const sub = words[1] ?? "";
+    if (!GIT_SUBCOMMANDS.has(sub)) return null;
+    if (words.some((w) => /^(-c|--config(-env)?|--exec-path|--upload-pack|--receive-pack)(=|$)/.test(w))) return null;
+    return `Bash:git ${sub}`;
+  }
+  return null;
 }
 
 export function signatureOf(toolName: string, input: Record<string, unknown>): string {
   if (toolName === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
-    const head = bashHead(command);
-    // 复杂命令只记完整命令本身
-    return head ? `Bash:${head}` : `BashExact:${command.trim()}`;
+    return prefixSignature(command) ?? `BashExact:${command.trim()}`;
   }
   if (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit") {
     const file = typeof input.file_path === "string" ? input.file_path : "";
@@ -83,7 +97,7 @@ export function setAllowlist(next: string[]): void {
 /** 「总是允许」按钮上写清楚到底放行多宽。 */
 export function alwaysLabelOf(toolName: string, signature: string): string {
   if (toolName === "Bash") {
-    return signature.startsWith("BashExact:") ? "总是允许这条完整命令" : `总是允许 ${signature.slice(5)} 开头的单条命令`;
+    return signature.startsWith("BashExact:") ? "总是允许这条完全相同的命令" : `总是允许 ${signature.slice(5)} 开头的单条命令`;
   }
   if (signature.includes(":")) return `总是允许在该目录下${toolName === "Write" ? "新建" : "修改"}`;
   return `总是允许 ${toolName}`;

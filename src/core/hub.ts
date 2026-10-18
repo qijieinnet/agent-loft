@@ -101,6 +101,17 @@ export type ConversationInfo = {
 };
 
 const BUFFER_MAX = 400;
+/** 会占住会话操作队列的 agent 查询，最多等这么久 */
+const QUERY_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(p: Promise<T>, what: string, ms = QUERY_TIMEOUT_MS): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what}超时（${ms / 1000} 秒没有响应）`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
 
 type Live = { agent: string; cwd: string; session: AgentSession };
 
@@ -116,6 +127,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private truncated = new Map<string, number>();
   /** 每条会话的生命周期操作串行执行，见 serial() */
   private locks = new Map<string, Promise<unknown>>();
+  /** 每条会话的「停止代次」：排队中的发送在真正送出前对一下，点过停止的就作废 */
+  private stopGen = new Map<string, number>();
 
   constructor() {
     super();
@@ -291,12 +304,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const driver = this.requireDriver(conv.agent);
     const binding = agentBinding(conv);
 
-    // 闲置太久的会话不再续用，直接开新的
-    if (binding.sessionId && !opts.resumeId && isExpired(conv)) {
-      console.log(`[会话] ${key} 闲置超过 ${config().sessionTtlMs / 3600000} 小时，开新会话`);
-      updateAgentBinding(key, conv.agent, { sessionId: undefined, model: undefined, effort: undefined });
-    }
-
     const agentDefaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[
       conv.agent
     ];
@@ -414,13 +421,35 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       }
     }
 
+    // 闲置过期要按这次说话之前的活跃时间判断，所以先判断、后 touch
+    const expired = isExpired(conv);
     touchConversation(key);
     if (!conv.title && conv.channel === "web" && input.text.trim()) {
       updateConversation(key, { title: input.text.trim().replace(/\s+/g, " ").slice(0, 40) });
       this.emitEvent(key, { type: "meta" });
     }
     this.emitEvent(key, shown);
-    void this.serial(key, async () => this.sendNow(key, input));
+    const gen = this.stopGen.get(key) ?? 0;
+    void this.serial(key, async () => {
+      if ((this.stopGen.get(key) ?? 0) !== gen) {
+        this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
+        return;
+      }
+      if (expired) await this.expireNow(key);
+      this.sendNow(key, input);
+    });
+  }
+
+  /** 闲置太久：不再续用上次的会话（活着的也丢掉），开新的 */
+  private async expireNow(key: string): Promise<void> {
+    const conv = getConversation(key);
+    if (!conv || !agentBinding(conv).sessionId) return;
+    console.log(`[会话] ${key} 闲置超过 ${config().sessionTtlMs / 3600000} 小时，开新会话`);
+    await this.drop(key, "会话已闲置过期");
+    updateAgentBinding(key, conv.agent, { sessionId: undefined, model: undefined, effort: undefined });
+    clearUploads(key);
+    this.emitEvent(key, { type: "notice", text: "上次的会话闲置太久，已自动开新会话。" });
+    this.emitEvent(key, { type: "meta" });
   }
 
   private sendNow(key: string, input: UserInput): void {
@@ -452,14 +481,17 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const binding = agentBinding(conv);
     let runtime: RuntimeInfo = {};
     try {
-      runtime = await this.session(key).describeRuntime();
+      runtime = await withTimeout(this.session(key).describeRuntime(), "读取模型信息");
     } catch (err) {
       console.error("[会话] 读取模型信息失败:", err);
     }
     const defaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[
       conv.agent
     ];
-    const fallback = runtime.model && runtime.effort ? {} : await driver.defaults().catch(() => ({}) as RuntimeInfo);
+    const fallback =
+      runtime.model && runtime.effort
+        ? {}
+        : await withTimeout(driver.defaults(), "读取默认配置").catch(() => ({}) as RuntimeInfo);
     const model = runtime.model ?? binding.model ?? (defaults?.defaultModel || undefined) ?? fallback.model;
     const effort = runtime.effort ?? binding.effort ?? (defaults?.defaultEffort || undefined) ?? fallback.effort;
     return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
@@ -489,7 +521,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private async resumeNow(key: string, sessionId: string, originCwd?: string): Promise<string> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
-    if (!(await driver.sessionExists(sessionId, conv.cwd))) {
+    if (!(await withTimeout(driver.sessionExists(sessionId, conv.cwd), "查询会话"))) {
       return `找不到会话 ${sessionId}。\n发 /sessions 看看有哪些可恢复的。`;
     }
     await this.drop(key, "会话已切换");
@@ -526,7 +558,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private async modelsNow(key: string): Promise<Extract<CommandReply, { type: "models" }>> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
-    const models = await driver.listModels(this.session(key));
+    const models = await withTimeout(driver.listModels(this.session(key)), "读取模型列表");
     const runtime = await this.runtimeNow(key);
     return {
       type: "models",
@@ -540,7 +572,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   private async setModelNow(key: string, model: string): Promise<string> {
     const conv = getConversation(key)!;
-    await this.session(key).setModel(model);
+    await withTimeout(this.session(key).setModel(model), "切换模型");
     updateAgentBinding(key, conv.agent, { model });
     this.emitEvent(key, { type: "meta" });
     return `模型已切换为 ${model}。`;
@@ -550,7 +582,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
     if (!driver.capabilities.effort) return `${driver.label} 不支持切换思考程度。`;
-    await this.session(key).setModel(undefined, effort);
+    await withTimeout(this.session(key).setModel(undefined, effort), "切换思考程度");
     updateAgentBinding(key, conv.agent, { effort });
     this.emitEvent(key, { type: "meta" });
     return `思考程度已切换为 ${effort}。`;
@@ -572,6 +604,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   async stop(key: string): Promise<string> {
+    // 不进串行队列：停止要立刻生效。排队中还没送出的消息靠代次作废
+    this.stopGen.set(key, (this.stopGen.get(key) ?? 0) + 1);
     interactions.cancelAll(key, "本轮已中断");
     await this.live.get(key)?.session.interrupt();
     this.setInflight(key, 0);
@@ -597,7 +631,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
     const runtime = await this.runtimeNow(key);
-    const extra = await driver.statusLines().catch(() => [] as string[]);
+    const extra = await withTimeout(driver.statusLines(), "读取状态").catch(() => [] as string[]);
     return [
       `Agent：${driver.label}`,
       `会话：${agentBinding(conv).sessionId ?? "(尚未建立)"}`,

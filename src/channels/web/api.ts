@@ -14,13 +14,12 @@ import { beginRegistration, initRegistration, pollRegistration, qrSvg } from "..
 import { FeishuClient } from "../feishu/client.js";
 import {
   checkSetupToken,
-  clearFailures,
+  clearAttempts,
   createSession,
   destroySession,
   hasPassword,
   listSessions as listWebSessions,
-  lockedFor,
-  recordFailure,
+  takeAttempt,
   revokeSession,
   setPassword,
   validateSession,
@@ -195,28 +194,26 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/setup" && method === "POST") {
     if (hasPassword()) throw new HttpError(400, "已经设置过密码了");
-    const left = lockedFor(ip);
-    if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     const body = await readJsonBody<{ token?: string; password?: string }>(req);
+    const left = takeAttempt(ip);
+    if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     if (!checkSetupToken(String(body.token ?? ""))) {
-      recordFailure(ip);
       throw new HttpError(403, "设置码不对。它打印在 agent-im 的启动日志里");
     }
     setPassword(String(body.password ?? ""));
-    clearFailures(ip);
+    clearAttempts(ip);
     setCookie(req, res, createSession(ip, String(req.headers["user-agent"] ?? "")), 30 * 24 * 3600);
     sendJson(res, 200, { ok: true });
     return;
   }
   if (p === "/api/login" && method === "POST") {
-    const left = lockedFor(ip);
-    if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     const body = await readJsonBody<{ password?: string }>(req);
+    const left = takeAttempt(ip);
+    if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     if (!hasPassword() || !verifyPassword(String(body.password ?? ""), config().web.passwordHash)) {
-      recordFailure(ip);
       throw new HttpError(403, "密码不对");
     }
-    clearFailures(ip);
+    clearAttempts(ip);
     setCookie(req, res, createSession(ip, String(req.headers["user-agent"] ?? "")), 30 * 24 * 3600);
     sendJson(res, 200, { ok: true });
     return;
@@ -246,6 +243,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       workspaceRoot: config().workspaceRoot,
       conversations: hub.list(),
       pending: interactions.listPending(),
+      serverTime: Date.now(),
     });
     return;
   }
@@ -291,29 +289,44 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     if (sub === "history" && method === "GET") {
-      // 读历史是异步的，期间这条会话可能刚好跑完一轮：那样快照里少了最后的回复，
-      // 而游标又已经越过了它，客户端会永远漏掉。所以读的过程中有新事件就重读，
-      // 并且返回读之前的游标，让客户端从那里开始补。
-      let snapshot = hub.currentSeq();
-      let messages = await hub.history(key);
-      for (let i = 0; i < 3 && (hub.eventsSince(key, snapshot) ?? [null]).length > 0 && !hub.isBusy(key); i++) {
-        snapshot = hub.currentSeq();
+      // 读历史是异步的。要保证「历史快照 + 进行中这一轮的事件 + 之后的补发」首尾相接、
+      // 不重不漏，只在两种情况下接受这次读到的快照：
+      //   a) 读的过程中这条会话没有任何新事件；
+      //   b) 读之前和读之后是同一轮还在进行（快照里缺的部分由 live 事件补上）。
+      // 其余情况（读的过程中有一轮结束了、或者开始了新的一轮）都重读。
+      const turnStartSeq = () => hub.liveTurn(key)[0]?.seq ?? 0;
+      let messages: Awaited<ReturnType<typeof hub.history>> = [];
+      for (let i = 0; i < 5; i++) {
+        const before = hub.currentSeq();
+        const startBefore = turnStartSeq();
         messages = await hub.history(key);
+        const changed = (hub.eventsSince(key, before) ?? [null]).length > 0;
+        const startAfter = turnStartSeq();
+        if (!changed || (startBefore !== 0 && startBefore === startAfter)) break;
+        await new Promise((r) => setTimeout(r, 200));
       }
+      // 以下同步执行：live 和 seq 是同一时刻的，客户端从 seq 往后订阅正好接上
       const live = hub.liveTurn(key);
-      // 进行中的这一轮，agent 的记录里已经写进去了一部分，和 live 事件重复：
-      // 从记录里最后一条用户消息起砍掉，交给 live 事件来画
-      if (live.some((e) => e.ev.type === "user")) {
+      const seq = hub.currentSeq();
+      // 进行中的这一轮，agent 的记录里可能已经写进去了一部分，和 live 重复：
+      // 记录里最后一条用户消息就是这一轮的那条时，从它起砍掉，交给 live 来画
+      const liveUser = live.find((e) => e.ev.type === "user")?.ev as { text?: string } | undefined;
+      if (liveUser) {
         const lastUser = messages.map((m) => m.role).lastIndexOf("user");
-        if (lastUser >= 0) messages = messages.slice(0, lastUser);
+        const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+        const want = norm(liveUser.text ?? "");
+        if (lastUser >= 0 && want && norm(messages[lastUser]!.text).startsWith(want.slice(0, 200))) {
+          messages = messages.slice(0, lastUser);
+        }
       }
       sendJson(res, 200, {
         info: hub.info(key),
         messages,
         live,
-        seq: snapshot,
+        seq,
         pending: interactions.listPending(key),
         allowedAgents: allowedAgentsFor(key),
+        serverTime: Date.now(),
       });
       return;
     }
@@ -395,7 +408,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/password" && method === "POST") {
     const body = await readJsonBody<{ old?: string; password?: string }>(req);
+    const left = takeAttempt(ip);
+    if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     if (!verifyPassword(String(body.old ?? ""), config().web.passwordHash)) throw new HttpError(403, "原密码不对");
+    clearAttempts(ip);
     setPassword(String(body.password ?? ""));
     setCookie(req, res, createSession(ip, String(req.headers["user-agent"] ?? "")), 30 * 24 * 3600);
     sendJson(res, 200, { ok: true });

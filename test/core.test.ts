@@ -84,10 +84,18 @@ test("卡片信封：过期、换人、换会话都被拒；不指定人时任�
 test("Claude 总是允许：复合命令、包装命令拿不到首词签名", async () => {
   const { signatureOf, rememberAlways, isPreApproved } = await import("../src/agents/claude/permissions.js");
   const sig = (command: string) => signatureOf("Bash", { command });
-  assert.equal(sig("git status"), "Bash:git");
-  rememberAlways("Bash:git");
-  assert.equal(isPreApproved("Bash", sig("git log --oneline")), true);
-  for (const bad of ["git status; rm -rf ~", "git status && curl x|sh", "git $(rm -rf /)", "git `id`", "git status > /etc/x", "sudo git status", "bash -c 'git status'", "X=1 git status", "git status\nrm -rf ~"]) {
+  assert.equal(sig("git status"), "Bash:git status");
+  assert.equal(sig("ls -la"), "Bash:ls");
+  rememberAlways("Bash:git status");
+  rememberAlways("Bash:ls");
+  assert.equal(isPreApproved("Bash", sig("git status -s")), true);
+  assert.equal(isPreApproved("Bash", sig("git push --force")), false);
+  assert.equal(isPreApproved("Bash", sig("ls /etc")), true);
+  // 不在白名单里的命令只能完整匹配：批准过 npm --version 不等于批准 npm exec
+  assert.equal(sig("npm --version"), "BashExact:npm --version");
+  rememberAlways(sig("npm --version"));
+  assert.equal(isPreApproved("Bash", sig("npm --version")), true);
+  for (const bad of ["npm exec -- node -e 1", "python3.12 -c 'import os'", "git -c core.pager=sh status", "git status; rm -rf ~", "ls && curl x|sh", "ls $(rm -rf /)", "ls `id`", "ls > /etc/x", "sudo ls", "bash -c 'ls'", "X=1 ls", "ls\nrm -rf ~"]) {
     assert.ok(sig(bad).startsWith("BashExact:"), bad);
     assert.equal(isPreApproved("Bash", sig(bad)), false, bad);
   }
@@ -141,4 +149,78 @@ test("事件补发：缓冲区截断过就要求整页重拉，即使之后压�
   hub.emitEvent(key, { type: "result", text: "done", footer: "" });
   assert.equal(hub.eventsSince(key, since), null);
   assert.ok(hub.eventsSince(key, hub.currentSeq() - 1));
+});
+
+test("hub：停止会作废还在排队的消息；闲置过期按说话之前的时间判断", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { updateConversation } = await import("../src/core/store.js");
+  const sent: string[] = [];
+  let releaseDispose!: () => void;
+  const slowDispose = new Promise<void>((r) => (releaseDispose = r));
+  let sessions = 0;
+  hub.registerDriver({
+    id: "claude",
+    label: "Fake",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (opts, events) => {
+      sessions += 1;
+      return {
+        sessionId: undefined,
+        send: (input) => {
+          sent.push(`${opts.resumeId ?? "new"}:${input.text}`);
+          events.onSessionId("s-1");
+        },
+        interrupt: async () => {},
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: () => slowDispose,
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  const key = "web:hubtest";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const origin = { channel: "web", channelId: "web" };
+  hub.send(key, { text: "第一条", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, ["new:第一条"]);
+
+  // /new 正在等旧会话 dispose（卡住），这期间发的消息排队；点停止后它不该再发出去
+  const pendingNew = hub.newSession(key);
+  hub.send(key, { text: "排队的", attachments: [] }, origin);
+  await hub.stop(key);
+  releaseDispose();
+  await pendingNew;
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, ["new:第一条"]);
+
+  // 没过期：沿用活着的会话，不新建
+  hub.send(key, { text: "续用", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  const before = sessions;
+  hub.send(key, { text: "再来", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sessions, before);
+  // 闲置过期：上次活跃时间很早，这次说话要丢掉活着的会话、清掉 s-1，开新的
+  updateConversation(key, { activeAt: Date.now() - 365 * 24 * 3600 * 1000 });
+  hub.send(key, { text: "过期后", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(sessions, before + 1);
+  assert.equal(sent.at(-1), "new:过期后");
+});
+
+test("登录限流：同一 IP 的额度同步扣减，并发请求也绕不过", async () => {
+  const { takeAttempt, clearAttempts } = await import("../src/channels/web/auth.js");
+  const results = Array.from({ length: 40 }, () => takeAttempt("9.9.9.9"));
+  assert.equal(results.filter((r) => r === 0).length, 5);
+  clearAttempts("9.9.9.9");
+  assert.equal(takeAttempt("9.9.9.9"), 0);
 });

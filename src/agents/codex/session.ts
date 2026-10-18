@@ -147,7 +147,16 @@ class DisposedError extends Error {}
 export class CodexSession implements AgentSession {
   private threadId: string | undefined;
   private turnId: string | undefined;
-  private turnActive = false;
+  /**
+   * 当前轮次的阶段。idle：没有轮次；starting：turn/start 已发出、还没拿到轮次 id；
+   * running：拿到 id 了。一条会话同一时间只跑一轮，期间新来的消息排队。
+   */
+  private phase: "idle" | "starting" | "running" = "idle";
+  /** 每开一轮加一：迟到的回调据此判断自己是不是已经过时 */
+  private turnSeq = 0;
+  private queue: UserInput[] = [];
+  /** 已经收尾过的轮次：error 通知之后还可能再来一个 turn/completed，不能收两次尾 */
+  private endedTurns = new Set<string>();
   /** thread/start 或 thread/resume 的在途请求，避免并发的两条消息各开一条 thread */
   private opening: Promise<string> | null = null;
   private detached = false;
@@ -158,8 +167,7 @@ export class CodexSession implements AgentSession {
   /** agentMessage 的 itemId → 是不是旁白（commentary 属于过程，不流式到正文里） */
   private commentaryItems = new Set<string>();
   private disposed = false;
-  /** turn/start 已发出、还没收到 turn/started：这期间点停止，等拿到轮次 id 再中断 */
-  private starting = false;
+  /** 轮次还在 starting 时点了停止：拿到轮次 id 立刻中断 */
   private stopRequested = false;
 
   constructor(
@@ -174,16 +182,32 @@ export class CodexSession implements AgentSession {
 
   markDetached(): void {
     this.detached = true;
-    this.turnId = undefined;
-    this.turnActive = false;
   }
 
-  /** app-server 挂了：这一轮不会再有任何通知，必须自己收尾，否则界面一直显示忙。 */
+  /** app-server 挂了 / 重启了：这一轮不会再有任何通知，必须自己收尾，否则界面一直显示忙。 */
   onServerExit(reason: string): void {
-    const inFlight = this.turnActive || this.starting;
     this.markDetached();
-    this.starting = false;
+    const inFlight = this.phase !== "idle";
+    this.endTurn();
+    this.queue = [];
     if (inFlight && !this.disposed) this.events.onError(new Error(`${reason}，这一轮已中断，请重新发送`));
+  }
+
+  private endTurn(): void {
+    if (this.turnId) {
+      this.endedTurns.add(this.turnId);
+      if (this.endedTurns.size > 50) this.endedTurns.delete(this.endedTurns.values().next().value!);
+    }
+    this.phase = "idle";
+    this.turnId = undefined;
+    this.stopRequested = false;
+    this.turnSeq += 1;
+  }
+
+  /** 一轮结束后，排着队的下一条消息接着开 */
+  private drainQueue(): void {
+    const next = this.queue.shift();
+    if (next && !this.disposed) this.startTurn(next);
   }
 
   /**
@@ -250,18 +274,30 @@ export class CodexSession implements AgentSession {
    * 图片作为 localImage 一起送进去，模型能直接看到。
    */
   send(input: UserInput): void {
+    if (this.disposed) return;
+    // 上一轮还没完：排队。不能并发开两个 turn —— 它们会互相覆盖回复文本和中断状态
+    if (this.phase !== "idle") {
+      this.queue.push(input);
+      return;
+    }
+    this.startTurn(input);
+  }
+
+  private startTurn(input: UserInput): void {
     this.replyText = "";
+    this.phase = "starting";
+    this.turnId = undefined;
+    this.stopRequested = false;
+    const token = ++this.turnSeq;
     const note = input.attachments.length
       ? describeAttachments(input.attachments, (a) => a.kind === "image")
       : "";
     const text = note ? (input.text ? `${input.text}\n\n${note}` : note) : input.text;
     const images = input.attachments.filter((a) => a.kind === "image").map((a) => a.path);
-    if (this.disposed) return;
-    this.starting = true;
-    this.stopRequested = false;
     void this.open()
       .then((threadId) => {
         if (this.disposed) throw new DisposedError();
+        if (token !== this.turnSeq) throw new DisposedError(); // 等 thread 期间被停止了
         return appServer.call<{ turn?: { id?: string } }>("turn/start", {
           threadId,
           input: [
@@ -276,21 +312,22 @@ export class CodexSession implements AgentSession {
       })
       .then((res) => {
         // turn/start 的响应带着轮次 id（它只是「轮次已开始」，不是结果）
-        if (res?.turn?.id) this.onTurnId(res.turn.id);
+        if (token === this.turnSeq && res?.turn?.id) this.onTurnId(res.turn.id);
       })
       .catch((err) => {
-        this.starting = false;
-        if (err instanceof DisposedError || this.disposed) return;
+        // 这一轮已经被别的路径收尾了（停止、进程退出、丢弃）：不再重复报错
+        if (err instanceof DisposedError || this.disposed || token !== this.turnSeq) return;
+        this.endTurn();
         this.events.onError(err);
+        this.drainQueue();
       });
   }
 
   private onTurnId(id: string): void {
     this.turnId = id;
-    this.starting = false;
+    this.phase = "running";
     if (this.stopRequested) {
       this.stopRequested = false;
-      this.turnActive = true;
       void this.interrupt();
     }
   }
@@ -310,12 +347,14 @@ export class CodexSession implements AgentSession {
   }
 
   async interrupt(): Promise<void> {
-    if (this.starting && !this.turnId) {
+    // 停止 = 这一轮和排着队的都不要了
+    this.queue = [];
+    if (this.phase === "starting" && !this.turnId) {
       // 轮次还没真正开始：记下来，拿到轮次 id 立刻中断
       this.stopRequested = true;
       return;
     }
-    if (!this.threadId || !this.turnId || !this.turnActive) return;
+    if (this.phase !== "running" || !this.threadId || !this.turnId) return;
     try {
       await appServer.call("turn/interrupt", { threadId: this.threadId, turnId: this.turnId });
     } catch (err) {
@@ -325,6 +364,7 @@ export class CodexSession implements AgentSession {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.queue = [];
     await this.interrupt();
     if (this.threadId) {
       byThread.delete(this.threadId);
@@ -335,7 +375,7 @@ export class CodexSession implements AgentSession {
       }
     }
     this.threadId = undefined;
-    this.turnId = undefined;
+    this.endTurn();
   }
 
   // ---------- 反向请求：审批与提问 ----------
@@ -437,15 +477,13 @@ export class CodexSession implements AgentSession {
   // ---------- 通知 ----------
 
   handleNotification(method: string, params: unknown): void {
-    const turnId = (params as { turnId?: unknown } | null)?.turnId;
-    if (typeof turnId === "string") this.turnId = turnId;
 
     switch (method) {
       case "turn/started": {
         // 轮次 id 在 params.turn.id，不在顶层
         const id = (params as { turn?: { id?: string } }).turn?.id;
-        this.replyText = "";
-        this.turnActive = true;
+        // 只认「正在等它开始」的那一轮；收过尾的旧轮次晚到的通知忽略
+        if (this.phase === "idle" || (id && this.endedTurns.has(id))) return;
         if (id) this.onTurnId(id);
         this.commentaryItems.clear();
         this.events.onTurnStart?.();
@@ -476,22 +514,24 @@ export class CodexSession implements AgentSession {
 
       case "turn/completed": {
         const { turn } = params as TurnCompletedNotification;
-        this.turnActive = false;
+        // 已经收过尾的、或者不是当前这一轮的，不处理
+        if (this.phase === "idle" || (turn.id && this.endedTurns.has(turn.id))) return;
+        if (this.turnId && turn.id && turn.id !== this.turnId) return;
+        const text = this.replyText;
+        this.replyText = "";
+        this.endTurn();
         if (turn.status === "failed") {
           this.events.onError(new Error(turn.error?.message ?? "这一轮失败了"));
-          return;
+        } else if (turn.status === "interrupted") {
+          this.events.onResult({ text: text || "（已中断）", durationMs: turn.durationMs ?? 0 });
+        } else {
+          this.events.onResult({
+            text,
+            durationMs: turn.durationMs ?? 0,
+            ...(this.lastTokens !== undefined ? { tokens: this.lastTokens } : {}),
+          });
         }
-        if (turn.status === "interrupted") {
-          this.events.onResult({ text: this.replyText || "（已中断）", durationMs: turn.durationMs ?? 0 });
-          this.replyText = "";
-          return;
-        }
-        this.events.onResult({
-          text: this.replyText,
-          durationMs: turn.durationMs ?? 0,
-          ...(this.lastTokens !== undefined ? { tokens: this.lastTokens } : {}),
-        });
-        this.replyText = "";
+        this.drainQueue();
         return;
       }
 
@@ -501,8 +541,10 @@ export class CodexSession implements AgentSession {
           this.events.onStep("warning", `⚠️ ${summarize(error?.message ?? "出错，正在重试")}`);
           return;
         }
-        this.turnActive = false;
+        if (this.phase === "idle") return;
+        this.endTurn();
         this.events.onError(new Error(error?.message ?? "未知错误"));
+        this.drainQueue();
         return;
       }
 

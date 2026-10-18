@@ -161,40 +161,44 @@ export function revokeSession(idPrefix: string): boolean {
 }
 
 // ---------- 防爆破 ----------
+//
+// 额度在「真要验密码的那一刻」同步扣掉，而不是先查后记：后者中间隔着读请求体的
+// await，攻击者攒一大批请求同时提交，每个都能通过检查。
 
-const failures = new Map<string, { count: number; until: number; first: number }>();
-const MAX_FAILURES = 5;
+const MAX_ATTEMPTS = 5;
 const WINDOW_MS = 15 * 60 * 1000;
-
-/** 全局限流：就算对方能换 IP，一分钟内总共也只能试这么多次 */
+/** 全局：就算对方能换 IP，一分钟内总共也只能试这么多次 */
 const GLOBAL_MAX_PER_MIN = 30;
+
+const attempts = new Map<string, { count: number; first: number; until: number }>();
 let globalWindow = { start: 0, count: 0 };
 
-export function lockedFor(ip: string): number {
-  const now = Date.now();
-  if (now - globalWindow.start < 60_000 && globalWindow.count >= GLOBAL_MAX_PER_MIN) {
-    return globalWindow.start + 60_000 - now;
-  }
-  const f = failures.get(ip);
-  if (!f) return 0;
-  const left = f.until - now;
-  return left > 0 ? left : 0;
-}
-
-export function recordFailure(ip: string): void {
+/**
+ * 占用一次尝试额度。返回 0 表示可以验证；否则返回还要等多少毫秒。
+ * 同步执行，并发请求之间不会穿插。
+ */
+export function takeAttempt(ip: string): number {
   const now = Date.now();
   if (now - globalWindow.start >= 60_000) globalWindow = { start: now, count: 0 };
-  globalWindow.count += 1;
-  if (failures.size > 10_000) failures.clear();
-  const f = failures.get(ip);
-  if (!f || now - f.first > WINDOW_MS) {
-    failures.set(ip, { count: 1, until: 0, first: now });
-    return;
+  if (globalWindow.count >= GLOBAL_MAX_PER_MIN) return globalWindow.start + 60_000 - now;
+
+  let a = attempts.get(ip);
+  if (a && a.until > now) return a.until - now;
+  if (!a || now - a.first > WINDOW_MS) {
+    if (attempts.size > 10_000) attempts.clear();
+    a = { count: 0, first: now, until: 0 };
+    attempts.set(ip, a);
   }
-  f.count += 1;
-  if (f.count >= MAX_FAILURES) f.until = now + WINDOW_MS;
+  if (a.count >= MAX_ATTEMPTS) {
+    a.until = now + WINDOW_MS;
+    return WINDOW_MS;
+  }
+  a.count += 1;
+  globalWindow.count += 1;
+  return 0;
 }
 
-export function clearFailures(ip: string): void {
-  failures.delete(ip);
+/** 验证成功：这个 IP 的计数清零（全局窗口不退，防止拿一个正确密码洗额度） */
+export function clearAttempts(ip: string): void {
+  attempts.delete(ip);
 }
