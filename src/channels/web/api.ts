@@ -291,11 +291,18 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     if (sub === "history" && method === "GET") {
-      const messages = await hub.history(key);
+      let messages = await hub.history(key);
+      const live = hub.liveTurn(key);
+      // 进行中的这一轮，agent 的记录里已经写进去了一部分，和 live 事件重复：
+      // 从记录里最后一条用户消息起砍掉，交给 live 事件来画
+      if (live.some((e) => e.ev.type === "user")) {
+        const lastUser = messages.map((m) => m.role).lastIndexOf("user");
+        if (lastUser >= 0) messages = messages.slice(0, lastUser);
+      }
       sendJson(res, 200, {
         info: hub.info(key),
         messages,
-        live: hub.liveTurn(key),
+        live,
         seq: hub.currentSeq(),
         pending: interactions.listPending(key),
         allowedAgents: allowedAgentsFor(key),

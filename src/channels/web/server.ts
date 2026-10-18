@@ -20,8 +20,19 @@ import { HttpError, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 const require = createRequire(import.meta.url);
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
 
+/** 包的根目录。有的包（dompurify）的 exports 没放出 package.json，只能从入口往上找。 */
+function pkgDir(pkg: string): string {
+  try {
+    return path.dirname(require.resolve(`${pkg}/package.json`));
+  } catch {
+    let dir = path.dirname(require.resolve(pkg));
+    while (!fs.existsSync(path.join(dir, "package.json")) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+    return dir;
+  }
+}
+
 function pkgFile(pkg: string, rel: string): string {
-  return path.join(path.dirname(require.resolve(`${pkg}/package.json`)), rel);
+  return path.join(pkgDir(pkg), rel);
 }
 
 /** 前端依赖直接从 node_modules 里给，不走 CDN（国内访问 CDN 不稳定） */

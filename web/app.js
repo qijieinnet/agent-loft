@@ -25,6 +25,11 @@ function h(tag, attrs, ...children) {
   return el;
 }
 
+/** replaceChildren 会把 null 变成字面量 "null"，统一过滤掉 */
+function fill(el, ...kids) {
+  el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false));
+}
+
 const ICON = {
   menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
@@ -301,7 +306,7 @@ async function showAuth() {
     btn,
     err,
   );
-  $app.replaceChildren(h("div", { class: "auth" }, form));
+  fill($app, h("div", { class: "auth" }, form));
   (me.needsSetup ? token : pw).focus();
 }
 
@@ -358,7 +363,7 @@ function renderLayout() {
   ui.composerWrap = h("div", { class: "composer-wrap" });
   ui.main = h("main", { class: "main" }, ui.topbar, ui.messages, ui.composerWrap);
   ui.layout = h("div", { class: "layout" }, ui.sidebar, h("div", { class: "scrim", onclick: closeSide }), ui.main);
-  $app.replaceChildren(ui.layout);
+  fill($app, ui.layout);
   renderComposer();
   renderSidebar();
 }
@@ -431,7 +436,7 @@ function renderSidebar() {
     }
   }
   if (nodes.length === 0) nodes.push(h("div", { class: "conv-group" }, "还没有会话"));
-  ui.convList.replaceChildren(...nodes);
+  fill(ui.convList, ...nodes);
   const asks = askKeys.size;
   document.title = asks ? `(${asks}) 待处理 · Agent IM` : "Agent IM";
 }
@@ -464,16 +469,18 @@ function renderTopbar() {
     ? h(
         "button",
         { class: "pill", onclick: () => openModelPicker() },
-        h("span", { class: "sub" }, c.model ? c.model : "模型"),
+        h("span", { class: "sub" }, c.model ? c.model : "默认模型"),
         c.effort ? h("span", { class: "sub" }, `· ${c.effort}`) : null,
         icon("down"),
       )
     : null;
   const more = h("button", { class: "icon-btn", title: "更多", onclick: (e) => openMoreMenu(e.currentTarget) }, icon("more"));
-  ui.topbar.replaceChildren(
-    h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
-    h("div", { class: "top-title" }, agentPill, modelPill),
-    c ? more : null,
+  fill(ui.topbar, 
+    ...[
+      h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
+      h("div", { class: "top-title" }, agentPill, modelPill),
+      c ? more : null,
+    ].filter(Boolean),
   );
 }
 
@@ -551,7 +558,7 @@ function newDraft() {
 
 function renderEmpty() {
   const enabled = S.agents.filter((a) => a.enabled);
-  ui.msgInner.replaceChildren(
+  fill(ui.msgInner, 
     h(
       "div",
       { class: "empty" },
@@ -593,18 +600,18 @@ async function openConversation(key) {
   history.replaceState(null, "", `#${encodeURIComponent(key)}`);
   renderTopbar();
   renderSidebar();
-  ui.msgInner.replaceChildren(h("div", { class: "empty" }, h("span", { class: "spinner" })));
+  fill(ui.msgInner, h("div", { class: "empty" }, h("span", { class: "spinner" })));
   let data;
   try {
     data = await api(`/api/conversations/${encodeURIComponent(key)}/history`);
   } catch (err) {
-    if (token === S.loadToken) ui.msgInner.replaceChildren(h("div", { class: "empty" }, err.message));
+    if (token === S.loadToken) fill(ui.msgInner, h("div", { class: "empty" }, err.message));
     return;
   }
   if (token !== S.loadToken) return; // 期间又切到别的会话了
   S.convs.set(key, data.info);
   S.allowedAgents = data.allowedAgents;
-  ui.msgInner.replaceChildren();
+  fill(ui.msgInner, );
   for (const m of data.messages) {
     if (m.role === "user") addItem({ type: "user", text: m.text, files: [], origin: null });
     else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true });
@@ -708,7 +715,9 @@ function renderAi(item) {
             "summary",
             {},
             working ? h("span", { class: "spinner" }) : null,
-            working ? `正在处理… ${item.steps[item.steps.length - 1]}` : `已完成 ${item.steps.length} 步`,
+            working
+              ? `正在处理… ${item.steps[item.steps.length - 1]}`
+              : `${item.segment ? "" : "已完成 "}${item.steps.length} 步${item.segment ? "过程" : ""}`,
           ),
           h("ol", {}, item.steps.map((s) => h("li", {}, s))),
         )
@@ -719,7 +728,7 @@ function renderAi(item) {
     steps,
     body ? renderMarkdown(body) : working && item.steps.length === 0 ? h("div", { class: "thinking" }, h("span", { class: "spinner" }), "思考中…") : null,
     item.error ? h("div", { class: "error-box" }, item.error) : null,
-    item.done && (body || item.footer)
+    item.done && !item.segment && (body || item.footer)
       ? h(
           "div",
           { class: "ai-actions" },
@@ -829,7 +838,13 @@ function upsertInteraction(ix) {
     return;
   }
   if (ix.settled) return;
-  // 放在这一轮 AI 回复的前面看着别扭，直接追加到末尾
+  // 卡片插在这一轮中间：之前的输出先封口，之后的输出接在卡片下面，顺序才对
+  if (S.turnAi && !S.turnAi.done) {
+    S.turnAi.done = true;
+    S.turnAi.segment = true;
+    updateItem(S.turnAi);
+    S.turnAi = null;
+  }
   addItem({ type: "ix", id: ix.id, ix });
   notifyIfHidden(ix);
 }
@@ -985,7 +1000,7 @@ function renderComposer() {
       ui.sendBtn,
     ),
   );
-  ui.composerWrap.replaceChildren(
+  fill(ui.composerWrap, 
     ui.composer,
     h("div", { class: "composer-hint" }, "Enter 发送，Shift+Enter 换行。agent 会在你的机器上执行操作，注意审批。"),
   );
@@ -1017,7 +1032,7 @@ function setBusy(busy) {
 
 function renderChips() {
   if (!ui.chips) return;
-  ui.chips.replaceChildren(
+  fill(ui.chips, 
     ...S.uploads.map((u) =>
       h(
         "span",
@@ -1050,7 +1065,7 @@ async function ensureConversation() {
   S.allowedAgents = S.agents.filter((a) => a.enabled).map((a) => a.id);
   S.seq.set(info.key, 0);
   history.replaceState(null, "", `#${encodeURIComponent(info.key)}`);
-  ui.msgInner.replaceChildren();
+  fill(ui.msgInner, );
   WS.subscribe(info.key, 0);
   renderTopbar();
   renderSidebar();
@@ -1166,7 +1181,7 @@ async function openModelPicker() {
   try {
     const data = await api(`/api/conversations/${encodeURIComponent(S.current)}/models`);
     const efforts = data.models.find((m) => m.id === data.current)?.efforts ?? data.models.find((m) => m.efforts?.length)?.efforts ?? [];
-    body.replaceChildren(
+    fill(body, 
       ...data.models.map((m) =>
         h(
           "button",
@@ -1207,7 +1222,7 @@ async function openModelPicker() {
         : null,
     );
   } catch (err) {
-    body.replaceChildren(h("div", { class: "error-text" }, err.message));
+    fill(body, h("div", { class: "error-text" }, err.message));
   }
 }
 
@@ -1216,7 +1231,7 @@ async function openSessions(all) {
   const close = modal({ title: "历史会话", body });
   try {
     const data = await api(`/api/conversations/${encodeURIComponent(S.current)}/sessions${all ? "?all=1" : ""}`);
-    body.replaceChildren(
+    fill(body, 
       h(
         "div",
         { class: "muted" },
@@ -1260,7 +1275,7 @@ async function openSessions(all) {
           )),
     );
   } catch (err) {
-    body.replaceChildren(h("div", { class: "error-text" }, err.message));
+    fill(body, h("div", { class: "error-text" }, err.message));
   }
 }
 
@@ -1329,7 +1344,7 @@ async function openSettings() {
   ];
   const select = (i) => {
     nav.querySelectorAll("button").forEach((b, j) => b.classList.toggle("on", i === j));
-    panel.replaceChildren();
+    fill(panel, );
     tabs[i][1]();
   };
   nav.append(...tabs.map(([name], i) => h("button", { onclick: () => select(i) }, name)));
@@ -1454,7 +1469,7 @@ function feishuTab(cfg, panel) {
   const bots = structuredClone(cfg.feishu.bots);
   const statusBox = new Map();
   const render = () => {
-    panel.replaceChildren(
+    fill(panel, 
       h(
         "div",
         { class: "row" },
@@ -1522,7 +1537,7 @@ function feishuTab(cfg, panel) {
               bots[i] = collect();
               delete bots[i]._new;
               await saveConfig(cfg, { feishu: { bots } });
-              feishuTab(cfg, (panel.replaceChildren(), panel));
+              feishuTab(cfg, (fill(panel, ), panel));
             },
           },
           "保存",
@@ -1579,7 +1594,7 @@ function feishuTab(cfg, panel) {
           body: { name: nameInput.value, agents: checks.filter((c) => c.box.checked).map((c) => c.id) },
         });
         const state = h("div", { class: "muted", style: { textAlign: "center" } }, "等待扫码确认…");
-        body.replaceChildren(
+        fill(body, 
           h("div", { class: "qr", html: reg.qrSvg }),
           h("div", { class: "row", style: { justifyContent: "center" } }, h("a", { href: reg.qrUrl, target: "_blank", rel: "noopener" }, "手机上直接打开链接")),
           state,
@@ -1596,7 +1611,7 @@ function feishuTab(cfg, panel) {
               const fresh = await api("/api/config");
               Object.assign(cfg, fresh);
               await saveConfig(cfg, {});
-              feishuTab(cfg, (panel.replaceChildren(), panel));
+              feishuTab(cfg, (fill(panel, ), panel));
               return;
             }
             state.textContent = { access_denied: "已拒绝授权", expired: "二维码已过期", timeout: "超时了" }[r.status] ?? `出错：${r.message ?? r.status}`;
@@ -1651,7 +1666,7 @@ async function authTab(panel) {
                     try {
                       await api("/api/pairing/approve", { method: "POST", body: { code: request.code } });
                       toast("已批准");
-                      panel.replaceChildren();
+                      fill(panel, );
                       void authTab(panel);
                     } catch (err) {
                       toast(err.message);
@@ -1680,7 +1695,7 @@ async function authTab(panel) {
                   class: "btn small danger",
                   onclick: async () => {
                     await api("/api/pairing/revoke", { method: "POST", body: { channelId, userId } });
-                    panel.replaceChildren();
+                    fill(panel, );
                     void authTab(panel);
                   },
                 },
@@ -1761,7 +1776,7 @@ async function securityTab(panel) {
               class: "btn small danger",
               onclick: async () => {
                 await api("/api/web-sessions/revoke", { method: "POST", body: { id: s.id } });
-                panel.replaceChildren();
+                fill(panel, );
                 void securityTab(panel);
               },
             },
@@ -1833,5 +1848,5 @@ boot()
     ui.messages?.addEventListener("scroll", () => (ui.stick = nearBottom()), { passive: true });
   })
   .catch((err) => {
-    $app.replaceChildren(h("div", { class: "auth" }, h("div", { class: "auth-card" }, h("p", {}, `加载失败：${err.message}`))));
+    fill($app, h("div", { class: "auth" }, h("div", { class: "auth-card" }, h("p", {}, `加载失败：${err.message}`))));
   });
