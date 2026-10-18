@@ -258,3 +258,17 @@ test("登录限流：同一 IP 的额度同步扣减，并发请求也绕不过"
   clearAttempts("9.9.9.9");
   assert.equal(takeAttempt("9.9.9.9"), 0);
 });
+
+test("NotebookEdit 按 notebook_path 的目录记，拿不到路径不给总是允许", async () => {
+  const { signatureOf, isRememberableSignature, rememberAlways, isPreApproved } = await import("../src/agents/claude/permissions.js");
+  const a = signatureOf("NotebookEdit", { notebook_path: "/proj/allowed/a.ipynb" });
+  const b = signatureOf("NotebookEdit", { notebook_path: "/proj/protected/b.ipynb" });
+  assert.equal(a, "NotebookEdit:/proj/allowed");
+  assert.notEqual(a, b);
+  rememberAlways(a);
+  assert.equal(isPreApproved("NotebookEdit", b), false);
+  const none = signatureOf("NotebookEdit", {});
+  assert.equal(isRememberableSignature("NotebookEdit", none), false);
+  rememberAlways("NotebookEdit:.");
+  assert.equal(isPreApproved("NotebookEdit", "NotebookEdit:."), false);
+});

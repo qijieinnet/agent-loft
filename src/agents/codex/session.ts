@@ -186,9 +186,20 @@ export class CodexSession implements AgentSession {
     this.detached = true;
   }
 
-  /** thread 被另一条会话接管了。正在跑的这一轮收不到后续通知了，收尾掉 */
+  get busy(): boolean {
+    return this.phase !== "idle";
+  }
+
+  /**
+   * thread 被另一条会话接管了（正常情况下只会在空闲时发生，见 openOnce 的检查）。
+   * 万一时序上撞上了正在跑的一轮：先让服务端中断它，再在本地收尾 —— 不中断的话，
+   * 它后续的输出和审批会按 threadId 串到新所有者那边。
+   */
   evict(): void {
     this.detached = true;
+    if (this.phase !== "idle" && this.threadId && this.turnId) {
+      void appServer.call("turn/interrupt", { threadId: this.threadId, turnId: this.turnId }).catch(() => {});
+    }
     if (this.phase !== "idle" && !this.disposed) {
       const dropped = this.queue.length;
       this.queue = [];
@@ -257,6 +268,12 @@ export class CodexSession implements AgentSession {
     };
     const resumeId = this.threadId ?? this.opts.resumeId;
     const fork = this.opts.fork && !this.everOpened;
+    // 这个 thread 正在别的会话里跑：不接管。接管后它的后续输出和审批请求都按 threadId
+    // 路由，会串到这边来；等它跑完再恢复。（fork 出来的是新 thread，不受影响）
+    const owner = resumeId && !fork ? byThread.get(resumeId) : undefined;
+    if (owner && owner !== this && owner.busy) {
+      throw new Error("这条 Codex 会话正在另一个聊天里运行，等那边这一轮结束后再试。");
+    }
     this.everOpened = true;
 
     let res: ThreadResponse;

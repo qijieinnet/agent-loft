@@ -17,8 +17,18 @@ export function isRememberable(toolName: string): boolean {
   return !NEVER_REMEMBER.has(toolName);
 }
 
+/** 按目录记的签名，目录必须是绝对路径；老版本因读错参数名记下的「NotebookEdit:.」之类一律作废 */
+function validSignature(sig: string): boolean {
+  const m = /^(Edit|Write|NotebookEdit):(.*)$/.exec(sig);
+  return !m || path.isAbsolute(m[2]!);
+}
+
+export function isRememberableSignature(toolName: string, signature: string): boolean {
+  return isRememberable(toolName) && validSignature(signature);
+}
+
 function load(): string[] {
-  allowlist ??= readJson<string[]>(allowlistPath, []);
+  allowlist ??= readJson<string[]>(allowlistPath, []).filter(validSignature);
   return allowlist;
 }
 
@@ -121,7 +131,11 @@ export function signatureOf(toolName: string, input: Record<string, unknown>): s
     return prefixSignature(command) ?? `BashExact:${command.trim()}`;
   }
   if (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit") {
-    const file = typeof input.file_path === "string" ? input.file_path : "";
+    // NotebookEdit 的路径参数叫 notebook_path，不是 file_path
+    const raw = toolName === "NotebookEdit" ? input.notebook_path : input.file_path;
+    const file = typeof raw === "string" ? raw : "";
+    // 拿不到绝对路径就没法按目录记：给一个不可记忆的签名（见 isRememberableSignature）
+    if (!file || !path.isAbsolute(file)) return `${toolName}:`;
     return `${toolName}:${path.dirname(file)}`;
   }
   return toolName;
@@ -129,10 +143,11 @@ export function signatureOf(toolName: string, input: Record<string, unknown>): s
 
 export function isPreApproved(toolName: string, signature: string): boolean {
   // 防绕过靠的是 signatureOf：复合命令拿到的是 BashExact 签名，命中不了 Bash:<首词>
-  return isRememberable(toolName) && load().includes(signature);
+  return isRememberableSignature(toolName, signature) && load().includes(signature);
 }
 
 export function rememberAlways(signature: string): void {
+  if (!validSignature(signature)) return;
   const list = load();
   if (list.includes(signature)) return;
   list.push(signature);

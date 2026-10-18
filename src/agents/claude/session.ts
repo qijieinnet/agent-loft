@@ -27,7 +27,7 @@ import {
   alwaysLabelOf,
   describeToolCall,
   isPreApproved,
-  isRememberable,
+  isRememberableSignature,
   parseQuestions,
   rememberAlways,
   signatureOf,
@@ -140,8 +140,12 @@ export class ClaudeSession implements AgentSession {
     const fork = this.opts.fork && !this.everStarted;
     this.everStarted = true;
 
+    // 每个 query 一条自己的输入队列：CLI 崩溃后重新拉起时，旧 query 的输入循环可能还挂在
+    // 旧队列上等着；继续共用的话，下一条消息会被那个已经没人处理的旧循环吞掉。
+    const input = new AsyncQueue<SDKUserMessage>();
+    this.queue = input;
     this.q = query({
-      prompt: this.queue.stream(),
+      prompt: input.stream(),
       options: {
         cwd: this.opts.cwd,
         env: agentEnvironment(),
@@ -165,6 +169,7 @@ export class ClaudeSession implements AgentSession {
       .finally(() => {
         // query 真的结束了（CLI 退出或输入被关）。清掉之后下一条消息会带着最新的
         // sessionId 重新拉起来，上下文不丢；不清的话消息会进一个没人消费的队列。
+        input.close();
         this.q = null;
         this.pump = null;
         // CLI 半路退出：这一轮不会再有结果了，排队的下一条会重新拉起 CLI 接着跑
@@ -252,9 +257,9 @@ export class ClaudeSession implements AgentSession {
       kind: "approval",
       title: `需要授权：${toolName}`,
       detail: describeToolCall(toolName, input),
-      ...(isRememberable(toolName) ? { alwaysLabel: alwaysLabelOf(toolName, signature) } : {}),
+      ...(isRememberableSignature(toolName, signature) ? { alwaysLabel: alwaysLabelOf(toolName, signature) } : {}),
     });
-    if (outcome.settlement === "allow-always" && isRememberable(toolName)) rememberAlways(signature);
+    if (outcome.settlement === "allow-always" && isRememberableSignature(toolName, signature)) rememberAlways(signature);
     if (outcome.settlement === "allow-once" || outcome.settlement === "allow-always") {
       return { behavior: "allow", updatedInput: input };
     }

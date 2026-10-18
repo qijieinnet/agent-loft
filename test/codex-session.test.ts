@@ -195,3 +195,25 @@ test("两条会话恢复同一个 thread：回复只进当前所有者，被接�
   assert.ok(a.log.includes("result:给A"));
   assert.ok(!b.log.some((l) => l.includes("给A")));
 });
+
+test("thread 正在别的会话里跑：不接管，明确报错", async () => {
+  calls.length = 0;
+  const { CodexSession: Session } = await import("../src/agents/codex/session.js");
+  const a = makeSession();
+  a.session.send({ text: "长任务", attachments: [] });
+  const ta = await startTurn();
+  // B 想恢复 A 正在跑的 thread
+  const log: string[] = [];
+  const b = new Session(
+    { cwd: "/tmp", uploadsDir: "/tmp", resumeId: ta.threadId },
+    { onStep: () => {}, onTextDelta: () => {}, onText: () => {}, onResult: () => {}, onError: (e) => log.push(String(e)), onSessionId: () => {} },
+    async () => ({ settlement: "deny", answers: {} }),
+  );
+  b.send({ text: "抢", attachments: [] });
+  await tick();
+  assert.equal(calls.some((c) => c.method === "thread/resume"), false);
+  assert.match(log[0] ?? "", /正在另一个聊天里运行/);
+  // A 不受影响
+  notify("turn/completed", { threadId: ta.threadId, turn: { id: ta.turnId, status: "completed" } });
+  assert.ok(a.log.some((l) => l.startsWith("result:")));
+});
