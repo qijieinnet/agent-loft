@@ -8,7 +8,7 @@
 // 同一条会话可以被多个渠道同时看着：飞书群里的会话也能在 Web 上打开，Web 上
 // 说的话照样回到飞书。所以事件是广播出去的，每个订阅者自己挑感兴趣的会话。
 import { EventEmitter } from "node:events";
-import { config, resolveWorkspacePath } from "./config.js";
+import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
   agentBinding,
@@ -102,7 +102,7 @@ export type ConversationInfo = {
 
 const BUFFER_MAX = 400;
 
-type Live = { agent: string; session: AgentSession };
+type Live = { agent: string; cwd: string; session: AgentSession };
 
 class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private drivers = new Map<string, AgentDriver>();
@@ -112,10 +112,28 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   /** 每条会话还没收到结果的轮数，> 0 即忙 */
   private inflight = new Map<string, number>();
   private announced = new Set<string>();
+  /** 每条会话因缓冲区溢出被丢掉的最后一个 seq */
+  private truncated = new Map<string, number>();
+  /** 每条会话的生命周期操作串行执行，见 serial() */
+  private locks = new Map<string, Promise<unknown>>();
 
   constructor() {
     super();
     this.setMaxListeners(100);
+    // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
+    onConfigChange((next, prev) => {
+      if (next.workspaceRoot === prev.workspaceRoot) return;
+      for (const key of [...this.live.keys()]) {
+        void this.serial(key, async () => {
+          const conv = getConversation(key);
+          if (conv && conv.cwd !== this.live.get(key)?.cwd) {
+            await this.drop(key, "工作目录配置已变更");
+            this.emitEvent(key, { type: "notice", text: `工作目录配置已变更，之后在 ${conv.cwd} 里开新会话。` });
+            this.emitEvent(key, { type: "meta" });
+          }
+        });
+      }
+    });
   }
 
   // ---------- agent 注册 ----------
@@ -154,7 +172,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       buf.length = 0;
       buf.push(...kept);
     }
-    if (buf.length > BUFFER_MAX) buf.splice(0, buf.length - BUFFER_MAX);
+    if (buf.length > BUFFER_MAX) {
+      const dropped = buf.splice(0, buf.length - BUFFER_MAX);
+      // 记下截断水位：之后再压缩 delta 让数组变短，也不能假装还能补全
+      this.truncated.set(key, dropped[dropped.length - 1]!.seq);
+    }
     this.emit("event", env);
   }
 
@@ -167,11 +189,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    */
   eventsSince(key: string, since: number): EventEnvelope[] | null {
     const buf = this.buffers.get(key) ?? [];
-    if (since > 0 && buf.length > 0 && buf[0]!.seq > since + 1) {
-      // 缓冲区最早一条之前还有没见过的：补不全了
-      const missed = buf[0]!.seq - since - 1;
-      if (missed > 0 && buf.length >= BUFFER_MAX) return null;
-    }
+    // 客户端没见过的事件里有被截掉的：补不全了
+    if (since < (this.truncated.get(key) ?? 0)) return null;
     return buf.filter((e) => e.seq > since);
   }
 
@@ -260,8 +279,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
     const existing = this.live.get(key);
-    if (existing && existing.agent === conv.agent && !opts.resumeId) return existing.session;
+    if (existing && existing.agent === conv.agent && existing.cwd === conv.cwd && !opts.resumeId) {
+      return existing.session;
+    }
     if (existing) {
+      interactions.cancelAll(key, "会话已切换");
       this.live.delete(key);
       void existing.session.dispose();
     }
@@ -316,6 +338,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
             console.error(`[${agent}] ${diagnosis.consoleHint}`);
           }
           console.error(`[${agent}] ${key} 出错:`, err instanceof Error ? err.message : err);
+          // 这一轮已经结束了，挂着的审批没人会再等它
+          interactions.cancelAll(key, "本轮出错结束");
           this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
         },
@@ -329,7 +353,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       (spec: InteractionSpec) => interactions.create(key, spec, config().approvalTimeoutMs),
     );
     holder.session = session;
-    this.live.set(key, { agent, session });
+    this.live.set(key, { agent, cwd: conv.cwd, session });
     return session;
   }
 
@@ -339,7 +363,29 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const existing = this.live.get(key);
     this.live.delete(key);
     this.setInflight(key, 0);
-    await existing?.session.dispose();
+    if (!existing) return;
+    // dispose 卡住（CLI 不响应）不能把这条会话的操作队列永远堵死
+    await Promise.race([
+      existing.session.dispose().catch(() => {}),
+      new Promise((r) => setTimeout(r, 10_000).unref()),
+    ]);
+  }
+
+  /**
+   * 同一条会话的生命周期操作（开新会话、切目录、切 agent、恢复、发消息…）串行执行。
+   *
+   * 不串行的话：/cd 正在等旧会话 dispose，另一个渠道恰好发来一条消息，就会用旧目录
+   * 拉起一个新会话；/cd 随后只改了记录，实际进程却还在旧目录里干活。
+   */
+  private serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(key) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(fn);
+    const tail = next.catch(() => {});
+    this.locks.set(key, tail);
+    void tail.then(() => {
+      if (this.locks.get(key) === tail) this.locks.delete(key);
+    });
+    return next;
   }
 
   // ---------- 说话 ----------
@@ -374,7 +420,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       this.emitEvent(key, { type: "meta" });
     }
     this.emitEvent(key, shown);
+    void this.serial(key, async () => this.sendNow(key, input));
+  }
 
+  private sendNow(key: string, input: UserInput): void {
     let session: AgentSession;
     try {
       session = this.session(key);
@@ -397,7 +446,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   // ---------- 操作（命令和 Web 按钮共用） ----------
 
-  async runtime(key: string): Promise<RuntimeInfo> {
+  private async runtimeNow(key: string): Promise<RuntimeInfo> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
     const binding = agentBinding(conv);
@@ -416,19 +465,19 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
 
-  async newSession(key: string, model?: string): Promise<string> {
+  private async newSessionNow(key: string, model?: string): Promise<string> {
     const conv = getConversation(key)!;
     await this.drop(key, "已开新会话");
     updateAgentBinding(key, conv.agent, { sessionId: undefined, model: model || undefined, effort: undefined });
     clearUploads(key);
     this.emitEvent(key, { type: "meta" });
-    const runtime = await this.runtime(key);
+    const runtime = await this.runtimeNow(key);
     return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
       runtime.effort ? `，思考 ${runtime.effort}` : ""
     }）。`;
   }
 
-  async fork(key: string): Promise<string> {
+  private async forkNow(key: string): Promise<string> {
     const conv = getConversation(key)!;
     const current = agentBinding(conv).sessionId;
     if (!current) return "当前还没有可分叉的会话。";
@@ -437,7 +486,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return "已分叉，原会话保留。下一条消息起在分叉出来的新会话里继续。";
   }
 
-  async resume(key: string, sessionId: string, originCwd?: string): Promise<string> {
+  private async resumeNow(key: string, sessionId: string, originCwd?: string): Promise<string> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
     if (!(await driver.sessionExists(sessionId, conv.cwd))) {
@@ -474,11 +523,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     };
   }
 
-  async models(key: string): Promise<Extract<CommandReply, { type: "models" }>> {
+  private async modelsNow(key: string): Promise<Extract<CommandReply, { type: "models" }>> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
     const models = await driver.listModels(this.session(key));
-    const runtime = await this.runtime(key);
+    const runtime = await this.runtimeNow(key);
     return {
       type: "models",
       agent: conv.agent,
@@ -489,7 +538,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     };
   }
 
-  async setModel(key: string, model: string): Promise<string> {
+  private async setModelNow(key: string, model: string): Promise<string> {
     const conv = getConversation(key)!;
     await this.session(key).setModel(model);
     updateAgentBinding(key, conv.agent, { model });
@@ -497,7 +546,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return `模型已切换为 ${model}。`;
   }
 
-  async setEffort(key: string, effort: string): Promise<string> {
+  private async setEffortNow(key: string, effort: string): Promise<string> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
     if (!driver.capabilities.effort) return `${driver.label} 不支持切换思考程度。`;
@@ -508,7 +557,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   /** 切 agent：各 agent 的会话各自保留，切回来接着聊。 */
-  async setAgent(key: string, agent: string, allowed: string[]): Promise<string> {
+  private async setAgentNow(key: string, agent: string, allowed: string[]): Promise<string> {
     const conv = getConversation(key)!;
     if (!allowed.includes(agent)) {
       return `这里不能用「${agent}」。可选：${allowed.join("、")}`;
@@ -529,9 +578,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return "已请求中断。";
   }
 
-  async cd(key: string, dir: string): Promise<string> {
+  private async cdNow(key: string, dir: string): Promise<string> {
     const resolved = resolveWorkspacePath(dir);
-    if (!resolved) return `不允许：目录必须在 ${config().workspaceRoot} 之内。`;
+    if (!resolved) return `不允许：目录必须存在，且在 ${config().workspaceRoot} 之内（不能经符号链接跳出去）。`;
     const conv = getConversation(key)!;
     await this.drop(key, "工作目录已切换");
     // 会话记录是按目录存的，换目录后旧会话 resume 不回来，干脆都清掉
@@ -544,10 +593,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return `工作目录已切换到 ${resolved}，下条消息将开新会话。`;
   }
 
-  async status(key: string): Promise<string> {
+  private async statusNow(key: string): Promise<string> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
-    const runtime = await this.runtime(key);
+    const runtime = await this.runtimeNow(key);
     const extra = await driver.statusLines().catch(() => [] as string[]);
     return [
       `Agent：${driver.label}`,
@@ -571,6 +620,48 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       console.error(`[历史] 读取 ${key} 失败:`, err);
       return [];
     }
+  }
+
+  // ---------- 对外的操作：都经过 serial() ----------
+
+  runtime(key: string): Promise<RuntimeInfo> {
+    return this.serial(key, () => this.runtimeNow(key));
+  }
+
+  newSession(key: string, model?: string): Promise<string> {
+    return this.serial(key, () => this.newSessionNow(key, model));
+  }
+
+  fork(key: string): Promise<string> {
+    return this.serial(key, () => this.forkNow(key));
+  }
+
+  resume(key: string, sessionId: string, originCwd?: string): Promise<string> {
+    return this.serial(key, () => this.resumeNow(key, sessionId, originCwd));
+  }
+
+  models(key: string): Promise<Extract<CommandReply, { type: "models" }>> {
+    return this.serial(key, () => this.modelsNow(key));
+  }
+
+  setModel(key: string, model: string): Promise<string> {
+    return this.serial(key, () => this.setModelNow(key, model));
+  }
+
+  setEffort(key: string, effort: string): Promise<string> {
+    return this.serial(key, () => this.setEffortNow(key, effort));
+  }
+
+  setAgent(key: string, agent: string, allowed: string[]): Promise<string> {
+    return this.serial(key, () => this.setAgentNow(key, agent, allowed));
+  }
+
+  cd(key: string, dir: string): Promise<string> {
+    return this.serial(key, () => this.cdNow(key, dir));
+  }
+
+  status(key: string): Promise<string> {
+    return this.serial(key, () => this.statusNow(key));
   }
 
   label(agent: string): string {

@@ -588,8 +588,8 @@ export class FeishuBot {
         this.background(envelope.k, () => hub.setModel(envelope.k, envelope.m));
         return { toast: { type: "success", content: `正在切换到 ${envelope.m}` } };
       case "effort":
-        this.background(envelope.k, () => hub.setEffort(envelope.k, envelope.e));
-        return { toast: { type: "success", content: `思考程度设为 ${envelope.e}` } };
+        this.background(envelope.k, () => hub.setEffort(envelope.k, envelope.f));
+        return { toast: { type: "success", content: `思考程度设为 ${envelope.f}` } };
       case "agent":
         this.background(envelope.k, () => hub.setAgent(envelope.k, envelope.g, this.allowedAgents()));
         return { toast: { type: "success", content: `正在切换到 ${hub.label(envelope.g)}` } };

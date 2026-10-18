@@ -11,19 +11,42 @@ export class HttpError extends Error {
   }
 }
 
+function normalizeIp(ip: string): string {
+  return ip.trim().replace(/^::ffff:/, "");
+}
+
+function isTrustedProxy(ip: string | undefined): boolean {
+  if (!ip) return false;
+  const list = config().web.trustedProxies.map(normalizeIp);
+  return list.includes(normalizeIp(ip));
+}
+
+/** 这条连接是不是经由可信反代来的。只有这时 X-Forwarded-* 才可信。 */
+export function viaTrustedProxy(req: IncomingMessage): boolean {
+  return isTrustedProxy(req.socket.remoteAddress);
+}
+
+/**
+ * 客户端 IP：从 X-Forwarded-For 的最右边往左剥掉可信代理，第一个不可信的就是客户端。
+ * 不取最左边那个 —— 那一项是客户端自己能随便填的。
+ */
 export function clientIp(req: IncomingMessage): string {
-  if (config().web.trustProxy) {
-    const fwd = req.headers["x-forwarded-for"];
-    const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim();
-    if (first) return first;
-    const real = req.headers["x-real-ip"];
-    if (typeof real === "string" && real) return real;
+  const remote = req.socket.remoteAddress ?? "unknown";
+  if (!viaTrustedProxy(req)) return normalizeIp(remote);
+  const fwd = req.headers["x-forwarded-for"];
+  const chain = (Array.isArray(fwd) ? fwd.join(",") : (fwd ?? ""))
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    if (!isTrustedProxy(chain[i])) return normalizeIp(chain[i]!);
   }
-  return req.socket.remoteAddress ?? "unknown";
+  const real = req.headers["x-real-ip"];
+  return typeof real === "string" && real ? normalizeIp(real) : normalizeIp(remote);
 }
 
 export function isHttps(req: IncomingMessage): boolean {
-  if (config().web.trustProxy && req.headers["x-forwarded-proto"] === "https") return true;
+  if (viaTrustedProxy(req) && req.headers["x-forwarded-proto"] === "https") return true;
   return (req.socket as { encrypted?: boolean }).encrypted === true;
 }
 
@@ -50,7 +73,7 @@ export function sameOrigin(req: IncomingMessage): boolean {
   } catch {
     return false;
   }
-  const fwdHost = config().web.trustProxy ? req.headers["x-forwarded-host"] : undefined;
+  const fwdHost = viaTrustedProxy(req) ? req.headers["x-forwarded-host"] : undefined;
   const hosts = [req.headers.host, ...(Array.isArray(fwdHost) ? fwdHost : fwdHost ? [fwdHost] : [])];
   return hosts.some((h) => h?.split(",")[0]?.trim() === originHost);
 }

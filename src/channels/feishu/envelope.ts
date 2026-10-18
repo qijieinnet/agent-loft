@@ -10,7 +10,7 @@
 // 切换语义在重投下不幂等。
 import type { ApprovalDecision } from "../../core/types.js";
 
-export const ENVELOPE_VERSION = "aim1";
+export const ENVELOPE_VERSION = "aim2";
 
 /** k 是会话键：卡片回调里拿不到 thread_id，凡是作用于某条会话的动作都得带上它。 */
 export type EnvelopeAction =
@@ -19,7 +19,7 @@ export type EnvelopeAction =
   | { a: "ask-submit"; r: string }
   | { a: "ask-skip"; r: string }
   | { a: "model"; m: string; k: string }
-  | { a: "effort"; e: string; k: string }
+  | { a: "effort"; f: string; k: string }
   | { a: "agent"; g: string; k: string }
   | { a: "resume"; s: string; k: string; c?: string };
 
@@ -71,9 +71,36 @@ export function decodeEnvelope(params: {
   if (typeof value.h === "string" && value.h.trim() !== (chatId ?? "").trim()) {
     return { ok: false, reason: "wrong_conversation" };
   }
+  if (!validAction(value)) return { ok: false, reason: "malformed" };
   // 白名单是最后也是最硬的一道
   if (!isAllowed(operatorOpenId)) return { ok: false, reason: "not_allowed" };
   return { ok: true, envelope: value as CardEnvelope };
+}
+
+const str = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length < 512;
+const idx = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 100;
+
+/** 每种动作的字段逐个验类型：信封是明文，别让一个畸形的值流进 agent。 */
+function validAction(v: Record<string, unknown>): boolean {
+  switch (v.a) {
+    case "approval":
+      return str(v.r) && (v.d === "allow-once" || v.d === "allow-always" || v.d === "deny");
+    case "ask":
+      return str(v.r) && idx(v.q) && idx(v.o) && (v.v === 0 || v.v === 1);
+    case "ask-submit":
+    case "ask-skip":
+      return str(v.r);
+    case "model":
+      return str(v.m) && str(v.k);
+    case "effort":
+      return str(v.f) && str(v.k);
+    case "agent":
+      return str(v.g) && str(v.k);
+    case "resume":
+      return str(v.s) && str(v.k) && (v.c === undefined || str(v.c));
+    default:
+      return false;
+  }
 }
 
 export const DECODE_FAILURE_TEXT: Record<DecodeFailure, string> = {

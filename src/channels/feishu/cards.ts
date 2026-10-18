@@ -218,7 +218,7 @@ export function modelPickerCard(params: {
         efforts
           .slice(0, 8)
           .map((e) =>
-            button(`${e}${e === params.currentEffort ? " ✅" : ""}`, { a: "effort", e, k: params.sessionKey }, params.ctx),
+            button(`${e}${e === params.currentEffort ? " ✅" : ""}`, { a: "effort", f: e, k: params.sessionKey }, params.ctx),
           ),
       ),
     );

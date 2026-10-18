@@ -8,11 +8,15 @@
 //   - 同一 IP 连续输错会被锁一段时间。
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import { config, saveConfig } from "../../core/config.js";
 import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** 登录态被撤销（退出、改密码、踢设备）时通知 WebSocket 那边立刻断开对应连接 */
+export const authEvents = new EventEmitter<{ revoked: [] }>();
 const sessionsPath = path.join(dataDir, "web-sessions.json");
 const setupTokenPath = path.join(dataDir, "web-setup-token");
 
@@ -85,6 +89,7 @@ export function setPassword(password: string): void {
   sessions = {};
   saveSessions();
   fs.rmSync(setupTokenPath, { force: true });
+  authEvents.emit("revoked");
 }
 
 // ---------- 首次设置码 ----------
@@ -138,6 +143,7 @@ export function destroySession(token: string | undefined): void {
   if (!token) return;
   delete loadSessions()[sha256(token)];
   saveSessions();
+  authEvents.emit("revoked");
 }
 
 export function listSessions(): (WebSession & { id: string })[] {
@@ -150,6 +156,7 @@ export function revokeSession(idPrefix: string): boolean {
   if (!hit) return false;
   delete all[hit];
   saveSessions();
+  authEvents.emit("revoked");
   return true;
 }
 
@@ -159,15 +166,26 @@ const failures = new Map<string, { count: number; until: number; first: number }
 const MAX_FAILURES = 5;
 const WINDOW_MS = 15 * 60 * 1000;
 
+/** 全局限流：就算对方能换 IP，一分钟内总共也只能试这么多次 */
+const GLOBAL_MAX_PER_MIN = 30;
+let globalWindow = { start: 0, count: 0 };
+
 export function lockedFor(ip: string): number {
+  const now = Date.now();
+  if (now - globalWindow.start < 60_000 && globalWindow.count >= GLOBAL_MAX_PER_MIN) {
+    return globalWindow.start + 60_000 - now;
+  }
   const f = failures.get(ip);
   if (!f) return 0;
-  const left = f.until - Date.now();
+  const left = f.until - now;
   return left > 0 ? left : 0;
 }
 
 export function recordFailure(ip: string): void {
   const now = Date.now();
+  if (now - globalWindow.start >= 60_000) globalWindow = { start: now, count: 0 };
+  globalWindow.count += 1;
+  if (failures.size > 10_000) failures.clear();
   const f = failures.get(ip);
   if (!f || now - f.first > WINDOW_MS) {
     failures.set(ip, { count: 1, until: 0, first: now });

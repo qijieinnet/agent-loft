@@ -56,7 +56,7 @@ agent-im service install
 
 - Web 登录密码用 scrypt 哈希保存。首次设置必须用启动日志里的一次性设置码，防止「谁先打开页面谁就成了主人」。
 - 登录态通过 HttpOnly cookie 保存，服务端只存它的哈希。同一 IP 连续输错 5 次锁 15 分钟。所有写请求和 WebSocket 都校验 Origin。页面开启了严格的 CSP。
-- 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）访问，并保持 `web.trustProxy = true`。不要直接把 8800 端口映射出去。
+- 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）访问，并把反代的 IP 加进 `web.trustedProxies`（只有从这些地址来的连接才采信 `X-Forwarded-*`）。不要直接把 8800 端口映射出去。
 - 审批超时一律按拒绝处理。Codex 默认沙箱为 `workspace-write`，不会因为 `~/.codex/config.toml` 里配了 `never` 或 `danger-full-access` 就绕过审批。
 - agent 子进程拿不到本服务自己的凭据（`FEISHU_*`、`AGENT_IM_*` 等环境变量会被剔除）。
 

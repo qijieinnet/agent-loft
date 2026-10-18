@@ -291,7 +291,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     if (sub === "history" && method === "GET") {
+      // 读历史是异步的，期间这条会话可能刚好跑完一轮：那样快照里少了最后的回复，
+      // 而游标又已经越过了它，客户端会永远漏掉。所以读的过程中有新事件就重读，
+      // 并且返回读之前的游标，让客户端从那里开始补。
+      let snapshot = hub.currentSeq();
       let messages = await hub.history(key);
+      for (let i = 0; i < 3 && (hub.eventsSince(key, snapshot) ?? [null]).length > 0 && !hub.isBusy(key); i++) {
+        snapshot = hub.currentSeq();
+        messages = await hub.history(key);
+      }
       const live = hub.liveTurn(key);
       // 进行中的这一轮，agent 的记录里已经写进去了一部分，和 live 事件重复：
       // 从记录里最后一条用户消息起砍掉，交给 live 事件来画
@@ -303,7 +311,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         info: hub.info(key),
         messages,
         live,
-        seq: hub.currentSeq(),
+        seq: snapshot,
         pending: interactions.listPending(key),
         allowedAgents: allowedAgentsFor(key),
       });

@@ -55,10 +55,14 @@ appServer.setServerRequestHandler(async (method, params) => {
   return session.handleServerRequest(method, params);
 });
 
-// app-server 重启后进程里的 thread 都没了，但盘上还在：标记「下次说话先 resume 回来」
-appServer.onRestart(() => {
-  for (const session of byThread.values()) session.markDetached();
+// app-server 退出：进程里的 thread 都没了，但盘上还在。在途的轮次立刻收尾，
+// 之后说话时先 resume 回来，上下文不丢。
+appServer.onExit((reason) => {
+  for (const session of new Set([...byThread.values(), ...opening])) session.onServerExit(reason);
 });
+
+/** 还在 thread/start 途中、尚未登记到 byThread 的会话 */
+const opening = new Set<CodexSession>();
 
 // ---------- 审批正文 ----------
 
@@ -137,6 +141,9 @@ function parseQuestions(raw: unknown): ParsedQuestion[] | null {
 
 // ---------- 会话 ----------
 
+/** 会话已被丢弃，迟到的异步结果直接作废 */
+class DisposedError extends Error {}
+
 export class CodexSession implements AgentSession {
   private threadId: string | undefined;
   private turnId: string | undefined;
@@ -150,6 +157,10 @@ export class CodexSession implements AgentSession {
   private everOpened = false;
   /** agentMessage 的 itemId → 是不是旁白（commentary 属于过程，不流式到正文里） */
   private commentaryItems = new Set<string>();
+  private disposed = false;
+  /** turn/start 已发出、还没收到 turn/started：这期间点停止，等拿到轮次 id 再中断 */
+  private starting = false;
+  private stopRequested = false;
 
   constructor(
     private readonly opts: SessionOptions,
@@ -165,6 +176,14 @@ export class CodexSession implements AgentSession {
     this.detached = true;
     this.turnId = undefined;
     this.turnActive = false;
+  }
+
+  /** app-server 挂了：这一轮不会再有任何通知，必须自己收尾，否则界面一直显示忙。 */
+  onServerExit(reason: string): void {
+    const inFlight = this.turnActive || this.starting;
+    this.markDetached();
+    this.starting = false;
+    if (inFlight && !this.disposed) this.events.onError(new Error(`${reason}，这一轮已中断，请重新发送`));
   }
 
   /**
@@ -192,12 +211,22 @@ export class CodexSession implements AgentSession {
     this.everOpened = true;
 
     let res: ThreadResponse;
-    if (resumeId && fork) {
-      res = await appServer.call<ThreadResponse>("thread/fork", { threadId: resumeId, excludeTurns: true, ...shared });
-    } else if (resumeId) {
-      res = await appServer.call<ThreadResponse>("thread/resume", { threadId: resumeId, excludeTurns: true, ...shared });
-    } else {
-      res = await appServer.call<ThreadResponse>("thread/start", shared);
+    opening.add(this);
+    try {
+      if (resumeId && fork) {
+        res = await appServer.call<ThreadResponse>("thread/fork", { threadId: resumeId, excludeTurns: true, ...shared });
+      } else if (resumeId) {
+        res = await appServer.call<ThreadResponse>("thread/resume", { threadId: resumeId, excludeTurns: true, ...shared });
+      } else {
+        res = await appServer.call<ThreadResponse>("thread/start", shared);
+      }
+    } finally {
+      opening.delete(this);
+    }
+    // 等待期间会话已被丢弃（切了目录 / 开了新会话）：迟到的 thread 只做清理，绝不再开轮次
+    if (this.disposed) {
+      void appServer.call("thread/unsubscribe", { threadId: res.thread.id }).catch(() => {});
+      throw new DisposedError();
     }
     this.adopt(res.thread);
     return res.thread.id;
@@ -227,9 +256,13 @@ export class CodexSession implements AgentSession {
       : "";
     const text = note ? (input.text ? `${input.text}\n\n${note}` : note) : input.text;
     const images = input.attachments.filter((a) => a.kind === "image").map((a) => a.path);
+    if (this.disposed) return;
+    this.starting = true;
+    this.stopRequested = false;
     void this.open()
-      .then((threadId) =>
-        appServer.call("turn/start", {
+      .then((threadId) => {
+        if (this.disposed) throw new DisposedError();
+        return appServer.call<{ turn?: { id?: string } }>("turn/start", {
           threadId,
           input: [
             { type: "text", text, text_elements: [] },
@@ -239,9 +272,27 @@ export class CodexSession implements AgentSession {
           approvalPolicy: "on-request",
           ...(this.opts.model ? { model: this.opts.model } : {}),
           ...(this.opts.effort ? { effort: this.opts.effort } : {}),
-        }),
-      )
-      .catch((err) => this.events.onError(err));
+        });
+      })
+      .then((res) => {
+        // turn/start 的响应带着轮次 id（它只是「轮次已开始」，不是结果）
+        if (res?.turn?.id) this.onTurnId(res.turn.id);
+      })
+      .catch((err) => {
+        this.starting = false;
+        if (err instanceof DisposedError || this.disposed) return;
+        this.events.onError(err);
+      });
+  }
+
+  private onTurnId(id: string): void {
+    this.turnId = id;
+    this.starting = false;
+    if (this.stopRequested) {
+      this.stopRequested = false;
+      this.turnActive = true;
+      void this.interrupt();
+    }
   }
 
   /** 记下来，下一轮 turn/start 带上即可。 */
@@ -259,6 +310,11 @@ export class CodexSession implements AgentSession {
   }
 
   async interrupt(): Promise<void> {
+    if (this.starting && !this.turnId) {
+      // 轮次还没真正开始：记下来，拿到轮次 id 立刻中断
+      this.stopRequested = true;
+      return;
+    }
     if (!this.threadId || !this.turnId || !this.turnActive) return;
     try {
       await appServer.call("turn/interrupt", { threadId: this.threadId, turnId: this.turnId });
@@ -268,6 +324,7 @@ export class CodexSession implements AgentSession {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
     await this.interrupt();
     if (this.threadId) {
       byThread.delete(this.threadId);
@@ -384,12 +441,16 @@ export class CodexSession implements AgentSession {
     if (typeof turnId === "string") this.turnId = turnId;
 
     switch (method) {
-      case "turn/started":
+      case "turn/started": {
+        // 轮次 id 在 params.turn.id，不在顶层
+        const id = (params as { turn?: { id?: string } }).turn?.id;
         this.replyText = "";
         this.turnActive = true;
+        if (id) this.onTurnId(id);
         this.commentaryItems.clear();
         this.events.onTurnStart?.();
         return;
+      }
 
       case "item/started":
         this.onItem((params as ItemNotification).item, "started");

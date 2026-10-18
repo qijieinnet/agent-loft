@@ -22,10 +22,35 @@ function load(): string[] {
   return allowlist;
 }
 
+/**
+ * 能不能按「命令首词」放行。
+ *
+ * 只有不含任何 shell 组合语法的单条命令才行：否则批准过 `git status` 之后，
+ * `git status; rm -rf ~` 的首词也是 git，会被一并放行。包装类命令（sudo、env、
+ * bash -c、xargs…）的首词说明不了它真正要执行什么，同样不行。
+ */
+const SHELL_SYNTAX = /[;&|`<>\n\r\\]|\$[({]|\$[A-Za-z_]/;
+const WRAPPERS = new Set([
+  "sudo", "su", "doas", "env", "bash", "sh", "zsh", "fish", "dash", "ksh", "xargs", "find", "exec",
+  "eval", "source", ".", "timeout", "nohup", "nice", "ionice", "time", "watch", "command", "builtin",
+  "python", "python3", "node", "perl", "ruby", "php", "npx", "pnpx", "bunx", "ssh", "docker", "kubectl",
+  "awk", "sed", "git-shell", "script", "setsid", "stdbuf", "chroot", "busybox",
+]);
+
+function bashHead(command: string): string | null {
+  const trimmed = command.trim();
+  if (!trimmed || SHELL_SYNTAX.test(trimmed)) return null;
+  const head = trimmed.split(/\s+/)[0] ?? "";
+  if (!head || head.includes("=") || WRAPPERS.has(path.basename(head))) return null;
+  return head;
+}
+
 export function signatureOf(toolName: string, input: Record<string, unknown>): string {
   if (toolName === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
-    return `Bash:${command.trim().split(/\s+/)[0] ?? ""}`;
+    const head = bashHead(command);
+    // 复杂命令只记完整命令本身
+    return head ? `Bash:${head}` : `BashExact:${command.trim()}`;
   }
   if (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit") {
     const file = typeof input.file_path === "string" ? input.file_path : "";
@@ -35,6 +60,7 @@ export function signatureOf(toolName: string, input: Record<string, unknown>): s
 }
 
 export function isPreApproved(toolName: string, signature: string): boolean {
+  // 防绕过靠的是 signatureOf：复合命令拿到的是 BashExact 签名，命中不了 Bash:<首词>
   return isRememberable(toolName) && load().includes(signature);
 }
 
@@ -56,7 +82,9 @@ export function setAllowlist(next: string[]): void {
 
 /** 「总是允许」按钮上写清楚到底放行多宽。 */
 export function alwaysLabelOf(toolName: string, signature: string): string {
-  if (toolName === "Bash") return `总是允许 ${signature.slice(5) || "此命令"} 开头的命令`;
+  if (toolName === "Bash") {
+    return signature.startsWith("BashExact:") ? "总是允许这条完整命令" : `总是允许 ${signature.slice(5)} 开头的单条命令`;
+  }
   if (signature.includes(":")) return `总是允许在该目录下${toolName === "Write" ? "新建" : "修改"}`;
   return `总是允许 ${toolName}`;
 }

@@ -49,8 +49,12 @@ export type AppConfig = {
     port: number;
     /** scrypt 哈希，空 = 还没设密码（首次访问需要终端里打印的设置码） */
     passwordHash: string;
-    /** 在反向代理后面时信任 X-Forwarded-* 头 */
-    trustProxy: boolean;
+    /**
+     * 可信反向代理的 IP。只有从这些地址来的连接，才采信 X-Forwarded-* 头 ——
+     * 否则直连的人随手伪造一个 X-Forwarded-For 就能绕过登录限流。
+     * 反代（比如 Lucky）不在本机时，把它的 IP 加进来。
+     */
+    trustedProxies: string[];
   };
   feishu: {
     /** 长连接掉线多久就重建，0 关闭 */
@@ -77,7 +81,7 @@ export function defaultConfig(): AppConfig {
         defaultEffort: "",
       },
     },
-    web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustProxy: true },
+    web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"] },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },
   };
 }
@@ -192,13 +196,30 @@ export function onConfigChange(listener: (next: AppConfig, prev: AppConfig) => v
   return () => listeners.delete(listener);
 }
 
-/** 把用户给的目录限制在 workspaceRoot 之内，防止 /cd 跳到任意路径。 */
+function inside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * 把用户给的目录限制在 workspaceRoot 之内，防止 /cd 跳到任意路径。
+ *
+ * 必须比较真实路径：工作区里一个指向外面的符号链接，字符串上在里面，实际在外面。
+ * 目标还必须存在且是目录 —— 不存在的目录拉不起 agent。
+ */
 export function resolveWorkspacePath(input: string, base?: string): string | null {
   const root = config().workspaceRoot;
   const target = path.resolve(base ?? root, input);
-  const rel = path.relative(root, target);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
-  return target;
+  if (!inside(root, target)) return null;
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realTarget = fs.realpathSync(target);
+    if (!inside(realRoot, realTarget) || !fs.statSync(realTarget).isDirectory()) return null;
+    // 用工作区根目录的写法返回：根目录本身是符号链接时，存下来的路径仍然落在根目录之内
+    return path.join(root, path.relative(realRoot, realTarget));
+  } catch {
+    return null;
+  }
 }
 
 export function isInsideWorkspace(dir: string): boolean {

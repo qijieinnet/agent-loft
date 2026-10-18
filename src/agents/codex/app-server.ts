@@ -60,6 +60,14 @@ export class AppServer {
     return () => this.notificationHandlers.delete(handler);
   }
 
+  /** 进程一退出就通知（不等重连成功）：在途的轮次得立刻收尾，不能一直显示忙 */
+  private readonly exitHandlers = new Set<(reason: string) => void>();
+
+  onExit(handler: (reason: string) => void): () => void {
+    this.exitHandlers.add(handler);
+    return () => this.exitHandlers.delete(handler);
+  }
+
   onRestart(handler: RestartHandler): () => void {
     this.restartHandlers.add(handler);
     return () => this.restartHandlers.delete(handler);
@@ -212,6 +220,13 @@ export class AppServer {
     this.child = null;
     this.ready = null;
     this.failAllPending(new Error(why));
+    for (const handler of this.exitHandlers) {
+      try {
+        handler(why);
+      } catch (err) {
+        console.error("[codex] 退出回调出错:", err);
+      }
+    }
 
     if (this.stopping) return;
 

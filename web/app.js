@@ -164,7 +164,12 @@ const WS = {
   connected: false,
   pingTimer: null,
 
+  stopped: false,
+  epoch: null,
+  hellos: 0,
+
   connect() {
+    if (this.stopped) return;
     if (this.sock && (this.sock.readyState === 0 || this.sock.readyState === 1)) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const sock = new WebSocket(`${proto}://${location.host}/ws`);
@@ -173,16 +178,34 @@ const WS = {
       this.connected = true;
       this.backoff = 500;
       setConnBanner(null);
-      if (S.current) this.subscribe(S.current, S.seq.get(S.current) ?? 0);
       clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => this.raw({ t: "ping" }), 25000);
     };
     sock.onmessage = (e) => onWsMessage(JSON.parse(e.data));
-    sock.onclose = () => {
+    sock.onclose = async (e) => {
       this.connected = false;
       clearInterval(this.pingTimer);
       for (const w of this.waiters.values()) w.reject(new Error("连接已断开"));
       this.waiters.clear();
+      if (this.sock !== sock) return;
+      // 登录已失效（改了密码、被踢下线）：回登录页，不再重连
+      if (e.code === 4401) {
+        this.stopped = true;
+        showAuth();
+        return;
+      }
+      if (this.stopped) return;
+      // 握手被拒（401）在浏览器里只表现为 1006：问一下是不是登录态没了
+      try {
+        const me = await (await fetch("/api/me", { credentials: "same-origin" })).json();
+        if (!me.authed) {
+          this.stopped = true;
+          showAuth();
+          return;
+        }
+      } catch {
+        // 网络不通，照常重连
+      }
       if (document.visibilityState === "visible") setConnBanner("连接已断开，正在重连…");
       setTimeout(() => this.connect(), this.backoff);
       this.backoff = Math.min(this.backoff * 2, 10000);
@@ -209,7 +232,7 @@ const WS = {
   },
 
   subscribe(key, since) {
-    this.raw({ t: "sub", key, since });
+    this.raw({ t: "sub", key, since, epoch: this.epoch });
   },
 };
 
@@ -221,8 +244,43 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+/** 重连后：以服务器上的会话列表和待处理授权为准，清掉本地已失效的 */
+async function resync() {
+  try {
+    const data = await api("/api/bootstrap");
+    S.convs = new Map(data.conversations.map((c) => [c.key, c]));
+    const live = new Set(data.pending.map((i) => i.id));
+    for (const ix of S.pending.values()) {
+      if (!ix.settled && !live.has(ix.id)) markGone(ix);
+    }
+    for (const ix of data.pending) upsertInteraction(ix);
+    renderSidebar();
+  } catch {
+    // 下次重连再说
+  }
+}
+
+/** 本地以为还挂着、服务器上已经没了的授权：断线期间在别处处理掉了，或者服务重启过 */
+function markGone(ix) {
+  upsertInteraction({ ...ix, settled: { settlement: "gone", by: "已在别处处理或已失效", at: Date.now() } });
+}
+
 function onWsMessage(msg) {
   switch (msg.t) {
+    case "hello": {
+      const restarted = WS.epoch && WS.epoch !== msg.epoch;
+      WS.epoch = msg.epoch;
+      WS.hellos += 1;
+      if (restarted) {
+        // 服务重启过：seq 从头计数了，旧游标全部作废，当前会话整页重拉
+        S.seq.clear();
+        if (S.current) void openConversation(S.current);
+      } else if (S.current) {
+        WS.subscribe(S.current, S.seq.get(S.current) ?? 0);
+      }
+      if (WS.hellos > 1 || restarted) void resync();
+      return;
+    }
     case "ack": {
       const w = WS.waiters.get(msg.rid);
       if (!w) return;
@@ -241,6 +299,12 @@ function onWsMessage(msg) {
         return;
       }
       for (const env of msg.events) applyEvent(env);
+      {
+        const live = new Set(msg.pending.map((i) => i.id));
+        for (const ix of S.pending.values()) {
+          if (ix.convKey === msg.key && !ix.settled && !live.has(ix.id)) markGone(ix);
+        }
+      }
       for (const ix of msg.pending) upsertInteraction(ix);
       setBusy(msg.busy);
       return;
@@ -269,6 +333,7 @@ function setConnBanner(text) {
 // ---------- 登录 ----------
 
 async function showAuth() {
+  WS.stopped = true;
   WS.sock?.close();
   let me = { needsSetup: false };
   try {
@@ -315,6 +380,9 @@ async function showAuth() {
 async function boot() {
   const me = await api("/api/me");
   if (!me.authed) return showAuth();
+  WS.stopped = false;
+  WS.epoch = null;
+  WS.hellos = 0;
   const data = await api("/api/bootstrap");
   S.agents = data.agents;
   S.bots = data.bots;
@@ -876,6 +944,7 @@ const SETTLE_LABEL = {
   cancelled: "已取消",
   answered: "已回答",
   skipped: "已跳过",
+  gone: "已处理",
 };
 
 function renderInteraction(item) {

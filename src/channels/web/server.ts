@@ -14,7 +14,9 @@ import { interactions, type Interaction } from "../../core/interactions.js";
 import { getConversation } from "../../core/store.js";
 import type { Settlement } from "../../core/types.js";
 import { authed, handleApi, takeUploads } from "./api.js";
-import { ensureSetupToken } from "./auth.js";
+import { authEvents, ensureSetupToken, validateSession } from "./auth.js";
+import { cookies } from "./http.js";
+import { COOKIE } from "./api.js";
 import { HttpError, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 
 const require = createRequire(import.meta.url);
@@ -83,7 +85,19 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: U
     }
     return;
   }
-  let rel = decodeURIComponent(url.pathname);
+  let rel: string;
+  try {
+    rel = decodeURIComponent(url.pathname);
+  } catch {
+    res.writeHead(400, SECURITY_HEADERS);
+    res.end("bad request");
+    return;
+  }
+  if (rel.includes("\0")) {
+    res.writeHead(400, SECURITY_HEADERS);
+    res.end("bad request");
+    return;
+  }
   if (rel === "/" || !path.extname(rel)) rel = "/index.html"; // 单页应用
   const file = path.resolve(webRoot, `.${rel}`);
   if (!file.startsWith(webRoot + path.sep)) {
@@ -98,7 +112,18 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: U
 
 // ---------- WebSocket ----------
 
-type Client = { ws: WebSocket; subs: Set<string>; alive: boolean };
+type Client = { ws: WebSocket; subs: Set<string>; alive: boolean; token: string };
+
+/** 每次进程启动换一个：客户端发现变了，就知道 seq 已经从头计数，得整页重拉 */
+const EPOCH = Math.random().toString(36).slice(2, 10);
+
+/** 登录态已失效的连接：断开。客户端收到 4401 会回到登录页 */
+function checkClient(client: Client): boolean {
+  if (validateSession(client.token)) return true;
+  client.ws.close(4401, "登录已失效");
+  clients.delete(client);
+  return false;
+}
 const clients = new Set<Client>();
 
 function send(client: Client, msg: unknown): void {
@@ -109,7 +134,7 @@ function broadcastEvent(env: EventEnvelope): void {
   // 侧边栏需要知道哪条会话有动静；正文只推给订阅了的
   const listChanged = ["user", "meta", "state", "result", "error"].includes(env.ev.type);
   const info = listChanged ? hub.info(env.key) : undefined;
-  for (const client of clients) {
+  for (const client of [...clients]) {
     if (client.subs.has(env.key)) send(client, { t: "ev", ...env });
     if (info) send(client, { t: "conv", info });
   }
@@ -122,9 +147,13 @@ function broadcastInteraction(i: Interaction): void {
 const BY = "已在 Web 处理";
 
 function handleClientMessage(client: Client, raw: string): void {
+  // 每条消息都复查登录态：握手时有效不代表现在还有效（改了密码、被踢了）
+  if (!checkClient(client)) return;
   let msg: Record<string, unknown>;
   try {
-    msg = JSON.parse(raw) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+    msg = parsed as Record<string, unknown>;
   } catch {
     return;
   }
@@ -142,10 +171,14 @@ function handleClientMessage(client: Client, raw: string): void {
         if (!getConversation(key)) return ack(false, { error: "会话不存在" });
         client.subs.add(key);
         const since = typeof msg.since === "number" ? msg.since : 0;
+        // 客户端的 seq 来自上一个进程（比现在的还大），或者换了实例：补不了，整页重拉
+        const staleEpoch = typeof msg.epoch === "string" && msg.epoch !== EPOCH;
         // since=0：刚打开，历史由 REST 拉，这里只补正在进行的那一轮
-        const events = since > 0 ? hub.eventsSince(key, since) : hub.liveTurn(key);
+        const events =
+          staleEpoch || since > hub.currentSeq() ? null : since > 0 ? hub.eventsSince(key, since) : hub.liveTurn(key);
         send(client, {
           t: "replay",
+          epoch: EPOCH,
           key,
           reset: events === null,
           events: events ?? [],
@@ -215,9 +248,22 @@ export async function startWeb(): Promise<void> {
   const { host, port } = config().web;
 
   server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://local");
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://local");
+    } catch {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
     if (!url.pathname.startsWith("/api/")) {
-      serveStatic(req, res, url);
+      try {
+        serveStatic(req, res, url);
+      } catch (err) {
+        console.error("[web] 静态文件出错:", err);
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      }
       return;
     }
     if (req.method !== "GET" && !sameOrigin(req)) {
@@ -235,26 +281,40 @@ export async function startWeb(): Promise<void> {
 
   wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", "http://local");
-    if (url.pathname !== "/ws" || !sameOrigin(req) || !authed(req)) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    try {
+      const url = new URL(req.url ?? "/", "http://local");
+      if (url.pathname !== "/ws" || !sameOrigin(req) || !authed(req)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      const token = cookies(req)[COOKIE] ?? "";
+      wss!.handleUpgrade(req, socket, head, (ws) => {
+        const client: Client = { ws, subs: new Set(), alive: true, token };
+        clients.add(client);
+        ws.on("pong", () => (client.alive = true));
+        ws.on("message", (data) => {
+          try {
+            handleClientMessage(client, data.toString());
+          } catch (err) {
+            console.error("[web] 处理 WebSocket 消息出错:", err);
+          }
+        });
+        ws.on("close", () => clients.delete(client));
+        ws.on("error", () => clients.delete(client));
+        send(client, { t: "hello", seq: hub.currentSeq(), epoch: EPOCH });
+      });
+    } catch (err) {
+      console.error("[web] WebSocket 握手出错:", err);
       socket.destroy();
-      return;
     }
-    wss!.handleUpgrade(req, socket, head, (ws) => {
-      const client: Client = { ws, subs: new Set(), alive: true };
-      clients.add(client);
-      ws.on("pong", () => (client.alive = true));
-      ws.on("message", (data) => handleClientMessage(client, data.toString()));
-      ws.on("close", () => clients.delete(client));
-      ws.on("error", () => clients.delete(client));
-      send(client, { t: "hello", seq: hub.currentSeq() });
-    });
   });
+  authEvents.on("revoked", onRevoked);
 
   // 反代 / 手机网络会悄悄掐掉空闲连接，定期 ping 一下把死连接清掉
   heartbeat = setInterval(() => {
-    for (const client of clients) {
+    for (const client of [...clients]) {
+      if (!checkClient(client)) continue;
       if (!client.alive) {
         client.ws.terminate();
         clients.delete(client);
@@ -284,7 +344,12 @@ export async function startWeb(): Promise<void> {
   }
 }
 
+function onRevoked(): void {
+  for (const client of [...clients]) checkClient(client);
+}
+
 export async function stopWeb(): Promise<void> {
+  authEvents.off("revoked", onRevoked);
   hub.off("event", broadcastEvent);
   interactions.off("created", broadcastInteraction);
   interactions.off("updated", broadcastInteraction);

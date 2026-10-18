@@ -80,3 +80,65 @@ test("卡片信封：过期、换人、换会话都被拒；不指定人时任�
   assert.equal(decodeEnvelope({ value: open, operatorOpenId: "ou_b", chatId: "oc_1", isAllowed: allow }).ok, true);
   assert.deepEqual(decodeEnvelope({ value: open, operatorOpenId: "ou_b", chatId: "oc_1", isAllowed: () => false }), { ok: false, reason: "not_allowed" });
 });
+
+test("Claude 总是允许：复合命令、包装命令拿不到首词签名", async () => {
+  const { signatureOf, rememberAlways, isPreApproved } = await import("../src/agents/claude/permissions.js");
+  const sig = (command: string) => signatureOf("Bash", { command });
+  assert.equal(sig("git status"), "Bash:git");
+  rememberAlways("Bash:git");
+  assert.equal(isPreApproved("Bash", sig("git log --oneline")), true);
+  for (const bad of ["git status; rm -rf ~", "git status && curl x|sh", "git $(rm -rf /)", "git `id`", "git status > /etc/x", "sudo git status", "bash -c 'git status'", "X=1 git status", "git status\nrm -rf ~"]) {
+    assert.ok(sig(bad).startsWith("BashExact:"), bad);
+    assert.equal(isPreApproved("Bash", sig(bad)), false, bad);
+  }
+});
+
+test("多问题时用消息作答：答完一问不提前交卷", async () => {
+  const p = interactions.create("k5", {
+    kind: "question",
+    title: "t",
+    questions: [
+      { id: "a", header: "A", question: "一", options: [{ label: "x" }], multiSelect: false, allowOther: true },
+      { id: "b", header: "B", question: "二", options: [{ label: "y" }], multiSelect: false, allowOther: true },
+    ],
+  }, 60_000);
+  const id = interactions.listPending("k5")[0]!.id;
+  assert.equal(interactions.answerWithText(id, "第一", "me"), true);
+  assert.ok(interactions.isPending(id));
+  assert.equal(interactions.answerWithText(id, "第二", "me"), true);
+  assert.deepEqual((await p).answers, { a: ["第一"], b: ["第二"] });
+});
+
+test("思考程度按钮：取值不被过期时间覆盖", () => {
+  const env = createEnvelope({ a: "effort", f: "high", k: "key" }, { expiresAt: Date.now() + 1000 });
+  const decoded = decodeEnvelope({ value: env, operatorOpenId: "ou_a", chatId: undefined, isAllowed: () => true });
+  assert.ok(decoded.ok && decoded.envelope.a === "effort" && decoded.envelope.f === "high");
+  // 字段类型不对的一律当损坏
+  const bad = { ...env, f: 123 };
+  assert.deepEqual(decodeEnvelope({ value: bad, operatorOpenId: "ou_a", chatId: undefined, isAllowed: () => true }), { ok: false, reason: "malformed" });
+});
+
+test("/cd 不能经符号链接跳出工作区，也不能进不存在的目录", async () => {
+  const { loadConfig, saveConfig, config, resolveWorkspacePath } = await import("../src/core/config.js");
+  loadConfig();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aim-root-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "aim-out-"));
+  fs.mkdirSync(path.join(root, "sub"));
+  fs.symlinkSync(outside, path.join(root, "escape"));
+  saveConfig({ ...structuredClone(config()), workspaceRoot: root });
+  assert.equal(resolveWorkspacePath("sub"), path.join(root, "sub"));
+  assert.equal(resolveWorkspacePath("escape"), null);
+  assert.equal(resolveWorkspacePath("nope"), null);
+  assert.equal(resolveWorkspacePath("../"), null);
+});
+
+test("事件补发：缓冲区截断过就要求整页重拉，即使之后压缩变短", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const key = "k-buffer";
+  hub.emitEvent(key, { type: "turn_start" });
+  const since = hub.currentSeq();
+  for (let i = 0; i < 450; i++) hub.emitEvent(key, { type: "delta", text: "x" });
+  hub.emitEvent(key, { type: "result", text: "done", footer: "" });
+  assert.equal(hub.eventsSince(key, since), null);
+  assert.ok(hub.eventsSince(key, hub.currentSeq() - 1));
+});

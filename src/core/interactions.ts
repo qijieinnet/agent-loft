@@ -145,9 +145,18 @@ class InteractionCenter extends EventEmitter<InteractionEvents> {
     const entry = this.pending.get(id);
     if (!entry || entry.spec.kind !== "question") return false;
     const index = entry.selections.findIndex((picked, i) => picked.length === 0 && !entry.freeText[i]);
-    if (index >= 0) entry.freeText[index] = text;
+    if (index < 0) {
+      // 都答过了（多选还没点提交）：这条消息不是作答，交给会话照常处理
+      return false;
+    }
+    entry.freeText[index] = text;
+    // 还有没答的问题：留着让人继续答（下一条消息或点按钮），不能提前交卷
+    if (unansweredCount(entry) > 0) {
+      this.emit("updated", publicView(entry));
+      return true;
+    }
     this.settle(id, "answered", by);
-    return index >= 0;
+    return true;
   }
 
   /** 这条会话里挂着的提问（正常同时只会有一个）。 */
