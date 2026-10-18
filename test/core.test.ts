@@ -282,3 +282,54 @@ test("Web 上传：同名文件每次存到不同路径，重置后旧 id 撞不
   assert.equal(fs.existsSync(a.path), false);
   assert.equal(fs.readFileSync(b.path, "utf8"), "B");
 });
+
+test("/fork 只记意图并落盘：切走再切回、或重建会话，下一条消息仍然分叉", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { getConversation } = await import("../src/core/store.js");
+  const created: { resumeId?: string; fork?: boolean }[] = [];
+  const fake = (id: string) => ({
+    id,
+    label: id,
+    capabilities: { effort: false, fork: true, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (opts: { resumeId?: string; fork?: boolean }, events: { onSessionId: (s: string) => void }) => {
+      created.push({ resumeId: opts.resumeId, fork: opts.fork });
+      return {
+        sessionId: undefined,
+        send: () => events.onSessionId(opts.fork ? `${id}-forked` : `${id}-orig`),
+        interrupt: async () => {},
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: async () => {},
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  hub.registerDriver(fake("claude") as never);
+  hub.registerDriver(fake("codex") as never);
+  const key = "web:forktest";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const origin = { channel: "web", channelId: "web" };
+  hub.send(key, { text: "1", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "claude-orig");
+  await hub.fork(key);
+  assert.equal(getConversation(key)!.perAgent.claude!.forkFrom, "claude-orig");
+  // 切到 codex 再切回 claude，然后才说话
+  await hub.setAgent(key, "codex", ["claude", "codex"]);
+  await hub.setAgent(key, "claude", ["claude", "codex"]);
+  created.length = 0;
+  hub.send(key, { text: "2", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(created[0], { resumeId: "claude-orig", fork: true });
+  const b = getConversation(key)!.perAgent.claude!;
+  assert.equal(b.sessionId, "claude-forked");
+  assert.equal(b.forkFrom, undefined);
+});

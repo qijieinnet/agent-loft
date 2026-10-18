@@ -311,7 +311,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     ];
     const model = binding.model || agentDefaults?.defaultModel || undefined;
     const effort = binding.effort || agentDefaults?.defaultEffort || undefined;
-    const resumeId = opts.resumeId ?? (opts.fork ? undefined : binding.sessionId);
+    // 有待分叉的记录：从它分叉（见 AgentBinding.forkFrom）
+    const pendingFork = !opts.resumeId && binding.forkFrom ? binding.forkFrom : undefined;
+    const resumeId = opts.resumeId ?? pendingFork ?? (opts.fork ? undefined : binding.sessionId);
+    const fork = opts.fork || !!pendingFork;
     const agent = conv.agent;
     // 被丢弃的旧会话晚到的事件（dispose 时的中断错误等）不该再出现在这条会话里
     const holder: { session?: AgentSession } = {};
@@ -324,7 +327,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
         ...(resumeId ? { resumeId } : {}),
-        ...(opts.fork ? { fork: true } : {}),
+        ...(fork ? { fork: true } : {}),
       },
       {
         onTurnStart: () => alive() && this.emitEvent(key, { type: "turn_start" }),
@@ -364,7 +367,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         onSessionId: (sessionId) => {
           // 切走之后旧会话晚到的回调不该覆盖新绑定
           if (!alive()) return;
-          updateAgentBinding(key, agent, { sessionId });
+          const current = getConversation(key);
+          const forkFrom = current ? agentBinding(current, agent).forkFrom : undefined;
+          // 分叉中还报的是原会话 id：分叉尚未生效，什么都不改
+          if (forkFrom && sessionId === forkFrom) return;
+          updateAgentBinding(key, agent, { sessionId, forkFrom: undefined });
           this.emitEvent(key, { type: "meta" });
         },
       },
@@ -471,10 +478,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   /** 闲置太久：不再续用上次的会话（活着的也丢掉），开新的 */
   private async expireNow(key: string): Promise<void> {
     const conv = getConversation(key);
-    if (!conv || !agentBinding(conv).sessionId) return;
+    if (!conv || !(agentBinding(conv).sessionId || agentBinding(conv).forkFrom)) return;
     console.log(`[会话] ${key} 闲置超过 ${config().sessionTtlMs / 3600000} 小时，开新会话`);
     await this.drop(key, "会话已闲置过期");
-    updateAgentBinding(key, conv.agent, { sessionId: undefined, model: undefined, effort: undefined });
+    updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: undefined, effort: undefined });
     // 不清上传目录：本次和排在后面的消息可能都带着刚上传的附件。
     // 旧附件留到 /new 或下次启动的清扫时再删。
     this.emitEvent(key, { type: "notice", text: "上次的会话闲置太久，已自动开新会话。" });
@@ -529,7 +536,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private async newSessionNow(key: string, model?: string): Promise<string> {
     const conv = getConversation(key)!;
     await this.drop(key, "已开新会话");
-    updateAgentBinding(key, conv.agent, { sessionId: undefined, model: model || undefined, effort: undefined });
+    updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
     clearUploads(key);
     this.emitEvent(key, { type: "meta" });
     const runtime = await this.runtimeNow(key);
@@ -540,10 +547,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   private async forkNow(key: string): Promise<string> {
     const conv = getConversation(key)!;
-    const current = agentBinding(conv).sessionId;
+    const binding = agentBinding(conv);
+    const current = binding.forkFrom ?? binding.sessionId;
     if (!current) return "当前还没有可分叉的会话。";
     await this.drop(key, "已分叉会话");
-    this.session(key, { resumeId: current, fork: true });
+    // 只记下意图，下一条消息时才真正分叉（见 session() 里的 pendingFork）
+    updateAgentBinding(key, conv.agent, { forkFrom: current });
+    this.emitEvent(key, { type: "meta" });
     return "已分叉，原会话保留。下一条消息起在分叉出来的新会话里继续。";
   }
 
@@ -555,7 +565,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     }
     await this.drop(key, "会话已切换");
     if (sessionId !== agentBinding(conv).sessionId) clearUploads(key);
-    updateAgentBinding(key, conv.agent, { sessionId });
+    updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
     this.session(key, { resumeId: sessionId });
     this.emitEvent(key, { type: "meta" });
     const note =
@@ -649,7 +659,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     await this.drop(key, "工作目录已切换");
     // 会话记录是按目录存的，换目录后旧会话 resume 不回来，干脆都清掉
     const perAgent = Object.fromEntries(
-      Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined }]),
+      Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
     );
     updateConversation(key, { cwd: resolved, cwdExplicit: true, perAgent });
     clearUploads(key);

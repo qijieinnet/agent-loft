@@ -13,6 +13,12 @@ export type AgentBinding = {
   /** 用户显式选的模型，开新会话清掉 */
   model?: string;
   effort?: string;
+  /**
+   * 待分叉：/fork 之后、新会话真正建立之前，记着要从哪个会话分叉。
+   * 必须落盘：期间切了 agent、或者 agent-im 重启了，下一条消息仍要分叉，而不是续写原会话。
+   * 拿到不同于它的新会话 id 后清掉。
+   */
+  forkFrom?: string;
 };
 
 export type Conversation = {
@@ -78,7 +84,10 @@ function reconcileCwd(conv: Conversation): Conversation {
   conv.cwd = root;
   conv.cwdExplicit = false;
   // 目录变了，旧会话的上下文已经没意义
-  for (const binding of Object.values(conv.perAgent)) delete binding.sessionId;
+  for (const binding of Object.values(conv.perAgent)) {
+    delete binding.sessionId;
+    delete binding.forkFrom;
+  }
   persist();
   return conv;
 }

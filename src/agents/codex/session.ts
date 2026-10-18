@@ -64,6 +64,19 @@ appServer.onExit((reason) => {
 /** 还在 thread/start 途中、尚未登记到 byThread 的会话 */
 const opening = new Set<CodexSession>();
 
+/** 配置里的沙箱模式 → turn/start 的 sandboxPolicy */
+function sandboxPolicyFor(mode: string, cwd: string): unknown {
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (mode === "read-only") return { type: "readOnly", networkAccess: false };
+  return {
+    type: "workspaceWrite",
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
+}
+
 // ---------- 审批正文 ----------
 
 function describeCommand(params: CommandExecutionApprovalParams): string {
@@ -372,6 +385,9 @@ export class CodexSession implements AgentSession {
           ],
           cwd: this.opts.cwd,
           approvalPolicy: "on-request",
+          // 每一轮都按当前配置显式给沙箱：thread 是开着复用的，只在 thread/start 时给的话，
+          // 设置里收紧了沙箱（比如改成只读），已有会话还会按旧权限干活
+          sandboxPolicy: sandboxPolicyFor(config().agents.codex.sandbox, this.opts.cwd),
           ...(this.opts.model ? { model: this.opts.model } : {}),
           ...(this.opts.effort ? { effort: this.opts.effort } : {}),
         });
