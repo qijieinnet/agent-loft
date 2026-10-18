@@ -165,7 +165,8 @@ export class CodexSession implements AgentSession {
   private runtime: RuntimeInfo = {};
   private replyText = "";
   private lastTokens: number | undefined;
-  private everOpened = false;
+  /** 分叉已经真正完成（拿到并接管了新 thread）。失败了不算，重试还要接着分叉 */
+  private forked = false;
   /** agentMessage 的 itemId → 是不是旁白（commentary 属于过程，不流式到正文里） */
   private commentaryItems = new Set<string>();
   private disposed = false;
@@ -267,14 +268,13 @@ export class CodexSession implements AgentSession {
       ...(this.opts.model ? { model: this.opts.model } : {}),
     };
     const resumeId = this.threadId ?? this.opts.resumeId;
-    const fork = this.opts.fork && !this.everOpened;
+    const fork = this.opts.fork && !this.forked;
     // 这个 thread 正在别的会话里跑：不接管。接管后它的后续输出和审批请求都按 threadId
     // 路由，会串到这边来；等它跑完再恢复。（fork 出来的是新 thread，不受影响）
     const owner = resumeId && !fork ? byThread.get(resumeId) : undefined;
     if (owner && owner !== this && owner.busy) {
       throw new Error("这条 Codex 会话正在另一个聊天里运行，等那边这一轮结束后再试。");
     }
-    this.everOpened = true;
 
     let res: ThreadResponse;
     opening.add(this);
@@ -298,6 +298,8 @@ export class CodexSession implements AgentSession {
       throw new DisposedError();
     }
     this.adopt(res.thread);
+    // 到这里分叉才算完成；之前任何一步失败，下次重试都还会走 thread/fork，绝不会续写原会话
+    if (fork) this.forked = true;
     return res.thread.id;
   }
 

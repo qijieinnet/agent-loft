@@ -274,3 +274,35 @@ test("已丢弃会话的迟到 resume：thread 被别人持有时不退订", asy
   await tick();
   assert.equal(calls.some((c) => c.method === "thread/unsubscribe" && c.params.threadId === ta.threadId), false);
 });
+
+test("分叉失败后重试仍然分叉，不会续写原会话", async () => {
+  calls.length = 0;
+  const { CodexSession: Session } = await import("../src/agents/codex/session.js");
+  const log: string[] = [];
+  const s = new Session(
+    { cwd: "/tmp", uploadsDir: "/tmp", resumeId: "orig", fork: true },
+    { onStep: () => {}, onTextDelta: () => {}, onText: () => {}, onResult: () => {}, onError: (e) => log.push(String(e)), onSessionId: () => {} },
+    async () => ({ settlement: "deny", answers: {} }),
+  );
+  s.send({ text: "1", attachments: [] });
+  await tick();
+  take("thread/fork").reject(new Error("超时"));
+  await tick();
+  assert.equal(log.length, 1);
+  s.send({ text: "2", attachments: [] });
+  await tick();
+  assert.equal(calls.some((c) => c.method === "thread/resume"), false);
+  const retry = take("thread/fork");
+  assert.equal(retry.params.threadId, "orig");
+  retry.resolve({ thread: { id: "forked" } });
+  await tick();
+  take("turn/start").resolve({ turn: { id: "t" } });
+  await tick();
+  notify("turn/completed", { threadId: "forked", turn: { id: "t", status: "completed" } });
+  await tick();
+  // 分叉成功之后再说话：接着分叉出来的新 thread，不再分叉
+  s.send({ text: "3", attachments: [] });
+  await tick();
+  assert.equal(calls.some((c) => c.method === "thread/fork"), false);
+  assert.equal(take("turn/start").params.threadId, "forked");
+});

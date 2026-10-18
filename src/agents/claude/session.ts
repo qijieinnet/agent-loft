@@ -110,7 +110,11 @@ export class ClaudeSession implements AgentSession {
   private q: Query | null = null;
   private pump: Promise<void> | null = null;
   private currentId: string | undefined;
-  private everStarted = false;
+  /**
+   * 分叉已经真正生效（CLI 报出了一个不同于原会话的新 session id）。
+   * 在那之前 CLI 起不来、半路退出，重试都还要带 forkSession，绝不能续写原会话。
+   */
+  private forked = false;
   private runtime: RuntimeInfo = {};
   private disposed = false;
   /**
@@ -135,10 +139,9 @@ export class ClaudeSession implements AgentSession {
   private start(): void {
     if (this.q || this.disposed) return;
     // 重启时要接着最新的会话，而不是构造时那个 —— 否则中途崩一次，之后都被倒回去
-    const resume = this.currentId ?? this.opts.resumeId;
+    const resume = this.opts.fork && !this.forked ? this.opts.resumeId : (this.currentId ?? this.opts.resumeId);
     // fork 只在第一次生效：重启再 fork 一次就又分叉一条
-    const fork = this.opts.fork && !this.everStarted;
-    this.everStarted = true;
+    const fork = this.opts.fork && !this.forked;
 
     // 每个 query 一条自己的输入队列：CLI 崩溃后重新拉起时，旧 query 的输入循环可能还挂在
     // 旧队列上等着；继续共用的话，下一条消息会被那个已经没人处理的旧循环吞掉。
@@ -185,6 +188,8 @@ export class ClaudeSession implements AgentSession {
   private handle(message: SDKMessage): void {
     if ("session_id" in message && typeof message.session_id === "string" && message.session_id) {
       if (message.session_id !== this.currentId) {
+        // 分叉时 CLI 报出的新 id 和原会话不同，这才算分叉成功
+        if (this.opts.fork && message.session_id !== this.opts.resumeId) this.forked = true;
         this.currentId = message.session_id;
         this.events.onSessionId(message.session_id);
       }
