@@ -636,3 +636,85 @@ test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消�
   assert.equal(sent.at(-1), "target:继续");
   assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "target");
 });
+
+test("操作序号边界：无效操作的占位、同一次切换都不会给旧消息留出越过新切换的余量", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { config } = await import("../src/core/config.js");
+  let exists = false;
+  const sent: string[] = [];
+  let gate!: () => void;
+  let blocker = Promise.resolve();
+  hub.registerDriver({
+    id: "claude",
+    label: "S",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: () => ({
+      sessionId: undefined,
+      send: (input) => sent.push(input.text),
+      interrupt: async () => {},
+      setModel: async () => {},
+      describeRuntime: async () => ({}),
+      dispose: async () => {},
+    }),
+    listSessions: async () => [],
+    sessionExists: async () => {
+      await blocker;
+      return exists;
+    },
+    readHistory: async () => [],
+    listModels: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
+  });
+  const key = "feishu:b:seq";
+  hub.ensure({ key, channel: "feishu", channelId: "b", defaultAgent: "claude" });
+  const origin = { channel: "feishu", channelId: "b" };
+  hub.send(key, { text: "建立", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+
+  // 场景一：/resume 不存在的 id 正在查询时收到附件消息；查询失败后用户 /cd B；附件下载完 → 必须作废
+  blocker = new Promise<void>((r) => (gate = r));
+  const bad = hub.resume(key, "missing");
+  const g1 = hub.generation(key);
+  gate();
+  await bad;
+  const dir = fs.mkdtempSync(path.join(config().workspaceRoot, "b-"));
+  await hub.cd(key, path.basename(dir));
+  sent.length = 0;
+  hub.send(key, { text: "旧指令1", attachments: [] }, origin, g1);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, []);
+
+  // 场景二：/new 生效后还在收尾时收到消息；之后用户 /cd C；下载完 → 必须作废
+  const pendingNew = hub.newSession(key);
+  await Promise.resolve();
+  const g2 = hub.generation(key);
+  await pendingNew;
+  const dir2 = fs.mkdtempSync(path.join(config().workspaceRoot, "c-"));
+  await hub.cd(key, path.basename(dir2));
+  hub.send(key, { text: "旧指令2", attachments: [] }, origin, g2);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, []);
+
+  // 无效操作执行期间打字作答：操作结束后仍当作答案，不会变成下一轮输入
+  hub.send(key, { text: "建立进程", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  sent.length = 0;
+  const q = interactions.create(key, {
+    kind: "question",
+    title: "t",
+    questions: [{ id: "q", header: "Q", question: "?", options: [{ label: "a" }], multiSelect: false, allowOther: true }],
+  }, 60_000, hub.liveSessionId(key));
+  blocker = new Promise<void>((r) => (gate = r));
+  const bad2 = hub.resume(key, "missing");
+  hub.send(key, { text: "我的答案", attachments: [] }, origin);
+  gate();
+  await bad2;
+  assert.deepEqual((await q).answers, { q: ["我的答案"] });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, []);
+  exists = true;
+});
