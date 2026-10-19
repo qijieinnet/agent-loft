@@ -7,6 +7,8 @@ import {
   getSessionMessages,
   listSessions,
 } from "@anthropic-ai/claude-agent-sdk";
+import os from "node:os";
+import type { AgentCommand } from "../../core/command-catalog.js";
 import { config } from "../../core/config.js";
 import type {
   AgentDriver,
@@ -19,8 +21,43 @@ import type {
   SessionOptions,
   SessionSummary,
 } from "../../core/types.js";
+import { describeUsage, readUsage } from "./account.js";
+import { cachedProbe, withProbe } from "./probe.js";
 import { diagnose } from "./errors.js";
-import { ClaudeSession, describeToolUse, summarize } from "./session.js";
+import { ClaudeSession, describeToolUse, summarize, toModelInfo } from "./session.js";
+
+/** 模型列表几乎不变，缓存 10 分钟；读失败抛给设置页，让它退回手填 */
+const readCatalog = cachedProbe(10 * 60_000, "模型列表", () => withProbe(async (q) => toModelInfo(await q.supportedModels())));
+
+/**
+ * 斜杠命令（skills、/compact 这些）。项目目录里可能有自己的命令，所以按 cwd 分开缓存；
+ * 装了新 skill 最多 5 分钟后出现。读不到就只显示 im-agent 自己的命令。
+ */
+const commandReaders = new Map<string, () => Promise<AgentCommand[]>>();
+function readCommands(cwd: string): Promise<AgentCommand[]> {
+  let reader = commandReaders.get(cwd);
+  if (!reader) {
+    // 目录数量一般很少；万一很多，丢掉最早的，别无限涨
+    if (commandReaders.size >= 50) commandReaders.delete(commandReaders.keys().next().value!);
+    reader = cachedProbe(
+      5 * 60_000,
+      "Claude 命令列表",
+      () =>
+        withProbe(
+          async (q) =>
+            (await q.supportedCommands()).map((c) => ({
+              name: c.name,
+              description: c.description,
+              ...(c.argumentHint ? { args: c.argumentHint } : {}),
+            })),
+          cwd,
+        ),
+      [] as AgentCommand[],
+    );
+    commandReaders.set(cwd, reader);
+  }
+  return reader();
+}
 
 /** sessionId 会被拼进路径，先验形，防 /resume ../../x 越界 */
 const SESSION_ID = /^[A-Za-z0-9_-]{8,64}$/;
@@ -131,6 +168,14 @@ export class ClaudeDriver implements AgentDriver {
     return (session as ClaudeSession).listModels();
   }
 
+  catalog(): Promise<ModelInfo[]> {
+    return readCatalog();
+  }
+
+  commands(cwd?: string): Promise<AgentCommand[]> {
+    return readCommands(cwd ?? os.homedir());
+  }
+
   async defaults(): Promise<RuntimeInfo> {
     const c = config().agents.claude;
     return {
@@ -140,7 +185,7 @@ export class ClaudeDriver implements AgentDriver {
   }
 
   async statusLines(): Promise<string[]> {
-    return [];
+    return describeUsage(await readUsage());
   }
 
   diagnose(err: unknown) {

@@ -35,7 +35,17 @@ function reconcile(list: FeishuBotConfig[]): void {
 
 export function startFeishu(): void {
   reconcile(config().feishu.bots);
-  onConfigChange((next) => reconcile(next.feishu.bots));
+  onConfigChange((next, prev) => {
+    reconcile(next.feishu.bots);
+    // 命令顺序 / 隐藏改了，或者机器人能用的 agent 变了：重新同步飞书指令面板
+    const commandsChanged = JSON.stringify(next.commands) !== JSON.stringify(prev.commands);
+    for (const bot of bots.values()) {
+      const before = prev.feishu.bots.find((b) => b.id === bot.id);
+      const agentsChanged =
+        !before || JSON.stringify([before.agents, before.defaultAgent]) !== JSON.stringify([bot.cfg.agents, bot.cfg.defaultAgent]);
+      if (commandsChanged || agentsChanged) bot.slash.request();
+    }
+  });
   // 配对被批准（Web 上点的，或终端里另一个进程批的）：通知等着的人
   watchPairing((channelId, _userId, chatId) => {
     if (chatId) bots.get(channelId)?.notifyApproved(chatId);

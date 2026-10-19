@@ -17,9 +17,12 @@ import { getConversation, updateConversation } from "../../core/store.js";
 import { adoptFile, KIND_LABEL } from "../../core/uploads.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { FeishuClient } from "./client.js";
+import { SlashSync } from "./slash-sync.js";
+import type { CommandEntry } from "../../core/command-catalog.js";
 import {
   agentPickerCard,
   approvalCard,
+  commandListCard,
   modelPickerCard,
   progressCard,
   questionCard,
@@ -56,8 +59,27 @@ export class FeishuBot {
   private stopped = false;
   status: BotStatus = { state: "stopped", since: Date.now() };
 
+  /** 飞书输入框里「/」弹出的指令面板 */
+  readonly slash: SlashSync;
+  private slashTimer: NodeJS.Timeout | null = null;
+
   constructor(readonly cfg: FeishuBotConfig) {
     this.client = new FeishuClient(cfg.appId, cfg.appSecret, cfg.domain, `飞书:${cfg.name}`);
+    this.slash = new SlashSync(this.client.lark, () => this.slashCommands(), `[飞书:${cfg.name}]`);
+  }
+
+  /**
+   * 这个机器人该注册的命令：默认 agent 的命令表在前，其它可用 agent 的原生命令接在后面。
+   * 飞书的指令面板是整个应用一份，不分会话，没法跟着每个会话当前的 agent 变。
+   */
+  private async slashCommands(): Promise<CommandEntry[]> {
+    const agents = [this.cfg.defaultAgent, ...this.cfg.agents.filter((a) => a !== this.cfg.defaultAgent)];
+    const out: CommandEntry[] = [];
+    for (const agent of agents) {
+      if (!hub.driver(agent)) continue;
+      out.push(...(await hub.commandCatalog(agent, { allowedAgents: this.cfg.agents })));
+    }
+    return out;
   }
 
   get id(): string {
@@ -120,10 +142,17 @@ export class FeishuBot {
 
     this.connect();
     this.startWatchdog();
+    // 等 agent 起来再同步（Claude 的原生命令要起进程读）；之后每 6 小时对一次账，新装的 skill 会跟上
+    this.slash.request(15_000);
+    this.slashTimer = setInterval(() => this.slash.request(0), 6 * 3600_000);
+    this.slashTimer.unref?.();
   }
 
   stop(): void {
     this.stopped = true;
+    this.slash.stop();
+    if (this.slashTimer) clearInterval(this.slashTimer);
+    this.slashTimer = null;
     for (const off of this.offs.splice(0)) off();
     if (this.watchdog) clearInterval(this.watchdog);
     this.watchdog = null;
@@ -486,6 +515,12 @@ export class FeishuBot {
       case "agents":
         await this.client.sendCard(chatId, agentPickerCard({ ...reply, sessionKey: key, ctx }));
         return;
+      case "commands":
+        await this.client.sendCard(
+          chatId,
+          commandListCard({ agentLabel: hub.label(reply.agent), commands: reply.commands, sessionKey: key, ctx }),
+        );
+        return;
       case "none":
         return;
     }
@@ -595,7 +630,32 @@ export class FeishuBot {
       case "agent":
         this.background(envelope.k, () => hub.setAgent(envelope.k, envelope.g, this.allowedAgents()));
         return { toast: { type: "success", content: `正在切换到 ${hub.label(envelope.g)}` } };
+      case "cmd":
+        return this.runCardCommand(envelope.k, `/${envelope.c}`);
     }
+  }
+
+  /**
+   * 命令表上点「执行」：等同于用户自己发了这条命令。
+   * im-agent 的命令就地执行并回卡片；agent 原生命令（skills 等）当一条消息发给 agent。
+   */
+  private runCardCommand(key: string, text: string): CardResponse {
+    if (!this.mine(key) || !getConversation(key)) {
+      return { toast: { type: "error", content: "这条会话已不存在，请重新发一次「/」。" } };
+    }
+    const command = parseCommand(text);
+    if (command.kind === "chat") {
+      const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书" };
+      const gen = hub.generation(key);
+      this.enqueue(key, async () => hub.send(key, { text, attachments: [] }, origin, gen));
+      return { toast: { type: "success", content: `已发送 ${text}` } };
+    }
+    const chatId = this.chatIdOf(key);
+    void hub
+      .command(key, command, { allowedAgents: this.allowedAgents(), by: "飞书命令" })
+      .then((reply) => this.renderReply(key, reply))
+      .catch((err) => this.client.sendText(chatId, `出错了：${err instanceof Error ? err.message : String(err)}`));
+    return { toast: { type: "info", content: `正在执行 ${text}` } };
   }
 
   /** 卡片回调里耗时的操作：先应答，做完在会话里回一句。 */

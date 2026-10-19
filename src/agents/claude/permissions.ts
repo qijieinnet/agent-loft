@@ -3,6 +3,7 @@
 // Codex 把「总是允许」做进了协议（acceptForSession / execpolicy 补丁），Claude 没有，
 // 只能自己记一份名单。特征刻意保守：Bash 只认命令的第一个词，文件类只认所在目录。
 // 宁可多问几次，也不要因为特征太宽而放行了本不该放行的东西。
+import os from "node:os";
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
 import type { QuestionSpec } from "../../core/types.js";
@@ -143,7 +144,39 @@ export function signatureOf(toolName: string, input: Record<string, unknown>): s
 
 export function isPreApproved(toolName: string, signature: string): boolean {
   // 防绕过靠的是 signatureOf：复合命令拿到的是 BashExact 签名，命中不了 Bash:<首词>
-  return isRememberableSignature(toolName, signature) && load().includes(signature);
+  if (!isRememberableSignature(toolName, signature)) return false;
+  const list = load();
+  if (list.includes(signature)) return true;
+  return coveredBySubdirectoryRule(toolName, signature, list);
+}
+
+const DIR_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
+
+/**
+ * 按目录记的批准连带子目录：批准过 /home/me/project，改 project/src/core 下的文件不用再问。
+ * 以前只认完全相同的目录，项目里每进一个子目录都要再点一次，点到后来就是闭眼点 —— 那才不安全。
+ *
+ * 两道收口：
+ *   - 太宽的批准不往下延伸：/、家目录、家目录的上级。批准过「在家目录下新建文件」
+ *     不等于能改 ~/.ssh、~/.bashrc；
+ *   - 不延伸进隐藏目录（.git/hooks、.github/workflows、.husky…）：往那里写东西等于
+ *     让它下次自动执行。真要改，单独批一次那个目录。
+ */
+function coveredBySubdirectoryRule(toolName: string, signature: string, list: string[]): boolean {
+  if (!DIR_TOOLS.has(toolName)) return false;
+  const target = signature.slice(toolName.length + 1);
+  const home = os.homedir();
+  for (const entry of list) {
+    if (!entry.startsWith(`${toolName}:`)) continue;
+    const approved = entry.slice(toolName.length + 1);
+    if (!path.isAbsolute(approved)) continue;
+    if (approved === path.parse(approved).root || approved === home || home.startsWith(`${approved}${path.sep}`)) continue;
+    const rel = path.relative(approved, target);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    if (rel.split(path.sep).some((part) => part.startsWith("."))) continue;
+    return true;
+  }
+  return false;
 }
 
 export function rememberAlways(signature: string): void {
@@ -168,7 +201,7 @@ export function alwaysLabelOf(toolName: string, signature: string): string {
   if (toolName === "Bash") {
     return signature.startsWith("BashExact:") ? "总是允许这条完全相同的命令" : `总是允许 ${signature.slice(5)} 开头的单条命令`;
   }
-  if (signature.includes(":")) return `总是允许在该目录下${toolName === "Write" ? "新建" : "修改"}`;
+  if (signature.includes(":")) return `总是允许在该目录及子目录下${toolName === "Write" ? "新建" : "修改"}`;
   return `总是允许 ${toolName}`;
 }
 

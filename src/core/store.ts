@@ -38,6 +38,8 @@ export type Conversation = {
   createdAt: number;
   /** Web 列表里隐藏（Web 上删除的会话只是隐藏，agent 侧的历史还在） */
   hidden?: boolean;
+  /** /autoedit：这条对话里 agent 在工作目录内改文件不再询问（跨 /new 保留，属于对话不属于某个会话） */
+  autoEdit?: boolean;
 };
 
 type StoreShape = Record<string, Conversation>;

@@ -155,6 +155,10 @@ export class CodexDriver implements AgentDriver {
       }));
   }
 
+  catalog(): Promise<ModelInfo[]> {
+    return this.listModels();
+  }
+
   /** config.toml 里的默认值（config/read），不需要为此建 thread。 */
   async defaults(): Promise<RuntimeInfo> {
     const c = config().agents.codex;

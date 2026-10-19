@@ -220,7 +220,7 @@ const WS = {
     if (this.sock?.readyState === 1) this.sock.send(JSON.stringify(msg));
   },
 
-  request(msg) {
+  request(msg, timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
       if (this.sock?.readyState !== 1) {
         reject(new Error("还没连上服务器，稍等再试"));
@@ -231,7 +231,7 @@ const WS = {
       this.sock.send(JSON.stringify({ ...msg, rid }));
       setTimeout(() => {
         if (this.waiters.delete(rid)) reject(new Error("服务器没有响应"));
-      }, 15000);
+      }, timeoutMs);
     });
   },
 
@@ -1035,8 +1035,16 @@ function renderComposer() {
   ui.input = h("textarea", {
     rows: 1,
     placeholder: "给 agent 发消息",
-    oninput: autosize,
+    oninput: () => {
+      autosize();
+      void updateSlashMenu();
+    },
+    onblur: () => setTimeout(closeSlashMenu, 150),
     onkeydown: (e) => {
+      if (slashKeydown(e)) {
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isTouch) {
         e.preventDefault();
         void sendMessage();
@@ -1061,6 +1069,7 @@ function renderComposer() {
   });
   ui.sendBtn = h("button", { class: "send-btn", title: "发送", onclick: () => (S.busy && !hasDraft() ? stopTurn() : sendMessage()) });
   ui.chips = h("div", { class: "chips" });
+  ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
   ui.composer = h(
     "div",
     {
@@ -1076,6 +1085,7 @@ function renderComposer() {
         void addFiles([...(e.dataTransfer?.files ?? [])]);
       },
     },
+    ui.slashMenu,
     ui.chips,
     ui.input,
     h(
@@ -1194,11 +1204,14 @@ async function sendMessage() {
     toast("附件还在上传，稍等");
     return;
   }
+  closeSlashMenu();
   let key;
+  let res;
   try {
     key = await ensureConversation();
     if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
-    await WS.request({ t: "send", key, text, uploads: S.uploads.map((u) => u.id) });
+    // 命令（比如 /status 要现读额度）可能比普通发送慢，多给点时间
+    res = await WS.request({ t: "send", key, text, uploads: S.uploads.map((u) => u.id) }, 45000);
   } catch (err) {
     toast(err.message);
     return;
@@ -1207,8 +1220,219 @@ async function sendMessage() {
   autosize();
   S.uploads = [];
   renderChips();
+  updateSendBtn();
   ui.stick = true;
+  if (res?.reply) await showCommandReply(text.trim(), res.reply, res.info);
   scrollToBottom(true);
+}
+
+/** 会改变当前会话（换会话、换目录、换 agent）的命令，执行完要重拉一遍 */
+const RELOADING_COMMANDS = new Set(["new", "fork", "resume", "agent", "claude", "codex", "cd"]);
+
+/** im-agent 命令的结果：只显示给发命令的这个页面，不进会话记录 */
+async function showCommandReply(text, reply, info) {
+  if (info) S.convs.set(info.key, info);
+  renderTopbar();
+  const head = text.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (RELOADING_COMMANDS.has(head) && S.current) await openConversation(S.current);
+  const note = (md) => addItem({ type: "notice", text: md });
+  switch (reply.type) {
+    case "text":
+      note(`\`${text}\`\n\n${reply.text}`);
+      return;
+    case "sessions":
+      await openSessions(reply.allDirs);
+      return;
+    case "models":
+      await openModelPicker();
+      return;
+    case "agents":
+      note(
+        `当前 agent：**${agentLabel(reply.current)}**\n\n可切换：${reply.agents.map((a) => `\`/${a.id}\` ${a.label}`).join("　")}`,
+      );
+      return;
+    case "commands":
+      note(reply.commands.map((c) => `\`${commandUsage(c)}\` ${oneLine(c.description)}`).join("\n\n") || "没有可用命令");
+      return;
+  }
+}
+
+// ---------- 斜杠命令补全 ----------
+//
+// 输入框里只有「/xxx」（还没打空格）时弹出命令表，顺序就是设置 → 命令里排好的。
+// 列表按 agent + 会话目录缓存一分钟：Claude 的原生命令要起一次进程才问得到。
+
+const slash = { open: false, items: [], index: 0, cache: new Map(), token: 0 };
+
+function commandUsage(c) {
+  return `/${c.name}${c.args ? ` ${c.args}` : ""}`;
+}
+
+function oneLine(text, max = 80) {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+function currentAgentId() {
+  const c = S.current ? S.convs.get(S.current) : null;
+  return c?.agent ?? S.draftAgent ?? S.agents.find((a) => a.enabled)?.id ?? "claude";
+}
+
+async function loadCommands(agent) {
+  const cacheKey = `${agent}|${S.current ?? ""}`;
+  const hit = slash.cache.get(cacheKey);
+  if (hit && Date.now() - hit.at < 60_000) return hit.list;
+  const q = S.current ? `?key=${encodeURIComponent(S.current)}` : "";
+  const data = await api(`/api/agents/${agent}/commands${q}`);
+  const list = data.commands.filter((c) => !c.hidden);
+  slash.cache.set(cacheKey, { at: Date.now(), list });
+  return list;
+}
+
+function slashQuery() {
+  const v = ui.input.value;
+  const m = /^[/／]([^\s]*)$/.exec(v);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** 名字前缀匹配排最前，其次名字里包含，最后是说明里包含；同档内保持用户排的顺序 */
+function matchCommands(list, q) {
+  if (!q) return list;
+  const tiers = [[], [], []];
+  for (const c of list) {
+    const name = c.name.toLowerCase();
+    if (name.startsWith(q)) tiers[0].push(c);
+    else if (name.includes(q)) tiers[1].push(c);
+    else if (c.description.toLowerCase().includes(q)) tiers[2].push(c);
+  }
+  return tiers.flat();
+}
+
+async function updateSlashMenu() {
+  const q = slashQuery();
+  if (q === null) return closeSlashMenu();
+  const token = ++slash.token;
+  if (!slash.open) renderSlashMenu(null);
+  let list;
+  try {
+    list = await loadCommands(currentAgentId());
+  } catch (err) {
+    if (token === slash.token) renderSlashMenu(null, err.message);
+    return;
+  }
+  // 等待期间又打了字：以最新的那次为准
+  if (token !== slash.token || slashQuery() === null) return;
+  const items = matchCommands(list, slashQuery());
+  if (items.length === 0) return closeSlashMenu();
+  slash.items = items;
+  slash.index = Math.min(slash.index, items.length - 1);
+  renderSlashMenu(items);
+}
+
+function renderSlashMenu(items, error) {
+  slash.open = true;
+  ui.slashMenu.hidden = false;
+  if (!items) {
+    fill(ui.slashMenu, h("div", { class: "slash-empty" }, error ? `读取命令失败：${error}` : h("span", { class: "spinner" })));
+    return;
+  }
+  fill(
+    ui.slashMenu,
+    ...items.map((c, i) =>
+      h(
+        "button",
+        {
+          class: `slash-item${i === slash.index ? " on" : ""}`,
+          type: "button",
+          // mousedown 而不是 click：不然输入框先失焦，手机上键盘会闪一下
+          onmousedown: (e) => {
+            e.preventDefault();
+            void pickSlash(c, false);
+          },
+          onmousemove: () => {
+            if (slash.index !== i) {
+              slash.index = i;
+              highlightSlash();
+            }
+          },
+        },
+        h(
+          "div",
+          { class: "slash-head" },
+          h("span", { class: "slash-name" }, `/${c.name}`),
+          c.args ? h("span", { class: "slash-args" }, c.args) : null,
+          c.source === "agent" ? h("span", { class: "badge" }, agentLabel(currentAgentId())) : null,
+        ),
+        h("div", { class: "slash-desc" }, oneLine(c.description, 120) || "（无说明）"),
+      ),
+    ),
+  );
+  highlightSlash();
+}
+
+function highlightSlash() {
+  ui.slashMenu.querySelectorAll(".slash-item").forEach((el, i) => el.classList.toggle("on", i === slash.index));
+  ui.slashMenu.querySelector(".slash-item.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function closeSlashMenu() {
+  slash.open = false;
+  slash.items = [];
+  slash.index = 0;
+  slash.token++;
+  if (ui.slashMenu) ui.slashMenu.hidden = true;
+}
+
+/**
+ * 选中一条命令。fillOnly（Tab）只补全；回车 / 点击时，不需要参数的直接发出去，
+ * 需要参数的补全成「/name 」等用户接着打。
+ */
+async function pickSlash(c, fillOnly) {
+  const needsArgs = !c.runnable;
+  if (fillOnly || needsArgs) {
+    ui.input.value = `/${c.name}${c.args ? " " : ""}`;
+    closeSlashMenu();
+    autosize();
+    updateSendBtn();
+    ui.input.focus();
+    return;
+  }
+  ui.input.value = `/${c.name}`;
+  closeSlashMenu();
+  await sendMessage();
+}
+
+/** 菜单开着时接管方向键 / Tab / 回车 / Esc；返回 true 表示已处理 */
+function slashKeydown(e) {
+  if (!slash.open || slash.items.length === 0) {
+    if (slash.open && e.key === "Escape") {
+      closeSlashMenu();
+      return true;
+    }
+    return false;
+  }
+  if (e.isComposing) return false;
+  switch (e.key) {
+    case "ArrowDown":
+      slash.index = (slash.index + 1) % slash.items.length;
+      highlightSlash();
+      return true;
+    case "ArrowUp":
+      slash.index = (slash.index - 1 + slash.items.length) % slash.items.length;
+      highlightSlash();
+      return true;
+    case "Tab":
+      void pickSlash(slash.items[slash.index], true);
+      return true;
+    case "Enter":
+      if (e.shiftKey) return false;
+      void pickSlash(slash.items[slash.index], false);
+      return true;
+    case "Escape":
+      closeSlashMenu();
+      return true;
+  }
+  return false;
 }
 
 async function stopTurn() {
@@ -1424,6 +1648,7 @@ async function openSettings() {
   const tabs = [
     ["通用", () => generalTab(cfg, panel)],
     ["Agent", () => agentsTab(cfg, panel)],
+    ["命令", () => commandsTab(cfg, panel)],
     ["飞书机器人", () => feishuTab(cfg, panel)],
     ["授权", () => authTab(panel)],
     ["安全", () => securityTab(panel)],
@@ -1491,11 +1716,313 @@ function generalTab(cfg, panel) {
   );
 }
 
+/**
+ * 默认模型 + 默认思考程度的联动下拉框。
+ * 模型列表从 agent 实时拿（Claude 要起一次进程，可能要几秒），拿到前先显示当前值；
+ * 拿不到就退回文本框手填，不挡住保存。思考程度的选项跟着所选模型变。
+ * 已保存但不在列表里的值（比如手填过的完整模型名）会作为「当前值」保留，不会被悄悄清掉。
+ */
+function modelPicker(agent, model, effort, defaultLabel) {
+  const modelSlot = h("div", { class: "picker" });
+  const effortSlot = h("div", { class: "picker" });
+  let getModel = () => model;
+  let getEffort = () => effort;
+
+  const option = (value, label, selected) => h("option", { value, selected: value === selected }, label);
+  const withCurrent = (values, current) => (current && !values.includes(current) ? [current] : []);
+
+  const asText = (reason) => {
+    const m = h("input", { value: getModel(), placeholder: `留空${defaultLabel}` });
+    const e = h("input", { value: getEffort(), placeholder: "low / medium / high …，留空默认" });
+    modelSlot.replaceChildren(m, reason ? h("small", {}, reason) : null);
+    effortSlot.replaceChildren(e);
+    getModel = () => m.value.trim();
+    getEffort = () => e.value.trim();
+  };
+
+  const loading = (text) => {
+    modelSlot.replaceChildren(h("select", { disabled: true }, option("", text, "")));
+    effortSlot.replaceChildren(h("select", { disabled: true }, option("", effort || "默认", "")));
+  };
+
+  const asSelect = (models) => {
+    // Claude 自带一项 "default"，和「留空」是一回事，不重复列
+    const listed = models.filter((m) => m.id !== "default");
+    const fallback = models.find((m) => m.id === "default" || m.isDefault);
+    const modelSel = h(
+      "select",
+      {},
+      option("", `默认（${defaultLabel.replace(/^跟随\s*/, "")}）`, model),
+      withCurrent(listed.map((m) => m.id), model).map((v) => option(v, `${v}（当前值，不在列表中）`, model)),
+      listed.map((m) => option(m.id, m.label && m.label !== m.id ? `${m.label} · ${m.id}` : m.id, model)),
+    );
+    const effortSel = h("select", {});
+    const renderEfforts = () => {
+      const picked = modelSel.value ? models.find((m) => m.id === modelSel.value) : fallback;
+      const efforts = picked?.efforts ?? [];
+      const keep = effortSel.value || effort;
+      effortSel.replaceChildren(
+        option("", "默认", keep),
+        withCurrent(efforts, keep).map((v) => option(v, `${v}（当前值，该模型可能不支持）`, keep)),
+        efforts.map((v) => option(v, v, keep)),
+      );
+    };
+    modelSel.addEventListener("change", renderEfforts);
+    renderEfforts();
+    modelSlot.replaceChildren(modelSel);
+    effortSlot.replaceChildren(effortSel);
+    getModel = () => modelSel.value;
+    getEffort = () => effortSel.value;
+  };
+
+  loading(model ? `${model}（正在读取模型列表…）` : "正在读取模型列表…");
+  api(`/api/agents/${agent}/models`)
+    .then((data) => (data?.models?.length ? asSelect(data.models) : asText("没读到模型列表，请手填")))
+    .catch((err) => asText(err.status === 409 ? err.message : `读取模型列表失败，请手填：${err.message ?? err}`));
+
+  return { modelEl: modelSlot, effortEl: effortSlot, model: () => getModel(), effort: () => getEffort() };
+}
+
+/**
+ * 设置 → 命令：每个 agent 一张表，拖动或用箭头排序，取消勾选就不在「/」列表里出现。
+ * 保存时把整张表的顺序存下来；以后新装的 skill 不在表里，会自动接在最后。
+ */
+function commandsTab(cfg, panel) {
+  const agentIds = Object.keys(cfg.agents);
+  let agent = currentAgentId();
+  if (!agentIds.includes(agent)) agent = agentIds[0];
+  let list = [];
+  let filter = "";
+  let dragFrom = -1;
+
+  const tabs = h("div", { class: "row" });
+  const search = h("input", {
+    class: "input",
+    placeholder: "筛选命令（只影响显示，排序仍按整张表）",
+    oninput: () => {
+      filter = search.value.trim().toLowerCase();
+      renderList();
+    },
+  });
+  const listBox = h("div", { class: "cmd-list" });
+
+  const move = (from, to) => {
+    if (to < 0 || to >= list.length || from === to) return;
+    const [item] = list.splice(from, 1);
+    list.splice(to, 0, item);
+    renderList();
+  };
+
+  const renderTabs = () =>
+    fill(
+      tabs,
+      ...agentIds.map((id) =>
+        h(
+          "button",
+          { class: `btn small${id === agent ? " primary" : ""}`, onclick: () => id !== agent && load(id) },
+          agentLabel(id),
+        ),
+      ),
+    );
+
+  const renderList = () => {
+    const rows = list
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => !filter || c.name.toLowerCase().includes(filter) || c.description.toLowerCase().includes(filter));
+    fill(
+      listBox,
+      ...rows.map(({ c, i }) => {
+        const shown = h("input", {
+          type: "checkbox",
+          checked: !c.hidden,
+          title: "在「/」列表里显示",
+          onchange: () => {
+            c.hidden = !shown.checked;
+            row.classList.toggle("off", c.hidden);
+          },
+        });
+        const row = h(
+          "div",
+          {
+            class: `cmd-row${c.hidden ? " off" : ""}`,
+            draggable: filter ? false : "true",
+            ondragstart: (e) => {
+              dragFrom = i;
+              e.dataTransfer.effectAllowed = "move";
+              row.classList.add("dragging");
+            },
+            ondragend: () => row.classList.remove("dragging"),
+            ondragover: (e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+            },
+            ondrop: (e) => {
+              e.preventDefault();
+              if (dragFrom >= 0) move(dragFrom, i);
+              dragFrom = -1;
+            },
+          },
+          h("span", { class: "cmd-grip", title: filter ? "筛选时不能拖动" : "拖动排序" }, "⋮⋮"),
+          shown,
+          h(
+            "div",
+            { class: "grow" },
+            h(
+              "div",
+              { class: "t" },
+              h("code", {}, commandUsage(c)),
+              c.source === "agent" ? h("span", { class: "badge" }, agentLabel(agent)) : null,
+            ),
+            h("div", { class: "s" }, oneLine(c.description, 100) || "（无说明）"),
+          ),
+          h("button", { class: "icon-btn", title: "置顶", onclick: () => move(i, 0) }, "⤒"),
+          h("button", { class: "icon-btn", title: "上移", onclick: () => move(i, i - 1) }, "↑"),
+          h("button", { class: "icon-btn", title: "下移", onclick: () => move(i, i + 1) }, "↓"),
+        );
+        return row;
+      }),
+    );
+  };
+
+  const save = async (prefs) => {
+    await saveConfig(cfg, { commands: { [agent]: prefs } });
+    slash.cache.clear();
+    // 服务端 3 秒防抖后才开始同步，稍等再看状态
+    setTimeout(() => void refreshFeishu(), 3500);
+  };
+
+  // ---- 飞书指令面板同步状态 ----
+  const feishuBox = h("div", { class: "cmd-feishu" });
+  let feishuTimer = null;
+  const describeSlash = (st) => {
+    if (st.state === "syncing") return "同步中…（重建时每条间隔 1 秒，命令多要一两分钟）";
+    if (st.state === "error") return `同步失败：${st.error}`;
+    if (st.state === "done") {
+      const when = new Date(st.at).toLocaleTimeString();
+      const skipped = st.skipped?.length
+        ? `；${st.skipped.length} 个名字不符合飞书规则（只能小写字母、数字、- _，最长 32）没注册：${st.skipped.slice(0, 8).join("、")}${st.skipped.length > 8 ? " 等" : ""}`
+        : "";
+      return `${when} ${st.changed ? "已同步" : "已是最新"}，共 ${st.registered} 条${skipped}。飞书端约 5～8 分钟后生效。`;
+    }
+    return "等待首次同步";
+  };
+  async function refreshFeishu() {
+    let data;
+    try {
+      data = await api("/api/feishu/slash");
+    } catch (err) {
+      fill(feishuBox, h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    fill(
+      feishuBox,
+      data.bots.length === 0
+        ? h("div", { class: "muted" }, "没有运行中的飞书机器人。")
+        : data.bots.map((b) =>
+            h(
+              "div",
+              { class: `muted${b.status.state === "error" ? " error-text" : ""}` },
+              h("b", {}, b.name),
+              "：",
+              describeSlash(b.status),
+            ),
+          ),
+    );
+    clearTimeout(feishuTimer);
+    feishuTimer = data.bots.some((b) => b.status.state === "syncing") ? setTimeout(() => feishuBox.isConnected && void refreshFeishu(), 2000) : null;
+  }
+
+  async function load(id) {
+    agent = id;
+    renderTabs();
+    fill(listBox, h("span", { class: "spinner" }));
+    try {
+      const data = await api(`/api/agents/${id}/commands`);
+      list = data.commands;
+      renderList();
+    } catch (err) {
+      fill(listBox, h("div", { class: "error-text" }, err.message));
+    }
+  }
+
+  panel.append(
+    h(
+      "div",
+      { class: "section" },
+      h("h4", {}, "命令列表"),
+      h(
+        "div",
+        { class: "muted" },
+        "在输入框里打「/」时弹出的命令，按这里的顺序排列；保存后会自动同步到飞书机器人的指令面板。取消勾选的不会出现在列表里，但照样可以手动输入。带 agent 名标记的是 agent 自己的命令（skills 等），会原样转给 agent。",
+      ),
+      tabs,
+      search,
+      listBox,
+      h(
+        "div",
+        { class: "row" },
+        h(
+          "button",
+          {
+            class: "btn primary",
+            onclick: () => save({ order: list.map((c) => c.name), hidden: list.filter((c) => c.hidden).map((c) => c.name) }),
+          },
+          "保存",
+        ),
+        h(
+          "button",
+          {
+            class: "btn",
+            onclick: async () => {
+              if (!confirm(`把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认？`)) return;
+              await save({ order: [], hidden: [] });
+              await load(agent);
+            },
+          },
+          "恢复默认",
+        ),
+      ),
+    ),
+    h(
+      "div",
+      { class: "section" },
+      h(
+        "h4",
+        {},
+        "飞书指令面板",
+        h("span", { class: "grow" }),
+        h(
+          "button",
+          {
+            class: "btn small",
+            onclick: async () => {
+              try {
+                await api("/api/feishu/slash/sync", { method: "POST" });
+                setTimeout(() => void refreshFeishu(), 500);
+              } catch (err) {
+                toast(err.message);
+              }
+            },
+          },
+          "立即同步",
+        ),
+      ),
+      h(
+        "div",
+        { class: "muted" },
+        "飞书输入框打「/」看到的指令。面板是每个机器人一份：默认 agent 的命令在前，其它 agent 的命令接在后面。启动时、保存命令设置后、以及每 6 小时会自动同步。",
+      ),
+      feishuBox,
+    ),
+  );
+  void load(agent);
+  void refreshFeishu();
+}
+
 function agentsTab(cfg, panel) {
   const a = structuredClone(cfg.agents);
   const claudeOn = h("input", { type: "checkbox", checked: a.claude.enabled });
-  const claudeModel = h("input", { value: a.claude.defaultModel, placeholder: "留空跟随 Claude Code 默认" });
-  const claudeEffort = h("input", { value: a.claude.defaultEffort, placeholder: "low / medium / high / xhigh / max，留空默认" });
+  const claudePick = modelPicker("claude", a.claude.defaultModel, a.claude.defaultEffort, "跟随 Claude Code 默认");
   const codexOn = h("input", { type: "checkbox", checked: a.codex.enabled });
   const codexPath = h("input", { value: a.codex.path });
   const codexHome = h("input", { value: a.codex.home, placeholder: "留空用 ~/.codex" });
@@ -1504,15 +2031,14 @@ function agentsTab(cfg, panel) {
     {},
     ["read-only", "workspace-write", "danger-full-access"].map((m) => h("option", { value: m, selected: m === a.codex.sandbox }, m)),
   );
-  const codexModel = h("input", { value: a.codex.defaultModel, placeholder: "留空跟随 config.toml" });
-  const codexEffort = h("input", { value: a.codex.defaultEffort, placeholder: "留空跟随 config.toml" });
+  const codexPick = modelPicker("codex", a.codex.defaultModel, a.codex.defaultEffort, "跟随 config.toml");
   panel.append(
     h(
       "div",
       { class: "section" },
       h("h4", {}, "Claude Code", h("span", { class: "grow" }), h("label", { class: "check" }, claudeOn, "启用")),
-      field("默认模型", claudeModel),
-      field("默认思考程度", claudeEffort),
+      field("默认模型", claudePick.modelEl),
+      field("默认思考程度", claudePick.effortEl),
     ),
     h(
       "div",
@@ -1521,8 +2047,8 @@ function agentsTab(cfg, panel) {
       field("codex 可执行文件", codexPath, "以系统服务运行时 PATH 很短，建议写绝对路径"),
       field("CODEX_HOME", codexHome),
       field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"),
-      field("默认模型", codexModel),
-      field("默认思考程度", codexEffort),
+      field("默认模型", codexPick.modelEl),
+      field("默认思考程度", codexPick.effortEl),
     ),
     h(
       "div",
@@ -1534,14 +2060,14 @@ function agentsTab(cfg, panel) {
           onclick: () =>
             saveConfig(cfg, {
               agents: {
-                claude: { enabled: claudeOn.checked, defaultModel: claudeModel.value.trim(), defaultEffort: claudeEffort.value.trim() },
+                claude: { enabled: claudeOn.checked, defaultModel: claudePick.model(), defaultEffort: claudePick.effort() },
                 codex: {
                   enabled: codexOn.checked,
                   path: codexPath.value.trim() || "codex",
                   home: codexHome.value.trim(),
                   sandbox: sandbox.value,
-                  defaultModel: codexModel.value.trim(),
-                  defaultEffort: codexEffort.value.trim(),
+                  defaultModel: codexPick.model(),
+                  defaultEffort: codexPick.effort(),
                 },
               },
             }),

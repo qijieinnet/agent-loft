@@ -134,6 +134,19 @@ function applyConfig(input: Partial<AppConfig>): void {
     const { passwordHash: _ignored, ...web } = input.web as AppConfig["web"];
     next.web = { ...next.web, ...web, passwordHash: current.web.passwordHash };
   }
+  if (input.commands) {
+    // 只收字符串数组，别的一律当没传
+    const names = (v: unknown) =>
+      Array.isArray(v) ? [...new Set(v.filter((s): s is string => typeof s === "string" && s.length > 0 && s.length < 128))] : null;
+    for (const id of AGENT_IDS) {
+      const prefs = (input.commands as Record<string, { order?: unknown; hidden?: unknown } | undefined>)[id];
+      if (!prefs) continue;
+      next.commands[id] = {
+        order: names(prefs.order) ?? next.commands[id].order,
+        hidden: names(prefs.hidden) ?? next.commands[id].hidden,
+      };
+    }
+  }
   if (input.feishu) {
     if (typeof input.feishu.watchdogMs === "number") next.feishu.watchdogMs = input.feishu.watchdogMs;
     if (Array.isArray(input.feishu.bots)) {
@@ -413,6 +426,38 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 200, publicConfig());
     return;
   }
+  {
+    // 设置页的模型下拉框：不需要会话。
+    // 未启用的 agent 不去问 —— Codex 的 app-server 一问就会被拉起来常驻，违背「未启用」
+    const m = /^\/api\/agents\/([a-z0-9_-]+)\/models$/.exec(p);
+    if (m && method === "GET") {
+      const driver = hub.enabledAgents().find((d) => d.id === m[1]);
+      if (!driver) {
+        sendJson(res, 409, { error: "未启用，启用并保存后可下拉选择" });
+        return;
+      }
+      sendJson(res, 200, { models: await driver.catalog() });
+      return;
+    }
+  }
+  {
+    // 命令表（含隐藏项）。带 key 时按那条会话的目录读（项目里可能有自己的命令），
+    // Web 输入框补全用；不带 key 是设置页排序用。
+    const m = /^\/api\/agents\/([a-z0-9_-]+)\/commands$/.exec(p);
+    if (m && method === "GET") {
+      if (!(AGENT_IDS as readonly string[]).includes(m[1]!)) {
+        sendJson(res, 404, { error: `没有 agent「${m[1]}」` });
+        return;
+      }
+      const conv = getConversation(url.searchParams.get("key") ?? "");
+      const commands = await hub.commandCatalog(m[1]!, {
+        ...(conv ? { cwd: conv.cwd } : {}),
+        allowedAgents: hub.enabledAgents().map((d) => d.id),
+      });
+      sendJson(res, 200, { commands });
+      return;
+    }
+  }
   if (p === "/api/password" && method === "POST") {
     const body = await readJsonBody<{ old?: string; password?: string }>(req);
     const left = takeAttempt(ip);
@@ -457,6 +502,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const body = await readJsonBody<{ list?: string[] }>(req);
     setAllowlist(Array.isArray(body.list) ? body.list.map(String) : []);
     sendJson(res, 200, listAllowlist());
+    return;
+  }
+  if (p === "/api/feishu/slash" && method === "GET") {
+    sendJson(res, 200, { bots: feishuBots().map((b) => ({ id: b.id, name: b.cfg.name, status: b.slash.status })) });
+    return;
+  }
+  if (p === "/api/feishu/slash/sync" && method === "POST") {
+    for (const b of feishuBots()) b.slash.request(0);
+    sendJson(res, 200, { ok: true });
     return;
   }
   if (p === "/api/feishu/status" && method === "GET") {

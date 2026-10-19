@@ -2,6 +2,7 @@
 //
 // 只有「整条消息就是一个命令」时才当命令处理，参数对不上就退化成普通聊天 ——
 // 避免把正常对话误当指令执行。
+import { BUILTIN_COMMANDS, usageOf } from "./command-catalog.js";
 import type { ApprovalDecision } from "./types.js";
 
 export type ParsedCommand =
@@ -16,7 +17,10 @@ export type ParsedCommand =
   | { kind: "cd"; dir: string }
   | { kind: "status" }
   | { kind: "pwd" }
+  | { kind: "autoedit"; on?: boolean }
   | { kind: "help" }
+  /** 只发了一个「/」：列出可用命令 */
+  | { kind: "commands" }
   | { kind: "approve"; requestId: string; decision: ApprovalDecision }
   | { kind: "chat"; text: string };
 
@@ -24,6 +28,8 @@ const DECISIONS: ApprovalDecision[] = ["allow-once", "allow-always", "deny"];
 
 export function parseCommand(raw: string): ParsedCommand {
   const text = raw.trim();
+  // 全角斜杠也认：中文输入法下很容易打成「／」
+  if (text === "/" || text === "／") return { kind: "commands" };
   if (!text.startsWith("/") || text.includes("\n")) return { kind: "chat", text };
 
   const [head = "", ...rest] = text.slice(1).split(/\s+/);
@@ -56,6 +62,13 @@ export function parseCommand(raw: string): ParsedCommand {
       return { kind: "status" };
     case "pwd":
       return { kind: "pwd" };
+    case "autoedit": {
+      const v = arg.toLowerCase();
+      if (!v) return { kind: "autoedit" };
+      if (["on", "开", "1", "true"].includes(v)) return { kind: "autoedit", on: true };
+      if (["off", "关", "0", "false"].includes(v)) return { kind: "autoedit", on: false };
+      return { kind: "chat", text };
+    }
     case "help":
       return { kind: "help" };
     case "approve": {
@@ -78,22 +91,14 @@ export function helpText(agents: string[]): string {
     "",
     "Agent 给选项时会发一张提问卡，点按钮作答；都不合适就直接发消息，那条消息会被当成你的回答。",
     "",
-    "**命令**（需整条消息只有命令）",
+    "**命令**（需整条消息只有命令；只发一个 `/` 可以列出全部命令，包括 agent 自己的）",
     "",
-    ...(multi
-      ? [`\`/agent [名称]\` 查看 / 切换 agent（可选：${agents.join("、")}），也可以直接发 ${agents.map((a) => `\`/${a}\``).join(" ")}`]
-      : []),
-    "`/new [模型]` 开一条新会话",
-    "`/fork` 从当前会话分叉，原会话保留",
-    "`/sessions [all]` 列出历史会话，点按钮恢复；加 all 列所有目录",
-    "`/resume <会话ID>` 恢复指定会话",
-    "`/model [名称]` 切换模型（不带参数弹选择卡片）",
-    "`/effort <程度>` 切换思考程度",
-    "`/stop` 中断当前执行",
-    "`/cd <相对目录>` 切换工作目录（限 workspace 内）",
-    "`/pwd` 显示当前工作目录",
-    "`/status` 查看当前会话、模型、目录",
-    "`/approve <请求ID> allow-once|allow-always|deny` 审批兜底",
-    "`/help` 显示本帮助",
+    ...BUILTIN_COMMANDS.filter((c) => !c.multiAgentOnly || multi)
+      .filter((c) => !["claude", "codex"].includes(c.name))
+      .map((c) =>
+        c.name === "agent"
+          ? `\`${usageOf(c)}\` ${c.description}（可选：${agents.join("、")}），也可以直接发 ${agents.map((a) => `\`/${a}\``).join(" ")}`
+          : `\`${usageOf(c)}\` ${c.description}`,
+      ),
   ].join("\n");
 }

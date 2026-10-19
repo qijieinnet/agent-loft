@@ -133,6 +133,13 @@ select {
   color: var(--fg-soft);
 }
 
+/* 设置页的模型 / 思考程度下拉：读取失败时里面会换成文本框 + 提示 */
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .field small {
   color: var(--fg-faint);
   font-size: 12px;
@@ -1264,4 +1271,144 @@ button.list-item:hover {
   .settings-nav button {
     white-space: nowrap;
   }
+}
+
+/* ---------- 斜杠命令补全 ---------- */
+
+.composer {
+  position: relative;
+}
+
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 20;
+}
+
+.slash-menu[hidden] {
+  display: none;
+}
+
+.slash-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.slash-item.on {
+  background: var(--bg-hover);
+}
+
+.slash-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slash-name {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.slash-args {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-desc {
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-empty {
+  padding: 10px;
+  color: var(--fg-faint);
+  font-size: 13px;
+}
+
+.slash-item .badge,
+.cmd-row .badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  margin-left: 6px;
+}
+
+/* ---------- 设置 → 命令 ---------- */
+
+.cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+}
+
+.cmd-row.off {
+  opacity: 0.5;
+}
+
+.cmd-row.dragging {
+  border-color: var(--accent);
+}
+
+.cmd-row .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.cmd-row .t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-row .s {
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-grip {
+  cursor: grab;
+  color: var(--fg-faint);
+  user-select: none;
+  letter-spacing: -2px;
+}
+
+.cmd-row input[type="checkbox"] {
+  width: auto;
 }

@@ -21,7 +21,9 @@ export type EnvelopeAction =
   | { a: "model"; m: string; k: string }
   | { a: "effort"; f: string; k: string }
   | { a: "agent"; g: string; k: string }
-  | { a: "resume"; s: string; k: string; c?: string };
+  | { a: "resume"; s: string; k: string; c?: string }
+  /** 命令列表卡上的「执行」：c 是命令名，不带斜杠 */
+  | { a: "cmd"; c: string; k: string };
 
 export type CardEnvelope = EnvelopeAction & {
   oc: typeof ENVELOPE_VERSION;
@@ -98,6 +100,9 @@ function validAction(v: Record<string, unknown>): boolean {
       return str(v.g) && str(v.k);
     case "resume":
       return str(v.s) && str(v.k) && (v.c === undefined || str(v.c));
+    case "cmd":
+      // 只放行命令名该有的字符（skill 名会带冒号），别让参数、换行之类混进来
+      return str(v.c) && /^[\w:.-]+$/.test(v.c) && str(v.k);
     default:
       return false;
   }

@@ -1,5 +1,6 @@
 // 核心类型：渠道（飞书 / Web / 以后的 Telegram）与 agent（Claude / Codex / 以后的 ACP）
 // 之间只通过这里的类型说话。渠道不认识 Claude，agent 不认识飞书。
+import type { AgentCommand } from "./command-catalog.js";
 
 // ---------- 用户输入 ----------
 
@@ -118,6 +119,8 @@ export type SessionOptions = {
   fork?: boolean;
   /** 附件所在目录，agent 需要能直接读 */
   uploadsDir: string;
+  /** 工作目录内改文件不再询问（/autoedit）。Bash 等照常询问 */
+  autoEdit?: boolean;
 };
 
 export interface AgentSession {
@@ -127,6 +130,8 @@ export interface AgentSession {
   setModel(model?: string, effort?: string): Promise<void>;
   describeRuntime(): Promise<RuntimeInfo>;
   dispose(): Promise<void>;
+  /** 运行中切换「自动允许改文件」；不支持的 agent 不实现 */
+  setAutoEdit?(on: boolean): Promise<void>;
 }
 
 export type Diagnosis = {
@@ -151,6 +156,10 @@ export interface AgentDriver {
   readHistory(id: string, cwd: string): Promise<HistoryMessage[]>;
   /** 有的 agent（Claude）要借一个活着的会话才能问到模型列表 */
   listModels(session: AgentSession): Promise<ModelInfo[]>;
+  /** 不依赖会话的模型列表，设置页的下拉框用 */
+  catalog(): Promise<ModelInfo[]>;
+  /** agent 自己的斜杠命令（skills 之类），没有就不实现。cwd 影响项目级命令 */
+  commands?(cwd?: string): Promise<AgentCommand[]>;
   /** 不建会话也能知道的默认模型 / 思考程度 */
   defaults(): Promise<RuntimeInfo>;
   /** /status 里额外的几行（比如 Codex 的额度） */

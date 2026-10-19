@@ -33,6 +33,15 @@ import {
   signatureOf,
 } from "./permissions.js";
 
+export function toModelInfo(models: Awaited<ReturnType<Query["supportedModels"]>>): ModelInfo[] {
+  return models.map((m) => ({
+    id: m.value,
+    label: m.displayName || m.value,
+    ...(m.description ? { description: m.description } : {}),
+    ...(m.supportedEffortLevels?.length ? { efforts: [...m.supportedEffortLevels] } : {}),
+  }));
+}
+
 class AsyncQueue<T> {
   private items: T[] = [];
   private waiting: ((result: IteratorResult<T>) => void)[] = [];
@@ -152,8 +161,9 @@ export class ClaudeSession implements AgentSession {
       options: {
         cwd: this.opts.cwd,
         env: agentEnvironment(),
-        // 必须是 default：bypassPermissions 会让 canUseTool 变成死代码
-        permissionMode: "default",
+        // 只能是 default 或 acceptEdits：bypassPermissions 会让 canUseTool 变成死代码。
+        // acceptEdits 只放行工作目录（含附件目录）内的改文件，其它照样走 canUseTool
+        permissionMode: this.opts.autoEdit ? "acceptEdits" : "default",
         // 逐字输出给 Web 用；飞书渠道直接忽略这些片段
         includePartialMessages: true,
         ...(this.opts.model ? { model: this.opts.model } : {}),
@@ -342,13 +352,13 @@ export class ClaudeSession implements AgentSession {
 
   async listModels(): Promise<ModelInfo[]> {
     this.start();
-    const models = await this.q!.supportedModels();
-    return models.map((m) => ({
-      id: m.value,
-      label: m.displayName || m.value,
-      ...(m.description ? { description: m.description } : {}),
-      ...(m.supportedEffortLevels?.length ? { efforts: [...m.supportedEffortLevels] } : {}),
-    }));
+    return toModelInfo(await this.q!.supportedModels());
+  }
+
+  async setAutoEdit(on: boolean): Promise<void> {
+    this.opts.autoEdit = on;
+    // 还没起 CLI 就不用管：下次拉起时按 opts 来
+    if (this.q) await this.q.setPermissionMode(on ? "acceptEdits" : "default");
   }
 
   async setModel(model?: string, effort?: string): Promise<void> {

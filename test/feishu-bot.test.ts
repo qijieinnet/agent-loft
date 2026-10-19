@@ -72,6 +72,7 @@ function fakeDriver(id: string): AgentDriver {
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [{ id: "m1", label: "M1" }],
+    catalog: async () => [{ id: "m1", label: "M1" }],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: (err) => ({ kind: "x", chatMessage: String(err), consoleHint: "" }),

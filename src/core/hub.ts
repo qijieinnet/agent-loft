@@ -34,6 +34,7 @@ import type {
   StepKind,
   UserInput,
 } from "./types.js";
+import { buildCatalog, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
 import { helpText, type ParsedCommand } from "./commands.js";
 
 // ---------- 事件 ----------
@@ -95,6 +96,8 @@ export type CommandReply =
       effortSupported: boolean;
     }
   | { type: "agents"; agents: { id: string; label: string }[]; current: string }
+  /** 只发了「/」：可用命令（已按用户配置排序、去掉隐藏的） */
+  | { type: "commands"; agent: string; commands: CommandEntry[] }
   | { type: "none" };
 
 export type ConversationInfo = {
@@ -368,6 +371,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         ...(effort ? { effort } : {}),
         ...(resumeId ? { resumeId } : {}),
         ...(fork ? { fork: true } : {}),
+        ...(conv.autoEdit ? { autoEdit: true } : {}),
       },
       {
         onTurnStart: () => alive() && this.emitEvent(key, { type: "turn_start" }),
@@ -756,6 +760,28 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return `思考程度已切换为 ${effort}。`;
   }
 
+  /** /autoedit：on 不给就是切换。只影响正在跑的会话和以后新建的，不追溯已经弹出的授权。 */
+  private async setAutoEditNow(key: string, on: boolean | undefined): Promise<string> {
+    const conv = getConversation(key)!;
+    const next = on ?? !conv.autoEdit;
+    const live = this.live.get(key);
+    if (live?.session.setAutoEdit) await withTimeout(live.session.setAutoEdit(next), "切换自动改文件");
+    updateConversation(key, { autoEdit: next });
+    this.emitEvent(key, { type: "meta" });
+    const driver = this.requireDriver(conv.agent);
+    const note =
+      conv.agent === "codex"
+        ? `\n\n注意：${driver.label} 改文件由沙箱控制（设置 → Agent → 沙箱），这个开关只对 Claude 生效。`
+        : "";
+    return next
+      ? `已开启：这条对话里 Claude 修改工作目录（${conv.cwd}）内的文件不再询问；目录外的文件、Bash 命令照常询问。发 /autoedit off 关闭。${note}`
+      : `已关闭：改文件恢复逐次询问。${note}`;
+  }
+
+  setAutoEdit(key: string, on?: boolean): Promise<string> {
+    return this.serial(key, () => this.setAutoEditNow(key, on));
+  }
+
   /** 切 agent：各 agent 的会话各自保留，切回来接着聊。 */
   private async setAgentNow(key: string, agent: string, allowed: string[], op: SwitchOp): Promise<string> {
     const conv = getConversation(key)!;
@@ -809,6 +835,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       `目录：${conv.cwd}`,
       `模型：${runtime.model ?? "默认"}`,
       ...(runtime.effort ? [`思考程度：${runtime.effort}`] : []),
+      ...(conv.autoEdit ? ["自动允许改文件：开（/autoedit off 关闭）"] : []),
       ...(extra.length > 0 ? ["", ...extra] : []),
     ].join("\n");
   }
@@ -879,8 +906,15 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     switch (cmd.kind) {
       case "help":
         return text(helpText(ctx.allowedAgents));
+      case "commands": {
+        const conv = getConversation(key)!;
+        const all = await this.commandCatalog(conv.agent, { cwd: conv.cwd, allowedAgents: ctx.allowedAgents });
+        return { type: "commands", agent: conv.agent, commands: all.filter((c) => !c.hidden) };
+      }
       case "pwd":
         return text(getConversation(key)!.cwd);
+      case "autoedit":
+        return text(await this.setAutoEdit(key, cmd.on));
       case "status":
         return text(await this.status(key));
       case "cd":
@@ -922,6 +956,27 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       case "chat":
         return { type: "none" };
     }
+  }
+
+  /**
+   * 某个 agent 的完整命令表（含隐藏项，带 hidden 标记），已按配置排序。
+   * 原生命令读不到、或者超时，就只给 im-agent 自己的 —— 列表少几项，总比「/」没反应强。
+   * 未启用的 agent 不去问：问一次就可能拉起它的进程。
+   */
+  async commandCatalog(
+    agent: string,
+    opts: { cwd?: string; allowedAgents: string[] },
+  ): Promise<CommandEntry[]> {
+    const driver = this.enabledAgents().find((d) => d.id === agent);
+    let native: AgentCommand[] = [];
+    if (driver?.commands) {
+      native = await withTimeout(driver.commands(opts.cwd), "读取命令列表").catch((err) => {
+        console.error(`[${agent}] 读取命令列表失败:`, err instanceof Error ? err.message : err);
+        return [];
+      });
+    }
+    const prefs = (config().commands as Record<string, CommandPrefs | undefined>)[agent];
+    return buildCatalog({ allowedAgents: opts.allowedAgents, native, prefs });
   }
 
   async shutdown(): Promise<void> {

@@ -6,6 +6,7 @@
 //   3. 没有 `tag: "note"`，小字提示只能并进 markdown
 import { createEnvelope, type CardCtx, type EnvelopeAction } from "./envelope.js";
 import { answerTextOf, SETTLEMENT_LABEL, type Interaction } from "../../core/interactions.js";
+import { usageOf, type CommandEntry } from "../../core/command-catalog.js";
 import type { ModelInfo, SessionSummary } from "../../core/types.js";
 
 function button(
@@ -224,6 +225,55 @@ export function modelPickerCard(params: {
     );
   }
   return card(elements, { title: "切换模型", template: "blue" });
+}
+
+/** 卡片太大会被飞书拒收（JSON 上限约 30KB），列表截到这么多条 */
+const COMMAND_CARD_MAX = 30;
+
+/**
+ * 只发「/」时回的命令表。顺序就是设置里排好的顺序；不带参数的命令给一个「执行」按钮，
+ * 要参数的只展示用法，让用户自己打。
+ */
+export function commandListCard(params: {
+  agentLabel: string;
+  commands: CommandEntry[];
+  sessionKey: string;
+  ctx: CardCtx;
+}) {
+  const shown = params.commands.slice(0, COMMAND_CARD_MAX);
+  const rest = params.commands.length - shown.length;
+  const oneLine = (s: string) => {
+    const t = s.replace(/\s+/g, " ").trim();
+    return t.length > 60 ? `${t.slice(0, 60)}…` : t;
+  };
+  const elements: unknown[] = [
+    {
+      tag: "markdown",
+      content: `当前 agent：**${params.agentLabel}**。点「执行」直接运行；带 \`<参数>\` 的请手动输入。\n顺序和显示哪些可以在 Web 设置 → 命令里调整。`,
+    },
+    { tag: "hr" },
+  ];
+  for (const c of shown) {
+    const tag = c.source === "agent" ? ` <font color='grey'>· ${params.agentLabel}</font>` : "";
+    const text = `**${usageOf(c)}**${tag}\n<font color='grey'>${oneLine(c.description) || "（无说明）"}</font>`;
+    elements.push({
+      tag: "column_set",
+      horizontal_spacing: "8px",
+      columns: [
+        { tag: "column", width: "weighted", weight: 1, vertical_align: "center", elements: [{ tag: "markdown", content: text }] },
+        {
+          tag: "column",
+          width: "auto",
+          vertical_align: "center",
+          elements: c.runnable ? [button("执行", { a: "cmd", c: c.name, k: params.sessionKey }, params.ctx)] : [],
+        },
+      ],
+    });
+  }
+  if (rest > 0) {
+    elements.push({ tag: "markdown", content: `<font color='grey'>还有 ${rest} 个没列出，可以在设置里把常用的排到前面、隐藏用不到的。</font>` });
+  }
+  return card(elements, { title: "可用命令", template: "blue" });
 }
 
 export function agentPickerCard(params: {

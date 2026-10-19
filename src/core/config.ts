@@ -6,6 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { configPath, ensureDirs, readJson, writeJsonAtomic } from "../home.js";
+import type { CommandPrefs } from "./command-catalog.js";
+
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
@@ -56,6 +58,8 @@ export type AppConfig = {
      */
     trustedProxies: string[];
   };
+  /** 输入「/」时命令列表的顺序和隐藏项，按 agent 分开（设置 → 命令） */
+  commands: { claude: CommandPrefs; codex: CommandPrefs };
   feishu: {
     /** 长连接掉线多久就重建，0 关闭 */
     watchdogMs: number;
@@ -82,6 +86,7 @@ export function defaultConfig(): AppConfig {
       },
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"] },
+    commands: { claude: { order: [], hidden: [] }, codex: { order: [], hidden: [] } },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },
   };
 }

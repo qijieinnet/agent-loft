@@ -183,6 +183,7 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
@@ -273,6 +274,23 @@ test("NotebookEdit 按 notebook_path 的目录记，拿不到路径不给总是�
   assert.equal(isPreApproved("NotebookEdit", "NotebookEdit:."), false);
 });
 
+test("按目录批准连带子目录，但不越进隐藏目录、不从家目录/根目录往下延伸", async () => {
+  const os = await import("node:os");
+  const { rememberAlways, isPreApproved } = await import("../src/agents/claude/permissions.js");
+  rememberAlways("Edit:/srv/proj");
+  assert.equal(isPreApproved("Edit", "Edit:/srv/proj"), true);
+  assert.equal(isPreApproved("Edit", "Edit:/srv/proj/src/core"), true);
+  assert.equal(isPreApproved("Edit", "Edit:/srv/proj-evil"), false, "前缀相同的兄弟目录不算");
+  assert.equal(isPreApproved("Edit", "Edit:/srv"), false, "上级目录不算");
+  assert.equal(isPreApproved("Edit", "Edit:/srv/proj/.git/hooks"), false);
+  assert.equal(isPreApproved("Edit", "Edit:/srv/proj/src/.husky"), false);
+  assert.equal(isPreApproved("Write", "Write:/srv/proj/src"), false, "Edit 的批准不等于 Write");
+  rememberAlways(`Write:${os.homedir()}`);
+  assert.equal(isPreApproved("Write", `Write:${os.homedir()}/project`), false, "家目录的批准不往下延伸");
+  rememberAlways("Write:/");
+  assert.equal(isPreApproved("Write", "Write:/etc"), false);
+});
+
 test("Web 上传：同名文件每次存到不同路径，重置后旧 id 撞不上新文件", async () => {
   const { saveBuffer, clearUploads } = await import("../src/core/uploads.js");
   const a = saveBuffer({ key: "k-up", data: Buffer.from("A"), name: "report.png", subdir: "id1" });
@@ -308,6 +326,7 @@ test("/fork 只记意图并落盘：切走再切回、或重建会话，下一�
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
@@ -356,6 +375,7 @@ test("代次：下载附件期间 /cd 或 /new，旧消息作废；关掉的 age
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
@@ -409,6 +429,7 @@ test("切换途中收到的附件不被清掉；改 workspaceRoot 让下载中�
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
@@ -463,6 +484,7 @@ test("排队中的消息也核对生命周期代次；连续两次切换不会�
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
@@ -540,6 +562,7 @@ test("/new 之后的消息不会被旧会话的提问吃掉；显式恢复后第
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
@@ -604,6 +627,7 @@ test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消�
     sessionExists: async () => true,
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
@@ -665,6 +689,7 @@ test("操作序号边界：无效操作的占位、同一次切换都不会给�
     },
     readHistory: async () => [],
     listModels: async () => [],
+    catalog: async () => [],
     defaults: async () => ({}),
     statusLines: async () => [],
     diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
