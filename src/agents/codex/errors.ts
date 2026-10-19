@@ -29,7 +29,7 @@ const LOGIN_STEPS = [
   "  1) codex login      # 用 ChatGPT 账号登录，或配 OPENAI_API_KEY",
   "  2) codex doctor     # 确认认证与运行时都正常",
   '  3) codex exec "回复 OK"   # 验证真的能跑',
-  "  4) 重启agent-im",
+  "  4) 重启im-agent",
 ].join("\n");
 
 export function diagnose(err: unknown): Diagnosis {
@@ -135,11 +135,11 @@ export function diagnose(err: unknown): Diagnosis {
   if (text.includes("method not found") || text.includes("-32601")) {
     return {
       kind: "protocol",
-      chatMessage: "agent-im和本机 Codex 的协议对不上了，请机器主人升级agent-im。",
+      chatMessage: "im-agent和本机 Codex 的协议对不上了，请机器主人升级im-agent。",
       consoleHint:
         "app-server 拒绝了某个方法，多半是 codex 升级后协议变了。\n" +
-        "  1) agent-im doctor   # 会比对版本\n" +
-        "  2) fcx upgrade                  # 升级agent-im",
+        "  1) im-agent doctor   # 会比对版本\n" +
+        "  2) npm i -g im-agent@latest       # 升级 im-agent",
       fatal: false,
     };
   }

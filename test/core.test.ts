@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-process.env.AGENT_IM_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-core-"));
+process.env.IM_AGENT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-core-"));
 // 待处理项的计时器是 unref 的（不该把进程钉住），测试里得自己保持事件循环
 const keepAlive = setInterval(() => {}, 1000);
 after(() => clearInterval(keepAlive));
@@ -64,7 +64,7 @@ test("命令解析：整条才算命令，参数不对退化为聊天", () => {
 });
 
 test("agent 子进程拿不到我们自己的凭据", () => {
-  const env = agentEnvironment({ FEISHU_APP_SECRET: "x", AGENT_IM_HOME: "y", PATH: "/bin", HOME: "/h" });
+  const env = agentEnvironment({ FEISHU_APP_SECRET: "x", IM_AGENT_HOME: "y", PATH: "/bin", HOME: "/h" });
   assert.deepEqual(env, { PATH: "/bin", HOME: "/h" });
 });
 

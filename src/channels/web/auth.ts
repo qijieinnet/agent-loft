@@ -40,7 +40,7 @@ function mtimeOf(file: string): number {
 }
 
 function loadSessions(): Record<string, WebSession> {
-  // 终端里 agent-im passwd 会清空登录态：文件变了就重新读，让被踢的设备立刻失效
+  // 终端里 im-agent passwd 会清空登录态：文件变了就重新读，让被踢的设备立刻失效
   const mtime = mtimeOf(sessionsPath);
   if (!sessions || mtime !== loadedMtime) {
     sessions = readJson<Record<string, WebSession>>(sessionsPath, {});

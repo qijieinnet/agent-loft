@@ -22,7 +22,7 @@ async function startDriver(id: "claude" | "codex"): Promise<void> {
 
 async function main(): Promise<void> {
   loadConfig();
-  console.log(`[启动] agent-im，配置目录 ${home}`);
+  console.log(`[启动] im-agent，配置目录 ${home}`);
 
   hub.registerDriver(new ClaudeDriver());
   hub.registerDriver(new CodexDriver());
@@ -43,7 +43,7 @@ async function main(): Promise<void> {
 
   console.log(`[启动] workspace=${config().workspaceRoot}`);
   if (config().workspaceRoot === process.cwd()) {
-    console.warn("[启动] ⚠️ 工作目录就是 agent-im 自身目录，agent 会在它的代码里干活。到设置里改 workspaceRoot。");
+    console.warn("[启动] ⚠️ 工作目录就是 im-agent 自身目录，agent 会在它的代码里干活。到设置里改 workspaceRoot。");
   }
 
   let stopping = false;
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("exit", (code) => console.log(`[退出] agent-im 结束，退出码 ${code}`));
+  process.on("exit", (code) => console.log(`[退出] im-agent 结束，退出码 ${code}`));
   process.on("unhandledRejection", (err) => console.error("[未处理的异常]", err));
 }
 

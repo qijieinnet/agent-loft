@@ -1,8 +1,7 @@
 {
-  "name": "agent-im",
+  "name": "im-agent",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
   "description": "把飞书（以及以后的 Telegram 等）和 Web 页面桥接到本机 Claude Code / Codex：聊天驱动、卡片审批、会话与模型切换",
   "keywords": [
     "feishu",
@@ -15,20 +14,20 @@
   ],
   "license": "MIT",
   "author": "qijieinnet",
-  "homepage": "https://github.com/qijieinnet/agent-im#readme",
+  "homepage": "https://github.com/qijieinnet/im-agent#readme",
   "bugs": {
-    "url": "https://github.com/qijieinnet/agent-im/issues"
+    "url": "https://github.com/qijieinnet/im-agent/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qijieinnet/agent-im.git"
+    "url": "git+https://github.com/qijieinnet/im-agent.git"
   },
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "agent-im": "bin/cli.js",
-    "aim": "bin/cli.js"
+    "im-agent": "bin/cli.js",
+    "ima": "bin/cli.js"
   },
   "files": [
     "bin",
@@ -39,9 +38,10 @@
   ],
   "scripts": {
     "start": "node bin/cli.js start",
-    "dev": "AGENT_IM_HOME=./.dev tsx watch src/main.ts",
+    "dev": "IM_AGENT_HOME=./.dev tsx watch src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.302",
@@ -58,5 +58,9 @@
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.5.12",
     "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

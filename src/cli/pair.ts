@@ -1,4 +1,4 @@
-// agent-im pair list | approve <配对码> | revoke <机器人id> <open_id>
+// im-agent pair list | approve <配对码> | revoke <机器人id> <open_id>
 import { approve, listApproved, listPending, revoke } from "../core/pairing.js";
 import { loadConfig } from "../core/config.js";
 
@@ -8,15 +8,15 @@ const [sub, ...rest] = process.argv.slice(2);
 switch (sub) {
   case "approve": {
     const code = rest[0];
-    if (!code) throw new Error("用法：agent-im pair approve <配对码>");
+    if (!code) throw new Error("用法：im-agent pair approve <配对码>");
     const result = approve(code);
     if (!result.ok) throw new Error(`配对码 ${code} 不存在或已过期`);
-    console.log(`已批准 ${result.request.userId}（机器人 ${result.channelId}）。正在运行的 agent-im 会通知对方。`);
+    console.log(`已批准 ${result.request.userId}（机器人 ${result.channelId}）。正在运行的 im-agent 会通知对方。`);
     break;
   }
   case "revoke": {
     const [channelId, userId] = rest;
-    if (!channelId || !userId) throw new Error("用法：agent-im pair revoke <机器人id> <open_id>");
+    if (!channelId || !userId) throw new Error("用法：im-agent pair revoke <机器人id> <open_id>");
     console.log(revoke(channelId, userId) ? "已撤销" : "没有这个已配对用户");
     break;
   }

@@ -15,7 +15,7 @@ export type AgentBinding = {
   effort?: string;
   /**
    * 待分叉：/fork 之后、新会话真正建立之前，记着要从哪个会话分叉。
-   * 必须落盘：期间切了 agent、或者 agent-im 重启了，下一条消息仍要分叉，而不是续写原会话。
+   * 必须落盘：期间切了 agent、或者 im-agent 重启了，下一条消息仍要分叉，而不是续写原会话。
    * 拿到不同于它的新会话 id 后清掉。
    */
   forkFrom?: string;

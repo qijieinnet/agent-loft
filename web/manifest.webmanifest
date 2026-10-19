@@ -1,6 +1,6 @@
 {
-  "name": "Agent IM",
-  "short_name": "Agent IM",
+  "name": "IM Agent",
+  "short_name": "IM Agent",
   "description": "在手机和电脑上驱动本机的 Claude Code / Codex",
   "start_url": "/",
   "scope": "/",

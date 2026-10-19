@@ -1,0 +1,84 @@
+# 发到 npm。走 OIDC Trusted Publishing —— 仓库里不存任何 token。
+#
+# npm 那边要对上的三个值（npmjs.com → 包 → Settings → Trusted publisher）：
+#   Organization or user:  qijieinnet
+#   Repository:            im-agent
+#   Workflow filename:     publish.yml     ← 必须和本文件名一字不差
+#   Environment name:      留空（本 workflow 没有用 environment）
+#   Allowed actions:       勾 npm publish
+#
+# 另有一条藏得很深的要求：package.json 的 repository.url 必须和 GitHub 仓库
+# 完全对得上，否则 OIDC 校验不过。本仓库是对的，改仓库名时记得同步。
+#
+# 发布方式：打一个 v 开头的 tag 推上来，例如
+#   git tag v0.1.0 && git push origin v0.1.0
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+  # 也允许在 Actions 页面手动触发（用于补发）
+  workflow_dispatch:
+
+# 一次 git push origin main --follow-tags 会推分支和 tag 两个 ref，GitHub
+# 可能就此派发两次 push 事件 —— 两个 run 抢着发同一个版本，后到的那个必然
+# 撞上「cannot publish over the previously published versions」而变红。
+# 串起来跑，再配合下面的「已发布就跳过」，重复触发和手动重跑都不会再报错。
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # OIDC 换取发布凭据全靠这行，少了必然 403
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          # Trusted Publishing 要求 Node >= 22.14；24 是官方示例用的版本
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          # 发布构建不要用缓存，避免拿到被污染的依赖
+          package-manager-cache: false
+
+      # Trusted Publishing 要 npm >= 11.5.1。Node 24 自带的通常够，但具体版本
+      # 随 runner 镜像漂移，显式升一下省得哪天以一个很费解的错误挂掉。
+      - name: 升级 npm
+        run: npm install -g npm@latest
+
+      - name: 装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 测试
+        run: npm test
+
+      # tag 和 package.json 对不上就早点炸，别发出一个版本号错的包
+      - name: 校验 tag 与 package.json 版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag 与 package.json 里的 $pkg 不一致，先对齐再发"
+            exit 1
+          fi
+          echo "版本一致：$pkg"
+
+      - name: 发布
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          name="$(node -p "require('./package.json').name")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "::notice::$name@$version 已经在 registry 上了，跳过发布"
+            exit 0
+          fi
+          npm publish

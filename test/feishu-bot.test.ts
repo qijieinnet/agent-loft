@@ -7,7 +7,7 @@ import path from "node:path";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "aim-test-"));
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "aim-ws-"));
-process.env.AGENT_IM_HOME = home;
+process.env.IM_AGENT_HOME = home;
 fs.writeFileSync(
   path.join(home, "config.json"),
   JSON.stringify({

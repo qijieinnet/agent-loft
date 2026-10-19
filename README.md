@@ -1,4 +1,4 @@
-# agent-im
+# im-agent
 
 用飞书（以后还有 Telegram 等）和 Web 页面，驱动本机的 **Claude Code** 和 **Codex**。
 
@@ -19,9 +19,9 @@
 ## 安装
 
 ```bash
-npm install -g <本仓库>        # 或者在仓库里 npm install 后用 node bin/cli.js
-agent-im start                  # 前台运行，日志里会打印首次登录用的设置码
-agent-im service install        # 注册为开机自启服务（systemd / launchd）
+npm install -g im-agent         # 或者在仓库里 npm install 后用 node bin/cli.js
+im-agent start                  # 前台运行，日志里会打印首次登录用的设置码
+im-agent service install        # 注册为开机自启服务（systemd / launchd）
 ```
 
 打开 `http://<机器 IP>:8800`：第一次需要输入日志里的设置码，然后设一个登录密码。
@@ -29,10 +29,10 @@ agent-im service install        # 注册为开机自启服务（systemd / launch
 ### 从旧桥接器迁移
 
 ```bash
-agent-im import --dry-run       # 先看会导入什么
+im-agent import --dry-run       # 先看会导入什么
 systemctl --user disable --now feishu-claude-bridge feishu-codex-bridge   # 同一个机器人不能被两个程序同时连
-agent-im import                 # 导入机器人凭据、白名单、配对、会话绑定、总是允许名单
-agent-im service install
+im-agent import                 # 导入机器人凭据、白名单、配对、会话绑定、总是允许名单
+im-agent service install
 ```
 
 导入后，飞书群里原来的会话会接着聊。
@@ -41,12 +41,12 @@ agent-im service install
 
 | 命令 | 作用 |
 |---|---|
-| `agent-im start` | 启动 |
-| `agent-im import [--only claude\|codex] [--disabled] [--dry-run]` | 从旧桥接器导入 |
-| `agent-im pair list \| approve <码> \| revoke <机器人id> <open_id>` | 配对管理（Web 设置页里也能做） |
-| `agent-im passwd [新密码]` | 重置 Web 登录密码，所有设备下线 |
-| `agent-im service install \| uninstall \| restart \| status` | 开机自启 |
-| `agent-im doctor` | 体检 |
+| `im-agent start` | 启动 |
+| `im-agent import [--only claude\|codex] [--disabled] [--dry-run]` | 从旧桥接器导入 |
+| `im-agent pair list \| approve <码> \| revoke <机器人id> <open_id>` | 配对管理（Web 设置页里也能做） |
+| `im-agent passwd [新密码]` | 重置 Web 登录密码，所有设备下线 |
+| `im-agent service install \| uninstall \| restart \| status` | 开机自启 |
+| `im-agent doctor` | 体检 |
 
 聊天里的命令（飞书和 Web 通用）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/approve <id> allow-once|allow-always|deny` `/help`
 
@@ -58,7 +58,7 @@ agent-im service install
 - 登录态通过 HttpOnly cookie 保存，服务端只存它的哈希。同一 IP 连续输错 5 次锁 15 分钟。所有写请求和 WebSocket 都校验 Origin。页面开启了严格的 CSP。
 - 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）访问，并把反代的 IP 加进 `web.trustedProxies`（只有从这些地址来的连接才采信 `X-Forwarded-*`）。不要直接把 8800 端口映射出去。
 - 审批超时一律按拒绝处理。Codex 默认沙箱为 `workspace-write`，不会因为 `~/.codex/config.toml` 里配了 `never` 或 `danger-full-access` 就绕过审批。
-- agent 子进程拿不到本服务自己的凭据（`FEISHU_*`、`AGENT_IM_*` 等环境变量会被剔除）。
+- agent 子进程拿不到本服务自己的凭据（`FEISHU_*`、`IM_AGENT_*` 等环境变量会被剔除）。
 
 ## 结构
 
@@ -95,7 +95,7 @@ web/               前端（原生 JS，不需要构建）
 
 ```bash
 npm install
-npm run dev          # AGENT_IM_HOME=./.dev，改代码自动重启
+npm run dev          # IM_AGENT_HOME=./.dev，改代码自动重启
 npm test
 npm run typecheck
 ```

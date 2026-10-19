@@ -6,6 +6,6 @@
  */
 export function agentEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(source).filter(([name]) => !/^(FEISHU_|LARK_|BRIDGE_|AGENT_IM_|TELEGRAM_)/i.test(name)),
+    Object.entries(source).filter(([name]) => !/^(FEISHU_|LARK_|BRIDGE_|IM_AGENT_|TELEGRAM_)/i.test(name)),
   );
 }

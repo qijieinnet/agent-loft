@@ -4,10 +4,10 @@
 // Claude 的「总是允许」名单，以及工作目录 / 默认模型 / 沙箱等设置。
 //
 // 用法：
-//   agent-im import                        两个都导
-//   agent-im import --only codex           只导其中一个
-//   agent-im import --disabled             导入但先不启用机器人（新旧并行时避免抢同一个机器人的消息）
-//   agent-im import --dry-run              只看会导入什么
+//   im-agent import                        两个都导
+//   im-agent import --only codex           只导其中一个
+//   im-agent import --disabled             导入但先不启用机器人（新旧并行时避免抢同一个机器人的消息）
+//   im-agent import --dry-run              只看会导入什么
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -142,7 +142,7 @@ async function instanceRunning(): Promise<boolean> {
   }
 }
 if (!dryRun && !flag("force") && (await instanceRunning())) {
-  throw new Error("agent-im 正在运行。请先停止它再导入（agent-im service 管理的话：systemctl --user stop agent-im），导完再启动。");
+  throw new Error("im-agent 正在运行。请先停止它再导入（im-agent service 管理的话：systemctl --user stop im-agent），导完再启动。");
 }
 
 console.log(dryRun ? "将要导入（dry-run，不落盘）：" : "导入中：");

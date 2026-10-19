@@ -1,6 +1,6 @@
 // 与 `codex app-server` 的 JSON-RPC 连接：一个进程，多条 thread。
 //
-// 这是整个agent-im的地基。
+// 这是整个im-agent的地基。
 //
 // 为什么不用官方的 @openai/codex-sdk：它是 `codex exec --json` 的薄封装，
 // 事件流够用，但**没有任何审批回调** —— approvalPolicy 只是个启动参数，
@@ -31,8 +31,8 @@ export type NotificationHandler = (method: string, params: unknown) => void;
 export type RestartHandler = (reason: string) => void;
 
 const CLIENT_INFO = {
-  name: "agent-im",
-  title: "agent-im",
+  name: "im-agent",
+  title: "im-agent",
   version: "0.1.0",
 };
 
@@ -188,7 +188,7 @@ export class AppServer {
   ): Promise<void> {
     if (!this.serverRequestHandler) {
       console.warn(`[codex] 没有处理器，自动拒绝服务端请求 ${method}`);
-      this.sendError(id, -32601, `agent-im未就绪，无法处理 ${method}`);
+      this.sendError(id, -32601, `im-agent未就绪，无法处理 ${method}`);
       return;
     }
     try {

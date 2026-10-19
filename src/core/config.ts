@@ -133,7 +133,7 @@ export function loadConfig(): AppConfig {
 }
 
 /**
- * 配置文件被别的进程改了（手改、或终端里跑了 agent-im passwd）：重新读进来。
+ * 配置文件被别的进程改了（手改、或终端里跑了 im-agent passwd）：重新读进来。
  * 自己保存触发的变更内容一致，比较后直接跳过。
  */
 let watching = false;

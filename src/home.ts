@@ -4,11 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-/** 配置与状态的家目录。AGENT_IM_HOME 可覆盖，默认 ~/.agent-im */
+/** 配置与状态的家目录。IM_AGENT_HOME 可覆盖，默认 ~/.im-agent */
 export const home = (() => {
-  const explicit = process.env.AGENT_IM_HOME?.trim();
+  const explicit = process.env.IM_AGENT_HOME?.trim();
   if (explicit) return path.resolve(explicit);
-  return path.join(os.homedir(), ".agent-im");
+  return path.join(os.homedir(), ".im-agent");
 })();
 
 export const configPath = path.join(home, "config.json");

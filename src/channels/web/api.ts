@@ -201,7 +201,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const left = takeAttempt(ip);
     if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     if (!checkSetupToken(String(body.token ?? ""))) {
-      throw new HttpError(403, "设置码不对。它打印在 agent-im 的启动日志里");
+      throw new HttpError(403, "设置码不对。它打印在 im-agent 的启动日志里");
     }
     setPassword(String(body.password ?? ""));
     clearAttempts(ip);

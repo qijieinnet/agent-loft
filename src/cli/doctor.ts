@@ -1,4 +1,4 @@
-// agent-im doctor：配置 / agent / 飞书连通性体检。
+// im-agent doctor：配置 / agent / 飞书连通性体检。
 import { spawnSync } from "node:child_process";
 import { config, loadConfig } from "../core/config.js";
 import { FeishuClient } from "../channels/feishu/client.js";

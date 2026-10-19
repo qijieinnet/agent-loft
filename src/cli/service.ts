@@ -1,6 +1,6 @@
-// agent-im service install | uninstall | restart | status
+// im-agent service install | uninstall | restart | status
 //
-// Linux 用 systemd 用户服务，macOS 用 launchd。只碰服务定义文件，不碰 ~/.agent-im 里的配置和会话。
+// Linux 用 systemd 用户服务，macOS 用 launchd。只碰服务定义文件，不碰 ~/.im-agent 里的配置和会话。
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -8,8 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { home, logsDir } from "../home.js";
 
-const UNIT = "agent-im";
-const LABEL = "com.agent-im";
+const UNIT = "im-agent";
+const LABEL = "com.im-agent";
 const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../bin/cli.js");
 
 function unitPath(): string {
@@ -31,7 +31,7 @@ function servicePath(): string {
 
 function systemdUnit(): string {
   return `[Unit]
-Description=agent-im（飞书 / Web ↔ Claude Code / Codex）
+Description=im-agent（飞书 / Web ↔ Claude Code / Codex）
 After=network-online.target
 # 默认「10 秒内重启 5 次就永久放弃」，那正是崩溃循环最需要它别放弃的时候
 StartLimitIntervalSec=0
@@ -43,7 +43,7 @@ WorkingDirectory=${home}
 StandardOutput=append:${path.join(logsDir, "out.log")}
 StandardError=append:${path.join(logsDir, "err.log")}
 Environment=PATH=${servicePath()}
-Environment=AGENT_IM_HOME=${home}
+Environment=IM_AGENT_HOME=${home}
 Restart=always
 RestartSec=5
 
@@ -66,7 +66,7 @@ function plist(): string {
   <key>StandardErrorPath</key><string>${esc(path.join(logsDir, "err.log"))}</string>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>${esc(servicePath())}</string>
-    <key>AGENT_IM_HOME</key><string>${esc(home)}</string>
+    <key>IM_AGENT_HOME</key><string>${esc(home)}</string>
   </dict>
 </dict></plist>
 `;

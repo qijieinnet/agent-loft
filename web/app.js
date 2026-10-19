@@ -1,4 +1,4 @@
-// agent-im Web 前端。无构建步骤，原生 ES module。
+// im-agent Web 前端。无构建步骤，原生 ES module。
 import { marked } from "/vendor/marked.js";
 import DOMPurify from "/vendor/purify.js";
 import hljs from "/vendor/hljs.js";
@@ -369,7 +369,7 @@ async function showAuth() {
         }
       },
     },
-    h("h1", {}, "Agent IM"),
+    h("h1", {}, "IM Agent"),
     h("p", {}, me.needsSetup ? "首次使用：输入启动日志里的设置码，并设一个登录密码（至少 8 位）" : "登录以继续"),
     me.needsSetup ? h("label", { class: "field" }, h("span", {}, "设置码"), token) : null,
     h("label", { class: "field" }, h("span", {}, me.needsSetup ? "新密码" : "密码"), pw),
@@ -511,7 +511,7 @@ function renderSidebar() {
   if (nodes.length === 0) nodes.push(h("div", { class: "conv-group" }, "还没有会话"));
   fill(ui.convList, ...nodes);
   const asks = askKeys.size;
-  document.title = asks ? `(${asks}) 待处理 · Agent IM` : "Agent IM";
+  document.title = asks ? `(${asks}) 待处理 · IM Agent` : "IM Agent";
 }
 
 // ---------- 顶栏 ----------
@@ -939,7 +939,7 @@ function notifyIfHidden(ix) {
   if (document.visibilityState === "visible" || !("Notification" in window)) return;
   if (Notification.permission === "granted") {
     try {
-      new Notification("Agent IM 需要你处理", { body: ix.spec.title, tag: ix.id });
+      new Notification("IM Agent 需要你处理", { body: ix.spec.title, tag: ix.id });
     } catch {
       // 某些浏览器只允许在 SW 里发
     }
@@ -1908,7 +1908,7 @@ async function systemTab(panel) {
             class: "btn",
             disabled: !sys.underSystemd,
             onclick: async () => {
-              if (!confirm("重启 agent-im？进行中的对话会被中断。")) return;
+              if (!confirm("重启 im-agent？进行中的对话会被中断。")) return;
               try {
                 await api("/api/system/restart", { method: "POST" });
                 toast("正在重启…");
