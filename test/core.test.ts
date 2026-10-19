@@ -438,3 +438,53 @@ test("切换途中收到的附件不被清掉；改 workspaceRoot 让下载中�
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(sent.length, before);
 });
+
+test("排队中的消息也核对生命周期代次；连续两次切换不会误删中间收到的附件", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { saveBuffer } = await import("../src/core/uploads.js");
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const sent: string[] = [];
+  hub.registerDriver({
+    id: "claude",
+    label: "S",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: () => ({
+      sessionId: undefined,
+      send: (input) => sent.push(input.text),
+      interrupt: async () => {},
+      setModel: async () => {},
+      describeRuntime: async () => ({}),
+      dispose: () => slow,
+    }),
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
+  });
+  const key = "web:queuegen";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const origin = { channel: "web", channelId: "web" };
+  hub.send(key, { text: "建立", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+
+  // t1 /new 卡在 dispose；t2 收到新附件；t3 再来一个（无效的）/cd
+  const first = hub.newSession(key);
+  await new Promise((r) => setTimeout(r, 5));
+  const fresh = saveBuffer({ key, data: Buffer.from("n"), name: "n.txt", subdir: "uq" });
+  // 此时排进一条消息（Web 输入，不带 gen），之后又有切换：它应当作废
+  hub.send(key, { text: "排队中", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 5));
+  const second = hub.cd(key, "/outside");
+  release();
+  await first;
+  assert.equal(fs.existsSync(fresh.path), true);
+  await second;
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sent.includes("排队中"), false);
+});

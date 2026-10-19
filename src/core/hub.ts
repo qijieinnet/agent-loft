@@ -138,8 +138,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    * 这条消息是冲着旧会话 / 旧目录说的，不能送进新的里去。
    */
   private lifeGen = new Map<string, number>();
-  /** 最近一次生命周期代次变化的时间 */
-  private lifeAt = new Map<string, number>();
   /** 每条会话的「停止代次」：排队中的发送在真正送出前对一下，点过停止的就作废 */
   private stopGen = new Map<string, number>();
 
@@ -456,17 +454,19 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return { stop: this.stopGeneration(key), life: this.lifeGen.get(key) ?? 0 };
   }
 
-  private bumpLife(key: string): void {
+  /** 返回这次切换发起的时刻：清上传目录时只清它之前的文件，见 clearOldUploads */
+  private bumpLife(key: string): number {
     this.lifeGen.set(key, (this.lifeGen.get(key) ?? 0) + 1);
-    this.lifeAt.set(key, Date.now());
+    return Date.now();
   }
 
   /**
-   * 切换类操作清上传目录：只清操作发起之前就有的文件。切换途中刚收到的附件
-   * 属于切换之后的新消息，不能一起删掉。
+   * 切换类操作清上传目录：只清这次操作发起之前就有的文件。切换途中刚收到的附件
+   * 属于切换之后的新消息，不能一起删掉。截止时间由各操作在入口自己捕获后传进来，
+   * 不读共享状态 —— 否则后面再来一条命令就会把它覆盖掉。
    */
-  private clearOldUploads(key: string): void {
-    clearUploads(key, [], this.lifeAt.get(key) ?? Date.now());
+  private clearOldUploads(key: string, before: number): void {
+    clearUploads(key, [], before);
   }
 
   /**
@@ -476,18 +476,23 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   send(key: string, input: UserInput, origin: Origin, gen?: InputGen): void {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
-    if (gen && gen.life !== (this.lifeGen.get(key) ?? 0)) {
-      this.emitEvent(key, {
-        type: "notice",
-        text: "处理这条消息期间会话被切换了（新会话 / 目录 / agent 变了），它没有发出，请重新发送。",
-      });
-      return;
-    }
     const myGen = gen?.stop ?? this.stopGeneration(key);
+    const myLife = gen?.life ?? this.lifeGen.get(key) ?? 0;
     const cancelled = () => {
-      if (this.stopGeneration(key) === myGen) return false;
-      this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
-      return true;
+      if (this.stopGeneration(key) !== myGen) {
+        this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
+        return true;
+      }
+      // 排队期间会话被切换了（新会话 / 分叉 / 恢复 / 切 agent / 切目录 / 改了工作区根目录）：
+      // 这条是冲着旧会话说的，不能送进新的里去
+      if ((this.lifeGen.get(key) ?? 0) !== myLife) {
+        this.emitEvent(key, {
+          type: "notice",
+          text: "这条消息排队期间会话被切换了（新会话 / 目录 / agent 变了），它没有发出，请重新发送。",
+        });
+        return true;
+      }
+      return false;
     };
     // 最先检查：停止之前收到的旧消息，不能去回答停止之后新冒出来的提问
     if (cancelled()) return;
@@ -583,11 +588,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
 
-  private async newSessionNow(key: string, model?: string): Promise<string> {
+  private async newSessionNow(key: string, model: string | undefined, at: number): Promise<string> {
     const conv = getConversation(key)!;
     await this.drop(key, "已开新会话");
     updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
-    this.clearOldUploads(key);
+    this.clearOldUploads(key, at);
     this.emitEvent(key, { type: "meta" });
     const runtime = await this.runtimeNow(key);
     return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
@@ -607,14 +612,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return "已分叉，原会话保留。下一条消息起在分叉出来的新会话里继续。";
   }
 
-  private async resumeNow(key: string, sessionId: string, originCwd?: string): Promise<string> {
+  private async resumeNow(key: string, sessionId: string, originCwd: string | undefined, at: number): Promise<string> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
     if (!(await withTimeout(driver.sessionExists(sessionId, conv.cwd), "查询会话"))) {
       return `找不到会话 ${sessionId}。\n发 /sessions 看看有哪些可恢复的。`;
     }
     await this.drop(key, "会话已切换");
-    if (sessionId !== agentBinding(conv).sessionId) this.clearOldUploads(key);
+    if (sessionId !== agentBinding(conv).sessionId) this.clearOldUploads(key, at);
     updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
     this.session(key, { resumeId: sessionId });
     this.emitEvent(key, { type: "meta" });
@@ -702,7 +707,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return "已请求中断。";
   }
 
-  private async cdNow(key: string, dir: string): Promise<string> {
+  private async cdNow(key: string, dir: string, at: number): Promise<string> {
     const resolved = resolveWorkspacePath(dir);
     if (!resolved) return `不允许：目录必须存在，且在 ${config().workspaceRoot} 之内（不能经符号链接跳出去）。`;
     const conv = getConversation(key)!;
@@ -712,7 +717,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
     );
     updateConversation(key, { cwd: resolved, cwdExplicit: true, perAgent });
-    this.clearOldUploads(key);
+    this.clearOldUploads(key, at);
     this.emitEvent(key, { type: "meta" });
     return `工作目录已切换到 ${resolved}，下条消息将开新会话。`;
   }
@@ -753,8 +758,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   newSession(key: string, model?: string): Promise<string> {
-    this.bumpLife(key);
-    return this.serial(key, () => this.newSessionNow(key, model));
+    const at = this.bumpLife(key);
+    return this.serial(key, () => this.newSessionNow(key, model, at));
   }
 
   fork(key: string): Promise<string> {
@@ -763,8 +768,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   resume(key: string, sessionId: string, originCwd?: string): Promise<string> {
-    this.bumpLife(key);
-    return this.serial(key, () => this.resumeNow(key, sessionId, originCwd));
+    const at = this.bumpLife(key);
+    return this.serial(key, () => this.resumeNow(key, sessionId, originCwd, at));
   }
 
   models(key: string): Promise<Extract<CommandReply, { type: "models" }>> {
@@ -785,8 +790,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   cd(key: string, dir: string): Promise<string> {
-    this.bumpLife(key);
-    return this.serial(key, () => this.cdNow(key, dir));
+    const at = this.bumpLife(key);
+    return this.serial(key, () => this.cdNow(key, dir, at));
   }
 
   status(key: string): Promise<string> {
