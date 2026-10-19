@@ -60,7 +60,14 @@ export type ConvEvent =
   | { type: "meta" };
 
 /** 一条输入是在哪个时刻收到的：停止代次 + 生命周期代次 */
-export type InputGen = { stop: number; life: number };
+/**
+ * 一条输入收到时的状态快照。
+ *   stop：停止代次。
+ *   executed：当时已经真正发生过几次会话切换。
+ *   target：当时已执行的 + 已发起但还在排队的切换数 —— 这条消息「预期」看到的切换次数。
+ * 执行时实际切换数超过 target，说明它收到之后才冒出来的切换生效了：这条是冲着旧会话说的。
+ */
+export type InputGen = { stop: number; executed: number; target: number };
 
 export type EventEnvelope = { key: string; seq: number; ts: number; ev: ConvEvent };
 
@@ -116,7 +123,7 @@ function withTimeout<T>(p: Promise<T>, what: string, ms = QUERY_TIMEOUT_MS): Pro
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
-type Live = { agent: string; cwd: string; session: AgentSession };
+type Live = { id: number; agent: string; cwd: string; session: AgentSession };
 
 class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private drivers = new Map<string, AgentDriver>();
@@ -137,7 +144,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    * 渠道收到消息后还要先做异步的事（飞书下载附件），期间会话被换掉了的话，
    * 这条消息是冲着旧会话 / 旧目录说的，不能送进新的里去。
    */
-  private lifeGen = new Map<string, number>();
+  private switchGen = new Map<string, number>();
+  /** 已发起、还在排队或执行中的切换操作数 */
+  private pendingOps = new Map<string, number>();
+  private sessionSeq = 0;
   /** 每条会话的「停止代次」：排队中的发送在真正送出前对一下，点过停止的就作废 */
   private stopGen = new Map<string, number>();
 
@@ -159,7 +169,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       }
       if (next.workspaceRoot === prev.workspaceRoot) return;
       // 工作区根目录变了：没显式 /cd 过的会话目录都会被重置，处理中的旧消息一律作废
-      for (const conv of listConversations()) this.bumpLife(conv.key);
+      for (const conv of listConversations()) this.markSwitched(conv.key);
       for (const key of [...this.live.keys()]) {
         void this.serial(key, async () => {
           const conv = getConversation(key);
@@ -339,6 +349,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const resumeId = opts.resumeId ?? pendingFork ?? (opts.fork ? undefined : binding.sessionId);
     const fork = opts.fork || !!pendingFork;
     const agent = conv.agent;
+    const liveId = ++this.sessionSeq;
     // 被丢弃的旧会话晚到的事件（dispose 时的中断错误等）不该再出现在这条会话里
     const holder: { session?: AgentSession } = {};
     const alive = () => this.live.get(key)?.session === holder.session;
@@ -398,11 +409,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           this.emitEvent(key, { type: "meta" });
         },
       },
+      // 已经被丢弃的旧进程晚到的提问 / 审批：直接按取消处理，不能挂到新会话上
       (spec: InteractionSpec) =>
-        interactions.create(key, spec, config().approvalTimeoutMs, this.lifeGen.get(key) ?? 0),
+        alive()
+          ? interactions.create(key, spec, config().approvalTimeoutMs, liveId)
+          : Promise.resolve({ settlement: "cancelled" as const, answers: {} }),
     );
     holder.session = session;
-    this.live.set(key, { agent, cwd: conv.cwd, session });
+    this.live.set(key, { id: liveId, agent, cwd: conv.cwd, session });
     return session;
   }
 
@@ -452,13 +466,30 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   /** 渠道在「收到消息」那一刻取，送进 send 的 gen 参数 */
   generation(key: string): InputGen {
-    return { stop: this.stopGeneration(key), life: this.lifeGen.get(key) ?? 0 };
+    const executed = this.switchGen.get(key) ?? 0;
+    return { stop: this.stopGeneration(key), executed, target: executed + (this.pendingOps.get(key) ?? 0) };
   }
 
-  /** 返回这次切换发起的时刻：清上传目录时只清它之前的文件，见 clearOldUploads */
-  private bumpLife(key: string): number {
-    this.lifeGen.set(key, (this.lifeGen.get(key) ?? 0) + 1);
-    return Date.now();
+  /** 当前活着的会话进程编号（交互请求绑定到它） */
+  liveSessionId(key: string): number | undefined {
+    return this.live.get(key)?.id;
+  }
+
+  /** 会话真的被换掉了（不是「操作被调用了」—— 没实际效果的操作不算） */
+  private markSwitched(key: string): void {
+    this.switchGen.set(key, (this.switchGen.get(key) ?? 0) + 1);
+  }
+
+  /**
+   * 切换类操作的统一入口：调用那一刻记下「有一个切换在排队」和发起时刻（清上传目录用），
+   * 进串行队列执行，结束后撤掉排队计数。真正换没换会话由操作自己 markSwitched。
+   */
+  private switchOp<T>(key: string, fn: (at: number) => Promise<T>): Promise<T> {
+    const at = Date.now();
+    this.pendingOps.set(key, (this.pendingOps.get(key) ?? 0) + 1);
+    return this.serial(key, () => fn(at)).finally(() => {
+      this.pendingOps.set(key, Math.max(0, (this.pendingOps.get(key) ?? 1) - 1));
+    });
   }
 
   /**
@@ -477,16 +508,16 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   send(key: string, input: UserInput, origin: Origin, gen?: InputGen): void {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
-    const myGen = gen?.stop ?? this.stopGeneration(key);
-    const myLife = gen?.life ?? this.lifeGen.get(key) ?? 0;
+    const g = gen ?? this.generation(key);
+    const switches = () => this.switchGen.get(key) ?? 0;
     const cancelled = () => {
-      if (this.stopGeneration(key) !== myGen) {
+      if (this.stopGeneration(key) !== g.stop) {
         this.emitEvent(key, { type: "notice", text: "已停止，这条消息没有发出。" });
         return true;
       }
-      // 排队期间会话被切换了（新会话 / 分叉 / 恢复 / 切 agent / 切目录 / 改了工作区根目录）：
-      // 这条是冲着旧会话说的，不能送进新的里去
-      if ((this.lifeGen.get(key) ?? 0) !== myLife) {
+      // 收到这条之后才冒出来的切换生效了（新会话 / 分叉 / 恢复 / 切 agent / 切目录 / 改了工作区根目录）：
+      // 这条是冲着旧会话说的，不能送进新的里去。收到之前就已发起的切换不算 —— 它本来就是冲着切换后说的
+      if (switches() > g.target) {
         this.emitEvent(key, {
           type: "notice",
           text: "这条消息排队期间会话被切换了（新会话 / 目录 / agent 变了），它没有发出，请重新发送。",
@@ -506,11 +537,15 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
     if (input.attachments.length === 0) {
       const asking = interactions.findQuestion(key);
-      // 只有同一代次的消息才能作答：/new 之后发的话是冲着新会话说的，不能被旧会话里
-      // 还没来得及取消的提问吃掉（它会走下面的正常发送路径，等切换执行完再送进新会话）
+      // 拿消息作答的条件：提问来自当前活着的会话进程，没有排队中的切换，这条消息收到后也没发生过切换。
+      // /new 之后发的话是冲着新会话说的，不能被旧会话里还没来得及取消的提问吃掉（它会走下面的
+      // 正常发送路径，等切换执行完再送进新会话）；而没实际效果的操作（/agent 当前 agent 之类）不影响作答
       if (
         asking &&
-        (asking.life ?? 0) === myLife &&
+        asking.owner !== undefined &&
+        asking.owner === this.liveSessionId(key) &&
+        (this.pendingOps.get(key) ?? 0) === 0 &&
+        switches() === g.executed &&
         interactions.answerWithText(asking.id, input.text, `${origin.name ?? "用户"}以消息作答`)
       ) {
         this.emitEvent(key, shown);
@@ -518,8 +553,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       }
     }
 
-    // 闲置过期要按这次说话之前的活跃时间判断，所以先判断、后 touch
-    const expired = isExpired(conv);
+    // 闲置过期要按这次说话之前的活跃时间判断，所以先记下、后 touch
+    const lastActive = conv.activeAt;
     touchConversation(key);
     if (!conv.title && conv.channel === "web" && input.text.trim()) {
       updateConversation(key, { title: input.text.trim().replace(/\s+/g, " ").slice(0, 40) });
@@ -528,6 +563,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     this.emitEvent(key, shown);
     void this.serial(key, async () => {
       if (cancelled()) return;
+      // 排队期间已经发生过显式切换（恢复 / 分叉 / 新会话…）：用户已经明确指定了会话，不再按旧的闲置时间作废它
+      const ttl = config().sessionTtlMs;
+      const expired = switches() === g.executed && ttl > 0 && Date.now() - lastActive > ttl;
       if (expired) {
         await this.expireNow(key);
         // 清理要等旧会话 dispose，期间可能又点了停止
@@ -598,6 +636,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private async newSessionNow(key: string, model: string | undefined, at: number): Promise<string> {
     const conv = getConversation(key)!;
     await this.drop(key, "已开新会话");
+    this.markSwitched(key);
     updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
     this.clearOldUploads(key, at);
     this.emitEvent(key, { type: "meta" });
@@ -613,6 +652,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const current = binding.forkFrom ?? binding.sessionId;
     if (!current) return "当前还没有可分叉的会话。";
     await this.drop(key, "已分叉会话");
+    this.markSwitched(key);
     // 只记下意图，下一条消息时才真正分叉（见 session() 里的 pendingFork）
     updateAgentBinding(key, conv.agent, { forkFrom: current });
     touchConversation(key);
@@ -627,6 +667,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       return `找不到会话 ${sessionId}。\n发 /sessions 看看有哪些可恢复的。`;
     }
     await this.drop(key, "会话已切换");
+    this.markSwitched(key);
     if (sessionId !== agentBinding(conv).sessionId) this.clearOldUploads(key, at);
     updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
     // 显式恢复 = 用户要接着它聊：刷新活跃时间，否则下一条消息会按恢复前的闲置时间判成过期
@@ -701,6 +742,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     this.requireDriver(agent);
     if (conv.agent === agent) return `当前已经是 ${this.label(agent)}。`;
     await this.drop(key, `已切换到 ${this.label(agent)}`);
+    this.markSwitched(key);
     updateConversation(key, { agent });
     this.emitEvent(key, { type: "meta" });
     const resumed = agentBinding(getConversation(key)!, agent).sessionId;
@@ -722,6 +764,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     if (!resolved) return `不允许：目录必须存在，且在 ${config().workspaceRoot} 之内（不能经符号链接跳出去）。`;
     const conv = getConversation(key)!;
     await this.drop(key, "工作目录已切换");
+    this.markSwitched(key);
     // 会话记录是按目录存的，换目录后旧会话 resume 不回来，干脆都清掉
     const perAgent = Object.fromEntries(
       Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
@@ -768,18 +811,15 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   newSession(key: string, model?: string): Promise<string> {
-    const at = this.bumpLife(key);
-    return this.serial(key, () => this.newSessionNow(key, model, at));
+    return this.switchOp(key, (at) => this.newSessionNow(key, model, at));
   }
 
   fork(key: string): Promise<string> {
-    this.bumpLife(key);
-    return this.serial(key, () => this.forkNow(key));
+    return this.switchOp(key, () => this.forkNow(key));
   }
 
   resume(key: string, sessionId: string, originCwd?: string): Promise<string> {
-    const at = this.bumpLife(key);
-    return this.serial(key, () => this.resumeNow(key, sessionId, originCwd, at));
+    return this.switchOp(key, (at) => this.resumeNow(key, sessionId, originCwd, at));
   }
 
   models(key: string): Promise<Extract<CommandReply, { type: "models" }>> {
@@ -795,13 +835,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   setAgent(key: string, agent: string, allowed: string[]): Promise<string> {
-    this.bumpLife(key);
-    return this.serial(key, () => this.setAgentNow(key, agent, allowed));
+    return this.switchOp(key, () => this.setAgentNow(key, agent, allowed));
   }
 
   cd(key: string, dir: string): Promise<string> {
-    const at = this.bumpLife(key);
-    return this.serial(key, () => this.cdNow(key, dir, at));
+    return this.switchOp(key, (at) => this.cdNow(key, dir, at));
   }
 
   status(key: string): Promise<string> {

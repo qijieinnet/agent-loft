@@ -23,8 +23,8 @@ export type Interaction = {
   /** 仅提问：自由作答，按问题下标存 */
   freeText: Record<number, string>;
   settled?: { settlement: Settlement; by: string; at: number };
-  /** 创建时会话所在的生命周期代次：只有同一代次收到的消息才能拿来作答 */
-  life?: number;
+  /** 发起它的会话进程编号：只有这个进程还活着时，普通消息才能拿来作答 */
+  owner?: number;
 };
 
 type Entry = Interaction & {
@@ -43,7 +43,7 @@ class InteractionCenter extends EventEmitter<InteractionEvents> {
   /** 已收束的留一小段时间，供渠道回调时给出准确的「已由 xx 处理」提示 */
   private recent = new Map<string, Interaction>();
 
-  create(convKey: string, spec: InteractionSpec, timeoutMs: number, life?: number): Promise<InteractionOutcome> {
+  create(convKey: string, spec: InteractionSpec, timeoutMs: number, owner?: number): Promise<InteractionOutcome> {
     const id = `req_${crypto.randomBytes(4).toString("hex")}`;
     let resolve!: (outcome: InteractionOutcome) => void;
     const promise = new Promise<InteractionOutcome>((r) => {
@@ -60,7 +60,7 @@ class InteractionCenter extends EventEmitter<InteractionEvents> {
       expiresAt: now + timeoutMs,
       selections: spec.kind === "question" ? spec.questions.map(() => []) : [],
       freeText: {},
-      ...(life !== undefined ? { life } : {}),
+      ...(owner !== undefined ? { owner } : {}),
       resolve,
       timer,
     };
@@ -199,7 +199,7 @@ class InteractionCenter extends EventEmitter<InteractionEvents> {
 }
 
 function publicView(entry: Entry | Interaction): Interaction {
-  const { id, convKey, spec, createdAt, expiresAt, selections, freeText, settled, life } = entry;
+  const { id, convKey, spec, createdAt, expiresAt, selections, freeText, settled, owner } = entry;
   return {
     id,
     convKey,
@@ -209,7 +209,7 @@ function publicView(entry: Entry | Interaction): Interaction {
     selections: selections.map((s) => [...s]),
     freeText: { ...freeText },
     ...(settled ? { settled } : {}),
-    ...(life !== undefined ? { life } : {}),
+    ...(owner !== undefined ? { owner } : {}),
   };
 }
 
