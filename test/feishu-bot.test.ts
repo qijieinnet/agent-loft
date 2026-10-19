@@ -219,7 +219,7 @@ test("提问挂着时，下一条消息被当成作答", async () => {
     kind: "question",
     title: "确认一下",
     questions: [{ id: "q1", header: "颜色", question: "哪个？", options: [{ label: "红" }], multiSelect: false, allowOther: true }],
-  }, 60_000);
+  }, 60_000, hub.generation(key).life);
   await tick();
   await message("ou_owner", "蓝色");
   const outcome = await answer;

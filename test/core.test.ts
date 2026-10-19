@@ -235,7 +235,7 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
     kind: "question",
     title: "t",
     questions: [{ id: "q", header: "Q", question: "?", options: [{ label: "a" }], multiSelect: false, allowOther: true }],
-  }, 60_000);
+  }, 60_000, hub.generation(key).life);
   hub.send(key, { text: "旧文字", attachments: [] }, origin, staleGen);
   const qid = interactions.listPending(key)[0]!.id;
   assert.ok(interactions.isPending(qid));
@@ -487,4 +487,67 @@ test("排队中的消息也核对生命周期代次；连续两次切换不会�
   await second;
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(sent.includes("排队中"), false);
+});
+
+test("/new 之后的消息不会被旧会话的提问吃掉；显式恢复后第一条消息不判过期", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { updateConversation, getConversation } = await import("../src/core/store.js");
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const sent: string[] = [];
+  let created = 0;
+  hub.registerDriver({
+    id: "claude",
+    label: "S",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (opts, events) => {
+      created += 1;
+      return {
+        sessionId: undefined,
+        send: (input) => {
+          sent.push(`${opts.resumeId ?? "new"}:${input.text}`);
+          events.onSessionId(opts.resumeId ?? `s${created}`);
+        },
+        interrupt: async () => {},
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: () => slow,
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
+  });
+  const key = "web:askgen";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const origin = { channel: "web", channelId: "web" };
+  hub.send(key, { text: "建立", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  const q = interactions.create(key, {
+    kind: "question",
+    title: "t",
+    questions: [{ id: "q", header: "Q", question: "?", options: [{ label: "a" }], multiSelect: false, allowOther: true }],
+  }, 60_000, hub.generation(key).life);
+  const pendingNew = hub.newSession(key); // 卡在 dispose，旧提问还没取消
+  hub.send(key, { text: "给新会话的话", attachments: [] }, origin);
+  const qid = interactions.listPending(key)[0]?.id;
+  assert.ok(qid && interactions.isPending(qid), "旧提问不该被新代次的消息作答");
+  release();
+  await pendingNew;
+  assert.equal((await q).settlement, "cancelled");
+
+  // 显式恢复：闲置很久的会话，恢复后第一条消息接着它聊，不判过期
+  updateConversation(key, { activeAt: Date.now() - 365 * 24 * 3600 * 1000 });
+  await hub.resume(key, "old-session");
+  sent.length = 0;
+  hub.send(key, { text: "继续之前的任务", attachments: [] }, origin);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, ["old-session:继续之前的任务"]);
+  assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "old-session");
 });

@@ -398,7 +398,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           this.emitEvent(key, { type: "meta" });
         },
       },
-      (spec: InteractionSpec) => interactions.create(key, spec, config().approvalTimeoutMs),
+      (spec: InteractionSpec) =>
+        interactions.create(key, spec, config().approvalTimeoutMs, this.lifeGen.get(key) ?? 0),
     );
     holder.session = session;
     this.live.set(key, { agent, cwd: conv.cwd, session });
@@ -505,7 +506,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
     if (input.attachments.length === 0) {
       const asking = interactions.findQuestion(key);
-      if (asking && interactions.answerWithText(asking.id, input.text, `${origin.name ?? "用户"}以消息作答`)) {
+      // 只有同一代次的消息才能作答：/new 之后发的话是冲着新会话说的，不能被旧会话里
+      // 还没来得及取消的提问吃掉（它会走下面的正常发送路径，等切换执行完再送进新会话）
+      if (
+        asking &&
+        (asking.life ?? 0) === myLife &&
+        interactions.answerWithText(asking.id, input.text, `${origin.name ?? "用户"}以消息作答`)
+      ) {
         this.emitEvent(key, shown);
         return;
       }
@@ -608,6 +615,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     await this.drop(key, "已分叉会话");
     // 只记下意图，下一条消息时才真正分叉（见 session() 里的 pendingFork）
     updateAgentBinding(key, conv.agent, { forkFrom: current });
+    touchConversation(key);
     this.emitEvent(key, { type: "meta" });
     return "已分叉，原会话保留。下一条消息起在分叉出来的新会话里继续。";
   }
@@ -621,6 +629,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     await this.drop(key, "会话已切换");
     if (sessionId !== agentBinding(conv).sessionId) this.clearOldUploads(key, at);
     updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
+    // 显式恢复 = 用户要接着它聊：刷新活跃时间，否则下一条消息会按恢复前的闲置时间判成过期
+    touchConversation(key);
     this.session(key, { resumeId: sessionId });
     this.emitEvent(key, { type: "meta" });
     const note =
