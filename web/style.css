@@ -231,6 +231,7 @@ select {
   display: flex;
   height: 100%;
   overflow: hidden;
+  position: relative;
 }
 
 .sidebar {
@@ -372,6 +373,10 @@ select {
   padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
   min-height: 52px;
   border-bottom: 1px solid transparent;
+  /* 不透明底色：iOS PWA 按顶部颜色给状态栏上色，透明的话会叠出一层朦胧的过渡 */
+  background: var(--bg);
+  position: relative;
+  z-index: 5;
 }
 
 .topbar .menu-btn {
@@ -419,6 +424,12 @@ select {
 
 .pill:hover {
   background: var(--bg-hover);
+}
+
+.pill.static,
+.pill.static:hover {
+  background: none;
+  cursor: default;
 }
 
 .pill .sub {
@@ -1044,6 +1055,75 @@ button.list-item:hover {
   border-color: var(--accent);
 }
 
+/* ----- 目录选择器 ----- */
+.dir-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.dir-crumbs .crumb {
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--accent);
+}
+
+.dir-crumbs .crumb:last-child {
+  color: inherit;
+  font-weight: 600;
+}
+
+.dir-crumbs .crumb:hover {
+  background: var(--bg-hover);
+}
+
+.dir-crumbs .crumb-sep {
+  color: var(--fg-faint);
+}
+
+.dir-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 120px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.dir-item {
+  padding: 8px 12px;
+}
+
+.dir-item .dir-icon {
+  width: 20px;
+  text-align: center;
+}
+
+.dir-item .dir-chev {
+  color: var(--fg-faint);
+  font-size: 18px;
+}
+
+.dir-manual {
+  flex: 1;
+  min-width: 160px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+  outline: none;
+}
+
+.dir-manual:focus {
+  border-color: var(--accent);
+}
+
+.modal-foot .grow {
+  flex: 1;
+}
+
 .menu {
   position: fixed;
   z-index: 50;
@@ -1199,8 +1279,10 @@ button.list-item:hover {
 /* ---------- 手机 ---------- */
 
 @media (max-width: 768px) {
+  /* 侧栏和遮罩用 absolute 而不是 fixed：iOS PWA 会拿贴着顶部的 fixed 元素给状态栏上色，
+     遮罩一出来状态栏就变暗，关掉后还不恢复 */
   .sidebar {
-    position: fixed;
+    position: absolute;
     inset: 0 auto 0 0;
     z-index: 30;
     transform: translateX(-100%);
@@ -1214,7 +1296,7 @@ button.list-item:hover {
   }
 
   .layout.side-open .scrim {
-    position: fixed;
+    position: absolute;
     inset: 0;
     background: rgba(0, 0, 0, 0.35);
     z-index: 25;

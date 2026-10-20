@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AGENT_IDS, config, saveConfig, type AppConfig } from "../../core/config.js";
+import { AGENT_IDS, config, listWorkspaceDirs, saveConfig, type AppConfig } from "../../core/config.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
@@ -27,6 +27,7 @@ import {
   verifyPassword,
 } from "./auth.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, sendJson } from "./http.js";
+import { addSubscription, listSubscriptions, pushToAll, removeSubscription, vapidPublicKey } from "./push.js";
 
 export const COOKIE = "aim_session";
 const startedAt = Date.now();
@@ -261,6 +262,41 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       pending: interactions.listPending(),
       serverTime: Date.now(),
     });
+    return;
+  }
+
+  // ----- 系统通知（Web Push） -----
+  if (p === "/api/push" && method === "GET") {
+    sendJson(res, 200, { publicKey: vapidPublicKey(), subscriptions: listSubscriptions() });
+    return;
+  }
+  if (p === "/api/push/subscribe" && method === "POST") {
+    const body = await readJsonBody<{ subscription?: unknown }>(req);
+    try {
+      const record = addSubscription(body.subscription, String(req.headers["user-agent"] ?? ""));
+      sendJson(res, 200, { ok: true, label: record.label });
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    return;
+  }
+  if (p === "/api/push/unsubscribe" && method === "POST") {
+    const body = await readJsonBody<{ endpoint?: string }>(req);
+    sendJson(res, 200, { ok: removeSubscription(String(body.endpoint ?? "")) });
+    return;
+  }
+  if (p === "/api/push/test" && method === "POST") {
+    const sent = await pushToAll({ title: "IM Agent", body: "测试通知：能看到这条，说明通知已经通了。", tag: "test", url: "/" });
+    if (sent === 0) throw new HttpError(502, "没有推送成功：还没有设备开启通知，或推送服务拒绝了（看服务日志）");
+    sendJson(res, 200, { sent });
+    return;
+  }
+
+  // ----- 目录选择器：列工作区内的子目录 -----
+  if (p === "/api/dirs" && method === "GET") {
+    const listing = listWorkspaceDirs(url.searchParams.get("path") ?? "");
+    if (!listing) throw new HttpError(404, `目录不存在，或不在 ${config().workspaceRoot} 之内`);
+    sendJson(res, 200, listing);
     return;
   }
 

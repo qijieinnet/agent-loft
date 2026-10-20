@@ -19,6 +19,7 @@ import { authEvents, ensureSetupToken, validateSession } from "./auth.js";
 import { cookies } from "./http.js";
 import { COOKIE } from "./api.js";
 import { HttpError, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
+import { hasSubscriptions, pushToAll } from "./push.js";
 
 const require = createRequire(import.meta.url);
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
@@ -113,7 +114,15 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: U
 
 // ---------- WebSocket ----------
 
-type Client = { ws: WebSocket; subs: Set<string>; alive: boolean; token: string };
+type Client = {
+  ws: WebSocket;
+  subs: Set<string>;
+  alive: boolean;
+  token: string;
+  /** 页面在前台，且正看着哪条会话（前端在切会话、切前后台时上报） */
+  visible: boolean;
+  viewing: string | null;
+};
 
 /** 每次进程启动换一个：客户端发现变了，就知道 seq 已经从头计数，得整页重拉 */
 const EPOCH = Math.random().toString(36).slice(2, 10);
@@ -143,6 +152,59 @@ function broadcastEvent(env: EventEnvelope): void {
 
 function broadcastInteraction(i: Interaction): void {
   for (const client of clients) send(client, { t: "ix", interaction: i });
+}
+
+// ---------- 系统通知（Web Push） ----------
+
+/** 有页面正在前台看着这条会话：人就在眼前，不用推 */
+function watching(key: string): boolean {
+  for (const client of clients) if (client.visible && client.viewing === key) return true;
+  return false;
+}
+
+/** 通知正文用：去掉 markdown 记号，压成一行 */
+export function plainPreview(text: string, max = 120): string {
+  const plain = text
+    .replace(/```[\s\S]*?```/g, " [代码] ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " [图片] ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_~#>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain.length > max ? `${plain.slice(0, max - 1)}…` : plain;
+}
+
+function convName(key: string): string {
+  const conv = getConversation(key);
+  if (!conv) return "IM Agent";
+  return conv.title?.trim() || hub.label(conv.agent);
+}
+
+/** 只推 Web 自己的会话：飞书会话的动静飞书已经会提醒 */
+function notifiable(key: string): boolean {
+  return getConversation(key)?.channel === "web" && hasSubscriptions() && !watching(key);
+}
+
+function pushEvent(env: EventEnvelope): void {
+  const ev = env.ev;
+  if (ev.type !== "result" && ev.type !== "error") return;
+  if (!notifiable(env.key)) return;
+  const name = convName(env.key);
+  const payload =
+    ev.type === "result"
+      ? { title: `${name} · 回复完成`, body: plainPreview(ev.text) || "（没有文字回复）" }
+      : { title: `${name} · 出错了`, body: plainPreview(ev.message) };
+  void pushToAll({ ...payload, tag: `reply:${env.key}`, url: `/#${encodeURIComponent(env.key)}` });
+}
+
+function pushInteraction(i: Interaction): void {
+  if (!notifiable(i.convKey)) return;
+  const name = convName(i.convKey);
+  const payload =
+    i.spec.kind === "approval"
+      ? { title: `${name} · 需要授权`, body: plainPreview(i.spec.title) }
+      : { title: `${name} · 有问题要你回答`, body: plainPreview(i.spec.questions[0]?.question ?? i.spec.title) };
+  void pushToAll({ ...payload, tag: `ix:${i.id}`, url: `/#${encodeURIComponent(i.convKey)}` });
 }
 
 const BY = "已在 Web 处理";
@@ -189,6 +251,11 @@ function handleClientMessage(client: Client, raw: string): void {
         });
         return ack(true);
       }
+
+      case "presence":
+        client.visible = msg.visible === true;
+        client.viewing = typeof msg.key === "string" && msg.key ? msg.key : null;
+        return;
 
       case "unsub":
         client.subs.delete(key);
@@ -302,7 +369,7 @@ export async function startWeb(): Promise<void> {
       }
       const token = cookies(req)[COOKIE] ?? "";
       wss!.handleUpgrade(req, socket, head, (ws) => {
-        const client: Client = { ws, subs: new Set(), alive: true, token };
+        const client: Client = { ws, subs: new Set(), alive: true, token, visible: false, viewing: null };
         clients.add(client);
         ws.on("pong", () => (client.alive = true));
         ws.on("message", (data) => {
@@ -339,7 +406,9 @@ export async function startWeb(): Promise<void> {
   heartbeat.unref();
 
   hub.on("event", broadcastEvent);
+  hub.on("event", pushEvent);
   interactions.on("created", broadcastInteraction);
+  interactions.on("created", pushInteraction);
   interactions.on("updated", broadcastInteraction);
   interactions.on("settled", broadcastInteraction);
 
@@ -363,7 +432,9 @@ function onRevoked(): void {
 export async function stopWeb(): Promise<void> {
   authEvents.off("revoked", onRevoked);
   hub.off("event", broadcastEvent);
+  hub.off("event", pushEvent);
   interactions.off("created", broadcastInteraction);
+  interactions.off("created", pushInteraction);
   interactions.off("updated", broadcastInteraction);
   interactions.off("settled", broadcastInteraction);
   if (heartbeat) clearInterval(heartbeat);

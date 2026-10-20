@@ -390,6 +390,11 @@ export class ClaudeSession implements AgentSession {
     }
   }
 
+  /** 已知的模型 / 思考程度，不拉起进程、不发请求（顶栏显示用） */
+  peekRuntime(): RuntimeInfo {
+    return this.runtime;
+  }
+
   /**
    * 当前实际生效的模型与思考程度。会拉起 CLI 进程，但不消耗对话轮次。
    * getSettings 没写进 SDK 的 Query 类型，先探测再调用。

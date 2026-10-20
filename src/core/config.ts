@@ -227,6 +227,48 @@ export function resolveWorkspacePath(input: string, base?: string): string | nul
   }
 }
 
+export type WorkspaceDirListing = {
+  root: string;
+  /** 绝对路径（工作区根目录的写法） */
+  path: string;
+  /** 相对工作区根目录，根目录本身是 "" */
+  rel: string;
+  dirs: { name: string; hidden: boolean }[];
+  /** 子目录太多，只列了前一部分 */
+  truncated: boolean;
+};
+
+const MAX_LISTED_DIRS = 500;
+
+/**
+ * 列出工作区内某个目录下的子目录，给 Web 的目录选择器用。只列目录不列文件；
+ * 指向工作区外面（或已经失效）的符号链接不列 —— 列出来也 /cd 不进去。
+ */
+export function listWorkspaceDirs(input: string): WorkspaceDirListing | null {
+  const root = config().workspaceRoot;
+  const resolved = resolveWorkspacePath(input || ".");
+  if (!resolved) return null;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(resolved, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const dirs: { name: string; hidden: boolean }[] = [];
+  for (const entry of entries) {
+    const ok = entry.isDirectory() || (entry.isSymbolicLink() && resolveWorkspacePath(path.join(resolved, entry.name)) !== null);
+    if (ok) dirs.push({ name: entry.name, hidden: entry.name.startsWith(".") });
+  }
+  dirs.sort((a, b) => Number(a.hidden) - Number(b.hidden) || a.name.localeCompare(b.name));
+  return {
+    root,
+    path: resolved,
+    rel: path.relative(root, resolved),
+    dirs: dirs.slice(0, MAX_LISTED_DIRS),
+    truncated: dirs.length > MAX_LISTED_DIRS,
+  };
+}
+
 export function isInsideWorkspace(dir: string): boolean {
   return resolveWorkspacePath(dir) === path.resolve(dir);
 }

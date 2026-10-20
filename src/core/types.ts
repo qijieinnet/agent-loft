@@ -135,6 +135,8 @@ export interface AgentSession {
   interrupt(): Promise<void>;
   setModel(model?: string, effort?: string): Promise<void>;
   describeRuntime(): Promise<RuntimeInfo>;
+  /** 手上已知的模型 / 思考程度，同步返回：不拉起进程、不发请求 */
+  peekRuntime?(): RuntimeInfo;
   dispose(): Promise<void>;
   /** 运行中切换「自动允许改文件」；不支持的 agent 不实现 */
   setAutoEdit?(on: boolean): Promise<void>;

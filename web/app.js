@@ -240,9 +240,18 @@ const WS = {
   subscribe(key, since) {
     this.raw({ t: "sub", key, since, epoch: this.epoch });
   },
+
+  /** 告诉服务器我是否在前台、正看着哪条会话：正看着的会话不推系统通知 */
+  presence() {
+    const visible = document.visibilityState === "visible" && document.hasFocus();
+    this.raw({ t: "presence", visible, key: S.current ?? "" });
+  },
 };
 
+for (const ev of ["focus", "blur"]) window.addEventListener(ev, () => WS.presence());
+
 document.addEventListener("visibilitychange", () => {
+  WS.presence();
   // 手机切回前台：连接多半已经被系统掐了，立刻重连而不是等退避
   if (document.visibilityState === "visible" && WS.sock?.readyState !== 1) {
     WS.backoff = 300;
@@ -278,6 +287,7 @@ function onWsMessage(msg) {
       const restarted = WS.epoch && WS.epoch !== msg.epoch;
       WS.epoch = msg.epoch;
       WS.hellos += 1;
+      WS.presence();
       if (restarted) {
         // 服务重启过：seq 从头计数了，旧游标全部作废，当前会话整页重拉
         S.seq.clear();
@@ -403,7 +413,15 @@ async function boot() {
   const fromHash = decodeURIComponent(location.hash.slice(1));
   if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
   else newDraft();
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    // 点了系统通知、页面本来就开着：跳到通知对应的会话
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data?.type !== "open") return;
+      const key = decodeURIComponent(new URL(e.data.url, location.origin).hash.slice(1));
+      if (key && S.convs.has(key) && key !== S.current) void openConversation(key);
+    });
+  }
 }
 
 function renderLayout() {
@@ -445,10 +463,27 @@ function renderLayout() {
 
 function openSide() {
   ui.layout.classList.add("side-open");
+  nudgeStatusBar();
 }
 
 function closeSide() {
-  ui.layout?.classList.remove("side-open");
+  if (!ui.layout?.classList.contains("side-open")) return;
+  ui.layout.classList.remove("side-open");
+  nudgeStatusBar();
+}
+
+/**
+ * iOS 26 的 PWA 会按页面顶部的颜色给状态栏上色，而且元素变了不一定重算，
+ * 侧栏遮罩关掉后状态栏还是暗的。重设一遍 theme-color 逼它刷新。
+ */
+function nudgeStatusBar() {
+  requestAnimationFrame(() => {
+    for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+      const v = meta.getAttribute("content");
+      meta.setAttribute("content", "");
+      meta.setAttribute("content", v);
+    }
+  });
 }
 
 // ---------- 侧边栏 ----------
@@ -557,31 +592,35 @@ function renderSidebar() {
 function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
   const agentId = c ? c.agent : S.draftAgent;
-  const agentPill = h(
-    "button",
-    {
-      class: "pill",
-      onclick: (e) => {
-        const allowed = c ? S.allowedAgents : S.agents.filter((a) => a.enabled).map((a) => a.id);
-        if (allowed.length < 2) return;
-        showMenu(
-          e.currentTarget,
-          allowed.map((id) => ({
-            label: `${agentLabel(id)}${id === agentId ? "  ✓" : ""}`,
-            onclick: () => switchAgent(id),
-          })),
-        );
-      },
-    },
-    agentLabel(agentId ?? "") || "无可用 agent",
-    icon("down"),
-  );
+  // 会话里只展示当前 agent，不能切换：两个 agent 的会话互不相通，切过去等于换了个人接着聊却看不到前文。
+  // 还没开始的新对话（草稿）可以选用哪个 agent。
+  const agentPill = c
+    ? h("span", { class: "pill static", title: "这条对话使用的智能体" }, agentLabel(agentId ?? "") || "无可用 agent")
+    : h(
+        "button",
+        {
+          class: "pill",
+          onclick: (e) => {
+            const allowed = S.agents.filter((a) => a.enabled).map((a) => a.id);
+            if (allowed.length < 2) return;
+            showMenu(
+              e.currentTarget,
+              allowed.map((id) => ({
+                label: `${agentLabel(id)}${id === agentId ? "  ✓" : ""}`,
+                onclick: () => switchAgent(id),
+              })),
+            );
+          },
+        },
+        agentLabel(agentId ?? "") || "无可用 agent",
+        icon("down"),
+      );
   const modelPill = c
     ? h(
         "button",
         { class: "pill", onclick: () => openModelPicker() },
-        h("span", { class: "sub" }, c.model ? c.model : "默认模型"),
-        c.effort ? h("span", { class: "sub" }, `· ${c.effort}`) : null,
+        h("span", { class: "sub model-name", title: c.runtimeModel ?? c.model ?? "" }, c.runtimeModel ?? c.model ?? "默认模型"),
+        (c.runtimeEffort ?? c.effort) ? h("span", { class: "sub" }, `· ${c.runtimeEffort ?? c.effort}`) : null,
         icon("down"),
       )
     : null;
@@ -660,6 +699,7 @@ function newDraft() {
   S.uploads = [];
   setBusy(false);
   history.replaceState(null, "", location.pathname);
+  WS.presence();
   renderTopbar();
   renderEmpty();
   renderChips();
@@ -709,6 +749,7 @@ async function openConversation(key) {
   S.uploads = [];
   renderChips();
   history.replaceState(null, "", `#${encodeURIComponent(key)}`);
+  WS.presence();
   renderTopbar();
   renderSidebar();
   fill(ui.msgInner, h("div", { class: "empty" }, h("span", { class: "spinner" })));
@@ -1204,6 +1245,7 @@ async function ensureConversation() {
   S.allowedAgents = S.agents.filter((a) => a.enabled).map((a) => a.id);
   S.seq.set(info.key, 0);
   history.replaceState(null, "", `#${encodeURIComponent(info.key)}`);
+  WS.presence();
   fill(ui.msgInner, );
   WS.subscribe(info.key, 0);
   renderTopbar();
@@ -1632,12 +1674,121 @@ async function openSessions(all) {
   }
 }
 
+/** 目录选择器：一层层点进去选，也能手动输入。只能在 workspaceRoot 之内 */
 async function changeCwd() {
-  const c = S.convs.get(S.current);
-  const dir = prompt(`切换到哪个目录？（相对 ${S.workspaceRoot ?? "workspace"}，切换后开新会话）`, "");
-  if (dir === null || !dir.trim()) return;
-  await doAction("cd", dir.trim());
-  void c;
+  const conv = S.convs.get(S.current);
+  const current = conv?.cwd ?? "";
+  let showHidden = localStorage.getItem("aim.cwdHidden") === "1";
+  let listing = null;
+  let seq = 0;
+
+  const crumbs = h("div", { class: "dir-crumbs" });
+  const list = h("div", { class: "dir-list" });
+  const hiddenBox = h("input", { type: "checkbox", checked: showHidden });
+  hiddenBox.onchange = () => {
+    showHidden = hiddenBox.checked;
+    localStorage.setItem("aim.cwdHidden", showHidden ? "1" : "0");
+    renderList();
+  };
+  const manual = h("input", { class: "dir-manual", placeholder: "或直接输入路径（相对工作区，回车跳转）" });
+  manual.onkeydown = (e) => {
+    if (e.key === "Enter" && manual.value.trim()) {
+      e.preventDefault();
+      void load(manual.value.trim());
+    }
+  };
+  const body = h(
+    "div",
+    { class: "modal-body" },
+    crumbs,
+    h("div", { class: "row", style: { gap: "8px", alignItems: "center" } }, manual, h("label", { class: "check" }, hiddenBox, "显示隐藏")),
+    list,
+  );
+  const go = h("button", { class: "btn primary", disabled: true }, "切换到此目录");
+  const note = h("span", { class: "muted grow" }, "切换后开新会话");
+  const close = modal({ title: "切换工作目录", body, foot: h("div", { class: "modal-foot", style: { alignItems: "center" } }, note, go) });
+
+  go.onclick = async () => {
+    if (!listing) return;
+    close();
+    await doAction("cd", listing.path);
+  };
+
+  function renderCrumbs() {
+    const parts = listing.rel ? listing.rel.split(/[\\/]/) : [];
+    const rootName = listing.root.split(/[\\/]/).filter(Boolean).pop() || listing.root;
+    const items = [h("button", { class: "crumb", title: listing.root, onclick: () => load("") }, rootName)];
+    parts.forEach((name, i) => {
+      items.push(h("span", { class: "crumb-sep" }, "/"));
+      const rel = parts.slice(0, i + 1).join("/");
+      items.push(h("button", { class: "crumb", onclick: () => load(rel) }, name));
+    });
+    fill(crumbs, items);
+  }
+
+  function renderList() {
+    if (!listing) return;
+    const join = (name) => (listing.rel ? `${listing.rel}/${name}` : name);
+    const dirs = listing.dirs.filter((d) => showHidden || !d.hidden);
+    const hiddenCount = listing.dirs.length - dirs.length;
+    fill(
+      list,
+      listing.rel
+        ? h(
+            "button",
+            { class: "list-item dir-item", onclick: () => load(listing.rel.split(/[\\/]/).slice(0, -1).join("/")) },
+            h("span", { class: "dir-icon" }, "↩"),
+            h("div", { class: "grow" }, h("div", { class: "t" }, "..")),
+          )
+        : null,
+      dirs.length === 0 ? h("div", { class: "muted" }, hiddenCount ? `没有子目录（${hiddenCount} 个隐藏目录未显示）` : "没有子目录") : null,
+      dirs.map((d) => {
+        const abs = `${listing.path.replace(/[\\/]+$/, "")}/${d.name}`;
+        const isCurrent = abs === current;
+        return h(
+          "button",
+          { class: `list-item dir-item${isCurrent ? " on" : ""}`, onclick: () => load(join(d.name)) },
+          h("span", { class: "dir-icon" }, "📁"),
+          h("div", { class: "grow" }, h("div", { class: "t" }, d.name)),
+          isCurrent ? h("span", { class: "muted" }, "当前") : current.startsWith(`${abs}/`) ? h("span", { class: "muted" }, "当前在内") : null,
+          h("span", { class: "dir-chev" }, "›"),
+        );
+      }),
+      listing.truncated ? h("div", { class: "muted" }, "子目录太多，只列出了一部分，可以手动输入路径") : null,
+    );
+  }
+
+  async function load(rel) {
+    const my = ++seq;
+    go.disabled = true;
+    fill(list, h("span", { class: "spinner" }));
+    try {
+      const data = await api(`/api/dirs?path=${encodeURIComponent(rel)}`);
+      if (my !== seq) return;
+      listing = data;
+      manual.value = "";
+      go.disabled = false;
+      go.textContent = data.path === current ? "已是当前目录" : "切换到此目录";
+      if (data.path === current) go.disabled = true;
+      renderCrumbs();
+      renderList();
+    } catch (err) {
+      if (my !== seq) return;
+      if (!listing) {
+        fill(list, h("div", { class: "error-text" }, err.message));
+        return;
+      }
+      // 进不去就留在原地
+      toast(err.message);
+      go.disabled = listing.path === current;
+      renderList();
+    }
+  }
+
+  // 从当前目录开始（在工作区之内的话），否则从根目录开始
+  const root = S.workspaceRoot ?? "";
+  const startRel = root && (current === root || current.startsWith(`${root.replace(/[\\/]+$/, "")}/`)) ? current.slice(root.replace(/[\\/]+$/, "").length + 1) : "";
+  await load(startRel);
 }
 
 async function showStatus() {
@@ -1693,6 +1844,7 @@ async function openSettings() {
     ["命令", () => commandsTab(cfg, panel)],
     ["飞书机器人", () => feishuTab(cfg, panel)],
     ["授权", () => authTab(panel)],
+    ["通知", () => notifyTab(panel)],
     ["安全", () => securityTab(panel)],
     ["系统", () => systemTab(panel, close)],
   ];
@@ -1703,6 +1855,130 @@ async function openSettings() {
   };
   nav.append(...tabs.map(([name], i) => h("button", { onclick: () => select(i) }, name)));
   select(0);
+}
+
+// ---------- 系统通知（Web Push） ----------
+
+function pushSupport() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  if (!window.isSecureContext) return { ok: false, why: "通知需要 HTTPS 访问（localhost 除外）。请通过 HTTPS 的反向代理地址打开。" };
+  if (ios && !standalone) {
+    return { ok: false, why: "iPhone / iPad 上要先在 Safari 里点「分享 → 添加到主屏幕」，再从桌面图标打开，才能开启通知（需 iOS 16.4+）。" };
+  }
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return { ok: false, why: "这个浏览器不支持网页推送通知。" };
+  }
+  return { ok: true };
+}
+
+function swReady(ms = 8000) {
+  return Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Service Worker 没有就绪，刷新页面再试")), ms)),
+  ]);
+}
+
+async function currentPushSub() {
+  if (!pushSupport().ok) return null;
+  try {
+    return await (await swReady()).pushManager.getSubscription();
+  } catch {
+    return null;
+  }
+}
+
+async function enablePush() {
+  // 必须在点击里直接请求权限，iOS 不认异步之后再弹的
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") throw new Error(permission === "denied" ? "通知权限被拒绝了，请到系统设置里给这个应用打开通知" : "没有授予通知权限");
+  const { publicKey } = await api("/api/push");
+  const reg = await swReady();
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    const raw = atob(publicKey.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(publicKey.length / 4) * 4, "="));
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: Uint8Array.from(raw, (c) => c.charCodeAt(0)),
+    });
+  }
+  await api("/api/push/subscribe", { method: "POST", body: { subscription: sub.toJSON() } });
+}
+
+async function notifyTab(panel) {
+  const support = pushSupport();
+  const box = h("div", { class: "section" }, h("h4", {}, "系统通知"), h("span", { class: "spinner" }));
+  fill(panel, box);
+  const render = async () => {
+    let data = { subscriptions: [] };
+    try {
+      data = await api("/api/push");
+    } catch (err) {
+      fill(box, h("h4", {}, "系统通知"), h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    const mine = await currentPushSub();
+    const here = mine && data.subscriptions.some((d) => d.endpoint === mine.endpoint);
+    const busy = (btn, fn) => async () => {
+      btn.disabled = true;
+      try {
+        await fn();
+      } catch (err) {
+        toast(err.message);
+      }
+      btn.disabled = false;
+      await render();
+    };
+    const onBtn = h("button", { class: "btn primary" }, "在此设备开启通知");
+    onBtn.onclick = busy(onBtn, async () => {
+      await enablePush();
+      toast("已开启，可以发一条测试通知看看");
+    });
+    const offBtn = h("button", { class: "btn" }, "关闭此设备的通知");
+    offBtn.onclick = busy(offBtn, async () => {
+      await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: mine.endpoint } });
+      await mine.unsubscribe().catch(() => {});
+      toast("已关闭");
+    });
+    const testBtn = h("button", { class: "btn" }, "发送测试通知");
+    testBtn.onclick = busy(testBtn, async () => {
+      const r = await api("/api/push/test", { method: "POST" });
+      toast(`已发送到 ${r.sent} 台设备`);
+    });
+    fill(
+      box,
+      h("h4", {}, "系统通知"),
+      h("div", { class: "muted" }, "Web 对话里 agent 回复完成、出错、需要授权或向你提问时，推送到开启了通知的设备。正在前台看着那条对话的时候不推。飞书对话由飞书自己提醒。"),
+      support.ok
+        ? h("div", { class: "row" }, here ? offBtn : onBtn, data.subscriptions.length ? testBtn : null)
+        : h("div", { class: "error-text" }, support.why),
+      support.ok && Notification.permission === "denied"
+        ? h("div", { class: "error-text" }, "这个设备的通知权限已被拒绝，需要到系统设置（iPhone：设置 → 通知 → IM Agent）里重新打开。")
+        : null,
+      h("h4", {}, "已开启通知的设备"),
+      data.subscriptions.length === 0
+        ? h("div", { class: "muted" }, "还没有")
+        : data.subscriptions.map((d) => {
+            const rm = h("button", { class: "btn small" }, "移除");
+            rm.onclick = busy(rm, async () => {
+              await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: d.endpoint } });
+              if (mine && mine.endpoint === d.endpoint) await mine.unsubscribe().catch(() => {});
+            });
+            return h(
+              "div",
+              { class: "list-item" },
+              h(
+                "div",
+                { class: "grow" },
+                h("div", { class: "t" }, d.label, mine && mine.endpoint === d.endpoint ? "（本设备）" : ""),
+                h("div", { class: "s" }, `开启于 ${relTime(d.createdAt)}${d.lastOkAt ? ` · 上次送达 ${relTime(d.lastOkAt)}` : ""}`),
+              ),
+              rm,
+            );
+          }),
+    );
+  };
+  await render();
 }
 
 async function saveConfig(cfg, patch) {

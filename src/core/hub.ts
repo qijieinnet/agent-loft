@@ -110,6 +110,9 @@ export type ConversationInfo = {
   sessionId?: string;
   model?: string;
   effort?: string;
+  /** 实际在用的模型 / 思考程度（尽力而为，可能不全）。model/effort 只是显式选过的 */
+  runtimeModel?: string;
+  runtimeEffort?: string;
   busy: boolean;
   activeAt: number;
   createdAt: number;
@@ -159,12 +162,21 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private sessionSeq = 0;
   /** 每条会话的「停止代次」：排队中的发送在真正送出前对一下，点过停止的就作废 */
   private stopGen = new Map<string, number>();
+  /** 每条会话最近一次实际生效的模型 / 思考程度（会话进程退了也留着，顶栏显示用） */
+  private lastRuntime = new Map<string, { agent: string; runtime: RuntimeInfo }>();
+  /** 各 agent 的默认模型 / 思考程度（driver.defaults() 的结果，Codex 要问 app-server，所以缓存） */
+  private defaultsCache = new Map<string, RuntimeInfo>();
+  private defaultsLoading = new Set<string>();
+  /** 已经补问过实际设置的会话进程（Live.id） */
+  private runtimeAsked = new Set<number>();
 
   constructor() {
     super();
     this.setMaxListeners(100);
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
     onConfigChange((next, prev) => {
+      // 默认模型可能改了，缓存作废，下次显示时重新读
+      this.defaultsCache.clear();
       // agent 被禁用：它所有活着的会话立刻停掉
       const agents = next.agents as Record<string, { enabled: boolean }>;
       for (const [key, live] of [...this.live]) {
@@ -196,6 +208,69 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   registerDriver(driver: AgentDriver): void {
     this.drivers.set(driver.id, driver);
+  }
+
+  /** 后台读一次 agent 的默认配置（第一次要显示时才读），读到后通知用它的会话刷新顶栏 */
+  private loadDefaults(agent: string): void {
+    const driver = this.drivers.get(agent);
+    if (!driver || this.defaultsLoading.has(agent)) return;
+    this.defaultsLoading.add(agent);
+    void withTimeout(driver.defaults(), "读取默认配置")
+      .then((defaults) => {
+        const prev = this.defaultsCache.get(agent);
+        this.defaultsCache.set(agent, defaults);
+        if (prev?.model === defaults.model && prev?.effort === defaults.effort) return;
+        for (const conv of listConversations()) {
+          if (conv.agent === agent && !conv.hidden) this.emitEvent(conv.key, { type: "meta" });
+        }
+      })
+      .catch((err) => {
+        // 记个空结果，别每次刷新顶栏都重试
+        this.defaultsCache.set(agent, {});
+        console.error(`[${agent}] 读取默认配置失败:`, err);
+      })
+      .finally(() => this.defaultsLoading.delete(agent));
+  }
+
+  /** 会话进程要退了：记下它最后实际用的模型，之后顶栏还能显示 */
+  private rememberRuntime(key: string, live: Live): void {
+    this.runtimeAsked.delete(live.id);
+    const runtime = live.session.peekRuntime?.();
+    if (runtime && (runtime.model || runtime.effort)) this.lastRuntime.set(key, { agent: live.agent, runtime: { ...runtime } });
+  }
+
+  /**
+   * 一轮结束后补问一次实际设置（Claude 的 init 消息里不一定带思考程度）。
+   * 进程已经在跑，不会额外拉起；每个会话进程只问一次。
+   */
+  private refreshRuntimeOnce(key: string, liveId: number): void {
+    const live = this.live.get(key);
+    if (!live || live.id !== liveId || this.runtimeAsked.has(liveId)) return;
+    this.runtimeAsked.add(liveId);
+    const before = live.session.peekRuntime?.() ?? {};
+    void withTimeout(live.session.describeRuntime(), "读取模型信息")
+      .then((rt) => {
+        if (this.live.get(key)?.id !== liveId) return;
+        if (rt.model !== before.model || rt.effort !== before.effort) this.emitEvent(key, { type: "meta" });
+      })
+      .catch(() => {});
+  }
+
+  /**
+   * 顶栏显示用的模型 / 思考程度：不拉起进程、不发请求，只拼手上已有的信息。
+   * 优先级和 runtimeNow 一致：活着的会话 > 显式选过的 > 上次实际跑的 > 设置里的默认 > agent 自己的默认。
+   */
+  private displayRuntime(conv: { key: string; agent: string }, binding: { model?: string; effort?: string }): RuntimeInfo {
+    const live = this.live.get(conv.key);
+    const peek = live && live.agent === conv.agent ? (live.session.peekRuntime?.() ?? {}) : {};
+    const last = this.lastRuntime.get(conv.key);
+    const lastRt = last && last.agent === conv.agent ? last.runtime : {};
+    const defaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[conv.agent];
+    const fallback = this.defaultsCache.get(conv.agent);
+    if (!fallback) this.loadDefaults(conv.agent);
+    const model = peek.model ?? binding.model ?? lastRt.model ?? (defaults?.defaultModel || undefined) ?? fallback?.model;
+    const effort = peek.effort ?? binding.effort ?? lastRt.effort ?? (defaults?.defaultEffort || undefined) ?? fallback?.effort;
+    return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
 
   driver(id: string): AgentDriver | undefined {
@@ -317,6 +392,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       ...(binding.sessionId ? { sessionId: binding.sessionId } : {}),
       ...(binding.model ? { model: binding.model } : {}),
       ...(binding.effort ? { effort: binding.effort } : {}),
+      ...(() => {
+        const rt = this.displayRuntime(conv, binding);
+        return { ...(rt.model ? { runtimeModel: rt.model } : {}), ...(rt.effort ? { runtimeEffort: rt.effort } : {}) };
+      })(),
       busy: this.isBusy(key),
       activeAt: conv.activeAt,
       createdAt: conv.createdAt,
@@ -342,6 +421,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     }
     if (existing) {
       interactions.cancelAll(key, "会话已切换");
+      this.rememberRuntime(key, existing);
       this.live.delete(key);
       void existing.session.dispose();
     }
@@ -385,6 +465,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           if (result.tokens !== undefined) parts.push(`${result.tokens} tokens`);
           this.emitEvent(key, { type: "result", text: result.text, footer: parts.join("　") });
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+          this.refreshRuntimeOnce(key, liveId);
         },
         onError: (err) => {
           if (!alive()) return;
@@ -434,6 +515,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   async drop(key: string, note: string): Promise<void> {
     interactions.cancelAll(key, note);
     const existing = this.live.get(key);
+    if (existing) this.rememberRuntime(key, existing);
     this.live.delete(key);
     this.setInflight(key, 0);
     if (!existing) return;
@@ -657,6 +739,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         : await withTimeout(driver.defaults(), "读取默认配置").catch(() => ({}) as RuntimeInfo);
     const model = runtime.model ?? binding.model ?? (defaults?.defaultModel || undefined) ?? fallback.model;
     const effort = runtime.effort ?? binding.effort ?? (defaults?.defaultEffort || undefined) ?? fallback.effort;
+    if (runtime.model || runtime.effort) this.lastRuntime.set(key, { agent: conv.agent, runtime });
     return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
 

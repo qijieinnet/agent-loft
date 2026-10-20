@@ -437,6 +437,11 @@ export class CodexSession implements AgentSession {
     this.runtime = { ...(nextModel ? { model: nextModel } : {}), ...(nextEffort ? { effort: nextEffort } : {}) };
   }
 
+  /** 已知的模型 / 思考程度，不拉起进程、不发请求（顶栏显示用） */
+  peekRuntime(): RuntimeInfo {
+    return this.runtime;
+  }
+
   /** 不额外发请求，也绝不为此新开 thread（否则历史里会留一串空会话）。 */
   async describeRuntime(): Promise<RuntimeInfo> {
     return this.runtime;

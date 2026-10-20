@@ -165,6 +165,34 @@ test("/cd 不能经符号链接跳出工作区，也不能进不存在的目录"
   assert.equal(resolveWorkspacePath("../"), null);
 });
 
+test("目录选择器只列工作区内的子目录，不列文件和跳出去的链接", async () => {
+  const { loadConfig, saveConfig, config, listWorkspaceDirs } = await import("../src/core/config.js");
+  loadConfig();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aim-root-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "aim-out-"));
+  fs.mkdirSync(path.join(root, "b"));
+  fs.mkdirSync(path.join(root, "a", "deep"), { recursive: true });
+  fs.mkdirSync(path.join(root, ".git"));
+  fs.writeFileSync(path.join(root, "file.txt"), "x");
+  fs.symlinkSync(outside, path.join(root, "escape"));
+  fs.symlinkSync(path.join(root, "b"), path.join(root, "link-b"));
+  saveConfig({ ...structuredClone(config()), workspaceRoot: root });
+  const top = listWorkspaceDirs("")!;
+  assert.equal(top.rel, "");
+  assert.deepEqual(
+    top.dirs.map((d) => d.name),
+    ["a", "b", "link-b", ".git"],
+  );
+  assert.equal(top.dirs.find((d) => d.name === ".git")!.hidden, true);
+  const sub = listWorkspaceDirs("a")!;
+  assert.equal(sub.path, path.join(root, "a"));
+  assert.equal(sub.rel, "a");
+  assert.deepEqual(sub.dirs.map((d) => d.name), ["deep"]);
+  assert.equal(listWorkspaceDirs("escape"), null);
+  assert.equal(listWorkspaceDirs(".."), null);
+  assert.equal(listWorkspaceDirs("file.txt"), null);
+});
+
 test("事件补发：缓冲区截断过就要求整页重拉，即使之后压缩变短", async () => {
   const { hub } = await import("../src/core/hub.js");
   const key = "k-buffer";
@@ -426,6 +454,55 @@ test("代次：下载附件期间 /cd 或 /new，旧消息作废；关掉的 age
   assert.deepEqual(sent, ["新"]);
   cfg.agents.codex.enabled = true;
   saveConfig(cfg);
+});
+
+test("顶栏模型：没起进程时用 agent 默认，跑起来后显示实际的，进程退了还记得", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { loadConfig, saveConfig, config } = await import("../src/core/config.js");
+  loadConfig();
+  const cfg = structuredClone(config());
+  cfg.agents.codex.enabled = true;
+  cfg.agents.codex.defaultModel = "";
+  cfg.agents.codex.defaultEffort = "";
+  saveConfig(cfg);
+  let runtime: { model?: string; effort?: string } = {};
+  hub.registerDriver({
+    id: "codex",
+    label: "C",
+    capabilities: { effort: true, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: () => ({
+      sessionId: undefined,
+      send: () => {},
+      interrupt: async () => {},
+      setModel: async () => {},
+      describeRuntime: async () => runtime,
+      peekRuntime: () => runtime,
+      dispose: async () => {},
+    }),
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    catalog: async () => [],
+    defaults: async () => ({ model: "toml-model", effort: "medium" }),
+    statusLines: async () => [],
+    diagnose: (e) => ({ kind: "x", chatMessage: String(e), consoleHint: "" }),
+  });
+  const key = "web:runtime";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "codex" });
+  hub.info(key); // 第一次触发后台读默认
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(hub.info(key)!.runtimeModel, "toml-model");
+  assert.equal(hub.info(key)!.runtimeEffort, "medium");
+  assert.equal(hub.info(key)!.model, undefined);
+  hub.session(key);
+  runtime = { model: "gpt-real", effort: "high" };
+  assert.equal(hub.info(key)!.runtimeModel, "gpt-real");
+  assert.equal(hub.info(key)!.runtimeEffort, "high");
+  await hub.drop(key, "test");
+  assert.equal(hub.info(key)!.runtimeModel, "gpt-real");
 });
 
 test("切换途中收到的附件不被清掉；改 workspaceRoot 让下载中的旧消息作废", async () => {
