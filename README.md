@@ -1,8 +1,21 @@
+<p align="center"><img src="web/icon.svg" width="120" alt="agent-loft"></p>
+
 # agent-loft
 
-用飞书（以后还有 Telegram 等）和 Web 页面，驱动本机的 **Claude Code** 和 **Codex**。
+**多个 agent 的工作台。** 把本机的 **Claude Code**、**Codex**（以后还有更多）放到同一张台面上统一管理，用飞书（以后还有 Telegram 等）和 Web 页面随时随地驱动它们。
 
 由 `feishu-claude-bridge` 和 `feishu-codex-bridge` 合并而来：一个进程、一份配置，飞书和网页共用同一套会话、审批和模型切换。
+
+## 理念
+
+这里的 Loft 不是阁楼，是**工作台**：agent 是干活的人，agent-loft 是它们共用的那张台面。
+
+- **多 agent，一张台面**：Claude Code、Codex 各有所长，不该各开一个窗口、各记一套会话。它们在这里共用工作目录、会话列表、审批和模型切换，同一条对话里随时换人接手，各自的上下文都还在。
+- **统一管理，而不是再造一个 agent**：agent-loft 不自己做模型、不改 agent 的行为，只负责把官方的 agent 接进来、管起来。新的 agent 接一个驱动就能上台。
+- **人在哪，台面就在哪**：电脑上用网页，手机上用 PWA 或飞书。同一个会话、同一个授权请求，在哪个渠道处理都行，其他地方自动同步。
+- **跑在你自己的机器上**：代码、凭据和会话都留在本机，agent-loft 只是一层安全的遥控。
+
+Logo 就是这个意思：一大两小几颗星（多个 agent）站在同一张台面上。
 
 ## 能做什么
 

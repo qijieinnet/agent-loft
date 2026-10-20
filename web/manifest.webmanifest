@@ -1,7 +1,7 @@
 {
   "name": "Agent Loft",
   "short_name": "Agent Loft",
-  "description": "在手机和电脑上驱动本机的 Claude Code / Codex",
+  "description": "多个 agent 的工作台：在手机和电脑上统一管理本机的 Claude Code / Codex",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
