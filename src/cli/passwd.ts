@@ -1,4 +1,4 @@
-// im-agent passwd：在终端里重置 Web 登录密码（忘记密码时用）。所有已登录设备会下线。
+// agent-loft passwd：在终端里重置 Web 登录密码（忘记密码时用）。所有已登录设备会下线。
 import readline from "node:readline/promises";
 import { loadConfig } from "../core/config.js";
 import { setPassword } from "../channels/web/auth.js";

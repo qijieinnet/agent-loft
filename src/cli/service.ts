@@ -1,6 +1,6 @@
-// im-agent service install | uninstall | restart | status
+// agent-loft service install | uninstall | restart | status
 //
-// Linux 用 systemd 用户服务，macOS 用 launchd。只碰服务定义文件，不碰 ~/.im-agent 里的配置和会话。
+// Linux 用 systemd 用户服务，macOS 用 launchd。只碰服务定义文件，不碰 ~/.agent-loft 里的配置和会话。
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -8,8 +8,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { home, logsDir } from "../home.js";
 
-const UNIT = "im-agent";
-const LABEL = "com.im-agent";
+const UNIT = "agent-loft";
+const LABEL = "com.agent-loft";
+/** 改名前的服务名。装新服务时顺手卸掉，免得新旧两个进程抢同一个飞书机器人的消息 */
+const LEGACY_UNIT = "im-agent";
+const LEGACY_LABEL = "com.im-agent";
 const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../bin/cli.js");
 
 function unitPath(): string {
@@ -31,7 +34,7 @@ function servicePath(): string {
 
 function systemdUnit(): string {
   return `[Unit]
-Description=im-agent（飞书 / Web ↔ Claude Code / Codex）
+Description=agent-loft（飞书 / Web ↔ Claude Code / Codex）
 After=network-online.target
 # 默认「10 秒内重启 5 次就永久放弃」，那正是崩溃循环最需要它别放弃的时候
 StartLimitIntervalSec=0
@@ -43,7 +46,7 @@ WorkingDirectory=${home}
 StandardOutput=append:${path.join(logsDir, "out.log")}
 StandardError=append:${path.join(logsDir, "err.log")}
 Environment=PATH=${servicePath()}
-Environment=IM_AGENT_HOME=${home}
+Environment=AGENT_LOFT_HOME=${home}
 Restart=always
 RestartSec=5
 
@@ -66,10 +69,25 @@ function plist(): string {
   <key>StandardErrorPath</key><string>${esc(path.join(logsDir, "err.log"))}</string>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>${esc(servicePath())}</string>
-    <key>IM_AGENT_HOME</key><string>${esc(home)}</string>
+    <key>AGENT_LOFT_HOME</key><string>${esc(home)}</string>
   </dict>
 </dict></plist>
 `;
+}
+
+function removeLegacyService(): void {
+  if (process.platform === "darwin") {
+    const file = path.join(os.homedir(), "Library/LaunchAgents", `${LEGACY_LABEL}.plist`);
+    if (!fs.existsSync(file)) return;
+    spawnSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 0}/${LEGACY_LABEL}`]);
+    fs.rmSync(file, { force: true });
+  } else {
+    const file = path.join(os.homedir(), ".config/systemd/user", `${LEGACY_UNIT}.service`);
+    if (!fs.existsSync(file)) return;
+    spawnSync("systemctl", ["--user", "disable", "--now", LEGACY_UNIT], { stdio: "inherit" });
+    fs.rmSync(file, { force: true });
+  }
+  console.log(`已停用并移除旧的 ${LEGACY_UNIT} 服务（配置目录不动）`);
 }
 
 function run(cmd: string, args: string[]): void {
@@ -82,6 +100,7 @@ fs.mkdirSync(logsDir, { recursive: true });
 if (process.platform === "darwin") {
   const uid = process.getuid?.() ?? 0;
   if (sub === "install") {
+    removeLegacyService();
     fs.mkdirSync(path.dirname(unitPath()), { recursive: true });
     fs.writeFileSync(unitPath(), plist());
     spawnSync("launchctl", ["bootout", `gui/${uid}/${LABEL}`]);
@@ -98,6 +117,7 @@ if (process.platform === "darwin") {
   }
 } else {
   if (sub === "install") {
+    removeLegacyService();
     fs.mkdirSync(path.dirname(unitPath()), { recursive: true });
     fs.writeFileSync(unitPath(), systemdUnit());
     run("systemctl", ["--user", "daemon-reload"]);

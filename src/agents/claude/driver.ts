@@ -33,7 +33,7 @@ const readCatalog = cachedProbe(10 * 60_000, "模型列表", () => withProbe(asy
 
 /**
  * 斜杠命令（skills、/compact 这些）。项目目录里可能有自己的命令，所以按 cwd 分开缓存；
- * 装了新 skill 最多 5 分钟后出现。读不到就只显示 im-agent 自己的命令。
+ * 装了新 skill 最多 5 分钟后出现。读不到就只显示 agent-loft 自己的命令。
  */
 const commandReaders = new Map<string, () => Promise<AgentCommand[]>>();
 function readCommands(cwd: string): Promise<AgentCommand[]> {

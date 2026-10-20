@@ -176,7 +176,7 @@ export function plainPreview(text: string, max = 120): string {
 
 function convName(key: string): string {
   const conv = getConversation(key);
-  if (!conv) return "IM Agent";
+  if (!conv) return "Agent Loft";
   return conv.title?.trim() || hub.label(conv.agent);
 }
 
@@ -266,7 +266,7 @@ function handleClientMessage(client: Client, raw: string): void {
         const text = typeof msg.text === "string" ? msg.text : "";
         const attachments = takeUploads(key, msg.uploads);
         if (!text.trim() && attachments.length === 0) return ack(false, { error: "空消息" });
-        // 和飞书一致：整条消息是 im-agent 命令就由 hub 执行，结果随 ack 回给发命令的这个页面，
+        // 和飞书一致：整条消息是 agent-loft 命令就由 hub 执行，结果随 ack 回给发命令的这个页面，
         // 不进会话记录。带附件的一律当聊天。
         const command = attachments.length > 0 ? null : parseCommand(text);
         if (command && command.kind !== "chat") {

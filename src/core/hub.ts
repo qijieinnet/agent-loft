@@ -1124,7 +1124,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   /**
    * 某个 agent 的完整命令表（含隐藏项，带 hidden 标记），已按配置排序。
-   * 原生命令读不到、或者超时，就只给 im-agent 自己的 —— 列表少几项，总比「/」没反应强。
+   * 原生命令读不到、或者超时，就只给 agent-loft 自己的 —— 列表少几项，总比「/」没反应强。
    * 未启用的 agent 不去问：问一次就可能拉起它的进程。
    */
   async commandCatalog(

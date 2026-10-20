@@ -1,5 +1,5 @@
 {
-  "name": "im-agent",
+  "name": "agent-loft",
   "version": "0.2.7",
   "type": "module",
   "description": "把飞书（以及以后的 Telegram 等）和 Web 页面桥接到本机 Claude Code / Codex：聊天驱动、卡片审批、会话与模型切换",
@@ -14,20 +14,20 @@
   ],
   "license": "MIT",
   "author": "qijieinnet",
-  "homepage": "https://github.com/qijieinnet/im-agent#readme",
+  "homepage": "https://github.com/qijieinnet/agent-loft#readme",
   "bugs": {
-    "url": "https://github.com/qijieinnet/im-agent/issues"
+    "url": "https://github.com/qijieinnet/agent-loft/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qijieinnet/im-agent.git"
+    "url": "git+https://github.com/qijieinnet/agent-loft.git"
   },
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "im-agent": "bin/cli.js",
-    "ima": "bin/cli.js"
+    "agent-loft": "bin/cli.js",
+    "aloft": "bin/cli.js"
   },
   "files": [
     "bin",
@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "start": "node bin/cli.js start",
-    "dev": "IM_AGENT_HOME=./.dev tsx watch src/main.ts",
+    "dev": "AGENT_LOFT_HOME=./.dev tsx watch src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "prepublishOnly": "npm run typecheck"

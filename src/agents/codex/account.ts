@@ -1,7 +1,7 @@
 // 账号额度：Codex 的 5 小时 / 7 天用量窗口。
 //
 // 这块是补一个认知落差：Codex 自己的 TUI 里 `/status` 会显示剩余额度，
-// 而im-agent的 `/status` 是另一条命令（同名而已），本来只报会话和目录。
+// 而agent-loft的 `/status` 是另一条命令（同名而已），本来只报会话和目录。
 // 用的人不会关心这个区别，他只知道「同样敲 /status，这边少了额度」。
 // 与其解释，不如把它显示出来 —— app-server 本来就给了。
 import type { QuotaInfo } from "../../core/types.js";

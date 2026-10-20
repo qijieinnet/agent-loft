@@ -10,7 +10,7 @@
 /** 无法应答的请求：交给 JSON-RPC 的 error 通道，而不是编一个结构出来。 */
 export class UnsupportedRequest extends Error {
   constructor(method: string) {
-    super(`im-agent不支持 ${method}`);
+    super(`agent-loft不支持 ${method}`);
     this.name = "UnsupportedRequest";
   }
 }
@@ -45,12 +45,12 @@ export function refusalFor(method: string): unknown | null {
     // 它们用的是 ReviewDecision，拒绝要带一句理由。
     case "execCommandApproval":
     case "applyPatchApproval":
-      return { decision: { denied: { rejection: "im-agent未获授权" } } };
+      return { decision: { denied: { rejection: "agent-loft未获授权" } } };
 
     // 服务端让我们代为调一个工具。没实现，如实说失败。
     case "item/tool/call":
       return {
-        contentItems: [{ type: "text", text: "im-agent不提供客户端工具" }],
+        contentItems: [{ type: "text", text: "agent-loft不提供客户端工具" }],
         success: false,
       };
 

@@ -5,7 +5,7 @@ import { parseCommand } from "../src/core/commands.js";
 
 const native = [
   { name: "compact", description: "压缩上下文" },
-  { name: "model", description: "Claude 自己的 /model，会被 im-agent 拦下" },
+  { name: "model", description: "Claude 自己的 /model，会被 agent-loft 拦下" },
   { name: "review", description: "审查", args: "<pr>" },
   { name: "compact", description: "重复的" },
 ];
@@ -20,7 +20,7 @@ test("合并内置与原生命令：重名丢弃、去重、必填参数不可�
   const list = buildCatalog({ allowedAgents: ["claude"], native, prefs: undefined });
   const names = list.map((c) => c.name);
   assert.equal(names.filter((n) => n === "model").length, 1);
-  assert.equal(list.find((c) => c.name === "model")!.source, "im-agent");
+  assert.equal(list.find((c) => c.name === "model")!.source, "agent-loft");
   assert.equal(names.filter((n) => n === "compact").length, 1);
   // 单 agent：不列切换命令
   assert.ok(!names.includes("agent") && !names.includes("codex") && !names.includes("claude"));
@@ -50,7 +50,7 @@ const { toFeishuCommands, planSync } = await import("../src/channels/feishu/slas
 const entry = (name: string, extra: Partial<{ args: string; description: string; hidden: boolean }> = {}) => ({
   name,
   description: extra.description ?? `说明 ${name}`,
-  source: "im-agent" as const,
+  source: "agent-loft" as const,
   runnable: true,
   hidden: extra.hidden ?? false,
   ...(extra.args ? { args: extra.args } : {}),

@@ -143,7 +143,7 @@ export type HistoryMessage = {
   ts?: number;
   /** 助手消息：从这条回复处分叉用的位置（见 AgentDriver.forkAt） */
   anchor?: string;
-  /** 助手消息：这一轮的用时 / 费用 / tokens（im-agent 自己记的，agent 记录里没有） */
+  /** 助手消息：这一轮的用时 / 费用 / tokens（agent-loft 自己记的，agent 记录里没有） */
   footer?: string;
 };
 

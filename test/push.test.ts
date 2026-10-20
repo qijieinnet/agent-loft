@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-process.env.IM_AGENT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-push-"));
+process.env.AGENT_LOFT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-push-"));
 const push = await import("../src/channels/web/push.js");
 
 /** 按 RFC 8291 以浏览器（UA）身份解密，验证我们的加密是对的 */

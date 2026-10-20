@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-process.env.IM_AGENT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-codex-"));
+process.env.AGENT_LOFT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-codex-"));
 const keepAlive = setInterval(() => {}, 1000);
 after(() => clearInterval(keepAlive));
 

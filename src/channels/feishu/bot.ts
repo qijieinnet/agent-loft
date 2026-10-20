@@ -184,7 +184,7 @@ export class FeishuBot {
           return await this.handleCardAction(data);
         } catch (err) {
           console.error(`${this.tag} 处理卡片回调出错:`, err);
-          return { toast: { type: "error", content: "处理失败，请看 im-agent 日志。" } };
+          return { toast: { type: "error", content: "处理失败，请看 agent-loft 日志。" } };
         }
       },
     } as any);
@@ -396,7 +396,7 @@ export class FeishuBot {
 
     const allowed = this.allowedAgents();
     if (allowed.length === 0) {
-      await this.client.sendText(chatId, "这个机器人没有可用的 agent，请到 im-agent 设置里给它勾选至少一个。");
+      await this.client.sendText(chatId, "这个机器人没有可用的 agent，请到 agent-loft 设置里给它勾选至少一个。");
       return;
     }
 
@@ -536,10 +536,10 @@ export class FeishuBot {
     }
     if (outcome.kind !== "created") return;
     const { code } = outcome.request;
-    console.log(`${this.tag} 新的接入请求 ${openId}，配对码 ${code}（Web 设置页批准，或运行 im-agent pair approve ${code}）`);
+    console.log(`${this.tag} 新的接入请求 ${openId}，配对码 ${code}（Web 设置页批准，或运行 agent-loft pair approve ${code}）`);
     await this.client.sendText(
       chatId,
-      `你还没有被授权使用这台机器。\n\n配对码：${code}\n\n请让机器主人在 im-agent 的 Web 设置页里批准，或在终端运行：\nim-agent pair approve ${code}\n\n批准后我会通知你。`,
+      `你还没有被授权使用这台机器。\n\n配对码：${code}\n\n请让机器主人在 agent-loft 的 Web 设置页里批准，或在终端运行：\nagent-loft pair approve ${code}\n\n批准后我会通知你。`,
     );
   }
 
@@ -578,7 +578,7 @@ export class FeishuBot {
         type: "error",
         content: i?.settled
           ? `这个请求已经处理过了（${i.settled.by}）。`
-          : "这个请求已失效（超时、已处理，或 im-agent 重启过），请重新发一次你的需求。",
+          : "这个请求已失效（超时、已处理，或 agent-loft 重启过），请重新发一次你的需求。",
       },
       ...(i?.settled ? { card: { type: "raw", data: settledCard(i) } } : {}),
     });
@@ -637,7 +637,7 @@ export class FeishuBot {
 
   /**
    * 命令表上点「执行」：等同于用户自己发了这条命令。
-   * im-agent 的命令就地执行并回卡片；agent 原生命令（skills 等）当一条消息发给 agent。
+   * agent-loft 的命令就地执行并回卡片；agent 原生命令（skills 等）当一条消息发给 agent。
    */
   private runCardCommand(key: string, text: string): CardResponse {
     if (!this.mine(key) || !getConversation(key)) {

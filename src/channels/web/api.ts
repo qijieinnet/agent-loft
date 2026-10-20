@@ -227,7 +227,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const left = takeAttempt(ip);
     if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     if (!checkSetupToken(String(body.token ?? ""))) {
-      throw new HttpError(403, "设置码不对。它打印在 im-agent 的启动日志里");
+      throw new HttpError(403, "设置码不对。它打印在 agent-loft 的启动日志里");
     }
     setPassword(String(body.password ?? ""));
     clearAttempts(ip);
@@ -301,7 +301,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/push/test" && method === "POST") {
-    const sent = await pushToAll({ title: "IM Agent", body: "测试通知：能看到这条，说明通知已经通了。", tag: "test", url: "/" });
+    const sent = await pushToAll({ title: "Agent Loft", body: "测试通知：能看到这条，说明通知已经通了。", tag: "test", url: "/" });
     if (sent === 0) throw new HttpError(502, "没有推送成功：还没有设备开启通知，或推送服务拒绝了（看服务日志）");
     sendJson(res, 200, { sent });
     return;

@@ -14,7 +14,7 @@ self.addEventListener("push", (event) => {
   }
   event.waitUntil(
     Promise.all([
-      self.registration.showNotification(data.title || "IM Agent", {
+      self.registration.showNotification(data.title || "Agent Loft", {
         body: data.body || "",
         tag: data.tag,
         icon: "/apple-touch-icon.png",

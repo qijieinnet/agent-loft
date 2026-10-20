@@ -34,7 +34,7 @@ type Store = {
 
 const FILE = () => path.join(dataDir, "push.json");
 /** VAPID 的 sub 声明：Apple 要求是 mailto: 或 https: 地址 */
-const VAPID_SUBJECT = "https://github.com/qijieinnet/im-agent";
+const VAPID_SUBJECT = "https://github.com/qijieinnet/agent-loft";
 
 let store: Store | null = null;
 
@@ -50,7 +50,7 @@ function persist(): void {
   writeJsonAtomic(FILE(), load());
 }
 
-/** 测试用：换了 IM_AGENT_HOME 之后重新读 */
+/** 测试用：换了 AGENT_LOFT_HOME 之后重新读 */
 export function resetPushStoreForTest(): void {
   store = null;
 }

@@ -1,4 +1,4 @@
-// im-agent Web 前端。无构建步骤，原生 ES module。
+// agent-loft Web 前端。无构建步骤，原生 ES module。
 import { marked } from "/vendor/marked.js";
 import DOMPurify from "/vendor/purify.js";
 import hljs from "/vendor/hljs.js";
@@ -429,7 +429,7 @@ async function showAuth() {
         }
       },
     },
-    h("h1", {}, "IM Agent"),
+    h("h1", {}, "Agent Loft"),
     h("p", {}, me.needsSetup ? "首次使用：输入启动日志里的设置码，并设一个登录密码（至少 8 位）" : "登录以继续"),
     me.needsSetup ? h("label", { class: "field" }, h("span", {}, "设置码"), token) : null,
     h("label", { class: "field" }, h("span", {}, me.needsSetup ? "新密码" : "密码"), pw),
@@ -987,7 +987,7 @@ function renderSidebar() {
     });
   }
   const asks = askKeys.size;
-  document.title = asks ? `(${asks}) 待处理 · IM Agent` : "IM Agent";
+  document.title = asks ? `(${asks}) 待处理 · Agent Loft` : "Agent Loft";
 }
 
 // ---------- 顶栏 ----------
@@ -1594,7 +1594,7 @@ function notifyIfHidden(ix) {
   if (document.visibilityState === "visible" || !("Notification" in window)) return;
   if (Notification.permission === "granted") {
     try {
-      new Notification("IM Agent 需要你处理", { body: ix.spec.title, tag: ix.id });
+      new Notification("Agent Loft 需要你处理", { body: ix.spec.title, tag: ix.id });
     } catch {
       // 某些浏览器只允许在 SW 里发
     }
@@ -2051,7 +2051,7 @@ async function sendMessage() {
 /** 会改变当前会话（换会话、换目录、换 agent）的命令，执行完要重拉一遍 */
 const RELOADING_COMMANDS = new Set(["new", "fork", "resume", "agent", "claude", "codex", "cd"]);
 
-/** im-agent 命令的结果：只显示给发命令的这个页面，不进会话记录 */
+/** agent-loft 命令的结果：只显示给发命令的这个页面，不进会话记录 */
 async function showCommandReply(text, reply, info) {
   if (info) S.convs.set(info.key, info);
   renderTopbar();
@@ -2830,7 +2830,7 @@ async function notifyTab(panel) {
         ? h("div", { class: "row" }, here ? offBtn : onBtn, data.subscriptions.length ? testBtn : null)
         : h("div", { class: "error-text" }, support.why),
       support.ok && Notification.permission === "denied"
-        ? h("div", { class: "error-text" }, "这个设备的通知权限已被拒绝，需要到系统设置（iPhone：设置 → 通知 → IM Agent）里重新打开。")
+        ? h("div", { class: "error-text" }, "这个设备的通知权限已被拒绝，需要到系统设置（iPhone：设置 → 通知 → Agent Loft）里重新打开。")
         : null,
       h("h4", {}, "已开启通知的设备"),
       data.subscriptions.length === 0
@@ -3700,7 +3700,7 @@ async function systemTab(panel) {
             class: "btn",
             disabled: !sys.underSystemd,
             onclick: async () => {
-              if (!confirm("重启 im-agent？进行中的对话会被中断。")) return;
+              if (!confirm("重启 agent-loft？进行中的对话会被中断。")) return;
               try {
                 await api("/api/system/restart", { method: "POST" });
                 toast("正在重启…");

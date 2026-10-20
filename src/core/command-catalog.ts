@@ -1,11 +1,11 @@
 // 命令目录：输入「/」时给用户看的那张表。
 //
 // 两种来源：
-//   - im-agent 自己的命令（/new /status …），由 hub 拦下来执行，所有 agent 通用；
-//   - agent 原生命令（Claude 的 skills、/compact 之类），im-agent 不认识，原样转给 agent。
+//   - agent-loft 自己的命令（/new /status …），由 hub 拦下来执行，所有 agent 通用；
+//   - agent 原生命令（Claude 的 skills、/compact 之类），agent-loft 不认识，原样转给 agent。
 // 顺序和隐藏按 agent 分开存在配置里（设置 → 命令），用户自己排。
 
-/** im-agent 内置命令。name 不带斜杠；args 里尖括号是必填、方括号是可选 */
+/** agent-loft 内置命令。name 不带斜杠；args 里尖括号是必填、方括号是可选 */
 export type BuiltinSpec = { name: string; args?: string; description: string; multiAgentOnly?: boolean };
 
 export const BUILTIN_COMMANDS: BuiltinSpec[] = [
@@ -34,7 +34,7 @@ export type CommandEntry = {
   name: string;
   args?: string;
   description: string;
-  source: "im-agent" | "agent";
+  source: "agent-loft" | "agent";
   /** 不带参数就能直接执行（飞书卡片上给按钮、Web 里回车直接发） */
   runnable: boolean;
   hidden: boolean;
@@ -50,7 +50,7 @@ function needsArgs(args: string | undefined): boolean {
 /**
  * 合并内置命令和 agent 原生命令，再按用户配置排序。
  * - 只对接得上的 agent 才列 /claude /codex 这类快捷切换；
- * - 和内置命令重名的原生命令丢掉：反正会被 im-agent 先拦下来，列出来只会误导；
+ * - 和内置命令重名的原生命令丢掉：反正会被 agent-loft 先拦下来，列出来只会误导；
  * - 配置里排过序的在前，按配置的顺序；没排过的（比如新装的 skill）按默认顺序接在后面。
  */
 export function buildCatalog(params: {
@@ -68,7 +68,7 @@ export function buildCatalog(params: {
     name: c.name,
     ...(c.args ? { args: c.args } : {}),
     description: c.description,
-    source: "im-agent" as const,
+    source: "agent-loft" as const,
     runnable: !needsArgs(c.args),
     hidden: false,
   }));

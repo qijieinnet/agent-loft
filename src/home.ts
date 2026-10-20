@@ -4,11 +4,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-/** 配置与状态的家目录。IM_AGENT_HOME 可覆盖，默认 ~/.im-agent */
+/**
+ * 配置与状态的家目录。AGENT_LOFT_HOME 可覆盖，默认 ~/.agent-loft。
+ * 兼容改名前（im-agent）：旧的 IM_AGENT_HOME 也认；新目录还不存在而 ~/.im-agent 在，就继续用旧目录，
+ * 不自动搬家 —— 正在跑的旧服务还在写它。
+ */
 export const home = (() => {
-  const explicit = process.env.IM_AGENT_HOME?.trim();
+  const explicit = (process.env.AGENT_LOFT_HOME ?? process.env.IM_AGENT_HOME)?.trim();
   if (explicit) return path.resolve(explicit);
-  return path.join(os.homedir(), ".im-agent");
+  const current = path.join(os.homedir(), ".agent-loft");
+  const legacy = path.join(os.homedir(), ".im-agent");
+  if (!fs.existsSync(current) && fs.existsSync(legacy)) return legacy;
+  return current;
 })();
 
 export const configPath = path.join(home, "config.json");

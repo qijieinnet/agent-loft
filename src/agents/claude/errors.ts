@@ -26,7 +26,7 @@ const LOGIN_STEPS = [
   "  1) npm i -g @anthropic-ai/claude-code",
   "  2) claude          # 然后用 /login 登录",
   '  3) claude -p "回复 OK"   # 验证认证是否恢复',
-  "  4) 重启 im-agent：im-agent service restart",
+  "  4) 重启 agent-loft：agent-loft service restart",
 ].join("\n");
 
 export function diagnose(err: unknown): Diagnosis {

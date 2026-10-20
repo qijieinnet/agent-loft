@@ -8,7 +8,7 @@
 //     按目标顺序倒着建，每条之间隔开 1 秒以上（create_time 精确到秒，同一秒内顺序不定）；
 //   - 改动约 5 分钟生效，客户端还有约 3 分钟缓存。
 //
-// 这个应用是 im-agent 专用的：同步时会删掉不在命令表里的指令，包括手动加的。
+// 这个应用是 agent-loft 专用的：同步时会删掉不在命令表里的指令，包括手动加的。
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import type { CommandEntry } from "../../core/command-catalog.js";
 

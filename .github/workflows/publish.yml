@@ -2,13 +2,13 @@
 #
 # npm 那边要对上的三个值（npmjs.com → 包 → Settings → Trusted publisher）：
 #   Organization or user:  qijieinnet
-#   Repository:            im-agent
+#   Repository:            agent-loft
 #   Workflow filename:     publish.yml     ← 必须和本文件名一字不差
 #   Environment name:      留空（本 workflow 没有用 environment）
 #   Allowed actions:       勾 npm publish
 #
 # 另有一条藏得很深的要求：package.json 的 repository.url 必须和 GitHub 仓库
-# 完全对得上，否则 OIDC 校验不过。本仓库是对的，改仓库名时记得同步。
+# 完全对得上，否则 OIDC 校验不过。改仓库名时记得同步。
 #
 # 发布方式：打一个 v 开头的 tag 推上来，例如
 #   git tag v0.1.0 && git push origin v0.1.0
