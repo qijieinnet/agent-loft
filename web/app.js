@@ -957,6 +957,7 @@ async function ixOp(id, op, extra = {}) {
 const SETTLE_LABEL = {
   "allow-once": "已允许（本次）",
   "allow-always": "已允许（总是）",
+  "allow-session": "已允许（本会话全部放行）",
   deny: "已拒绝",
   timeout: "已超时，按拒绝处理",
   cancelled: "已取消",
@@ -983,6 +984,9 @@ function renderInteraction(item) {
             h("button", { class: "btn accent", onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, "允许一次"),
             spec.alwaysLabel
               ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-always" }) }, spec.alwaysLabel)
+              : null,
+            spec.allowSession
+              ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
               : null,
             h("button", { class: "btn danger", onclick: () => ixOp(ix.id, "decide", { decision: "deny" }) }, "拒绝"),
           ),
@@ -1734,7 +1738,7 @@ function modelPicker(agent, model, effort, defaultLabel) {
   const asText = (reason) => {
     const m = h("input", { value: getModel(), placeholder: `留空${defaultLabel}` });
     const e = h("input", { value: getEffort(), placeholder: "low / medium / high …，留空默认" });
-    modelSlot.replaceChildren(m, reason ? h("small", {}, reason) : null);
+    fill(modelSlot, m, reason ? h("small", {}, reason) : null);
     effortSlot.replaceChildren(e);
     getModel = () => m.value.trim();
     getEffort = () => e.value.trim();
@@ -1761,7 +1765,9 @@ function modelPicker(agent, model, effort, defaultLabel) {
       const picked = modelSel.value ? models.find((m) => m.id === modelSel.value) : fallback;
       const efforts = picked?.efforts ?? [];
       const keep = effortSel.value || effort;
-      effortSel.replaceChildren(
+      // 子项里有数组：replaceChildren 不展开数组，会把它变成文本节点（select 里直接被忽略）
+      fill(
+        effortSel,
         option("", "默认", keep),
         withCurrent(efforts, keep).map((v) => option(v, `${v}（当前值，该模型可能不支持）`, keep)),
         efforts.map((v) => option(v, v, keep)),

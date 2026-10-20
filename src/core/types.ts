@@ -20,7 +20,11 @@ export type UserInput = { text: string; attachments: SavedAttachment[] };
 
 // ---------- 交互（审批 / 提问） ----------
 
-export type ApprovalDecision = "allow-once" | "allow-always" | "deny";
+/**
+ * allow-session：本会话内后续的审批全部自动放行（不落盘）。会话重建
+ * （/new、切目录、切 agent、恢复历史、进程重启）后失效。
+ */
+export type ApprovalDecision = "allow-once" | "allow-always" | "allow-session" | "deny";
 
 /** 一个卡点的收束方式。timeout / cancelled 和 deny 一样都是「没放行」，但显示不同。 */
 export type Settlement = ApprovalDecision | "timeout" | "cancelled" | "answered" | "skipped";
@@ -44,6 +48,8 @@ export type InteractionSpec =
       detail: string;
       /** 「总是允许」按钮的文字；不给就没有这个按钮 */
       alwaysLabel?: string;
+      /** 给了就显示「本会话全部允许」按钮。只有 agent 能真正兑现时才给 */
+      allowSession?: boolean;
     }
   | { kind: "question"; title: string; questions: QuestionSpec[] };
 

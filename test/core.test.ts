@@ -50,6 +50,30 @@ test("取消会话：挂着的全部收束为 cancelled", async () => {
   assert.equal(interactions.decide(interactions.get("x")?.id ?? "x", "allow-once", "me"), undefined);
 });
 
+test("本会话全部允许：一并放行同一会话进程里挂着的同类卡，别的不动", async () => {
+  const approval = (allowSession: boolean) => ({ kind: "approval" as const, title: "t", detail: "d", allowSession });
+  const a = interactions.create("k5", approval(true), 60_000, 1);
+  const b = interactions.create("k5", approval(true), 60_000, 1);
+  const plan = interactions.create("k5", approval(false), 60_000, 1);
+  const oldProc = interactions.create("k5", approval(true), 60_000, 0);
+  const otherConv = interactions.create("k6", approval(true), 60_000, 1);
+  const [ida, , idPlan] = interactions.listPending("k5").map((i) => i.id);
+
+  // 卡上没这个按钮：手打 /approve 也不认
+  assert.equal(interactions.decide(idPlan!, "allow-session", "me"), undefined);
+  assert.equal(interactions.decide(ida!, "allow-session", "me")?.settled?.settlement, "allow-session");
+  assert.equal((await a).settlement, "allow-session");
+  assert.equal((await b).settlement, "allow-session");
+  assert.equal(interactions.listPending("k5").length, 2, "批准计划和旧进程的卡留着");
+  assert.equal(interactions.listPending("k6").length, 1);
+  interactions.cancelAll("k5", "x");
+  interactions.cancelAll("k6", "x");
+  assert.equal((await plan).settlement, "cancelled");
+  assert.equal((await oldProc).settlement, "cancelled");
+  assert.equal((await otherConv).settlement, "cancelled");
+  assert.deepEqual(parseCommand("/approve req_1 allow-session"), { kind: "approve", requestId: "req_1", decision: "allow-session" });
+});
+
 test("命令解析：整条才算命令，参数不对退化为聊天", () => {
   assert.deepEqual(parseCommand("/new"), { kind: "new" });
   assert.deepEqual(parseCommand("/agent codex"), { kind: "agent", agent: "codex" });

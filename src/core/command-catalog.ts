@@ -23,7 +23,7 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "cd", args: "<相对目录>", description: "切换工作目录（限 workspace 内）" },
   { name: "pwd", description: "显示当前工作目录" },
   { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（Bash 仍询问）" },
-  { name: "approve", args: "<请求ID> allow-once|allow-always|deny", description: "审批兜底（卡片失效时用）" },
+  { name: "approve", args: "<请求ID> allow-once|allow-always|allow-session|deny", description: "审批兜底（卡片失效时用）" },
   { name: "help", description: "显示帮助" },
 ];
 

@@ -27,6 +27,7 @@ import {
   alwaysLabelOf,
   describeToolCall,
   isPreApproved,
+  isRememberable,
   isRememberableSignature,
   parseQuestions,
   rememberAlways,
@@ -134,6 +135,11 @@ export class ClaudeSession implements AgentSession {
    */
   private turnBusy = false;
   private pending: UserInput[] = [];
+  /**
+   * 用户点过「本会话全部允许」。只在内存里：这个对象一换（/new、切目录、切 agent、
+   * 恢复历史、进程重启），就重新逐条询问。
+   */
+  private allowAll = false;
 
   constructor(
     private readonly opts: SessionOptions,
@@ -265,6 +271,10 @@ export class ClaudeSession implements AgentSession {
       if (answered) return answered;
     }
 
+    // 提问、批准计划这类不是「安全确认」，而是要用户真的做决定，全部允许也照样问
+    const sessionable = isRememberable(toolName);
+    if (sessionable && this.allowAll) return { behavior: "allow", updatedInput: input };
+
     const signature = signatureOf(toolName, input);
     if (isPreApproved(toolName, signature)) return { behavior: "allow", updatedInput: input };
 
@@ -273,9 +283,14 @@ export class ClaudeSession implements AgentSession {
       title: `需要授权：${toolName}`,
       detail: describeToolCall(toolName, input),
       ...(isRememberableSignature(toolName, signature) ? { alwaysLabel: alwaysLabelOf(toolName, signature) } : {}),
+      ...(sessionable ? { allowSession: true } : {}),
     });
     if (outcome.settlement === "allow-always" && isRememberableSignature(toolName, signature)) rememberAlways(signature);
-    if (outcome.settlement === "allow-once" || outcome.settlement === "allow-always") {
+    if (outcome.settlement === "allow-session") {
+      if (!this.allowAll) this.events.onStep("warning", "🔓 本会话内后续操作不再询问（/new 或切换会话后恢复逐条确认）");
+      this.allowAll = true;
+    }
+    if (outcome.settlement === "allow-once" || outcome.settlement === "allow-always" || outcome.settlement === "allow-session") {
       return { behavior: "allow", updatedInput: input };
     }
     const why =

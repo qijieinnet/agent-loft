@@ -950,6 +950,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         return text(await this.stop(key));
       case "approve": {
         const settled = interactions.decide(cmd.requestId, cmd.decision as ApprovalDecision, ctx.by);
+        if (!settled && interactions.isPending(cmd.requestId)) {
+          return text(`请求 ${cmd.requestId} 不支持 ${cmd.decision}。`);
+        }
         if (!settled) return text(`请求 ${cmd.requestId} 不存在或已处理。`);
         return text(`${SETTLEMENT_LABEL[cmd.decision]}：${cmd.requestId}`);
       }

@@ -86,7 +86,7 @@ const idx = (v: unknown): v is number => typeof v === "number" && Number.isInteg
 function validAction(v: Record<string, unknown>): boolean {
   switch (v.a) {
     case "approval":
-      return str(v.r) && (v.d === "allow-once" || v.d === "allow-always" || v.d === "deny");
+      return str(v.r) && (v.d === "allow-once" || v.d === "allow-always" || v.d === "allow-session" || v.d === "deny");
     case "ask":
       return str(v.r) && idx(v.q) && idx(v.o) && (v.v === 0 || v.v === 1);
     case "ask-submit":

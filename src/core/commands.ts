@@ -24,7 +24,7 @@ export type ParsedCommand =
   | { kind: "approve"; requestId: string; decision: ApprovalDecision }
   | { kind: "chat"; text: string };
 
-const DECISIONS: ApprovalDecision[] = ["allow-once", "allow-always", "deny"];
+const DECISIONS: ApprovalDecision[] = ["allow-once", "allow-always", "allow-session", "deny"];
 
 export function parseCommand(raw: string): ParsedCommand {
   const text = raw.trim();

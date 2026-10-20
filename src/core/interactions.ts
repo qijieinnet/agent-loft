@@ -89,7 +89,18 @@ class InteractionCenter extends EventEmitter<InteractionEvents> {
   decide(id: string, decision: Settlement, by: string): Interaction | undefined {
     const entry = this.pending.get(id);
     if (!entry || entry.spec.kind !== "approval") return undefined;
-    return this.settle(id, decision, by);
+    // 卡上没有这个按钮（比如批准计划）就不认：不能靠手打 /approve 绕过去
+    if (decision === "allow-session" && !entry.spec.allowSession) return undefined;
+    const settled = this.settle(id, decision, by);
+    if (decision === "allow-session") {
+      // 并行的工具调用会同时挂着好几张卡：同一个会话进程里能一并放行的，一起放掉
+      for (const other of [...this.pending.values()]) {
+        if (other.convKey !== entry.convKey || other.owner !== entry.owner) continue;
+        if (other.spec.kind !== "approval" || !other.spec.allowSession) continue;
+        this.settle(other.id, "allow-session", `${by}（随「本会话全部允许」）`);
+      }
+    }
+    return settled;
   }
 
   /** 把某个选项设成选中 / 未选中。全单选且都答完时自动收束。 */
@@ -251,6 +262,7 @@ export function answerTextOf(entry: Interaction): Record<string, string> {
 export const SETTLEMENT_LABEL: Record<Settlement, string> = {
   "allow-once": "已允许（本次）",
   "allow-always": "已允许",
+  "allow-session": "已允许（本会话全部放行）",
   deny: "已拒绝",
   timeout: "已超时，按拒绝处理",
   cancelled: "已取消",

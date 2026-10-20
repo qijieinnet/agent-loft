@@ -10,6 +10,8 @@ import type {
   AgentEvents,
   AgentSession,
   InteractionHost,
+  InteractionOutcome,
+  InteractionSpec,
   QuestionSpec,
   RuntimeInfo,
   SessionOptions,
@@ -113,7 +115,7 @@ function describePermissions(params: PermissionsApprovalParams): string {
 }
 
 function allowed(s: Settlement): boolean {
-  return s === "allow-once" || s === "allow-always";
+  return s === "allow-once" || s === "allow-always" || s === "allow-session";
 }
 
 type ParsedQuestion = QuestionSpec & { secret: boolean };
@@ -176,6 +178,8 @@ export class CodexSession implements AgentSession {
   private opening: Promise<string> | null = null;
   private detached = false;
   private runtime: RuntimeInfo = {};
+  /** 用户点过「本会话全部允许」。只在内存里，会话对象一换就重新逐条询问。 */
+  private allowAll = false;
   private replyText = "";
   private lastTokens: number | undefined;
   /** 分叉已经真正完成（拿到并接管了新 thread）。失败了不算，重试还要接着分叉 */
@@ -473,6 +477,16 @@ export class CodexSession implements AgentSession {
 
   // ---------- 反向请求：审批与提问 ----------
 
+  /** 审批都走这里：带上「本会话全部允许」按钮，点了就记住。 */
+  private async ask(spec: Extract<InteractionSpec, { kind: "approval" }>): Promise<InteractionOutcome> {
+    const outcome = await this.host({ ...spec, allowSession: true });
+    if (outcome.settlement === "allow-session") {
+      if (!this.allowAll) this.events.onStep("warning", "🔓 本会话内后续操作不再询问（/new 或切换会话后恢复逐条确认）");
+      this.allowAll = true;
+    }
+    return outcome;
+  }
+
   /**
    * 每一条都**必须**返回点什么 —— 漏回一次，Codex 那一轮就永远挂在等审批上。
    * 未知方法也要按它自己的协议结构明确拒绝。
@@ -481,8 +495,9 @@ export class CodexSession implements AgentSession {
     switch (method) {
       case "item/commandExecution/requestApproval": {
         const req = params as CommandExecutionApprovalParams;
+        if (this.allowAll) return { decision: "acceptForSession" };
         const amendment = req.proposedExecpolicyAmendment ?? null;
-        const outcome = await this.host({
+        const outcome = await this.ask({
           kind: "approval",
           title: req.kind === "writeStdin" ? "需要授权：向运行中的命令输入" : "需要授权：执行命令",
           detail: describeCommand(req),
@@ -491,6 +506,7 @@ export class CodexSession implements AgentSession {
         });
         const s = outcome.settlement;
         if (s === "allow-once") return { decision: "accept" };
+        if (s === "allow-session") return { decision: "acceptForSession" };
         if (s === "allow-always") {
           return {
             decision: amendment
@@ -504,7 +520,8 @@ export class CodexSession implements AgentSession {
 
       case "item/fileChange/requestApproval": {
         const req = params as FileChangeApprovalParams;
-        const outcome = await this.host({
+        if (this.allowAll) return { decision: "acceptForSession" };
+        const outcome = await this.ask({
           kind: "approval",
           title: "需要授权：改动文件",
           detail: describeFileChange(req),
@@ -512,14 +529,15 @@ export class CodexSession implements AgentSession {
         });
         const s = outcome.settlement;
         if (s === "allow-once") return { decision: "accept" };
-        if (s === "allow-always") return { decision: "acceptForSession" };
+        if (s === "allow-always" || s === "allow-session") return { decision: "acceptForSession" };
         if (s === "cancelled") return { decision: "cancel" };
         return { decision: "decline" };
       }
 
       case "item/permissions/requestApproval": {
         const req = params as PermissionsApprovalParams;
-        const outcome = await this.host({
+        if (this.allowAll) return { permissions: req.permissions ?? {}, scope: "session" };
+        const outcome = await this.ask({
           kind: "approval",
           title: "需要授权：额外权限",
           detail: describePermissions(req),
@@ -528,7 +546,7 @@ export class CodexSession implements AgentSession {
         if (!allowed(outcome.settlement)) return { permissions: {}, scope: "turn" };
         return {
           permissions: req.permissions ?? {},
-          scope: outcome.settlement === "allow-always" ? "session" : "turn",
+          scope: outcome.settlement === "allow-once" ? "turn" : "session",
         };
       }
 

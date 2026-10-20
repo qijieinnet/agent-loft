@@ -1,6 +1,6 @@
 {
   "name": "im-agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "把飞书（以及以后的 Telegram 等）和 Web 页面桥接到本机 Claude Code / Codex：聊天驱动、卡片审批、会话与模型切换",
   "keywords": [

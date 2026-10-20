@@ -48,7 +48,7 @@ im-agent service install
 | `im-agent service install \| uninstall \| restart \| status` | 开机自启 |
 | `im-agent doctor` | 体检 |
 
-聊天里的命令（飞书和 Web 通用；Web 输入框打 `/` 会弹出命令补全，飞书里打 `/` 会弹出机器人的指令面板（im-agent 自动注册，约 5～8 分钟生效；只发一个 `/` 也会回一张可点击的命令卡片），顺序和显示项在 设置 → 命令 里调整）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/approve <id> allow-once|allow-always|deny` `/help`
+聊天里的命令（飞书和 Web 通用；Web 输入框打 `/` 会弹出命令补全，飞书里打 `/` 会弹出机器人的指令面板（im-agent 自动注册，约 5～8 分钟生效；只发一个 `/` 也会回一张可点击的命令卡片），顺序和显示项在 设置 → 命令 里调整）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/approve <id> allow-once|allow-always|allow-session|deny` `/help`
 
 ## 安全
 

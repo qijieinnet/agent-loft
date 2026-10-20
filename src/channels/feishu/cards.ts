@@ -62,6 +62,7 @@ export function approvalCard(interaction: Interaction, ctx: CardCtx) {
   const buttons = [
     button("允许一次", { a: "approval", r: id, d: "allow-once" }, ctx, "primary"),
     ...(spec.alwaysLabel ? [button(spec.alwaysLabel, { a: "approval", r: id, d: "allow-always" }, ctx)] : []),
+    ...(spec.allowSession ? [button("本会话全部允许", { a: "approval", r: id, d: "allow-session" }, ctx)] : []),
     button("拒绝", { a: "approval", r: id, d: "deny" }, ctx, "danger"),
   ];
   return card(
@@ -127,7 +128,7 @@ export function settledCard(interaction: Interaction) {
   const settlement = settled?.settlement ?? "cancelled";
   const by = settled?.by ?? "";
   if (interaction.spec.kind === "approval") {
-    const ok = settlement === "allow-once" || settlement === "allow-always";
+    const ok = settlement === "allow-once" || settlement === "allow-always" || settlement === "allow-session";
     const label =
       settlement === "allow-always"
         ? `已允许（${interaction.spec.alwaysLabel ?? "后续同类自动放行"}）`
