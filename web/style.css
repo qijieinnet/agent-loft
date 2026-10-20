@@ -497,6 +497,35 @@ select {
   margin: 0 0 8px;
 }
 
+.empty .draft-cwd {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: 8px;
+  color: var(--fg-soft);
+  font: inherit;
+}
+
+.empty .draft-cwd:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.empty .draft-cwd .path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty .draft-cwd svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 .empty .agent-choice {
   display: flex;
   justify-content: center;
@@ -909,6 +938,12 @@ select {
 
 .composer-row .spacer {
   flex: 1;
+}
+
+.mic-btn.recording {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  animation: pulse 1.2s infinite;
 }
 
 .send-btn {

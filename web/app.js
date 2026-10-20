@@ -36,6 +36,7 @@ const ICON = {
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>',
   clip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>',
@@ -148,6 +149,8 @@ const S = {
   pending: new Map(),
   current: null,
   draftAgent: localStorage.getItem("aim.agent") || null,
+  /** 新对话（还没发消息）选的工作目录，null 表示工作区根目录。开新对话时沿用上次选的 */
+  draftCwd: null,
   items: [],
   turnAi: null,
   seq: new Map(),
@@ -250,8 +253,16 @@ const WS = {
 
 for (const ev of ["focus", "blur"]) window.addEventListener(ev, () => WS.presence());
 
+/** 打开 / 切回页面：清掉桌面图标角标和计数（计数由 sw.js 在收到推送时累加） */
+function clearAppBadge() {
+  if (document.visibilityState !== "visible") return;
+  navigator.clearAppBadge?.().catch(() => {});
+  if ("caches" in window) caches.delete("aim-badge").catch(() => {});
+}
+
 document.addEventListener("visibilitychange", () => {
   WS.presence();
+  clearAppBadge();
   // 手机切回前台：连接多半已经被系统掐了，立刻重连而不是等退避
   if (document.visibilityState === "visible" && WS.sock?.readyState !== 1) {
     WS.backoff = 300;
@@ -415,6 +426,7 @@ async function boot() {
   else newDraft();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
+    clearAppBadge();
     // 点了系统通知、页面本来就开着：跳到通知对应的会话
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data?.type !== "open") return;
@@ -714,7 +726,15 @@ function renderEmpty() {
       "div",
       { class: "empty" },
       h("h2", {}, "有什么可以帮你？"),
-      h("div", {}, enabled.length ? `工作目录：${S.workspaceRoot ?? ""}` : "还没有启用任何 agent，先去设置里启用。"),
+      enabled.length
+        ? h(
+            "button",
+            { class: "draft-cwd", title: "选择这次对话的工作目录", onclick: () => changeCwd() },
+            "工作目录：",
+            h("span", { class: "path" }, S.draftCwd ?? S.workspaceRoot ?? ""),
+            icon("down"),
+          )
+        : h("div", {}, "还没有启用任何 agent，先去设置里启用。"),
       enabled.length > 1
         ? h(
             "div",
@@ -1115,10 +1135,13 @@ function renderInteraction(item) {
 // ---------- 输入框 ----------
 
 function renderComposer() {
+  cancelVoice();
   ui.input = h("textarea", {
     rows: 1,
     placeholder: "给 agent 发消息",
     oninput: () => {
+      // 识别过程中用户自己动了输入框，以用户为准，停掉识别
+      cancelVoice();
       autosize();
       void updateSlashMenu();
     },
@@ -1151,6 +1174,9 @@ function renderComposer() {
     },
   });
   ui.sendBtn = h("button", { class: "send-btn", title: "发送", onclick: () => (S.busy && !hasDraft() ? stopTurn() : sendMessage()) });
+  ui.micBtn = SpeechRec
+    ? h("button", { class: "icon-btn mic-btn", title: "语音输入", onclick: toggleVoice }, icon("mic"))
+    : null;
   ui.chips = h("div", { class: "chips" });
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
   ui.composer = h(
@@ -1177,6 +1203,7 @@ function renderComposer() {
       h("button", { class: "icon-btn", title: "添加附件", onclick: () => ui.fileInput.click() }, icon("clip")),
       ui.fileInput,
       h("span", { class: "spacer" }),
+      ui.micBtn,
       ui.sendBtn,
     ),
   );
@@ -1186,6 +1213,130 @@ function renderComposer() {
   );
   ui.input.addEventListener("input", updateSendBtn);
   updateSendBtn();
+}
+
+// ---------- 语音输入（浏览器自带 Web Speech API） ----------
+// Chrome / Edge 走各自厂商的在线识别服务，Safari 走系统识别；Firefox 没有这个 API，按钮直接不显示。
+// 必须是安全上下文（HTTPS 或 localhost）才能拿到麦克风。
+
+const SpeechRec = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+// Android Chrome 的 continuous 模式会把已确认的结果重复回吐，改成单句识别、说完自动续上
+const voiceContinuous = !/Android/i.test(navigator.userAgent);
+
+const VOICE_ERR = {
+  "not-allowed": "没有麦克风权限（需要 HTTPS，并在浏览器里允许麦克风）",
+  "service-not-allowed": "浏览器不允许使用语音识别服务",
+  "audio-capture": "没找到可用的麦克风",
+  network: "语音识别需要联网，连不上识别服务",
+  "language-not-supported": "不支持当前语言的语音识别",
+};
+
+/** rec：当前识别实例；before/after：开始时光标前后的文字；committed：已确认的识别结果 */
+const voice = { rec: null, want: false, before: "", after: "", committed: "", target: null };
+
+function toggleVoice() {
+  if (voice.rec) stopVoice();
+  else startVoice();
+}
+
+function startVoice() {
+  if (!SpeechRec) return toast("当前浏览器不支持语音输入");
+  const ta = ui.input;
+  voice.target = ta;
+  voice.before = ta.value.slice(0, ta.selectionStart);
+  voice.after = ta.value.slice(ta.selectionEnd);
+  voice.committed = "";
+  voice.want = true;
+  try {
+    listenOnce();
+  } catch (err) {
+    voice.rec = null;
+    voice.want = false;
+    toast(`无法启动语音识别：${err.message}`);
+  }
+  updateMicBtn();
+}
+
+function listenOnce() {
+  const rec = new SpeechRec();
+  rec.lang = navigator.language || "zh-CN";
+  rec.continuous = voiceContinuous;
+  rec.interimResults = true;
+  let heard = "";
+  rec.onresult = (e) => {
+    let fin = "";
+    let interim = "";
+    for (const r of e.results) {
+      if (r.isFinal) fin += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    heard = fin;
+    showVoiceText(joinVoice(voice.committed, fin + interim));
+  };
+  rec.onerror = (e) => {
+    if (e.error === "no-speech" || e.error === "aborted") return;
+    voice.want = false;
+    toast(VOICE_ERR[e.error] ?? `语音识别出错：${e.error}`);
+  };
+  rec.onend = () => {
+    if (voice.rec !== rec) return; // 已被取消
+    voice.committed = joinVoice(voice.committed, heard);
+    showVoiceText(voice.committed);
+    // 这一轮什么都没听到就当说完了，避免麦克风一直开着
+    if (voice.want && heard) {
+      try {
+        listenOnce();
+        return;
+      } catch {
+        // 续不上就结束
+      }
+    }
+    voice.rec = null;
+    voice.want = false;
+    updateMicBtn();
+  };
+  voice.rec = rec;
+  rec.start();
+}
+
+/** 用户点停止：让浏览器把最后一句定稿后再结束 */
+function stopVoice() {
+  voice.want = false;
+  voice.rec?.stop();
+}
+
+/** 发送、切会话、用户手动改输入框时：立刻丢掉识别，不再往输入框写 */
+function cancelVoice() {
+  const rec = voice.rec;
+  if (!rec) return;
+  voice.rec = null;
+  voice.want = false;
+  rec.abort();
+  updateMicBtn();
+}
+
+/** 中日韩直接拼接，其它语言之间补空格 */
+function joinVoice(a, b) {
+  if (!a || !b) return a + b;
+  if (/\s$/.test(a) || /^\s/.test(b) || /^(zh|ja|ko)/i.test(navigator.language)) return a + b;
+  return `${a} ${b}`;
+}
+
+function showVoiceText(text) {
+  const ta = voice.target;
+  if (!ta || ta !== ui.input) return;
+  ta.value = voice.before + text + voice.after;
+  const caret = voice.before.length + text.length;
+  ta.setSelectionRange(caret, caret);
+  autosize();
+  updateSendBtn();
+}
+
+function updateMicBtn() {
+  if (!ui.micBtn) return;
+  const on = !!voice.rec;
+  ui.micBtn.classList.toggle("recording", on);
+  ui.micBtn.title = on ? "停止语音输入" : "语音输入";
 }
 
 function autosize() {
@@ -1239,7 +1390,17 @@ function renderChips() {
 async function ensureConversation() {
   if (S.current) return S.current;
   if (!S.draftAgent) throw new Error("没有可用的 agent");
-  const info = await api("/api/conversations", { method: "POST", body: { agent: S.draftAgent } });
+  let info;
+  try {
+    info = await api("/api/conversations", { method: "POST", body: { agent: S.draftAgent, cwd: S.draftCwd ?? undefined } });
+  } catch (err) {
+    // 选的目录没了（被删、或工作区改了）：退回根目录，让用户重新确认
+    if (err.status === 400 && S.draftCwd) {
+      S.draftCwd = null;
+      renderEmpty();
+    }
+    throw err;
+  }
   S.convs.set(info.key, info);
   S.current = info.key;
   S.allowedAgents = S.agents.filter((a) => a.enabled).map((a) => a.id);
@@ -1282,6 +1443,7 @@ async function addFiles(files) {
 }
 
 async function sendMessage() {
+  cancelVoice();
   const text = ui.input.value;
   if (!text.trim() && S.uploads.length === 0) return;
   if (S.uploads.some((u) => u.uploading)) {
@@ -1676,8 +1838,11 @@ async function openSessions(all) {
 
 /** 目录选择器：一层层点进去选，也能手动输入。只能在 workspaceRoot 之内 */
 async function changeCwd() {
-  const conv = S.convs.get(S.current);
-  const current = conv?.cwd ?? "";
+  // 还没发消息的新对话：只记下选择，创建会话时带过去
+  const draft = !S.current;
+  const conv = draft ? null : S.convs.get(S.current);
+  const current = draft ? (S.draftCwd ?? S.workspaceRoot ?? "") : (conv?.cwd ?? "");
+  const goLabel = draft ? "使用此目录" : "切换到此目录";
   let showHidden = localStorage.getItem("aim.cwdHidden") === "1";
   let listing = null;
   let seq = 0;
@@ -1704,13 +1869,22 @@ async function changeCwd() {
     h("div", { class: "row", style: { gap: "8px", alignItems: "center" } }, manual, h("label", { class: "check" }, hiddenBox, "显示隐藏")),
     list,
   );
-  const go = h("button", { class: "btn primary", disabled: true }, "切换到此目录");
-  const note = h("span", { class: "muted grow" }, "切换后开新会话");
-  const close = modal({ title: "切换工作目录", body, foot: h("div", { class: "modal-foot", style: { alignItems: "center" } }, note, go) });
+  const go = h("button", { class: "btn primary", disabled: true }, goLabel);
+  const note = h("span", { class: "muted grow" }, draft ? "发送第一条消息时在这个目录开会话" : "切换后开新会话");
+  const close = modal({
+    title: draft ? "选择工作目录" : "切换工作目录",
+    body,
+    foot: h("div", { class: "modal-foot", style: { alignItems: "center" } }, note, go),
+  });
 
   go.onclick = async () => {
     if (!listing) return;
     close();
+    if (draft) {
+      S.draftCwd = listing.path === listing.root ? null : listing.path;
+      if (!S.current) renderEmpty();
+      return;
+    }
     await doAction("cd", listing.path);
   };
 
@@ -1768,7 +1942,7 @@ async function changeCwd() {
       listing = data;
       manual.value = "";
       go.disabled = false;
-      go.textContent = data.path === current ? "已是当前目录" : "切换到此目录";
+      go.textContent = data.path === current ? "已是当前目录" : goLabel;
       if (data.path === current) go.disabled = true;
       renderCrumbs();
       renderList();

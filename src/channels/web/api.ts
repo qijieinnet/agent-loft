@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AGENT_IDS, config, listWorkspaceDirs, saveConfig, type AppConfig } from "../../core/config.js";
+import { AGENT_IDS, config, listWorkspaceDirs, resolveWorkspacePath, saveConfig, type AppConfig } from "../../core/config.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
@@ -306,12 +306,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/conversations" && method === "POST") {
-    const body = await readJsonBody<{ agent?: string }>(req);
+    const body = await readJsonBody<{ agent?: string; cwd?: string }>(req);
     const enabled = hub.enabledAgents().map((d) => d.id);
     const agent = body.agent && enabled.includes(body.agent) ? body.agent : enabled[0];
     if (!agent) throw new HttpError(400, "没有可用的 agent");
+    // 新对话发第一条消息前在页面上选的工作目录；和 /cd 一样只能在工作区之内
+    let cwd: string | null = null;
+    if (typeof body.cwd === "string" && body.cwd.trim()) {
+      cwd = resolveWorkspacePath(body.cwd.trim());
+      if (!cwd) throw new HttpError(400, `目录必须存在，且在 ${config().workspaceRoot} 之内`);
+    }
     const key = `web:${crypto.randomBytes(6).toString("hex")}`;
     hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent });
+    if (cwd && cwd !== config().workspaceRoot) updateConversation(key, { cwd, cwdExplicit: true });
     sendJson(res, 200, hub.info(key));
     return;
   }
