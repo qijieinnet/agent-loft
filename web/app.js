@@ -41,6 +41,8 @@ const ICON = {
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  feishu:
+    '<svg viewBox="2 4 44 40"><path fill="#00D6B9" d="M11.6 7H27.6C30.9 9.9 32.8 14.7 33.6 17C30.9 18.3 29 20.6 27 24C22.6 16.4 15.6 11 11.6 7Z"/><path fill="#133C9A" d="M17 29C21 29 25 26.9 28 23.4C36 14 41.4 16.8 44 18C38.5 21 40.5 29.6 33 36C27.5 34.8 21.8 32.2 17 29Z"/><path fill="#3370FF" d="M4 16.2C7.2 20.8 12.4 26 17.4 29.4C23 33.2 28.6 35.7 34 35.2C28.9 39.8 23.8 41 19 41C12.5 41 6.9 37.8 4 35.4Z"/></svg>',
 };
 
 function icon(name) {
@@ -472,21 +474,57 @@ function agentLabel(id) {
   return S.agents.find((a) => a.id === id)?.label ?? id;
 }
 
+function agentShort(id) {
+  return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
+}
+
 function renderSidebar() {
   if (!ui.convList) return;
   const groups = new Map();
   const askKeys = new Set([...S.pending.values()].filter((i) => !i.settled).map((i) => i.convKey));
-  const list = [...S.convs.values()]
-    .filter((c) => !c.hidden)
-    .filter((c) => !S.search || convTitle(c).toLowerCase().includes(S.search))
-    .sort((a, b) => b.activeAt - a.activeAt);
+  const visible = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt);
+  const nodes = [];
+
+  // 飞书：每个机器人只占一行，点开它最近活跃的那个聊天
+  const cur = S.current ? S.convs.get(S.current) : null;
+  const botRows = [];
+  for (const bot of S.bots) {
+    const convs = visible.filter((c) => c.channel === "feishu" && c.channelId === bot.id);
+    if (bot.enabled === false && convs.length === 0) continue;
+    if (S.search && !bot.name.toLowerCase().includes(S.search)) continue;
+    const latest = convs[0];
+    const ask = convs.some((c) => askKeys.has(c.key));
+    const busy = convs.some((c) => c.busy);
+    botRows.push(
+      h(
+        "button",
+        {
+          class: `conv-item${cur?.channel === "feishu" && cur.channelId === bot.id ? " active" : ""}`,
+          title: latest ? `${bot.name}\n${agentLabel(latest.agent)} · ${latest.cwd}` : `${bot.name}\n还没有会话`,
+          onclick: () => {
+            if (!latest) {
+              toast("这个机器人还没有会话，先在飞书里给它发条消息");
+              return;
+            }
+            closeSide();
+            if (latest.key !== S.current) void openConversation(latest.key);
+          },
+        },
+        ask ? h("span", { class: "dot ask", title: "等你处理" }) : busy ? h("span", { class: "dot busy" }) : null,
+        h("span", { class: "brand-icon", html: ICON.feishu }),
+        h("span", { class: "title" }, bot.name),
+        latest && agentShort(latest.agent).toLowerCase() !== bot.name.toLowerCase() ? h("span", { class: "badge" }, agentShort(latest.agent)) : null,
+      ),
+    );
+  }
+  if (botRows.length) nodes.push(h("div", { class: "conv-group" }, "飞书"), ...botRows);
+
+  const list = visible.filter((c) => c.channel !== "feishu").filter((c) => !S.search || convTitle(c).toLowerCase().includes(S.search));
   for (const c of list) {
-    const group =
-      c.channel === "web" ? "Web" : c.channel === "feishu" ? `飞书 · ${S.bots.find((b) => b.id === c.channelId)?.name ?? c.channelId}` : c.channel;
+    const group = c.channel === "web" ? "Web" : c.channel;
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(c);
   }
-  const nodes = [];
   for (const [group, convs] of groups) {
     nodes.push(h("div", { class: "conv-group" }, group));
     for (const c of convs) {
@@ -503,7 +541,7 @@ function renderSidebar() {
           },
           askKeys.has(c.key) ? h("span", { class: "dot ask", title: "等你处理" }) : c.busy ? h("span", { class: "dot busy" }) : null,
           h("span", { class: "title" }, convTitle(c)),
-          h("span", { class: "badge" }, c.agent === "claude" ? "Claude" : c.agent === "codex" ? "Codex" : c.agent),
+          h("span", { class: "badge" }, agentShort(c.agent)),
         ),
       );
     }

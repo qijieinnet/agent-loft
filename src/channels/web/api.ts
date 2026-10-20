@@ -255,7 +255,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           capabilities: d?.capabilities ?? {},
         };
       }),
-      bots: config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents })),
+      bots: config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })),
       workspaceRoot: config().workspaceRoot,
       conversations: hub.list(),
       pending: interactions.listPending(),
