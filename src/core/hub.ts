@@ -9,6 +9,7 @@
 // 说的话照样回到飞书。所以事件是广播出去的，每个订阅者自己挑感兴趣的会话。
 import { EventEmitter } from "node:events";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
+import { attachFooters, recordFooter } from "./footers.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
   agentBinding,
@@ -463,7 +464,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           const parts = [`用时 ${(result.durationMs / 1000).toFixed(1)}s`];
           if (result.costUsd !== undefined) parts.push(`约 $${result.costUsd.toFixed(4)}`);
           if (result.tokens !== undefined) parts.push(`${result.tokens} tokens`);
-          this.emitEvent(key, { type: "result", text: result.text, footer: parts.join("　") });
+          const footer = parts.join("　");
+          this.emitEvent(key, { type: "result", text: result.text, footer });
+          const conv = getConversation(key);
+          recordFooter(holder.session?.sessionId ?? (conv ? agentBinding(conv, agent).sessionId : undefined), result.text, footer);
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
           this.refreshRuntimeOnce(key, liveId);
         },
@@ -930,7 +934,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     if (!sessionId) return [];
     const driver = this.requireDriver(conv.agent);
     try {
-      return await driver.readHistory(sessionId, conv.cwd);
+      return attachFooters(sessionId, await driver.readHistory(sessionId, conv.cwd));
     } catch (err) {
       console.error(`[历史] 读取 ${key} 失败:`, err);
       return [];

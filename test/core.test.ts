@@ -844,3 +844,25 @@ test("操作序号边界：无效操作的占位、同一次切换都不会给�
   assert.deepEqual(sent, []);
   exists = true;
 });
+
+test("回复脚注：重新加载历史后按正文结尾对回去，同样的回复按先后对应", async () => {
+  const { recordFooter, attachFooters } = await import("../src/core/footers.js");
+  const sid = "sess-footer";
+  recordFooter(sid, "最后一段结论", "用时 3.0s　约 $0.0100");
+  recordFooter(sid, "好的", "用时 1.0s");
+  recordFooter(sid, "好的", "用时 2.0s");
+  const history = attachFooters(sid, [
+    { role: "user", text: "问" },
+    // Claude 记录里同一轮的多段文字拼在一起，result 只是最后一段
+    { role: "assistant", text: "先看看代码\n\n最后一段   结论" },
+    { role: "user", text: "再问" },
+    { role: "assistant", text: "没记录过的回复" },
+    { role: "assistant", text: "好的" },
+    { role: "assistant", text: "好的" },
+  ]);
+  assert.deepEqual(
+    history.map((m) => m.footer),
+    [undefined, "用时 3.0s　约 $0.0100", undefined, undefined, "用时 1.0s", "用时 2.0s"],
+  );
+  assert.deepEqual(attachFooters("没有的会话", [{ role: "assistant", text: "x" }]), [{ role: "assistant", text: "x" }]);
+});

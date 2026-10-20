@@ -115,6 +115,8 @@ export type HistoryMessage = {
   /** 助手这一条之前的过程摘要 */
   steps?: string[];
   ts?: number;
+  /** 助手消息：这一轮的用时 / 费用 / tokens（im-agent 自己记的，agent 记录里没有） */
+  footer?: string;
 };
 
 export type SessionOptions = {

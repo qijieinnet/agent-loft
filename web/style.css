@@ -373,10 +373,35 @@ select {
   padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
   min-height: 52px;
   border-bottom: 1px solid transparent;
-  /* 不透明底色：iOS PWA 按顶部颜色给状态栏上色，透明的话会叠出一层朦胧的过渡 */
+  /*
+   * iOS 26+ 的主屏 PWA 会在页面顶端叠一层系统的模糊渐变（Liquid Glass 边缘效果），CSS 关不掉。
+   * WebKit 只在顶端有「fixed / sticky、铺满宽度、高于 10px、纯色不透明」的元素时跳过它，
+   * 并改用这个颜色延伸到状态栏。所以顶栏要 sticky + 不透明底色，不能是普通的流式元素。
+   */
   background: var(--bg);
-  position: relative;
+  position: sticky;
+  top: 0;
   z-index: 5;
+}
+
+/* 保险：主屏 PWA 里再在最顶端放一条 fixed 的纯色细条（同样是为了让 WebKit 跳过边缘模糊）。
+   层级低于顶栏和侧栏，和顶栏同色，看不出来 */
+.edge-strip {
+  display: none;
+}
+
+@media (display-mode: standalone) and (max-width: 768px) {
+  .edge-strip {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: max(12px, env(safe-area-inset-top));
+    background: var(--bg);
+    pointer-events: none;
+    z-index: 4;
+  }
 }
 
 .topbar .menu-btn {
@@ -426,11 +451,6 @@ select {
   background: var(--bg-hover);
 }
 
-.pill.static,
-.pill.static:hover {
-  background: none;
-  cursor: default;
-}
 
 .pill .sub {
   color: var(--fg-faint);

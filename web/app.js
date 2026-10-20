@@ -456,7 +456,7 @@ function renderLayout() {
   ui.composerWrap = h("div", { class: "composer-wrap" });
   ui.main = h("main", { class: "main" }, ui.topbar, ui.messages, ui.composerWrap);
   ui.layout = h("div", { class: "layout" }, ui.sidebar, h("div", { class: "scrim", onclick: closeSide }), ui.main);
-  fill($app, ui.layout);
+  fill($app, ui.layout, h("div", { class: "edge-strip", "aria-hidden": "true" }));
   renderComposer();
   renderSidebar();
 }
@@ -592,10 +592,10 @@ function renderSidebar() {
 function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
   const agentId = c ? c.agent : S.draftAgent;
-  // 会话里只展示当前 agent，不能切换：两个 agent 的会话互不相通，切过去等于换了个人接着聊却看不到前文。
-  // 还没开始的新对话（草稿）可以选用哪个 agent。
+  // 会话里不显示 agent（也不能切换：两个 agent 的会话互不相通，切过去看不到前文）。
+  // 只有还没开始的新对话（草稿）显示，用来选用哪个 agent。
   const agentPill = c
-    ? h("span", { class: "pill static", title: "这条对话使用的智能体" }, agentLabel(agentId ?? "") || "无可用 agent")
+    ? null
     : h(
         "button",
         {
@@ -776,7 +776,7 @@ async function openConversation(key) {
   fill(ui.msgInner, );
   for (const m of data.messages) {
     if (m.role === "user") addItem({ type: "user", text: m.text, files: [], origin: null });
-    else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true });
+    else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer });
   }
   S.seq.set(key, 0);
   for (const env of data.live) applyEvent(env);
