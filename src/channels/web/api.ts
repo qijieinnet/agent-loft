@@ -134,6 +134,8 @@ function applyConfig(input: Partial<AppConfig>): void {
     // 密码只能走专门的接口改
     const { passwordHash: _ignored, ...web } = input.web as AppConfig["web"];
     next.web = { ...next.web, ...web, passwordHash: current.web.passwordHash };
+    const q = Number(next.web.quotaRefreshMin);
+    next.web.quotaRefreshMin = Number.isFinite(q) ? Math.max(0, Math.min(1440, Math.round(q))) : 10;
   }
   if (input.commands) {
     // 只收字符串数组，别的一律当没传
@@ -258,6 +260,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       }),
       bots: config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })),
       workspaceRoot: config().workspaceRoot,
+      quotaRefreshMin: config().web.quotaRefreshMin,
       conversations: hub.list(),
       pending: interactions.listPending(),
       serverTime: Date.now(),
@@ -467,6 +470,25 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p === "/api/config" && method === "PUT") {
     applyConfig(await readJsonBody<Partial<AppConfig>>(req));
     sendJson(res, 200, publicConfig());
+    return;
+  }
+  // 侧栏的账号额度：各 agent 自己缓存（60 秒），这里并发问一遍，单个失败 / 超时不影响别的
+  if (p === "/api/quota" && method === "GET") {
+    const results = await Promise.all(
+      hub.enabledAgents().map(async (d) => {
+        if (!d.quota) return null;
+        try {
+          const quota = await Promise.race([
+            d.quota(),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 20_000).unref()),
+          ]);
+          return quota ? { agent: d.id, label: d.label, ...quota } : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    sendJson(res, 200, { quotas: results.filter(Boolean), at: Date.now() });
     return;
   }
   {

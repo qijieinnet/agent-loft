@@ -17,11 +17,12 @@ import type {
   HistoryMessage,
   InteractionHost,
   ModelInfo,
+  QuotaInfo,
   RuntimeInfo,
   SessionOptions,
   SessionSummary,
 } from "../../core/types.js";
-import { describeUsage, readUsage } from "./account.js";
+import { describeUsage, readUsage, toQuota } from "./account.js";
 import { cachedProbe, withProbe } from "./probe.js";
 import { diagnose } from "./errors.js";
 import { ClaudeSession, describeToolUse, summarize, toModelInfo } from "./session.js";
@@ -186,6 +187,10 @@ export class ClaudeDriver implements AgentDriver {
 
   async statusLines(): Promise<string[]> {
     return describeUsage(await readUsage());
+  }
+
+  async quota(): Promise<QuotaInfo | null> {
+    return toQuota(await readUsage());
   }
 
   diagnose(err: unknown) {

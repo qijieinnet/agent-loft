@@ -255,6 +255,28 @@ export class ClaudeSession implements AgentSession {
         this.events.onError(new Error(`运行结束但报错：${message.subtype}`));
       }
       this.onTurnEnd();
+      void this.readContext();
+    }
+  }
+
+  /**
+   * 一轮结束后问一次上下文占用（和 /context 同一份数据）。summary 模式只用上一次响应的
+   * usage 加本地估算，不额外调 token 计数接口，很便宜。读不到就算了，只是少个指示器。
+   */
+  private async readContext(): Promise<void> {
+    const q = this.q;
+    if (!q || typeof q.getContextUsage !== "function") return;
+    try {
+      const r = await q.getContextUsage({ detail: "summary" });
+      const window = r.rawMaxTokens || r.maxTokens;
+      if (!window || typeof r.totalTokens !== "number") return;
+      this.events.onContext?.({
+        used: r.totalTokens,
+        window,
+        percent: typeof r.percentage === "number" ? r.percentage : Math.round((r.totalTokens / window) * 100),
+      });
+    } catch (err) {
+      console.warn("[claude] 读取上下文占用失败:", err instanceof Error ? err.message : err);
     }
   }
 

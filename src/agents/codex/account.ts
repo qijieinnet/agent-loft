@@ -4,6 +4,7 @@
 // 而im-agent的 `/status` 是另一条命令（同名而已），本来只报会话和目录。
 // 用的人不会关心这个区别，他只知道「同样敲 /status，这边少了额度」。
 // 与其解释，不如把它显示出来 —— app-server 本来就给了。
+import type { QuotaInfo } from "../../core/types.js";
 import { appServer } from "./app-server.js";
 
 type UsageWindow = {
@@ -44,6 +45,35 @@ export async function readRateLimits(): Promise<RateLimits | null> {
     cache = { at: Date.now(), value: null };
   }
   return cache.value;
+}
+
+/** 300 → 「5h」，10080 → 「7d」 */
+function windowShort(mins: number): string {
+  if (mins % (60 * 24) === 0) return `${mins / (60 * 24)}d`;
+  if (mins % 60 === 0) return `${mins / 60}h`;
+  return `${mins}m`;
+}
+
+/** 侧栏用的结构化额度 */
+export function toQuota(limits: RateLimits | null): QuotaInfo | null {
+  if (!limits) return null;
+  const windows = [limits.primary, limits.secondary]
+    .filter((w): w is UsageWindow => !!w)
+    .map((w) => ({
+      label: windowName(w.windowDurationMins),
+      short: windowShort(w.windowDurationMins),
+      percent: w.usedPercent,
+      resetsAt: w.resetsAt * 1000,
+    }));
+  if (windows.length === 0) return null;
+  const credits = limits.credits;
+  const extra = credits?.unlimited ? "额度包：无限" : credits?.hasCredits && credits.balance ? `额度包：余 ${credits.balance}` : undefined;
+  return {
+    ...(limits.planType ? { plan: limits.planType } : {}),
+    windows,
+    ...(extra ? { extra } : {}),
+    ...(limits.rateLimitReachedType ? { reached: true } : {}),
+  };
 }
 
 /** 300 → 「5 小时」，10080 → 「7 天」，45 → 「45 分钟」 */

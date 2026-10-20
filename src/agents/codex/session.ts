@@ -622,9 +622,16 @@ export class CodexSession implements AgentSession {
 
       case "thread/tokenUsage/updated": {
         // last 是这一轮的用量，total 是整条 thread 的累计；页脚显示这一轮的
-        const usage = (params as { tokenUsage?: { last?: { totalTokens?: number } } }).tokenUsage;
+        const usage = (
+          params as { tokenUsage?: { last?: { totalTokens?: number }; modelContextWindow?: number | null } }
+        ).tokenUsage;
         const turnTokens = usage?.last?.totalTokens;
         if (typeof turnTokens === "number") this.lastTokens = turnTokens;
+        // 最近一次请求的用量 ≈ 当前上下文大小（Codex 自己的「剩余上下文」也是这么算的）
+        const window = usage?.modelContextWindow;
+        if (typeof turnTokens === "number" && window) {
+          this.events.onContext?.({ used: turnTokens, window, percent: Math.round((turnTokens / window) * 100) });
+        }
         return;
       }
 

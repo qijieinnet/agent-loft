@@ -88,6 +88,29 @@ export type AgentEvents = {
   onSessionId: (id: string) => void;
   /** 有 n 条排队中的输入被丢弃了（不会再有结果）：调用方据此结清「进行中」的计数 */
   onDropped?: (n: number) => void;
+  /** 上下文窗口占用更新了（一般在每轮结束后） */
+  onContext?: (ctx: ContextUsage) => void;
+};
+
+/** 上下文窗口占用：used / window 都是 token 数，percent 是 0-100（可能略超 100） */
+export type ContextUsage = { used: number; window: number; percent: number };
+
+/** 账号额度（订阅的用量窗口）。没有订阅额度（API key 之类）时 driver 返回 null */
+export type QuotaInfo = {
+  plan?: string;
+  windows: {
+    /** 完整名称，如「5 小时」「7 天（Opus）」 */
+    label: string;
+    /** 紧凑显示用，如「5h」「7d」 */
+    short: string;
+    percent: number;
+    /** 重置时刻（毫秒时间戳） */
+    resetsAt?: number;
+  }[];
+  /** 额度包等附加说明 */
+  extra?: string;
+  /** 已撞上限 */
+  reached?: boolean;
 };
 
 // ---------- agent ----------
@@ -174,5 +197,7 @@ export interface AgentDriver {
   defaults(): Promise<RuntimeInfo>;
   /** /status 里额外的几行（比如 Codex 的额度） */
   statusLines(): Promise<string[]>;
+  /** 账号额度，侧栏显示用；读不到 / 没有订阅额度时返回 null */
+  quota?(): Promise<QuotaInfo | null>;
   diagnose(err: unknown): Diagnosis;
 }

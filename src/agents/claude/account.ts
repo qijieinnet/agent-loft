@@ -5,6 +5,7 @@
 //
 // 注意：SDK 把它标成了 EXPERIMENTAL，方法名以后会改。改了的话这里只会读失败，
 // /status 少几行而已，不影响别的。
+import type { QuotaInfo } from "../../core/types.js";
 import { cachedProbe, withProbe } from "./probe.js";
 
 type Window = { utilization: number | null; resets_at: string | null } | null | undefined;
@@ -20,13 +21,20 @@ type LimitRow = {
 
 export type ClaudeUsage = {
   subscriptionType: string | null;
-  rows: { label: string; percent: number; resetsAt: string | null; severity?: string }[];
+  rows: { label: string; short: string; percent: number; resetsAt: string | null; severity?: string }[];
 };
 
 function labelOf(row: LimitRow): string {
   const scope = row.scope?.model?.display_name || row.scope?.surface?.display_name;
   const base = row.kind === "session" ? "5 小时" : row.group === "weekly" ? "7 天" : row.kind;
   return scope ? `${base}（${scope}）` : base;
+}
+
+/** 侧栏紧凑显示用：5h / 7d，带范围的加上范围名 */
+function shortOf(row: LimitRow): string {
+  const scope = row.scope?.model?.display_name || row.scope?.surface?.display_name;
+  const base = row.kind === "session" ? "5h" : row.group === "weekly" ? "7d" : row.kind;
+  return scope ? `${base} ${scope}` : base;
 }
 
 function normalize(res: {
@@ -42,6 +50,7 @@ function normalize(res: {
     // 新版服务端直接给出要显示哪些行、什么顺序，照单全收
     rows = limits.map((r) => ({
       label: labelOf(r),
+      short: shortOf(r),
       percent: r.percent,
       resetsAt: r.resets_at,
       ...(r.severity ? { severity: r.severity } : {}),
@@ -49,12 +58,12 @@ function normalize(res: {
   } else {
     // 老格式兜底：只认两个主窗口
     rows = [];
-    for (const [key, label] of [
-      ["five_hour", "5 小时"],
-      ["seven_day", "7 天"],
+    for (const [key, label, short] of [
+      ["five_hour", "5 小时", "5h"],
+      ["seven_day", "7 天", "7d"],
     ] as const) {
       const w = rl[key] as Window;
-      if (w && w.utilization != null) rows.push({ label, percent: w.utilization, resetsAt: w.resets_at });
+      if (w && w.utilization != null) rows.push({ label, short, percent: w.utilization, resetsAt: w.resets_at });
     }
   }
   return { subscriptionType: res.subscription_type, rows };
@@ -86,6 +95,19 @@ function untilReset(resetsAt: string | null, now = Date.now()): string {
   if (days > 0) return `${days} 天 ${hours} 小时后重置`;
   if (hours > 0) return `${hours} 小时 ${minutes} 分后重置`;
   return `${minutes} 分钟后重置`;
+}
+
+/** 侧栏用的结构化额度 */
+export function toQuota(usage: ClaudeUsage | null): QuotaInfo | null {
+  if (!usage || usage.rows.length === 0) return null;
+  return {
+    ...(usage.subscriptionType ? { plan: usage.subscriptionType } : {}),
+    windows: usage.rows.map((r) => {
+      const at = r.resetsAt ? Date.parse(r.resetsAt) : NaN;
+      return { label: r.label, short: r.short, percent: r.percent, ...(Number.isNaN(at) ? {} : { resetsAt: at }) };
+    }),
+    ...(usage.rows.some((r) => r.percent >= 100) ? { reached: true } : {}),
+  };
 }
 
 /** 渲染成 /status 里的几行；没有可显示的就返回空数组（API key / Bedrock 之类没有订阅额度） */

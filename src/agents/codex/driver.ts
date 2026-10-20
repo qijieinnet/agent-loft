@@ -2,7 +2,7 @@
 //
 // 不用 @openai/codex-sdk：它是 `codex exec --json` 的薄封装，没有任何审批回调。
 import { appServer } from "./app-server.js";
-import { describeRateLimits, readRateLimits } from "./account.js";
+import { describeRateLimits, readRateLimits, toQuota } from "./account.js";
 import { diagnose } from "./errors.js";
 import { CodexSession, summarize } from "./session.js";
 import { config, onConfigChange } from "../../core/config.js";
@@ -13,6 +13,7 @@ import type {
   HistoryMessage,
   InteractionHost,
   ModelInfo,
+  QuotaInfo,
   RuntimeInfo,
   SessionOptions,
   SessionSummary,
@@ -179,6 +180,10 @@ export class CodexDriver implements AgentDriver {
   async statusLines(): Promise<string[]> {
     const quota = describeRateLimits(await readRateLimits());
     return [`沙箱：${config().agents.codex.sandbox}`, ...(quota.length > 0 ? ["", ...quota] : [])];
+  }
+
+  async quota(): Promise<QuotaInfo | null> {
+    return toQuota(await readRateLimits());
   }
 
   diagnose(err: unknown) {

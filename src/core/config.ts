@@ -57,6 +57,8 @@ export type AppConfig = {
      * 反代（比如 Lucky）不在本机时，把它的 IP 加进来。
      */
     trustedProxies: string[];
+    /** 侧栏额度空闲时多久自动刷新一次（分钟），0 = 不自动刷新 */
+    quotaRefreshMin: number;
   };
   /** 输入「/」时命令列表的顺序和隐藏项，按 agent 分开（设置 → 命令） */
   commands: { claude: CommandPrefs; codex: CommandPrefs };
@@ -85,7 +87,7 @@ export function defaultConfig(): AppConfig {
         defaultEffort: "",
       },
     },
-    web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"] },
+    web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10 },
     commands: { claude: { order: [], hidden: [] }, codex: { order: [], hidden: [] } },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },
   };

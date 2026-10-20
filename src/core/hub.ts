@@ -26,6 +26,7 @@ import { clearUploads, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import type {
   AgentDriver,
   AgentSession,
+  ContextUsage,
   ApprovalDecision,
   HistoryMessage,
   InteractionSpec,
@@ -114,6 +115,8 @@ export type ConversationInfo = {
   /** 实际在用的模型 / 思考程度（尽力而为，可能不全）。model/effort 只是显式选过的 */
   runtimeModel?: string;
   runtimeEffort?: string;
+  /** 当前 agent 会话的上下文占用（这次启动以来跑过至少一轮才有） */
+  context?: ContextUsage;
   busy: boolean;
   activeAt: number;
   createdAt: number;
@@ -121,6 +124,7 @@ export type ConversationInfo = {
 };
 
 const BUFFER_MAX = 400;
+const CONTEXT_MAX = 500;
 /** 会占住会话操作队列的 agent 查询，最多等这么久 */
 const QUERY_TIMEOUT_MS = 30_000;
 
@@ -170,6 +174,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private defaultsLoading = new Set<string>();
   /** 已经补问过实际设置的会话进程（Live.id） */
   private runtimeAsked = new Set<number>();
+  /**
+   * 上下文占用，按 agent 的会话 id 记：开新会话 / 恢复 / 切 agent 后 id 变了，自然就不显示旧的。
+   * 只在内存里，最多留 CONTEXT_MAX 条。
+   */
+  private contextBySession = new Map<string, ContextUsage>();
 
   constructor() {
     super();
@@ -397,6 +406,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         const rt = this.displayRuntime(conv, binding);
         return { ...(rt.model ? { runtimeModel: rt.model } : {}), ...(rt.effort ? { runtimeEffort: rt.effort } : {}) };
       })(),
+      ...(() => {
+        const ctx = binding.sessionId ? this.contextBySession.get(binding.sessionId) : undefined;
+        return ctx ? { context: ctx } : {};
+      })(),
       busy: this.isBusy(key),
       activeAt: conv.activeAt,
       createdAt: conv.createdAt,
@@ -488,6 +501,19 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
             this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
           }
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+        },
+        onContext: (ctx) => {
+          if (!alive()) return;
+          const sid = holder.session?.sessionId;
+          if (!sid) return;
+          const prev = this.contextBySession.get(sid);
+          this.contextBySession.delete(sid);
+          this.contextBySession.set(sid, ctx);
+          if (this.contextBySession.size > CONTEXT_MAX) {
+            this.contextBySession.delete(this.contextBySession.keys().next().value!);
+          }
+          // Codex 一轮里会报好几次，数字没变就不打扰前端
+          if (prev?.used !== ctx.used || prev?.window !== ctx.window) this.emitEvent(key, { type: "meta" });
         },
         onDropped: (n) => {
           if (!alive() || n <= 0) return;
