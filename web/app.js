@@ -33,6 +33,7 @@ function fill(el, ...kids) {
 const ICON = {
   menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  compose: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M18.4 2.6a2 2 0 0 1 2.9 2.9L12.5 14.3 9 15l.7-3.5Z"/></svg>',
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>',
   clip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
@@ -40,6 +41,7 @@ const ICON = {
   more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>',
+  fork: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-6 4-11.2 8.6"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
@@ -103,6 +105,16 @@ async function api(path, opts = {}) {
     throw err;
   }
   return data;
+}
+
+/** 回复下面的时间：今天只显示时分，今年显示月日，再早带上年份 */
+function clockTime(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  if (d.toDateString() === now.toDateString()) return hm;
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  return d.getFullYear() === now.getFullYear() ? `${md} ${hm}` : `${d.getFullYear()}年${md} ${hm}`;
 }
 
 function relTime(ts) {
@@ -494,7 +506,7 @@ function renderLayout() {
     h(
       "div",
       { class: "side-top" },
-      h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("edit"), "新聊天"),
+      h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("compose"), "新聊天"),
     ),
     ui.convList,
     h(
@@ -750,6 +762,58 @@ function scheduleSidebar() {
   });
 }
 
+/**
+ * 把一组会话按分叉关系排成树：父对话也在这一组里的，挂到父对话下面；其余的是根。
+ * 节点 { c, kids, at }，at 是整棵子树里最近的活跃时间。根和同级都按 at 从新到旧。
+ */
+function forkForest(convs) {
+  const byKey = new Map(convs.map((c) => [c.key, c]));
+  const nodes = new Map(convs.map((c) => [c.key, { c, kids: [], at: c.activeAt }]));
+  // 父链里绕回自己（数据坏了）就当根处理，免得整串都不显示
+  const parentOf = (c) => {
+    if (!c.forkOf || !byKey.has(c.forkOf)) return null;
+    for (let p = byKey.get(c.forkOf), n = 0; p && n < 50; p = byKey.get(p.forkOf), n++) {
+      if (p.key === c.key) return null;
+    }
+    return c.forkOf;
+  };
+  const roots = [];
+  for (const c of convs) {
+    const parent = parentOf(c);
+    (parent ? nodes.get(parent).kids : roots).push(nodes.get(c.key));
+  }
+  const settle = (node) => {
+    for (const k of node.kids) node.at = Math.max(node.at, settle(k));
+    node.kids.sort((a, b) => b.at - a.at);
+    return node.at;
+  };
+  for (const r of roots) settle(r);
+  return roots.sort((a, b) => b.at - a.at);
+}
+
+/** 画一棵分叉树：主对话一行，分叉缩进挂在下面，用虚线连起来（样式见 .fork-node） */
+function renderForkNode(node, row, cls = "") {
+  const self = row(node.c, !!node.c.forkOf && !node.parentShown);
+  if (node.kids.length === 0) return self;
+  return h(
+    "div",
+    { class: "fork-group" },
+    self,
+    h(
+      "div",
+      { class: `fork-children${cls}` },
+      node.kids.map((k) => h("div", { class: "fork-node" }, renderForkNode({ ...k, parentShown: true }, row))),
+    ),
+  );
+}
+
+/** 分叉出来的对话：提示里写上从哪条来的 */
+function forkNote(c) {
+  if (!c.forkOf) return "";
+  const parent = S.convs.get(c.forkOf);
+  return `\n分叉自「${parent ? convTitle(parent) : "已删除的对话"}」`;
+}
+
 function convTitle(c) {
   if (!c) return "新对话";
   if (c.title) return c.title;
@@ -807,18 +871,26 @@ function renderSidebar() {
   const more = (list, id, expanded) =>
     h("button", { class: "conv-more", onclick: () => toggleSide(list, id) }, expanded ? "收起" : "展开显示");
 
+  // 一行会话。orphan：是分叉出来的、但父对话不在这一组里（删了 / 在别的目录），没有连线可画，用图标标一下
+  const convRow = (c, cls, detail, orphan) =>
+    h(
+      "button",
+      {
+        class: `conv-item${cls}${c.key === S.current ? " active" : ""}`,
+        "data-key": c.key,
+        title: `${convTitle(c)}${forkNote(c)}\n${detail}\n双击重命名`,
+        onclick: () => open(c.key),
+      },
+      orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
+      h("span", { class: "title" }, convTitle(c)),
+      status([c.key]),
+    );
+
   // ---- 最近：Web 会话 + 每个飞书机器人一行（点开它最近活跃的聊天），按活跃时间混排 ----
+  // 分叉出来的对话挂在主对话下面，整棵树按里面最近活跃的那条排
   const recent = [];
-  for (const c of visible.filter((c) => c.channel !== "feishu")) {
-    recent.push({
-      at: c.activeAt,
-      el: h(
-        "button",
-        { class: `conv-item${c.key === S.current ? " active" : ""}`, "data-key": c.key, title: `${convTitle(c)}\n${agentLabel(c.agent)} · ${c.cwd}\n双击重命名`, onclick: () => open(c.key) },
-        h("span", { class: "title" }, convTitle(c)),
-        status([c.key]),
-      ),
-    });
+  for (const node of forkForest(visible.filter((c) => c.channel !== "feishu"))) {
+    recent.push({ at: node.at, el: renderForkNode(node, (c, orphan) => convRow(c, "", `${agentLabel(c.agent)} · ${c.cwd}`, orphan)) });
   }
   for (const bot of S.bots) {
     const convs = visible.filter((c) => c.channel === "feishu" && c.channelId === bot.id);
@@ -833,9 +905,9 @@ function renderSidebar() {
           title: latest ? `飞书 · ${bot.name}\n${agentLabel(latest.agent)} · ${latest.cwd}` : `飞书 · ${bot.name}\n还没有会话`,
           onclick: () => (latest ? open(latest.key) : toast("这个机器人还没有会话，先在飞书里给它发条消息")),
         },
+        h("span", { class: "brand-icon lead", title: "飞书", html: ICON.feishu }),
         h("span", { class: "title" }, bot.name),
         status(convs.map((c) => c.key)),
-        h("span", { class: "brand-icon tail", title: "飞书", html: ICON.feishu }),
       ),
     });
   }
@@ -896,17 +968,12 @@ function renderSidebar() {
         ),
       );
       if (!expanded) continue;
-      for (const c of convs.slice(0, showAll ? convs.length : PROJECT_LIMIT)) {
-        nodes.push(
-          h(
-            "button",
-            { class: `conv-item sub${c.key === S.current ? " active" : ""}`, "data-key": c.key, title: `${convTitle(c)}\n${agentLabel(c.agent)}\n双击重命名`, onclick: () => open(c.key) },
-            h("span", { class: "title" }, convTitle(c)),
-            status([c.key]),
-          ),
-        );
+      // 「展开显示」按主对话算条数，分叉跟着主对话一起出现
+      const forest = forkForest(convs);
+      for (const node of forest.slice(0, showAll ? forest.length : PROJECT_LIMIT)) {
+        nodes.push(renderForkNode(node, (c, orphan) => convRow(c, " sub", agentLabel(c.agent), orphan), " in-proj"));
       }
-      if (convs.length > PROJECT_LIMIT) nodes.push(h("div", { class: "sub-more" }, more("more", dir, showAll)));
+      if (forest.length > PROJECT_LIMIT) nodes.push(h("div", { class: "sub-more" }, more("more", dir, showAll)));
     }
   }
   // 重绘会换掉 DOM：如果鼠标正停在某个标题上，重绘后接着滚
@@ -977,17 +1044,62 @@ function saveDraftPick() {
   localStorage.setItem("aim.draftPick", JSON.stringify(S.draftPick));
 }
 
-/** 各 agent 的模型列表（新对话用），按 agent 缓存 */
+/** 各 agent 的模型列表（新对话用 + 把模型 id 翻成显示名），按 agent 缓存 */
 const catalogCache = new Map();
+/** 已经拿到的：agent → 模型列表 / 没显式选时实际用的 { model, effort } */
+const catalogLoaded = new Map();
+const catalogDefaults = new Map();
 function agentCatalog(agent) {
   if (!catalogCache.has(agent)) {
-    const p = api(`/api/agents/${agent}/models`).then((d) => d.models ?? []);
+    const p = api(`/api/agents/${agent}/models`).then((d) => {
+      catalogLoaded.set(agent, d.models ?? []);
+      catalogDefaults.set(agent, d.defaults ?? {});
+      return d.models ?? [];
+    });
     p.catch(() => catalogCache.delete(agent));
     catalogCache.set(agent, p);
   }
   return catalogCache.get(agent);
 }
-const catalogLoaded = new Map();
+/** 列表还没拿到就去拿，拿到后重画输入框的模型按钮 */
+function ensureCatalog(agent) {
+  if (!agent || catalogLoaded.has(agent) || catalogCache.has(agent)) return;
+  void agentCatalog(agent).then(() => renderContext()).catch(() => {});
+}
+
+/** 设置里勾选的、输入框模型列表要显示的模型；没设置过（空）就全部显示 */
+function visibleModels(agent, models) {
+  const allow = S.agents.find((a) => a.id === agent)?.models ?? [];
+  if (!allow.length) return models;
+  const shown = models.filter((m) => allow.includes(m.id));
+  return shown.length ? shown : models;
+}
+
+// Claude 的 id 有几种写法：别名（opus）、完整名（claude-opus-5-5、带日期的、带 [1m] 的）
+const bareModelId = (id) => String(id).replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "");
+/** 「Default (recommended)」那一项实际是哪个模型：Claude 写在说明的开头（「Opus 5.5 · …」） */
+function defaultEntryName(m) {
+  const head = m.description?.split(" · ")[0]?.trim();
+  return head && head.length <= 24 && head !== m.description ? head : null;
+}
+/**
+ * 模型 id → 给人看的名字（Opus 5.5、GPT-6.1-Sol），和选择列表里的写法一致。
+ * id 为空 = 没显式选，按 agent 的默认模型算。都对不上时尽量从 id 拼出来，实在不行才显示 id。
+ */
+function modelName(agent, id) {
+  const models = catalogLoaded.get(agent) ?? [];
+  if (!id) id = catalogDefaults.get(agent)?.model;
+  if (!id || id === "default") {
+    const def = models.find((m) => m.id === "default") ?? models.find((m) => m.isDefault);
+    if (!def) return null;
+    return def.id === "default" ? (defaultEntryName(def) ?? def.label) : def.label || def.id;
+  }
+  const exact = models.find((m) => m.id === id) ?? models.find((m) => bareModelId(m.id) === bareModelId(id));
+  if (exact) return exact.id === "default" ? (defaultEntryName(exact) ?? exact.label) : exact.label || exact.id;
+  const claude = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?$/.exec(bareModelId(id));
+  if (claude) return `${claude[1][0].toUpperCase()}${claude[1].slice(1)} ${claude[2]}${claude[3] ? `.${claude[3]}` : ""}`;
+  return id;
+}
 
 /** 输入框上方的上下文条（目录 / agent）和输入框里的模型按钮 */
 function renderContext() {
@@ -1013,18 +1125,17 @@ function renderContext() {
   );
   updateCtxVisibility();
 
+  // 直接显示实际的模型名和思考程度（和选择列表里一样的写法），不显示「默认模型」
   let model;
   let effort;
-  if (c) {
-    model = c.runtimeModel ?? c.model ?? "默认模型";
-    effort = c.runtimeEffort ?? c.effort;
-  } else if (S.draftAgent) {
-    const pick = draftPick();
-    const models = catalogLoaded.get(S.draftAgent);
-    if (!models) void agentCatalog(S.draftAgent).then((m) => (catalogLoaded.set(S.draftAgent, m), renderContext())).catch(() => {});
-    const def = models?.find((m) => m.isDefault) ?? models?.find((m) => m.id === "default");
-    model = pick.model ? (models?.find((m) => m.id === pick.model)?.label ?? pick.model) : (def?.label ?? "默认模型");
-    effort = pick.effort;
+  const modelAgent = c ? c.agent : S.draftAgent;
+  if (modelAgent) {
+    ensureCatalog(modelAgent);
+    const defaults = catalogDefaults.get(modelAgent) ?? {};
+    const pick = c ? null : draftPick();
+    const id = c ? (c.runtimeModel ?? c.model) : pick.model;
+    model = modelName(modelAgent, id) ?? (catalogLoaded.has(modelAgent) ? "选择模型" : "…");
+    effort = (c ? (c.runtimeEffort ?? c.effort) : pick.effort) ?? defaults.effort;
   }
   renderCtxRing();
   fill(
@@ -1131,7 +1242,9 @@ function openMoreMenu(anchor) {
   showMenu(anchor, [
     { label: "历史会话…", onclick: () => openSessions(false) },
     { label: "开新会话（清空上下文）", onclick: () => doAction("new") },
-    { label: "分叉当前会话", onclick: () => doAction("fork") },
+    c.canFork
+      ? { label: "分叉成新对话", onclick: () => forkConversation() }
+      : { label: "分叉当前会话", onclick: () => doAction("fork") },
     { label: "切换工作目录…", onclick: () => changeCwd() },
     { label: "查看状态", onclick: () => showStatus() },
     "sep",
@@ -1216,7 +1329,7 @@ async function openConversation(key) {
   fill(ui.msgInner, );
   for (const m of data.messages) {
     if (m.role === "user") addItem({ type: "user", text: m.text, files: [], origin: null });
-    else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer });
+    else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor });
   }
   S.seq.set(key, 0);
   for (const env of data.live) applyEvent(env);
@@ -1249,12 +1362,26 @@ function scrollToBottom(force) {
   if (force || ui.stick) ui.messages.scrollTop = ui.messages.scrollHeight;
 }
 
+/** 只有最后一条回复默认显示底部的操作栏（复制 / 分叉 / 用时…），前面的 hover 才出来 */
+function markLatestAi() {
+  let latest = null;
+  for (let i = S.items.length - 1; i >= 0; i--) {
+    const it = S.items[i];
+    if (it.type === "ai" && it.done && !it.segment) {
+      latest = it;
+      break;
+    }
+  }
+  for (const it of S.items) if (it.type === "ai") it.el?.classList.toggle("latest", it === latest);
+}
+
 function addItem(item) {
   ui.msgInner.querySelector(".empty")?.remove();
   const stick = nearBottom();
   item.el = renderItem(item);
   ui.msgInner.append(item.el);
   S.items.push(item);
+  markLatestAi();
   updateCtxVisibility();
   if (stick) scrollToBottom(true);
   return item;
@@ -1276,6 +1403,7 @@ function updateItem(item) {
       it.el = next;
     }
     dirty.clear();
+    markLatestAi();
     if (stick) scrollToBottom(true);
   });
 }
@@ -1336,7 +1464,12 @@ function renderAi(item) {
           "div",
           { class: "ai-actions" },
           body ? h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(body) }, icon("copy")) : null,
-          item.footer ? h("span", { class: "footer-note" }, item.footer) : null,
+          item.anchor && S.convs.get(S.current)?.canFork
+            ? h("button", { class: "icon-btn", title: "从这里分叉成新对话", onclick: () => forkConversation(item.anchor) }, icon("fork"))
+            : null,
+          item.footer || item.at
+            ? h("span", { class: "footer-note" }, [item.footer, item.at ? clockTime(item.at) : ""].filter(Boolean).join("　"))
+            : null,
         )
       : null,
   );
@@ -1392,6 +1525,8 @@ function applyEvent(env) {
       ai.partial = "";
       ai.done = true;
       ai.footer = ev.footer;
+      ai.at = ev.at;
+      ai.anchor = ev.anchor;
       updateItem(ai);
       S.turnAi = null;
       return;
@@ -2145,6 +2280,22 @@ async function doAction(action, value, extra = {}) {
   }
 }
 
+/** 分叉成一条新对话（anchor 给了就到那条回复为止），然后切过去。原对话不动 */
+async function forkConversation(anchor) {
+  if (!S.current) return;
+  try {
+    const res = await api(`/api/conversations/${encodeURIComponent(S.current)}/fork`, {
+      method: "POST",
+      body: anchor ? { anchor } : {},
+    });
+    S.convs.set(res.info.key, res.info);
+    toast("已分叉成新对话，原对话保留");
+    await openConversation(res.info.key);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 async function switchAgent(id) {
   if (!S.current) {
     S.draftAgent = id;
@@ -2218,11 +2369,14 @@ async function openModelPicker(anchor = ui.modelSlot) {
   let effortSupported = true;
   try {
     if (conv) {
-      const data = await api(`/api/conversations/${encodeURIComponent(S.current)}/models`);
+      // 顺便把这个 agent 的默认模型 / 显示名准备好（缓存过就不会再请求）
+      const [data] = await Promise.all([
+        api(`/api/conversations/${encodeURIComponent(S.current)}/models`),
+        agentCatalog(conv.agent).catch(() => []),
+      ]);
       ({ models, current, currentEffort, effortSupported } = data);
     } else {
       models = await agentCatalog(S.draftAgent);
-      catalogLoaded.set(S.draftAgent, models);
       const pick = draftPick();
       current = pick.model ?? (models.find((m) => m.isDefault) ?? models.find((m) => m.id === "default"))?.id;
       currentEffort = pick.effort;
@@ -2247,17 +2401,29 @@ async function openModelPicker(anchor = ui.modelSlot) {
     else if (ui.menu === pop) render();
   };
 
+  const agent = conv ? conv.agent : S.draftAgent;
+  // 当前值可能是别名、完整名或空（默认）：先按 id 对，对不上再按显示名对，只勾一项
+  const currentItem = (list) => {
+    const byId = list.find((m) => m.id === current);
+    if (byId) return byId;
+    const name = modelName(agent, current);
+    return list.find((m) => m.id !== "default" && (m.label || m.id) === name) ?? null;
+  };
+
   function render() {
-    const efforts = models.find((m) => m.id === current)?.efforts ?? models.find((m) => m.efforts?.length)?.efforts ?? [];
+    const shown = visibleModels(agent, models);
+    const on = currentItem(shown);
+    const efforts = (on ?? currentItem(models))?.efforts ?? models.find((m) => m.efforts?.length)?.efforts ?? [];
+    if (!currentEffort) currentEffort = catalogDefaults.get(agent)?.effort;
     fill(
       pop,
       h("div", { class: "pop-head" }, "模型"),
-      models.map((m) =>
+      shown.map((m) =>
         h(
           "button",
-          { class: `pop-item${m.id === current ? " on" : ""}`, onclick: () => void choose("model", m.id) },
+          { class: `pop-item${m === on ? " on" : ""}`, onclick: () => void choose("model", m.id) },
           h("span", { class: "grow" }, h("span", { class: "t" }, m.label || m.id), m.description ? h("span", { class: "s" }, m.description) : null),
-          m.id === current ? h("span", { class: "check" }, "✓") : null,
+          m === on ? h("span", { class: "check" }, "✓") : null,
         ),
       ),
       effortSupported && efforts.length
@@ -2697,6 +2863,10 @@ async function saveConfig(cfg, patch) {
     const next = await api("/api/config", { method: "PUT", body: patch });
     Object.assign(cfg, next);
     toast("已保存");
+    // 默认模型 / 可选模型可能改了：模型列表和默认值重新拿
+    catalogCache.clear();
+    catalogLoaded.clear();
+    catalogDefaults.clear();
     const boot2 = await api("/api/bootstrap");
     S.agents = boot2.agents;
     S.bots = boot2.bots;
@@ -2707,6 +2877,7 @@ async function saveConfig(cfg, patch) {
     }
     renderTopbar();
     renderSidebar();
+    renderContext();
   } catch (err) {
     toast(err.message);
   }
@@ -3057,10 +3228,52 @@ function commandsTab(cfg, panel) {
   void refreshFeishu();
 }
 
+/**
+ * 设置 → Agent：勾选哪些模型出现在输入框的模型列表里。
+ * 全部勾上存成空数组 = 「全部显示」，以后 agent 新增的模型也会自动出现；
+ * 只勾了一部分就只显示这些。一个都不勾不允许保存。
+ */
+function modelChecklist(agent, selected) {
+  const box = h("div", { class: "model-checks" }, h("small", {}, "正在读取模型列表…"));
+  let boxes = null;
+  api(`/api/agents/${agent}/models`)
+    .then((data) => {
+      const models = data?.models ?? [];
+      if (!models.length) return fill(box, h("small", {}, "没读到模型列表"));
+      boxes = models.map((m) => ({ id: m.id, el: h("input", { type: "checkbox", checked: !selected.length || selected.includes(m.id) }) }));
+      fill(
+        box,
+        boxes.map(({ el }, i) => {
+          const m = models[i];
+          return h(
+            "label",
+            { class: "model-check" },
+            el,
+            h("span", { class: "t" }, m.label || m.id),
+            h("span", { class: "s" }, m.id === "default" && defaultEntryName(m) ? `跟随默认 · 现在是 ${defaultEntryName(m)}` : m.id),
+          );
+        }),
+        h("small", {}, "只影响输入框里的模型选择列表；全部勾上 = 以后新出的模型也自动显示"),
+      );
+    })
+    .catch((err) => fill(box, h("small", {}, err.status === 409 ? err.message : `读取模型列表失败：${err.message ?? err}`)));
+  return {
+    el: box,
+    /** 列表没读到时原样保留；null = 一个都没勾 */
+    value: () => {
+      if (!boxes) return selected;
+      const on = boxes.filter((b) => b.el.checked).map((b) => b.id);
+      if (on.length === 0) return null;
+      return on.length === boxes.length ? [] : on;
+    },
+  };
+}
+
 function agentsTab(cfg, panel) {
   const a = structuredClone(cfg.agents);
   const claudeOn = h("input", { type: "checkbox", checked: a.claude.enabled });
   const claudePick = modelPicker("claude", a.claude.defaultModel, a.claude.defaultEffort, "跟随 Claude Code 默认");
+  const claudeModels = modelChecklist("claude", a.claude.models ?? []);
   const codexOn = h("input", { type: "checkbox", checked: a.codex.enabled });
   const codexPath = h("input", { value: a.codex.path });
   const codexHome = h("input", { value: a.codex.home, placeholder: "留空用 ~/.codex" });
@@ -3070,6 +3283,9 @@ function agentsTab(cfg, panel) {
     ["read-only", "workspace-write", "danger-full-access"].map((m) => h("option", { value: m, selected: m === a.codex.sandbox }, m)),
   );
   const codexPick = modelPicker("codex", a.codex.defaultModel, a.codex.defaultEffort, "跟随 config.toml");
+  const codexModels = modelChecklist("codex", a.codex.models ?? []);
+  // 一组勾选框不能放进 <label>（点哪都会切到第一个），所以不用 field()
+  const checksField = (list) => h("div", { class: "field" }, h("span", {}, "输入框可选模型"), list.el);
   panel.append(
     h(
       "div",
@@ -3077,6 +3293,7 @@ function agentsTab(cfg, panel) {
       h("h4", {}, "Claude Code", h("span", { class: "grow" }), h("label", { class: "check" }, claudeOn, "启用")),
       field("默认模型", claudePick.modelEl),
       field("默认思考程度", claudePick.effortEl),
+      checksField(claudeModels),
     ),
     h(
       "div",
@@ -3087,6 +3304,7 @@ function agentsTab(cfg, panel) {
       field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"),
       field("默认模型", codexPick.modelEl),
       field("默认思考程度", codexPick.effortEl),
+      checksField(codexModels),
     ),
     h(
       "div",
@@ -3095,10 +3313,18 @@ function agentsTab(cfg, panel) {
         "button",
         {
           class: "btn primary",
-          onclick: () =>
-            saveConfig(cfg, {
+          onclick: () => {
+            const claudeList = claudeModels.value();
+            const codexList = codexModels.value();
+            if (!claudeList || !codexList) return toast(`${!claudeList ? "Claude Code" : "Codex"} 至少勾选一个模型`);
+            return saveConfig(cfg, {
               agents: {
-                claude: { enabled: claudeOn.checked, defaultModel: claudePick.model(), defaultEffort: claudePick.effort() },
+                claude: {
+                  enabled: claudeOn.checked,
+                  defaultModel: claudePick.model(),
+                  defaultEffort: claudePick.effort(),
+                  models: claudeList,
+                },
                 codex: {
                   enabled: codexOn.checked,
                   path: codexPath.value.trim() || "codex",
@@ -3106,9 +3332,11 @@ function agentsTab(cfg, panel) {
                   sandbox: sandbox.value,
                   defaultModel: codexPick.model(),
                   defaultEffort: codexPick.effort(),
+                  models: codexList,
                 },
               },
-            }),
+            });
+          },
         },
         "保存",
       ),

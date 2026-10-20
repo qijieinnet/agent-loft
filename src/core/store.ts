@@ -40,6 +40,8 @@ export type Conversation = {
   hidden?: boolean;
   /** /autoedit：这条对话里 agent 在工作目录内改文件不再询问（跨 /new 保留，属于对话不属于某个会话） */
   autoEdit?: boolean;
+  /** 从哪条对话分叉出来的（对话 key），列表里据此显示关联 */
+  forkOf?: string;
 };
 
 type StoreShape = Record<string, Conversation>;

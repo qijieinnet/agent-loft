@@ -7,9 +7,10 @@
 //
 // 同一条会话可以被多个渠道同时看着：飞书群里的会话也能在 Web 上打开，Web 上
 // 说的话照样回到飞书。所以事件是广播出去的，每个订阅者自己挑感兴趣的会话。
+import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
-import { attachFooters, recordFooter } from "./footers.js";
+import { attachFooters, copyFooters, recordFooter } from "./footers.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
   agentBinding,
@@ -56,7 +57,7 @@ export type ConvEvent =
   | { type: "step"; kind: StepKind; text: string }
   | { type: "delta"; text: string }
   | { type: "text"; text: string }
-  | { type: "result"; text: string; footer: string }
+  | { type: "result"; text: string; footer: string; at: number; anchor?: string }
   | { type: "error"; message: string }
   | { type: "notice"; text: string }
   | { type: "state"; busy: boolean }
@@ -121,6 +122,10 @@ export type ConversationInfo = {
   activeAt: number;
   createdAt: number;
   hidden?: boolean;
+  /** 从哪条对话分叉出来的 */
+  forkOf?: string;
+  /** 当前 agent 能不能从某条回复处分叉成新对话 */
+  canFork?: boolean;
 };
 
 const BUFFER_MAX = 400;
@@ -414,6 +419,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       activeAt: conv.activeAt,
       createdAt: conv.createdAt,
       ...(conv.hidden ? { hidden: true } : {}),
+      ...(conv.forkOf ? { forkOf: conv.forkOf } : {}),
+      ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
     };
   }
 
@@ -478,7 +485,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           if (result.costUsd !== undefined) parts.push(`约 $${result.costUsd.toFixed(4)}`);
           if (result.tokens !== undefined) parts.push(`${result.tokens} tokens`);
           const footer = parts.join("　");
-          this.emitEvent(key, { type: "result", text: result.text, footer });
+          this.emitEvent(key, {
+            type: "result",
+            text: result.text,
+            footer,
+            at: Date.now(),
+            ...(result.anchor ? { anchor: result.anchor } : {}),
+          });
           const conv = getConversation(key);
           recordFooter(holder.session?.sessionId ?? (conv ? agentBinding(conv, agent).sessionId : undefined), result.text, footer);
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
@@ -979,6 +992,41 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
 
   fork(key: string): Promise<string> {
     return this.switchOp(key, (op) => this.forkNow(key, op));
+  }
+
+  /**
+   * 分叉成一条新的 Web 对话：agent 会话复制一份（给了 anchor 就只到那条回复为止），
+   * 原对话完全不动。返回新对话的 key。和 /fork 不同 —— /fork 是在同一条对话里换成分叉出来的会话。
+   */
+  async forkConversation(key: string, anchor?: string): Promise<string> {
+    const conv = getConversation(key);
+    if (!conv) throw new Error(`会话不存在：${key}`);
+    const driver = this.requireDriver(conv.agent);
+    if (!driver.forkAt) throw new Error(`${driver.label} 不支持从这里分叉`);
+    const binding = agentBinding(conv);
+    // /fork 之后还没发消息：真正的内容还在原会话里
+    const source = binding.sessionId ?? binding.forkFrom;
+    if (!source) throw new Error("这条对话还没有可分叉的会话");
+    const sessionId = await withTimeout(driver.forkAt(source, conv.cwd, anchor), "分叉会话");
+    copyFooters(source, sessionId);
+    const newKey = `web:${crypto.randomBytes(6).toString("hex")}`;
+    ensureConversation({ key: newKey, channel: "web", channelId: "web", agent: conv.agent });
+    updateConversation(newKey, {
+      title: `${conv.title ?? "会话"} · 分叉`.slice(0, 80),
+      cwd: conv.cwd,
+      ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
+      ...(conv.autoEdit ? { autoEdit: true } : {}),
+      forkOf: key,
+      perAgent: {
+        [conv.agent]: {
+          sessionId,
+          ...(binding.model ? { model: binding.model } : {}),
+          ...(binding.effort ? { effort: binding.effort } : {}),
+        },
+      },
+    });
+    this.emitEvent(newKey, { type: "meta" });
+    return newKey;
   }
 
   resume(key: string, sessionId: string, originCwd?: string): Promise<string> {

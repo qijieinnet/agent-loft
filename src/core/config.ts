@@ -33,7 +33,13 @@ export type AppConfig = {
   approvalTimeoutMs: number;
   sessionTtlMs: number;
   agents: {
-    claude: { enabled: boolean; defaultModel: string; defaultEffort: string };
+    claude: {
+      enabled: boolean;
+      defaultModel: string;
+      defaultEffort: string;
+      /** 输入框模型列表里显示哪些（模型 id），空 = 全部显示 */
+      models: string[];
+    };
     codex: {
       enabled: boolean;
       /** codex 可执行文件，systemd 下 PATH 很短，最好写绝对路径 */
@@ -43,6 +49,8 @@ export type AppConfig = {
       sandbox: SandboxMode;
       defaultModel: string;
       defaultEffort: string;
+      /** 同 claude.models */
+      models: string[];
     };
   };
   web: {
@@ -77,7 +85,7 @@ export function defaultConfig(): AppConfig {
     approvalTimeoutMs: 30 * 60 * 1000,
     sessionTtlMs: 12 * 60 * 60 * 1000,
     agents: {
-      claude: { enabled: true, defaultModel: "", defaultEffort: "" },
+      claude: { enabled: true, defaultModel: "", defaultEffort: "", models: [] },
       codex: {
         enabled: true,
         path: "codex",
@@ -85,6 +93,7 @@ export function defaultConfig(): AppConfig {
         sandbox: "workspace-write",
         defaultModel: "",
         defaultEffort: "",
+        models: [],
       },
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10 },

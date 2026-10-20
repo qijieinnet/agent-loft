@@ -3,6 +3,7 @@
 // 会话列表 / 历史全部走 SDK 自带的 listSessions / getSessionInfo / getSessionMessages，
 // 不再自己去扒 ~/.claude/projects 下的 jsonl —— 那是 CLI 的内部约定，SDK 才是公开接口。
 import {
+  forkSession,
   getSessionInfo,
   getSessionMessages,
   listSessions,
@@ -140,15 +141,20 @@ export class ClaudeDriver implements AgentDriver {
     for (const msg of raw) {
       if (msg.parent_tool_use_id) continue;
       const blocks = blocksOf(msg.message);
+      // 运行时带着 timestamp（ISO 字符串），类型声明里没有
+      const ts = Date.parse((msg as { timestamp?: string }).timestamp ?? "");
       if (msg.type === "user") {
         const texts = blocks.filter((b) => b.type === "text" && b.text).map((b) => b.text!);
         if (texts.length === 0) continue; // 纯 tool_result
         const text = cleanUserText(texts.join("\n"));
         if (!text || text.startsWith("<command-") || text.startsWith("<local-command")) continue;
         flush();
-        out.push({ role: "user", text });
+        out.push({ role: "user", text, ...(Number.isFinite(ts) ? { ts } : {}) });
       } else if (msg.type === "assistant") {
         assistant ??= { role: "assistant", text: "", steps: [] };
+        // 这一轮最后一条助手消息：分叉到这里为止，时间也取它的
+        assistant.anchor = msg.uuid;
+        if (Number.isFinite(ts)) assistant.ts = ts;
         for (const b of blocks) {
           if (b.type === "text" && b.text?.trim()) {
             assistant.text += (assistant.text ? "\n\n" : "") + b.text;
@@ -163,6 +169,17 @@ export class ClaudeDriver implements AgentDriver {
     }
     flush();
     return out;
+  }
+
+  async forkAt(id: string, cwd: string, anchor?: string): Promise<string> {
+    if (!SESSION_ID.test(id)) throw new Error("会话 id 不对");
+    if (anchor) {
+      // 先确认这条回复在记录里：SDK 遇到不认识的 id 不一定报错，可能整条复制
+      const raw = await getSessionMessages(id, { dir: cwd });
+      if (!raw.some((m) => m.uuid === anchor)) throw new Error("在会话记录里找不到这条回复");
+    }
+    const res = await forkSession(id, { dir: cwd, ...(anchor ? { upToMessageId: anchor } : {}) });
+    return res.sessionId;
   }
 
   async listModels(session: AgentSession): Promise<ModelInfo[]> {

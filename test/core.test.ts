@@ -199,7 +199,7 @@ test("事件补发：缓冲区截断过就要求整页重拉，即使之后压�
   hub.emitEvent(key, { type: "turn_start" });
   const since = hub.currentSeq();
   for (let i = 0; i < 450; i++) hub.emitEvent(key, { type: "delta", text: "x" });
-  hub.emitEvent(key, { type: "result", text: "done", footer: "" });
+  hub.emitEvent(key, { type: "result", text: "done", footer: "", at: Date.now() });
   assert.equal(hub.eventsSince(key, since), null);
   assert.ok(hub.eventsSince(key, hub.currentSeq() - 1));
 });

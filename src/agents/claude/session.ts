@@ -125,6 +125,8 @@ export class ClaudeSession implements AgentSession {
    * 在那之前 CLI 起不来、半路退出，重试都还要带 forkSession，绝不能续写原会话。
    */
   private forked = false;
+  /** 主线上最新一条助手消息的 uuid，见 handle() */
+  private lastAssistantUuid: string | undefined;
   private runtime: RuntimeInfo = {};
   private disposed = false;
   /**
@@ -231,6 +233,8 @@ export class ClaudeSession implements AgentSession {
       const blocks = message.message.content;
       if (!Array.isArray(blocks)) return;
       const sub = !!message.parent_tool_use_id;
+      // 主线上最新的一条助手消息：这一轮结束时作为分叉位置报出去（和记录里的 uuid 一致）
+      if (!sub && message.uuid) this.lastAssistantUuid = message.uuid;
       for (const block of blocks) {
         if (block.type === "thinking") {
           const thought = summarize(block.thinking);
@@ -250,6 +254,7 @@ export class ClaudeSession implements AgentSession {
           text: message.result,
           costUsd: message.total_cost_usd,
           durationMs: message.duration_ms,
+          ...(this.lastAssistantUuid ? { anchor: this.lastAssistantUuid } : {}),
         });
       } else {
         this.events.onError(new Error(`运行结束但报错：${message.subtype}`));

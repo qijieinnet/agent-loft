@@ -102,7 +102,9 @@ export class CodexDriver implements AgentDriver {
   }
 
   async readHistory(id: string): Promise<HistoryMessage[]> {
-    const res = await appServer.call<{ thread: { turns?: { items?: HistoryItem[]; startedAt?: number | null }[] } }>(
+    const res = await appServer.call<{
+      thread: { turns?: { id?: string; items?: HistoryItem[]; startedAt?: number | null; completedAt?: number | null }[] };
+    }>(
       "thread/read",
       { threadId: id, includeTurns: true },
     );
@@ -136,9 +138,25 @@ export class CodexDriver implements AgentDriver {
           assistant.steps!.push(`💭 ${summarize(item.summary.join(" "))}`);
         }
       }
-      if (assistant && (assistant.text || assistant.steps?.length)) out.push(assistant);
+      if (assistant && (assistant.text || assistant.steps?.length)) {
+        const done = turn.completedAt ? turn.completedAt * 1000 : ts;
+        out.push({ ...assistant, ...(done ? { ts: done } : {}), ...(turn.id ? { anchor: turn.id } : {}) });
+      }
     }
     return out;
+  }
+
+  /** anchor 是轮次 id：分叉到这一轮为止（含） */
+  async forkAt(id: string, cwd: string, anchor?: string): Promise<string> {
+    const res = await appServer.call<{ thread: Thread }>("thread/fork", {
+      threadId: id,
+      ...(anchor ? { lastTurnId: anchor } : {}),
+      cwd,
+      excludeTurns: true,
+    });
+    // 只是复制，这边不接管：等这条会话真正发消息时再由 CodexSession 去 resume
+    void appServer.call("thread/unsubscribe", { threadId: res.thread.id }).catch(() => {});
+    return res.thread.id;
   }
 
   async listModels(): Promise<ModelInfo[]> {

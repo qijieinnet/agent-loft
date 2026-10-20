@@ -318,8 +318,16 @@ body.side-resizing {
   justify-content: flex-start;
   background: transparent;
   border: none;
-  padding: 8px 10px;
-  font-weight: 500;
+  /* 和下面的会话行同字号、同字重 */
+  padding: 7px 10px;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.side-top .new-chat svg {
+  width: 16px;
+  height: 16px;
 }
 
 .side-top .new-chat:hover {
@@ -395,7 +403,7 @@ button.conv-group:hover {
   padding-left: 36px;
 }
 
-.conv-item .tail {
+.conv-item .lead {
   width: 14px;
   height: 14px;
   opacity: 0.85;
@@ -1260,6 +1268,95 @@ button.conv-group:hover {
   display: flex;
   gap: 4px;
   align-items: center;
+  /* 只有最后一条回复默认显示，前面的 hover 时才出来；用 opacity 占着位置，免得 hover 时内容跳动 */
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.msg-ai.latest .ai-actions,
+.msg-ai:hover .ai-actions,
+.ai-actions:focus-within {
+  opacity: 1;
+}
+
+/* 触屏没有 hover：都显示，否则前面的回复就没法复制 / 分叉了 */
+@media (hover: none) {
+  .ai-actions {
+    opacity: 1;
+  }
+}
+
+.ai-actions .footer-note {
+  margin-left: 4px;
+}
+
+.conv-item .fork-mark {
+  color: var(--fg-soft);
+}
+
+/*
+ * 分叉树：分叉对话缩进挂在主对话下面，虚线连起来。
+ * 竖线从主对话标题下方往下走，每个分叉一个拐角；最后一个分叉的竖线只画到它的拐角为止。
+ * 行高约 34px（.conv-item 上下 7px + 一行字），拐角在 17px 处。
+ */
+.fork-children {
+  margin-left: 16px;
+}
+
+/* 「项目」里的会话行本身缩进 36px，竖线跟着右移 */
+.fork-children.in-proj {
+  margin-left: 42px;
+}
+
+/* 分叉的分叉：竖线对齐上一层分叉的标题 */
+.fork-node .fork-children {
+  margin-left: 14px;
+}
+
+.fork-children .conv-item,
+.fork-children .conv-item.sub {
+  padding-left: 8px;
+}
+
+.fork-node {
+  position: relative;
+  padding-left: 14px;
+}
+
+.fork-node::before,
+.fork-node::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  border: 0 dashed var(--fg-faint);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.fork-node::before {
+  top: 0;
+  bottom: 0;
+  border-left-width: 1px;
+}
+
+/* 第一个分叉的竖线往上接到主对话那一行 */
+.fork-node:first-child::before {
+  top: -6px;
+}
+
+.fork-node:last-child::before {
+  bottom: auto;
+  height: 17px;
+}
+
+.fork-node:first-child:last-child::before {
+  height: 23px;
+}
+
+.fork-node::after {
+  top: 17px;
+  width: 10px;
+  border-top-width: 1px;
 }
 
 .ai-actions .icon-btn {
@@ -1641,8 +1738,9 @@ button.ctx-item:hover {
   height: 30px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--accent);
-  color: var(--accent-fg);
+  /* 像 GPT 那样：浅色模式黑底白箭头，深色模式反过来 */
+  background: var(--fg);
+  color: var(--bg);
   display: grid;
   place-items: center;
   margin-left: 6px;
@@ -2456,4 +2554,51 @@ button.list-item:hover {
 .brand-icon svg {
   width: 100%;
   height: 100%;
+}
+
+/* 设置 → Agent：输入框可选模型 */
+.model-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+}
+
+.model-checks > small {
+  padding: 4px 6px;
+}
+
+.model-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.model-check:hover {
+  background: var(--bg-hover);
+}
+
+.field .model-check input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.model-check .t {
+  white-space: nowrap;
+}
+
+.model-check .s {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

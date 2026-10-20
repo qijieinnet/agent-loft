@@ -71,6 +71,8 @@ export type TurnResult = {
   durationMs: number;
   costUsd?: number;
   tokens?: number;
+  /** 这条回复在 agent 记录里的位置，从这里分叉用（见 AgentDriver.forkAt） */
+  anchor?: string;
 };
 
 export type AgentEvents = {
@@ -137,7 +139,10 @@ export type HistoryMessage = {
   text: string;
   /** 助手这一条之前的过程摘要 */
   steps?: string[];
+  /** 毫秒时间戳；助手消息是这一轮结束的时间 */
   ts?: number;
+  /** 助手消息：从这条回复处分叉用的位置（见 AgentDriver.forkAt） */
+  anchor?: string;
   /** 助手消息：这一轮的用时 / 费用 / tokens（im-agent 自己记的，agent 记录里没有） */
   footer?: string;
 };
@@ -187,6 +192,11 @@ export interface AgentDriver {
   listSessions(cwd: string | undefined, limit?: number): Promise<SessionSummary[]>;
   sessionExists(id: string, cwd: string): Promise<boolean>;
   readHistory(id: string, cwd: string): Promise<HistoryMessage[]>;
+  /**
+   * 把会话复制出一条新的、返回新会话 id。anchor（HistoryMessage / TurnResult 里的）给了就只保留到
+   * 那条回复为止（含），不给就整条复制。原会话不受影响。
+   */
+  forkAt?(id: string, cwd: string, anchor?: string): Promise<string>;
   /** 有的 agent（Claude）要借一个活着的会话才能问到模型列表 */
   listModels(session: AgentSession): Promise<ModelInfo[]>;
   /** 不依赖会话的模型列表，设置页的下拉框用 */

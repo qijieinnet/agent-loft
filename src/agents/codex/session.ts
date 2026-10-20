@@ -646,12 +646,17 @@ export class CodexSession implements AgentSession {
         if (turn.status === "failed") {
           this.events.onError(new Error(turn.error?.message ?? "这一轮失败了"));
         } else if (turn.status === "interrupted") {
-          this.events.onResult({ text: text || "（已中断）", durationMs: turn.durationMs ?? 0 });
+          this.events.onResult({
+            text: text || "（已中断）",
+            durationMs: turn.durationMs ?? 0,
+            ...(turn.id ? { anchor: turn.id } : {}),
+          });
         } else {
           this.events.onResult({
             text,
             durationMs: turn.durationMs ?? 0,
             ...(this.lastTokens !== undefined ? { tokens: this.lastTokens } : {}),
+            ...(turn.id ? { anchor: turn.id } : {}),
           });
         }
         this.drainQueue();

@@ -129,7 +129,17 @@ function applyConfig(input: Partial<AppConfig>): void {
   if (typeof input.workspaceRoot === "string" && input.workspaceRoot.trim()) next.workspaceRoot = input.workspaceRoot.trim();
   if (typeof input.approvalTimeoutMs === "number") next.approvalTimeoutMs = Math.max(60_000, input.approvalTimeoutMs);
   if (typeof input.sessionTtlMs === "number") next.sessionTtlMs = Math.max(0, input.sessionTtlMs);
-  if (input.agents) next.agents = { ...next.agents, ...structuredClone(input.agents) } as AppConfig["agents"];
+  if (input.agents) {
+    // 按 agent 逐个合并：只改了其中几项（比如没带 models）时，其余的保持原样
+    for (const id of AGENT_IDS) {
+      const patch = structuredClone(input.agents[id]) as Partial<AppConfig["agents"][typeof id]> | undefined;
+      if (!patch) continue;
+      if (patch.models !== undefined) {
+        patch.models = Array.isArray(patch.models) ? [...new Set(patch.models.filter((m) => typeof m === "string" && m))] : [];
+      }
+      Object.assign(next.agents[id], patch);
+    }
+  }
   if (input.web) {
     // 密码只能走专门的接口改
     const { passwordHash: _ignored, ...web } = input.web as AppConfig["web"];
@@ -256,6 +266,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           label: d?.label ?? id,
           enabled: hub.enabledAgents().some((e) => e.id === id),
           capabilities: d?.capabilities ?? {},
+          // 输入框模型列表里显示哪些，空 = 全部
+          models: config().agents[id].models.filter((m) => typeof m === "string"),
         };
       }),
       bots: config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })),
@@ -411,6 +423,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { id, name: attachment.name, kind: attachment.kind, size: attachment.size });
       return;
     }
+    if (sub === "fork" && method === "POST") {
+      const body = await readJsonBody<{ anchor?: string }>(req);
+      const anchor = typeof body.anchor === "string" && body.anchor ? body.anchor : undefined;
+      const newKey = await hub.forkConversation(key, anchor);
+      sendJson(res, 200, { info: hub.info(newKey) });
+      return;
+    }
     if (sub === "sessions" && method === "GET") {
       sendJson(res, 200, await hub.sessions(key, url.searchParams.get("all") === "1"));
       return;
@@ -501,7 +520,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         sendJson(res, 409, { error: "未启用，启用并保存后可下拉选择" });
         return;
       }
-      sendJson(res, 200, { models: await driver.catalog() });
+      // defaults：没显式选模型 / 思考程度时实际会用的，输入框据此直接显示模型名而不是「默认」
+      const defaults = await driver.defaults().catch(() => ({}));
+      sendJson(res, 200, { models: await driver.catalog(), defaults });
       return;
     }
   }

@@ -74,6 +74,14 @@ export function attachFooters(sessionId: string, messages: HistoryMessage[]): Hi
   });
 }
 
+/** 分叉出的新会话沿用原会话的脚注：它的记录是原会话的前一段，attachFooters 按顺序配得上 */
+export function copyFooters(from: string, to: string): void {
+  const src = load()[from];
+  if (!src?.entries.length) return;
+  load()[to] = { at: Date.now(), entries: src.entries.map((e) => ({ ...e })) };
+  persistSoon();
+}
+
 /** 测试用 */
 export function resetFootersForTest(): void {
   store = null;
