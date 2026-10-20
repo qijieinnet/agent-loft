@@ -18,6 +18,9 @@ export type SavedAttachment = {
 
 export type UserInput = { text: string; attachments: SavedAttachment[] };
 
+/** 给前端展示用的附件：能预览 / 下载（path 只在上传目录里有效，见 uploads.resolveUploadFile） */
+export type AttachmentInfo = { kind: AttachmentKind; name: string; path: string; size?: number };
+
 // ---------- 交互（审批 / 提问） ----------
 
 /**
@@ -145,6 +148,8 @@ export type HistoryMessage = {
   anchor?: string;
   /** 助手消息：这一轮的用时 / 费用 / tokens（agent-loft 自己记的，agent 记录里没有） */
   footer?: string;
+  /** 用户消息：带的附件（从消息里的附件清单解析出来） */
+  attachments?: AttachmentInfo[];
 };
 
 export type SessionOptions = {

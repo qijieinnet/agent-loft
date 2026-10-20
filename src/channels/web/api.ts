@@ -1,13 +1,14 @@
 // Web 的 REST 接口。实时的东西（事件流、发消息、点授权）走 WebSocket，见 server.ts。
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_IDS, config, listWorkspaceDirs, resolveWorkspacePath, saveConfig, type AppConfig } from "../../core/config.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
 import { getConversation, updateConversation } from "../../core/store.js";
-import { saveBuffer } from "../../core/uploads.js";
+import { resolveUploadFile, saveBuffer, sniff } from "../../core/uploads.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
 import { feishuBots } from "../feishu/index.js";
@@ -26,7 +27,7 @@ import {
   validateSession,
   verifyPassword,
 } from "./auth.js";
-import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, sendJson } from "./http.js";
+import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { addSubscription, listSubscriptions, pushToAll, removeSubscription, vapidPublicKey } from "./push.js";
 
 export const COOKIE = "aim_session";
@@ -55,6 +56,36 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, entry] of uploads) if (now - entry.at > 60 * 60 * 1000) uploads.delete(id);
 }, 10 * 60 * 1000).unref();
+
+/**
+ * 附件文件。只有按文件头确认是常见图片的才 inline 显示（缩略图 / 大图要用），其余一律当下载，
+ * 免得用户传上来的 HTML / SVG 在本站域名下被浏览器当网页执行
+ */
+const INLINE_IMAGE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function serveUpload(res: ServerResponse, requested: string, download: boolean): void {
+  const file = requested ? resolveUploadFile(requested) : undefined;
+  if (!file) throw new HttpError(404, "文件不存在（可能会话重置时已清理）");
+  const head = Buffer.alloc(12);
+  const fd = fs.openSync(file, "r");
+  try {
+    fs.readSync(fd, head, 0, 12, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const type = sniff(head)?.mediaType;
+  const inline = !download && !!type && INLINE_IMAGE.has(type);
+  const name = path.basename(file);
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    "Content-Type": inline ? type! : "application/octet-stream",
+    "Content-Length": fs.statSync(file).size,
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
+    "Content-Security-Policy": "default-src 'none'; img-src 'self'; sandbox",
+    "Cache-Control": "private, max-age=3600",
+  });
+  fs.createReadStream(file).pipe(res);
+}
 
 // ---------- 飞书扫码创建应用 ----------
 
@@ -255,6 +286,12 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
 
   if (!authed(req)) throw new HttpError(401, "请先登录");
+
+  // ----- 附件预览 / 下载：只给上传目录里的文件 -----
+  if (p === "/api/file" && method === "GET") {
+    serveUpload(res, url.searchParams.get("path") ?? "", url.searchParams.get("download") === "1");
+    return;
+  }
 
   // ----- 总览 -----
   if (p === "/api/bootstrap" && method === "GET") {

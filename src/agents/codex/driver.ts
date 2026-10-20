@@ -6,6 +6,7 @@ import { describeRateLimits, readRateLimits, toQuota } from "./account.js";
 import { diagnose } from "./errors.js";
 import { CodexSession, summarize } from "./session.js";
 import { config, onConfigChange } from "../../core/config.js";
+import { splitAttachmentNote } from "../../core/uploads.js";
 import type {
   AgentDriver,
   AgentEvents,
@@ -114,12 +115,19 @@ export class CodexDriver implements AgentDriver {
       const ts = turn.startedAt ? turn.startedAt * 1000 : undefined;
       for (const item of turn.items ?? []) {
         if (item.type === "userMessage") {
-          const text = (item.content ?? [])
-            .map((c) => (c.type === "text" ? (c.text ?? "") : c.type === "localImage" ? "📎 图片" : ""))
+          const raw = (item.content ?? [])
+            .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
             .filter(Boolean)
             .join("\n");
-          const cut = text.indexOf("[用户");
-          out.push({ role: "user", text: cut > 0 ? text.slice(0, cut).trim() || text : text, ...(ts ? { ts } : {}) });
+          // 附件清单拆出来单独展示；没有清单的图片（别处发的）只能留个占位
+          const { text, attachments } = splitAttachmentNote(raw);
+          const bareImages = attachments.length ? 0 : (item.content ?? []).filter((c) => c.type === "localImage").length;
+          out.push({
+            role: "user",
+            text: bareImages ? [text, ...Array(bareImages).fill("📎 图片")].filter(Boolean).join("\n") : text,
+            ...(attachments.length ? { attachments } : {}),
+            ...(ts ? { ts } : {}),
+          });
           continue;
         }
         assistant ??= { role: "assistant", text: "", steps: [] };

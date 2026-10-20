@@ -17,6 +17,18 @@ const MAX_PER_SESSION = 1000;
 /** 存下来比对用的正文结尾长度 */
 const TAIL = 80;
 
+/** 用时按大小换单位：12.3秒 / 3分12秒 / 1小时5分 */
+export function formatDuration(ms: number): string {
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}秒`;
+  const total = Math.round(sec);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}小时${m ? `${m}分` : ""}`;
+  return `${m}分${s ? `${s}秒` : ""}`;
+}
+
 let store: Store | null = null;
 let timer: NodeJS.Timeout | null = null;
 

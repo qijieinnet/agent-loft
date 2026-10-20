@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "../home.js";
-import type { AttachmentKind, SavedAttachment } from "./types.js";
+import type { AttachmentInfo, AttachmentKind, SavedAttachment } from "./types.js";
 
 const uploadsRoot = path.join(dataDir, "uploads");
 
@@ -179,6 +179,55 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+
+/** 附件清单的开头（新旧两种写法），历史里靠它把清单从用户正文里切出去 */
+const NOTE_HEADS = ["[用户发来了以下附件", "[用户通过飞书发来了以下附件"];
+const LABEL_KIND = Object.fromEntries(Object.entries(KIND_LABEL).map(([k, v]) => [v, k])) as Record<string, AttachmentKind>;
+
+/**
+ * 从发给 agent 的消息里拆出用户原文和附件清单（describeAttachments 写的那段）。
+ * 清单每行形如「- 图片1：/路径/a.png（12.3KB，…）」
+ */
+export function splitAttachmentNote(text: string): { text: string; attachments: AttachmentInfo[] } {
+  const cut = NOTE_HEADS.map((h) => text.indexOf(h))
+    .filter((i) => i >= 0)
+    .sort((a, b) => a - b)[0];
+  if (cut === undefined) return { text, attachments: [] };
+  const attachments: AttachmentInfo[] = [];
+  for (const line of text.slice(cut).split("\n")) {
+    const m = /^- (图片|文件|语音|视频)\d+：(.+)（([^（）]*)）\s*$/.exec(line.trim());
+    if (!m) continue;
+    const file = m[2]!.trim();
+    const size = parseSize(m[3]!.split("，")[0]!);
+    attachments.push({ kind: LABEL_KIND[m[1]!] ?? "file", name: path.basename(file), path: file, ...(size ? { size } : {}) });
+  }
+  return { text: text.slice(0, cut).trim(), attachments };
+}
+
+function parseSize(s: string): number | undefined {
+  const m = /^([\d.]+)(B|KB|MB)$/.exec(s.trim());
+  if (!m) return undefined;
+  return Math.round(Number(m[1]) * (m[2] === "MB" ? 1024 * 1024 : m[2] === "KB" ? 1024 : 1));
+}
+
+export function attachmentInfo(a: SavedAttachment): AttachmentInfo {
+  return { kind: a.kind, name: a.name, path: a.path, size: a.size };
+}
+
+/**
+ * 前端要预览 / 下载的附件：只认上传目录里真实存在的普通文件（解析符号链接后再判断，
+ * 防止用 ../ 或链接读到别处）。不合法返回 undefined
+ */
+export function resolveUploadFile(p: string): string | undefined {
+  try {
+    const root = fs.realpathSync(uploadsRoot);
+    const real = fs.realpathSync(path.resolve(p));
+    if (!real.startsWith(root + path.sep)) return undefined;
+    return fs.statSync(real).isFile() ? real : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 附件清单的文字说明，两个 agent 都用它告诉模型文件在哪。 */

@@ -10,7 +10,7 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
-import { attachFooters, copyFooters, recordFooter } from "./footers.js";
+import { attachFooters, copyFooters, formatDuration, recordFooter } from "./footers.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
   agentBinding,
@@ -23,9 +23,10 @@ import {
   updateConversation,
   type Conversation,
 } from "./store.js";
-import { clearUploads, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
+import { attachmentInfo, clearUploads, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import type {
   AgentDriver,
+  AttachmentInfo,
   AgentSession,
   ContextUsage,
   ApprovalDecision,
@@ -52,7 +53,7 @@ export type Origin = {
 };
 
 export type ConvEvent =
-  | { type: "user"; text: string; attachments: string[]; origin: Origin }
+  | { type: "user"; text: string; attachments: string[]; files?: AttachmentInfo[]; origin: Origin }
   | { type: "turn_start" }
   | { type: "step"; kind: StepKind; text: string }
   | { type: "delta"; text: string }
@@ -481,7 +482,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         onText: (text) => alive() && this.emitEvent(key, { type: "text", text }),
         onResult: (result) => {
           if (!alive()) return;
-          const parts = [`用时 ${(result.durationMs / 1000).toFixed(1)}s`];
+          const parts = [`用时 ${formatDuration(result.durationMs)}`];
           if (result.costUsd !== undefined) parts.push(`约 $${result.costUsd.toFixed(4)}`);
           if (result.tokens !== undefined) parts.push(`${result.tokens} tokens`);
           const footer = parts.join("　");
@@ -677,6 +678,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       type: "user" as const,
       text: input.text,
       attachments: input.attachments.map((a) => `${KIND_LABEL[a.kind]} ${a.name}`),
+      files: input.attachments.map(attachmentInfo),
       origin,
     };
     const by = `${origin.name ?? "用户"}以消息作答`;

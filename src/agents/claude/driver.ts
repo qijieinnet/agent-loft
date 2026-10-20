@@ -10,6 +10,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import os from "node:os";
 import type { AgentCommand } from "../../core/command-catalog.js";
+import { splitAttachmentNote } from "../../core/uploads.js";
 import { config } from "../../core/config.js";
 import type {
   AgentDriver,
@@ -78,15 +79,6 @@ function blocksOf(message: unknown): Block[] {
   return Array.isArray(content) ? (content as Block[]) : [];
 }
 
-/** 用户消息里我们自己拼进去的附件说明，历史里只留一行简述 */
-function cleanUserText(text: string): string {
-  const cut = [text.indexOf("[用户通过飞书发来了以下附件"), text.indexOf("[用户发来了以下附件")]
-    .filter((i) => i >= 0)
-    .sort((a, b) => a - b)[0];
-  if (cut === undefined) return text;
-  const files = (text.slice(cut).match(/^- /gm) ?? []).length;
-  return `${text.slice(0, cut).trim()}${files ? `\n\n📎 ${files} 个附件` : ""}`.trim();
-}
 
 export class ClaudeDriver implements AgentDriver {
   readonly id = "claude";
@@ -146,10 +138,17 @@ export class ClaudeDriver implements AgentDriver {
       if (msg.type === "user") {
         const texts = blocks.filter((b) => b.type === "text" && b.text).map((b) => b.text!);
         if (texts.length === 0) continue; // 纯 tool_result
-        const text = cleanUserText(texts.join("\n"));
-        if (!text || text.startsWith("<command-") || text.startsWith("<local-command")) continue;
+        // 我们自己拼进去的附件清单：从正文里拆出来，单独作为附件给前端展示
+        const { text, attachments } = splitAttachmentNote(texts.join("\n"));
+        if (!text && attachments.length === 0) continue;
+        if (text.startsWith("<command-") || text.startsWith("<local-command")) continue;
         flush();
-        out.push({ role: "user", text, ...(Number.isFinite(ts) ? { ts } : {}) });
+        out.push({
+          role: "user",
+          text,
+          ...(attachments.length ? { attachments } : {}),
+          ...(Number.isFinite(ts) ? { ts } : {}),
+        });
       } else if (msg.type === "assistant") {
         assistant ??= { role: "assistant", text: "", steps: [] };
         // 这一轮最后一条助手消息：分叉到这里为止，时间也取它的

@@ -108,6 +108,23 @@ async function api(path, opts = {}) {
 }
 
 /** 回复下面的时间：今天只显示时分，今年显示月日，再早带上年份 */
+/** 用时按大小换单位：12.3秒 / 3分12秒 / 1小时5分（和服务端 formatDuration 一致） */
+function formatDuration(ms) {
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}秒`;
+  const total = Math.round(sec);
+  const hr = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (hr > 0) return `${hr}小时${m ? `${m}分` : ""}`;
+  return `${m}分${s ? `${s}秒` : ""}`;
+}
+
+/** 老版本记下的脚注是「用时 1234.5s」，显示时也换成时 / 分 / 秒 */
+function tidyFooter(footer) {
+  return footer?.replace(/用时 ([\d.]+)s/, (_, s) => `用时 ${formatDuration(Number(s) * 1000)}`) ?? "";
+}
+
 function clockTime(ts) {
   const d = new Date(ts);
   const now = new Date();
@@ -492,6 +509,12 @@ function renderLayout() {
     }
     lastDown = { key, at: now };
   });
+  ui.convList.addEventListener("contextmenu", (e) => {
+    const key = e.target.closest?.("[data-key]")?.dataset.key;
+    if (!key || !S.convs.has(key)) return;
+    e.preventDefault();
+    openConvContextMenu(key, { x: e.clientX, y: e.clientY });
+  });
   ui.convList.addEventListener("pointerover", (e) => {
     const title = e.target.closest?.(".conv-item")?.querySelector(".title");
     if (title && title !== marquee.el) startMarquee(title);
@@ -862,7 +885,7 @@ function renderSidebar() {
     keys.some((k) => askKeys.has(k))
       ? h("span", { class: "dot ask", title: "等你处理" })
       : keys.some((k) => S.convs.get(k)?.busy)
-        ? h("span", { class: "dot busy" })
+        ? h("span", { class: "conv-spin", title: "进行中" })
         : null;
   const open = (key) => {
     closeSide();
@@ -878,7 +901,7 @@ function renderSidebar() {
       {
         class: `conv-item${cls}${c.key === S.current ? " active" : ""}`,
         "data-key": c.key,
-        title: `${convTitle(c)}${forkNote(c)}\n${detail}\n双击重命名`,
+        title: `${convTitle(c)}${forkNote(c)}\n${detail}\n双击重命名，右键更多操作`,
         onclick: () => open(c.key),
       },
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
@@ -1206,7 +1229,7 @@ function showMenu(anchor, items) {
         : h(
             "button",
             {
-              class: it.danger ? "btn danger" : "",
+              class: it.danger ? "danger" : "",
               onclick: () => {
                 closeMenu();
                 it.onclick();
@@ -1217,12 +1240,21 @@ function showMenu(anchor, items) {
     ),
   );
   document.body.append(menu);
-  const r = anchor.getBoundingClientRect();
+  // anchor 可以是元素（贴着它下沿弹出），也可以是 {x, y}（右键菜单，贴着鼠标弹出）
+  const r = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, bottom: anchor.y };
   const w = menu.offsetWidth;
-  menu.style.top = `${Math.min(r.bottom + 4, innerHeight - menu.offsetHeight - 8)}px`;
+  menu.style.top = `${Math.max(8, Math.min(r.bottom + (anchor instanceof Element ? 4 : 0), innerHeight - menu.offsetHeight - 8))}px`;
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 8))}px`;
   ui.menu = menu;
-  setTimeout(() => document.addEventListener("pointerdown", onOutsideMenu), 0);
+  setTimeout(() => {
+    document.addEventListener("pointerdown", onOutsideMenu);
+    document.addEventListener("keydown", onMenuKey);
+    addEventListener("blur", closeMenu);
+  }, 0);
+}
+
+function onMenuKey(e) {
+  if (e.key === "Escape") closeMenu();
 }
 
 function onOutsideMenu(e) {
@@ -1234,13 +1266,16 @@ function closeMenu() {
   ui.menu?.remove();
   ui.menu = null;
   document.removeEventListener("pointerdown", onOutsideMenu);
+  document.removeEventListener("keydown", onMenuKey);
+  removeEventListener("blur", closeMenu);
 }
 
 function openMoreMenu(anchor) {
   const c = S.convs.get(S.current);
   if (!c) return;
   showMenu(anchor, [
-    { label: "历史会话…", onclick: () => openSessions(false) },
+    // 飞书机器人在侧栏只占一行（点开最近活跃的那个聊天），它的其他聊天从这里找
+    ...(c.channel === "feishu" ? [{ label: "历史会话…", onclick: () => openBotConversations(c.channelId) }] : []),
     { label: "开新会话（清空上下文）", onclick: () => doAction("new") },
     c.canFork
       ? { label: "分叉成新对话", onclick: () => forkConversation() }
@@ -1251,6 +1286,59 @@ function openMoreMenu(anchor) {
     { label: "重命名", onclick: () => renameConv(S.current) },
     ...(c.channel === "web" ? [{ label: "从列表删除", danger: true, onclick: () => deleteConv() }] : []),
   ]);
+}
+
+/** 侧栏会话的右键菜单：分叉 / 重命名 / 删除 */
+function openConvContextMenu(key, at) {
+  const c = S.convs.get(key);
+  if (!c) return;
+  showMenu(at, [
+    {
+      label: "分叉",
+      onclick: async () => {
+        if (c.canFork) return forkConversation(undefined, key);
+        // 不支持另开一条的：只能在原对话里分叉，先切过去
+        if (key !== S.current) await openConversation(key);
+        await doAction("fork");
+      },
+    },
+    { label: "重命名", onclick: () => renameConv(key) },
+    ...(c.channel === "web" ? [{ label: "删除", danger: true, onclick: () => deleteConv(key) }] : []),
+  ]);
+}
+
+/** 飞书机器人的历史会话：这个机器人的所有聊天，按活跃时间排，点一下打开 */
+function openBotConversations(botId) {
+  const bot = S.bots.find((b) => b.id === botId);
+  const convs = [...S.convs.values()]
+    .filter((c) => c.channel === "feishu" && c.channelId === botId && !c.hidden)
+    .sort((a, b) => b.activeAt - a.activeAt);
+  const body = h("div", { class: "modal-body" });
+  const close = modal({ title: `历史会话${bot ? ` · ${bot.name}` : ""}`, body });
+  fill(
+    body,
+    ...(convs.length === 0
+      ? [h("div", { class: "muted" }, "还没有会话")]
+      : convs.map((c) =>
+          h(
+            "button",
+            {
+              class: `list-item${c.key === S.current ? " on" : ""}`,
+              onclick: () => {
+                close();
+                if (c.key !== S.current) void openConversation(c.key);
+              },
+            },
+            h(
+              "div",
+              { class: "grow" },
+              h("div", { class: "t" }, convTitle(c)),
+              h("div", { class: "s" }, `${relTime(c.activeAt)} · ${agentLabel(c.agent)} · ${c.cwd}`),
+            ),
+            c.key === S.current ? "当前" : c.busy ? h("span", { class: "conv-spin", title: "进行中" }) : null,
+          ),
+        )),
+  );
 }
 
 // ---------- 打开会话 ----------
@@ -1328,7 +1416,7 @@ async function openConversation(key) {
   S.allowedAgents = data.allowedAgents;
   fill(ui.msgInner, );
   for (const m of data.messages) {
-    if (m.role === "user") addItem({ type: "user", text: m.text, files: [], origin: null });
+    if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null });
     else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor });
   }
   S.seq.set(key, 0);
@@ -1408,16 +1496,96 @@ function updateItem(item) {
   });
 }
 
+const fileUrl = (f, download) => `/api/file?path=${encodeURIComponent(f.path)}${download ? "&download=1" : ""}`;
+
+function fmtSize(n) {
+  if (!n) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 非图片附件：卡片（图标 + 文件名 + 大小），点一下下载 */
+function fileCard(f, gone) {
+  const ext = (f.name.match(/\.([^.]+)$/)?.[1] ?? "").slice(0, 4).toUpperCase();
+  return h(
+    gone ? "span" : "a",
+    {
+      class: `att-file${gone ? " gone" : ""}`,
+      ...(gone ? { title: "文件已清理（开新会话 / 切换目录时会清掉附件）" } : { href: fileUrl(f, true), download: f.name, title: `下载 ${f.name}` }),
+    },
+    h("span", { class: "att-ext" }, ext || "FILE"),
+    h(
+      "span",
+      { class: "att-meta" },
+      h("span", { class: "att-name" }, f.name),
+      h("span", { class: "att-size" }, gone ? "已清理" : fmtSize(f.size) || "下载"),
+    ),
+  );
+}
+
+/**
+ * 用户消息带的附件，排在气泡上面，顺序和发送时一致。
+ * files：新的是 {kind, name, path, size} 对象；老事件里只有「图片 a.png」这样的标签，只能显示名字
+ */
+function renderUserFiles(files) {
+  if (!files?.length) return null;
+  return h(
+    "div",
+    { class: "msg-atts" },
+    files.map((f) => {
+      if (typeof f === "string") return h("span", { class: "att-file gone" }, h("span", { class: "att-meta" }, h("span", { class: "att-name" }, f)));
+      if (f.kind !== "image") return fileCard(f);
+      const box = h("button", { class: "att-img", title: f.name, onclick: () => openLightbox(fileUrl(f), f.name, fileUrl(f, true)) });
+      const img = h("img", { src: fileUrl(f), alt: f.name, loading: "lazy" });
+      // 文件已经被清理：退回成「已清理」的文件卡片
+      img.onerror = () => box.replaceWith(fileCard(f, true));
+      box.append(img);
+      return box;
+    }),
+  );
+}
+
+/** 点缩略图看大图：点任意处或按 Esc 关闭 */
+function openLightbox(src, name, download) {
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  };
+  const overlay = h(
+    "div",
+    { class: "lightbox", onclick: close },
+    h("img", { src, alt: name ?? "" }),
+    h(
+      "div",
+      { class: "lightbox-bar", onclick: (e) => e.stopPropagation() },
+      name ? h("span", { class: "lightbox-name" }, name) : null,
+      download ? h("a", { class: "lightbox-dl", href: download, download: name ?? "" }, "下载") : null,
+    ),
+  );
+  document.body.append(overlay);
+  document.addEventListener("keydown", onKey, true);
+}
+
 function renderItem(item) {
   switch (item.type) {
-    case "user":
+    case "user": {
+      const origin = item.origin && item.origin.channel !== "web" ? `来自${item.origin.name ?? item.origin.channel}` : "";
       return h(
         "div",
-        { class: "msg-user" },
-        item.origin && item.origin.channel !== "web" ? h("span", { class: "origin" }, `来自${item.origin.name ?? item.origin.channel}`) : null,
-        item.text,
-        item.files?.length ? h("div", { class: "files" }, `📎 ${item.files.join("、")}`) : null,
+        { class: "msg-user-group" },
+        // 只发了附件、没有文字：「来自飞书」挂在附件上面
+        !item.text && origin ? h("span", { class: "origin" }, origin) : null,
+        renderUserFiles(item.files),
+        item.text ? h("div", { class: "msg-user" }, origin ? h("span", { class: "origin" }, origin) : null, item.text) : null,
       );
+    }
     case "ai":
       return renderAi(item);
     case "notice":
@@ -1445,10 +1613,14 @@ function renderAi(item) {
           h(
             "summary",
             {},
-            working ? h("span", { class: "spinner" }) : null,
-            working
-              ? `正在处理… ${item.steps[item.steps.length - 1]}`
-              : `${item.segment ? "" : "已完成 "}${item.steps.length} 步${item.segment ? "过程" : ""}`,
+            h(
+              "span",
+              { class: `steps-text${working ? " shimmer" : ""}` },
+              working
+                ? item.steps[item.steps.length - 1].split("\n")[0]
+                : `${item.segment ? "" : "已完成 "}${item.steps.length} 步${item.segment ? "过程" : ""}`,
+            ),
+            h("span", { class: "chev" }, "›"),
           ),
           h("ol", {}, item.steps.map((s) => h("li", {}, s))),
         )
@@ -1457,7 +1629,7 @@ function renderAi(item) {
     "div",
     { class: "msg-ai" },
     steps,
-    body ? renderMarkdown(body) : working && item.steps.length === 0 ? h("div", { class: "thinking" }, h("span", { class: "spinner" }), "思考中…") : null,
+    body ? renderMarkdown(body) : working && item.steps.length === 0 ? h("div", { class: "thinking" }, h("span", { class: "shimmer" }, "思考中…")) : null,
     item.error ? h("div", { class: "error-box" }, item.error) : null,
     item.done && !item.segment && (body || item.footer)
       ? h(
@@ -1468,7 +1640,7 @@ function renderAi(item) {
             ? h("button", { class: "icon-btn", title: "从这里分叉成新对话", onclick: () => forkConversation(item.anchor) }, icon("fork"))
             : null,
           item.footer || item.at
-            ? h("span", { class: "footer-note" }, [item.footer, item.at ? clockTime(item.at) : ""].filter(Boolean).join("　"))
+            ? h("span", { class: "footer-note" }, [item.at ? clockTime(item.at) : "", tidyFooter(item.footer)].filter(Boolean).join("　"))
             : null,
         )
       : null,
@@ -1496,7 +1668,7 @@ function applyEvent(env) {
         S.items = S.items.filter((i) => i !== S.turnAi);
         S.turnAi = null;
       }
-      addItem({ type: "user", text: ev.text, files: ev.attachments, origin: ev.origin });
+      addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin });
       currentAi();
       return;
     }
@@ -1924,25 +2096,28 @@ function setBusy(busy) {
 
 function renderChips() {
   if (!ui.chips) return;
+  const remove = (u) => {
+    S.uploads = S.uploads.filter((x) => x !== u);
+    if (u.url) URL.revokeObjectURL(u.url);
+    renderChips();
+  };
   fill(ui.chips, 
     ...S.uploads.map((u) =>
-      h(
-        "span",
-        { class: "chip" },
-        u.uploading ? h("span", { class: "spinner" }) : u.kind === "image" ? "🖼" : "📄",
-        h("span", {}, u.name),
-        h(
-          "button",
-          {
-            title: "移除",
-            onclick: () => {
-              S.uploads = S.uploads.filter((x) => x !== u);
-              renderChips();
-            },
-          },
-          "×",
-        ),
-      ),
+      u.url
+        ? h(
+            "span",
+            { class: `chip-img${u.uploading ? " uploading" : ""}`, title: u.name },
+            h("img", { src: u.url, alt: u.name, onclick: () => openLightbox(u.url, u.name) }),
+            u.uploading ? h("span", { class: "spinner" }) : null,
+            h("button", { class: "chip-x", title: "移除", onclick: () => remove(u) }, "×"),
+          )
+        : h(
+            "span",
+            { class: "chip" },
+            u.uploading ? h("span", { class: "spinner" }) : "📄",
+            h("span", {}, u.name),
+            h("button", { title: "移除", onclick: () => remove(u) }, "×"),
+          ),
     ),
   );
   updateSendBtn();
@@ -1997,6 +2172,8 @@ async function addFiles(files) {
   }
   for (const file of files) {
     const u = { name: file.name || "粘贴的图片.png", kind: file.type.startsWith("image/") ? "image" : "file", uploading: true };
+    // 图片用本地文件直接做缩略图，不用等上传完、也不用再从服务器取
+    if (u.kind === "image") u.url = URL.createObjectURL(file);
     S.uploads.push(u);
     renderChips();
     try {
@@ -2005,9 +2182,11 @@ async function addFiles(files) {
         body: file,
         headers: { "Content-Type": file.type || "application/octet-stream" },
       });
-      Object.assign(u, { id: res.id, kind: res.kind, uploading: false });
+      Object.assign(u, { id: res.id, kind: res.kind, uploading: false, serverName: res.name });
+      if (u.kind !== "image" && u.url) (URL.revokeObjectURL(u.url), delete u.url);
     } catch (err) {
       S.uploads = S.uploads.filter((x) => x !== u);
+      if (u.url) URL.revokeObjectURL(u.url);
       toast(`${u.name} 上传失败：${err.message}`);
     }
     renderChips();
@@ -2040,6 +2219,7 @@ async function sendMessage() {
   }
   ui.input.value = "";
   autosize();
+  for (const u of S.uploads) if (u.url) URL.revokeObjectURL(u.url);
   S.uploads = [];
   renderChips();
   updateSendBtn();
@@ -2281,10 +2461,10 @@ async function doAction(action, value, extra = {}) {
 }
 
 /** 分叉成一条新对话（anchor 给了就到那条回复为止），然后切过去。原对话不动 */
-async function forkConversation(anchor) {
-  if (!S.current) return;
+async function forkConversation(anchor, key = S.current) {
+  if (!key) return;
   try {
-    const res = await api(`/api/conversations/${encodeURIComponent(S.current)}/fork`, {
+    const res = await api(`/api/conversations/${encodeURIComponent(key)}/fork`, {
       method: "POST",
       body: anchor ? { anchor } : {},
     });
@@ -2690,13 +2870,65 @@ function renameConv(key = S.current) {
   input.select();
 }
 
-async function deleteConv() {
-  if (!confirm("从列表里删除这条会话？（agent 那边的记录还在，之后能从「历史会话」恢复）")) return;
+/**
+ * 确认弹窗（替代浏览器自带的 confirm），样式和重命名弹窗一致。
+ * 回车确认、Esc / 点外面取消；resolve 成 true / false
+ */
+function confirmDialog({ title, message, sub, confirmText = "确定", danger = false }) {
+  return new Promise((resolve) => {
+    const ok = h("button", { class: `btn ${danger ? "danger-fill" : "primary"}` }, confirmText);
+    const cancel = h("button", { class: "btn ghost" }, "取消");
+    const done = (v) => {
+      overlay.classList.add("leaving");
+      setTimeout(() => overlay.remove(), 120);
+      document.removeEventListener("keydown", onKey, true);
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        done(false);
+      } else if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        done(true);
+      }
+    };
+    ok.onclick = () => done(true);
+    cancel.onclick = () => done(false);
+    const overlay = h(
+      "div",
+      { class: "overlay dialog-overlay", onclick: (e) => e.target === overlay && done(false) },
+      h(
+        "div",
+        { class: "dialog confirm-dialog" },
+        h("h3", {}, title),
+        sub ? h("p", { class: "dialog-sub" }, sub) : null,
+        message ? h("p", { class: "dialog-msg" }, message) : null,
+        h("div", { class: "dialog-foot" }, cancel, ok),
+      ),
+    );
+    document.body.append(overlay);
+    document.addEventListener("keydown", onKey, true);
+    ok.focus();
+  });
+}
+
+async function deleteConv(key = S.current) {
+  if (!key) return;
+  const c = S.convs.get(key);
+  const sure = await confirmDialog({
+    title: "删除会话？",
+    sub: c ? [agentIcon(c.agent), h("span", {}, `${convTitle(c)} · ${baseName(c.cwd)}`)] : null,
+    message: "只从列表里移除，agent 那边的会话记录还在。",
+    confirmText: "删除",
+    danger: true,
+  });
+  if (!sure) return;
   try {
-    await api(`/api/conversations/${encodeURIComponent(S.current)}`, { method: "DELETE" });
-    const c = S.convs.get(S.current);
+    await api(`/api/conversations/${encodeURIComponent(key)}`, { method: "DELETE" });
     if (c) c.hidden = true;
-    newDraft();
+    if (key === S.current) newDraft();
+    else renderSidebar();
   } catch (err) {
     toast(err.message);
   }
@@ -3183,7 +3415,7 @@ function commandsTab(cfg, panel) {
           {
             class: "btn",
             onclick: async () => {
-              if (!confirm(`把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认？`)) return;
+              if (!(await confirmDialog({ title: "恢复默认？", message: `把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认。`, confirmText: "恢复默认" }))) return;
               await save({ order: [], hidden: [] });
               await load(agent);
             },
@@ -3442,7 +3674,7 @@ function feishuTab(cfg, panel) {
           {
             class: "btn danger",
             onclick: async () => {
-              if (!confirm(`删除机器人「${b.name}」？`)) return;
+              if (!(await confirmDialog({ title: `删除机器人「${b.name}」？`, confirmText: "删除", danger: true }))) return;
               bots.splice(i, 1);
               if (!b._new) await saveConfig(cfg, { feishu: { bots } });
               render();
@@ -3700,7 +3932,7 @@ async function systemTab(panel) {
             class: "btn",
             disabled: !sys.underSystemd,
             onclick: async () => {
-              if (!confirm("重启 agent-loft？进行中的对话会被中断。")) return;
+              if (!(await confirmDialog({ title: "重启 agent-loft？", message: "进行中的对话会被中断。", confirmText: "重启", danger: true }))) return;
               try {
                 await api("/api/system/restart", { method: "POST" });
                 toast("正在重启…");
