@@ -15,6 +15,7 @@ import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js"
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
+import { fromThisMachine, isLoopbackHost, lanAddresses, listening, rebind } from "./listen.js";
 import { beginRegistration, initRegistration, pollRegistration, qrSvg } from "../feishu/register.js";
 import { FeishuClient } from "../feishu/client.js";
 import {
@@ -176,8 +177,11 @@ function applyConfig(input: Partial<AppConfig>): void {
   }
   if (input.web) {
     // 密码只能走专门的接口改
-    const { passwordHash: _ignored, ...web } = input.web as AppConfig["web"];
+    // 监听地址、端口已经在 applyListen 里校验并换好了，这里只收形状对的
+    const { passwordHash: _ignored, host, port, ...web } = input.web as AppConfig["web"];
     next.web = { ...next.web, ...web, passwordHash: current.web.passwordHash };
+    if (typeof host === "string" && host.trim()) next.web.host = host.trim();
+    if (Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535) next.web.port = Number(port);
     const q = Number(next.web.quotaRefreshMin);
     next.web.quotaRefreshMin = Number.isFinite(q) ? Math.max(0, Math.min(1440, Math.round(q))) : 10;
   }
@@ -215,6 +219,38 @@ function applyConfig(input: Partial<AppConfig>): void {
     }
   }
   saveConfig(next);
+}
+
+// ---------- 监听地址（局域网访问、端口） ----------
+
+/** 设置页「网络访问」要显示的：这台机器的局域网地址、当前请求是不是从本机来的 */
+function networkInfo(req: IncomingMessage) {
+  return { lan: lanAddresses(), local: fromThisMachine(req.socket.remoteAddress), listening: listening() };
+}
+
+/**
+ * 改了监听地址 / 端口：先真的换过去，成功了配置才保存（applyConfig 里只是照抄）。
+ * 端口被占用之类的失败直接报给页面，旧地址照常工作。
+ */
+async function applyListen(req: IncomingMessage, web: Partial<AppConfig["web"]> | undefined): Promise<void> {
+  if (!web || (web.host === undefined && web.port === undefined)) return;
+  const current = config().web;
+  const host = web.host === undefined ? current.host : String(web.host).trim();
+  const port = web.port === undefined ? current.port : Number(web.port);
+  if (!host) throw new HttpError(400, "监听地址不能为空");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, "端口要是 1 到 65535 之间的整数");
+  if (host === current.host && port === current.port) return;
+  // 从局域网里的另一台设备上关掉局域网访问：这个页面马上就连不上了，而且没法在这台设备上改回来
+  if (isLoopbackHost(host) && !isLoopbackHost(current.host) && !fromThisMachine(req.socket.remoteAddress)) {
+    throw new HttpError(400, "你现在是从局域网里的另一台设备访问的，关掉局域网访问后这个页面会立刻断开、也没法再改回来。请在运行 agent-loft 的这台机器上操作。");
+  }
+  if (config().web.enabled) {
+    try {
+      await rebind(host, port);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+  }
 }
 
 // ---------- 鉴权 ----------
@@ -534,12 +570,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 设置 -----
   if (p === "/api/config" && method === "GET") {
-    sendJson(res, 200, publicConfig());
+    sendJson(res, 200, { ...(publicConfig() as object), network: networkInfo(req) });
     return;
   }
   if (p === "/api/config" && method === "PUT") {
-    applyConfig(await readJsonBody<Partial<AppConfig>>(req));
-    sendJson(res, 200, publicConfig());
+    const input = await readJsonBody<Partial<AppConfig>>(req);
+    await applyListen(req, input.web);
+    applyConfig(input);
+    sendJson(res, 200, { ...(publicConfig() as object), network: networkInfo(req) });
     return;
   }
   // 侧栏的账号额度：各 agent 自己缓存（60 秒），这里并发问一遍，单个失败 / 超时不影响别的

@@ -8,7 +8,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import { config } from "../../core/config.js";
+import { config, onConfigChange } from "../../core/config.js";
 import { parseCommand } from "../../core/commands.js";
 import { hub, type EventEnvelope } from "../../core/hub.js";
 import { interactions, type Interaction } from "../../core/interactions.js";
@@ -20,6 +20,7 @@ import { cookies } from "./http.js";
 import { COOKIE } from "./api.js";
 import { HttpError, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 import { hasSubscriptions, pushToAll } from "./push.js";
+import { closeListener, listen, listening, rebind } from "./listen.js";
 
 const require = createRequire(import.meta.url);
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
@@ -336,6 +337,7 @@ function handleClientMessage(client: Client, raw: string): void {
 let server: http.Server | null = null;
 let wss: WebSocketServer | null = null;
 let heartbeat: NodeJS.Timeout | null = null;
+let stopWatchingListen: (() => void) | null = null;
 
 export async function startWeb(): Promise<void> {
   const { host, port } = config().web;
@@ -426,11 +428,14 @@ export async function startWeb(): Promise<void> {
   interactions.on("updated", broadcastInteraction);
   interactions.on("settled", broadcastInteraction);
 
-  await new Promise<void>((resolve, reject) => {
-    server!.once("error", reject);
-    server!.listen(port, host, () => resolve());
-  });
+  await listen(server, host, port);
   console.log(`[web] 已监听 http://${host}:${port}`);
+  // 配置文件被手改了地址 / 端口：跟着换（设置页保存时已经先换好了，这里会直接跳过）
+  stopWatchingListen = onConfigChange((next) => {
+    const now = listening();
+    if (!now || (now.host === next.web.host && now.port === next.web.port)) return;
+    rebind(next.web.host, next.web.port).catch((err) => console.error("[web] 换监听地址失败:", err instanceof Error ? err.message : err));
+  });
   const token = ensureSetupToken();
   if (token) {
     console.log("=".repeat(56));
@@ -455,6 +460,11 @@ export async function stopWeb(): Promise<void> {
   for (const client of clients) client.ws.close(1001, "服务重启");
   clients.clear();
   wss?.close();
+  stopWatchingListen?.();
+  stopWatchingListen = null;
+  closeListener();
+  // http.Server 自己没有 listen（连接是 listen.ts 交过来的），close 只为断开还连着的
   await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  server?.closeAllConnections();
   server = null;
 }

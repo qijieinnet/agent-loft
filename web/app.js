@@ -3357,6 +3357,89 @@ function generalTab(cfg, panel) {
       ),
     ),
   );
+  panel.append(networkSection(cfg));
+}
+
+/** 只有本机能连的监听地址（和服务端 listen.ts 的判断一致） */
+function loopbackHost(host) {
+  const v = String(host ?? "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return v === "localhost" || v === "::1" || /^127\./.test(v);
+}
+
+/**
+ * 网络访问：要不要让局域网里的其他设备打开、监听哪个端口。保存后服务端当场换过去，不用重启；
+ * 端口被占用之类的失败会直接报出来，原来的照常工作。
+ */
+function networkSection(cfg) {
+  const net = cfg.network ?? { lan: [], local: true, listening: null };
+  const box = h("div", { class: "section" });
+  const lanOn = h("input", { type: "checkbox", checked: !loopbackHost(cfg.web.host) });
+  const port = h("input", { type: "number", min: 1, max: 65535, value: cfg.web.port });
+  const hint = h("small", {});
+  // 现在这个页面是不是直接连的这个端口（不是经由反代 / 隧道）
+  const pagePort = Number(location.port || (location.protocol === "https:" ? 443 : 80));
+  const direct = pagePort === cfg.web.port;
+
+  const update = () => {
+    const p = Number(port.value) || cfg.web.port;
+    const lines = [];
+    if (lanOn.checked) {
+      lines.push(
+        net.lan.length
+          ? `局域网里的其他设备用 ${net.lan.map((ip) => `http://${ip}:${p}`).join(" 或 ")} 打开`
+          : "这台机器现在没连局域网，连上后其他设备可以用它的局域网地址打开",
+      );
+    } else {
+      lines.push("只有这台机器自己能打开。这台机器上的反向代理、Cloudflare Tunnel 之类不受影响");
+    }
+    if (!net.local && !lanOn.checked && !loopbackHost(cfg.web.host)) {
+      lines.push("⚠️ 你现在是从局域网里的另一台设备访问的，不能在这里关掉，请到运行 agent-loft 的机器上操作");
+    }
+    if (!direct && p !== cfg.web.port) lines.push(`⚠️ 你是经由反向代理 / 隧道访问的，改端口后要把它指向新端口 ${p}，否则这个页面会打不开`);
+    fill(hint, lines.map((l, i) => [i ? h("br") : null, l]));
+  };
+  lanOn.addEventListener("change", update);
+  port.addEventListener("input", update);
+  update();
+
+  const save = async () => {
+    const p = Number(port.value);
+    if (!Number.isInteger(p) || p < 1 || p > 65535) return toast("端口要是 1 到 65535 之间的整数");
+    // 打开：原来是本机地址就改成所有网卡；原来就是某个具体地址（手改过配置）就保留
+    const host = lanOn.checked ? (loopbackHost(cfg.web.host) ? "0.0.0.0" : cfg.web.host) : "127.0.0.1";
+    if (host === cfg.web.host && p === cfg.web.port) return toast("没有改动");
+    const oldPort = cfg.web.port;
+    let next;
+    try {
+      next = await api("/api/config", { method: "PUT", body: { web: { host, port: p } } });
+    } catch (err) {
+      toast(err.message, 5000);
+      return;
+    }
+    Object.assign(cfg, next);
+    if (p !== oldPort && direct) {
+      // 旧端口已经不再接新连接：带着当前会话跳到新端口
+      const url = new URL(location.href);
+      url.port = String(p);
+      toast(`已改为端口 ${p}，正在跳转…`);
+      // 桌面端里由它改掉存着的服务器地址再重新打开（直接跳过去会被当成外部链接）
+      if (typeof desktop?.serverMoved === "function") desktop.serverMoved(url.origin);
+      else setTimeout(() => (location.href = url.href), 600);
+      return;
+    }
+    toast(p !== oldPort ? `已改为端口 ${p}，记得把反向代理 / 隧道也指向它` : "已保存", p !== oldPort ? 6000 : 2600);
+    box.replaceWith(networkSection(cfg));
+  };
+
+  fill(
+    box,
+    h("h4", {}, "网络访问"),
+    h("label", { class: "check" }, lanOn, "允许局域网内的其他设备访问"),
+    hint,
+    field("端口", port, "改了立即生效，不用重启"),
+    h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => void save() }, "保存")),
+  );
+  return box;
 }
 
 /**
