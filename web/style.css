@@ -2300,6 +2300,11 @@ button.ctx-item:hover {
   max-width: 860px;
 }
 
+/* 设置弹窗：固定高度 */
+.modal.tall {
+  height: 86vh;
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -2745,6 +2750,10 @@ button.list-item:hover {
   .overlay.dialog-overlay {
     padding: 16px;
     align-items: center;
+  }
+
+  .modal.tall {
+    height: 92vh;
   }
 
   .modal,
@@ -3213,4 +3222,14 @@ button.list-item:hover {
   border-radius: 6px;
   background: var(--code-bg);
   font-size: 12px;
+}
+
+/* 桌面端（Agent Loft for macOS）里：顶栏和侧栏顶部按住能拖动窗口，里面的按钮照常能点 */
+.in-desktop .topbar,
+.in-desktop .side-top {
+  -webkit-app-region: drag;
+}
+.in-desktop .topbar :is(button, a, input, select, textarea, label, .conv-name),
+.in-desktop .side-top :is(button, a, input, select, textarea, label) {
+  -webkit-app-region: no-drag;
 }

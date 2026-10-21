@@ -12,7 +12,7 @@ import { getConversation, updateConversation } from "../../core/store.js";
 import { resolveUploadFile, saveBuffer, sniff } from "../../core/uploads.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
-import { agentHealth, invalidateHealth } from "../../agents/health.js";
+import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
 import { beginRegistration, initRegistration, pollRegistration, qrSvg } from "../feishu/register.js";
@@ -317,6 +317,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           capabilities: d?.capabilities ?? {},
           // 输入框模型列表里显示哪些，空 = 全部
           models: config().agents[id].models.filter((m) => typeof m === "string"),
+          // 没装 / 没登录：新对话里不出现（null = 还没查过，当作能用）
+          ...(agentAvailability(id) ?? {}),
         };
       }),
       bots: config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })),

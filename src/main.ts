@@ -5,6 +5,7 @@ import { flushStore, getConversation, isExpired } from "./core/store.js";
 import { sweepUploads } from "./core/uploads.js";
 import { ClaudeDriver } from "./agents/claude/driver.js";
 import { CodexDriver } from "./agents/codex/driver.js";
+import { agentHealth } from "./agents/health.js";
 import { startFeishu, stopFeishu } from "./channels/feishu/index.js";
 import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
@@ -40,6 +41,8 @@ async function main(): Promise<void> {
 
   startFeishu();
   if (config().web.enabled) await startWeb();
+  // 先查一遍 agent 装没装、登没登录，网页打开时新对话里就只列出能用的
+  void agentHealth().catch(() => {});
 
   console.log(`[启动] workspace=${config().workspaceRoot}`);
   if (config().workspaceRoot === process.cwd()) {

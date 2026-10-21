@@ -265,6 +265,8 @@ const ui = {};
  * 桌面端收不到 Web Push，系统通知、Dock 角标、菜单栏的待处理数都交给它。
  */
 const desktop = window.agentLoftDesktop ?? null;
+// 桌面端里：顶栏、侧栏顶部可以按住拖动窗口（样式见 style.css 的 .in-desktop）
+if (desktop) document.documentElement.classList.add("in-desktop");
 
 // ---------- WebSocket ----------
 
@@ -528,7 +530,7 @@ async function boot() {
   S.quotaRefreshMin = data.quotaRefreshMin ?? 10;
   S.convs = new Map(data.conversations.map((c) => [c.key, c]));
   S.pending = new Map(data.pending.map((i) => [i.id, i]));
-  const enabled = S.agents.filter((a) => a.enabled).map((a) => a.id);
+  const enabled = usableAgents().map((a) => a.id);
   if (!S.draftAgent || !enabled.includes(S.draftAgent)) S.draftAgent = enabled[0] ?? null;
   renderLayout();
   reportDesktop();
@@ -1113,8 +1115,18 @@ function currentCwd() {
   return c ? c.cwd : (S.draftCwd ?? S.workspaceRoot ?? "");
 }
 
+/**
+ * 新对话能选的 agent：启用了、并且服务端查过是装好登录了的（available 为 false 的不出现）。
+ * 一个能用的都没有时退回到全部启用的，至少能看到报错，而不是什么都选不了。
+ */
+function usableAgents() {
+  const enabled = S.agents.filter((a) => a.enabled);
+  const usable = enabled.filter((a) => a.available !== false);
+  return usable.length ? usable : enabled;
+}
+
 function pickAgentMenu(anchor) {
-  const allowed = S.agents.filter((a) => a.enabled).map((a) => a.id);
+  const allowed = usableAgents().map((a) => a.id);
   if (allowed.length < 2) return;
   if (ui.menu?.dataset.for === "agent") return closeMenu();
   const pop = showPopover(anchor, { align: "left" });
@@ -1205,7 +1217,7 @@ function renderContext() {
   if (!ui.ctxBar) return;
   const c = S.current ? S.convs.get(S.current) : null;
   const cwd = currentCwd();
-  const multi = S.agents.filter((a) => a.enabled).length > 1;
+  const multi = usableAgents().length > 1;
   // 会话里不能换 agent（两个 agent 的会话互不相通），只显示；新对话里可以选
   const agentId = c ? c.agent : S.draftAgent;
   const agentEl = c || !multi
@@ -1437,7 +1449,7 @@ function newDraft() {
 }
 
 function renderEmpty() {
-  const enabled = S.agents.filter((a) => a.enabled);
+  const enabled = usableAgents();
   const cwd = S.draftCwd ?? S.workspaceRoot ?? "";
   fill(ui.msgInner,
     h(
@@ -2382,7 +2394,7 @@ function oneLine(text, max = 80) {
 
 function currentAgentId() {
   const c = S.current ? S.convs.get(S.current) : null;
-  return c?.agent ?? S.draftAgent ?? S.agents.find((a) => a.enabled)?.id ?? "claude";
+  return c?.agent ?? S.draftAgent ?? usableAgents()[0]?.id ?? "claude";
 }
 
 async function loadCommands(agent) {
@@ -2593,14 +2605,14 @@ async function switchAgent(id) {
   await doAction("agent", id);
 }
 
-function modal({ title, body, foot, wide }) {
+function modal({ title, body, foot, wide, tall }) {
   const close = () => overlay.remove();
   const overlay = h(
     "div",
     { class: "overlay", onclick: (e) => e.target === overlay && close() },
     h(
       "div",
-      { class: `modal${wide ? " wide" : ""}` },
+      { class: `modal${wide ? " wide" : ""}${tall ? " tall" : ""}` },
       h("div", { class: "modal-head" }, h("h3", {}, title), h("button", { class: "icon-btn", onclick: close }, icon("x"))),
       body,
       foot ?? null,
@@ -3045,7 +3057,8 @@ async function deleteConv(key = S.current) {
 async function openSettings() {
   const nav = h("div", { class: "settings-nav" });
   const panel = h("div", { class: "settings-body" });
-  const close = modal({ title: "设置", wide: true, body: h("div", { class: "settings" }, nav, panel) });
+  // 设置弹窗高度固定，切标签页时不跟着内容一伸一缩
+  const close = modal({ title: "设置", wide: true, tall: true, body: h("div", { class: "settings" }, nav, panel) });
   let cfg;
   try {
     cfg = await api("/api/config");
@@ -3232,12 +3245,12 @@ function field(label, input, hint) {
 function serverVersionSection() {
   const box = h("div", { class: "section" });
   const load = async (refresh) => {
-    box.replaceChildren(h("h4", {}, "服务端版本", h("span", { class: "grow" }), h("span", { class: "spinner" })));
+    fill(box, h("h4", {}, "服务端版本", h("span", { class: "grow" }), h("span", { class: "spinner" })));
     let v;
     try {
       v = await api(`/api/server/version${refresh ? "?refresh=1" : ""}`);
     } catch (err) {
-      box.replaceChildren(h("h4", {}, "服务端版本"), h("div", { class: "error-text" }, err.message));
+      fill(box, h("h4", {}, "服务端版本"), h("div", { class: "error-text" }, err.message));
       return;
     }
     const recheck = h("button", { class: "btn small", onclick: () => load(true) }, "检查更新");
@@ -3269,7 +3282,8 @@ function serverVersionSection() {
             "升级",
           )
         : null;
-    box.replaceChildren(
+    fill(
+      box,
       h("h4", {}, "服务端版本", h("span", { class: "grow" }), upgradeBtn, recheck),
       h("div", { class: "health-meta" }, `当前 ${v.version} · ${status}`),
       v.updateAvailable && !v.canUpgrade && v.reason ? h("div", { class: "health-meta" }, v.reason) : null,
@@ -3767,15 +3781,23 @@ function agentHealthSection() {
   const box = h("div", { class: "section" });
   const load = async (refresh) => {
     const recheck = h("button", { class: "btn small", onclick: () => load(true) }, "重新检查");
-    box.replaceChildren(h("h4", {}, "运行环境", h("span", { class: "grow" }), h("span", { class: "spinner" })));
+    fill(box, h("h4", {}, "运行环境", h("span", { class: "grow" }), h("span", { class: "spinner" })));
     let data;
     try {
       data = await api(`/api/agents/health${refresh ? "?refresh=1" : ""}`);
     } catch (err) {
-      box.replaceChildren(h("h4", {}, "运行环境", h("span", { class: "grow" }), recheck), h("div", { class: "error-text" }, err.message));
+      fill(box, h("h4", {}, "运行环境", h("span", { class: "grow" }), recheck), h("div", { class: "error-text" }, err.message));
       return;
     }
-    box.replaceChildren(
+    // 体检结果顺手同步到新对话的 agent 列表：刚装好 / 登录好的立刻能选，不行的立刻消失
+    for (const a of data.agents) {
+      const known = S.agents.find((x) => x.id === a.id);
+      if (known) known.available = a.installed && a.loggedIn !== false;
+    }
+    if (!usableAgents().some((a) => a.id === S.draftAgent)) S.draftAgent = usableAgents()[0]?.id ?? null;
+    if (!S.current) renderEmpty();
+    fill(
+      box,
       h("h4", {}, "运行环境", h("span", { class: "grow" }), recheck),
       ...data.agents.map((a) => {
         const ok = a.installed && a.loggedIn === true;

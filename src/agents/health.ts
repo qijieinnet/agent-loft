@@ -134,6 +134,20 @@ async function codexHealth(): Promise<AgentHealth> {
 
 let cache: { at: number; value: AgentHealth[] } | null = null;
 
+/**
+ * 不等体检、立刻给出的「这个 agent 能不能用」：用最近一次体检的结果（多旧都算），
+ * 结果超过 5 分钟就顺手在后台再查一次。还没查过返回 null（当作能用，不挡人）。
+ * 新对话里只列出能用的 agent，没装、没登录的不出现。
+ */
+export function agentAvailability(id: AgentHealth["id"]): { available: boolean; reason?: string } | null {
+  if (!cache || Date.now() - cache.at > 5 * 60_000) void agentHealth().catch(() => {});
+  const h = cache?.value.find((a) => a.id === id);
+  if (!h) return null;
+  if (!h.installed) return { available: false, reason: "未安装" };
+  if (h.loggedIn === false) return { available: false, reason: "未登录" };
+  return { available: true };
+}
+
 /** 装了 / 登录了什么之后，下次体检不用缓存 */
 export function invalidateHealth(): void {
   cache = null;
