@@ -296,6 +296,40 @@ function openTarget(id, key) {
   if (key) viewFor(id).webContents.send("page:open", String(key));
 }
 
+/** 打开某台服务器自己的设置：切到它，再让页面弹出设置（页面还在加载就等加载完） */
+function openServerSettings(id) {
+  if (!store.server(id)) return;
+  showMain();
+  select(id);
+  if (rt(id).loadFailed) return;
+  const wc = viewFor(id).webContents;
+  const send = () => !wc.isDestroyed() && wc.send("page:open-settings");
+  if (wc.isLoading()) wc.once("did-finish-load", send);
+  else send();
+}
+
+/** 顶栏「更多」：桌面端设置 + 每台服务器的设置 */
+function popupMoreMenu(pos) {
+  if (!win || win.isDestroyed()) return;
+  const list = store.servers();
+  const appUpdate = !!systemState().update?.available;
+  Menu.buildFromTemplate([
+    {
+      label: appUpdate ? "桌面端设置（有新版本）" : "桌面端设置",
+      type: "checkbox",
+      checked: managing,
+      // 已经开着：再点一下回到当前服务器（和原来的设置按钮一样）
+      click: () => (managing && activeId ? select(activeId) : showManage()),
+    },
+    ...(list.length ? [{ type: "separator" }] : []),
+    ...list.map((s) => {
+      const v = rt(s.id).server;
+      const upgradable = v?.updateAvailable && v.canUpgrade;
+      return { label: `${s.name} 设置${upgradable ? "（服务端可升级）" : ""}`, click: () => openServerSettings(s.id) };
+    }),
+  ]).popup({ window: win, x: Math.round(Number(pos?.x) || 0), y: Math.round(Number(pos?.y) || BAR) });
+}
+
 // ---------- 菜单 ----------
 
 let menuSignature = "";
@@ -451,6 +485,7 @@ const calls = {
     hidePopover();
     showManage();
   },
+  moreMenu: (pos) => popupMoreMenu(pos),
   showMain: () => {
     hidePopover();
     showMain();

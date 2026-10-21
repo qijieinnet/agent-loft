@@ -43,12 +43,17 @@ function serverColor(id) {
   return palette[n % palette.length];
 }
 
+/** 还有多久重置，写法和 Web 侧栏的额度一样：x 天 x 小时后重置 */
 function resetText(at) {
   if (!at) return "";
-  const d = new Date(at);
-  const hm = d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === new Date().toDateString()) return `${hm} 重置`;
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm} 重置`;
+  const sec = Math.floor((at - Date.now()) / 1000);
+  if (sec <= 0) return "即将重置";
+  const d = Math.floor(sec / 86400);
+  const hh = Math.floor((sec % 86400) / 3600);
+  const mm = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d} 天 ${hh} 小时后重置`;
+  if (hh > 0) return `${hh} 小时 ${mm} 分后重置`;
+  return `${Math.max(1, mm)} 分钟后重置`;
 }
 
 function agoText(at) {
@@ -61,7 +66,7 @@ function agoText(at) {
 
 /**
  * 一个 agent 的额度：标题一行（名称、套餐），每个额度窗口两行——
- *   5 小时                15:20 重置    12%
+ *   5 小时        2 小时 10 分后重置    12%
  *   ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
  */
 function quotaBlock(q) {

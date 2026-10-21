@@ -8,14 +8,15 @@
     <link rel="stylesheet" href="shell.css" />
   </head>
   <body>
-    <!-- 顶栏：红绿灯后面是各服务器的标签（图标 + 名称），设置在最右边；下面整块给当前服务器的页面 -->
+    <!-- 顶栏：红绿灯后面是各服务器的标签（图标 + 名称），「更多」在最右边（桌面端设置、各服务器的设置）；下面整块给当前服务器的页面 -->
     <header class="topbar">
       <div class="tabs" id="servers"></div>
       <div class="bar-fill"></div>
-      <button class="bar-btn" id="settings" title="设置" aria-label="设置">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-          <circle cx="12" cy="12" r="3" />
+      <button class="bar-btn" id="more" title="更多" aria-label="更多">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+          <circle cx="5" cy="12" r="1.8" />
+          <circle cx="12" cy="12" r="1.8" />
+          <circle cx="19" cy="12" r="1.8" />
         </svg>
       </button>
     </header>

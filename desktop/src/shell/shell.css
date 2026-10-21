@@ -170,7 +170,7 @@ body.fullscreen .topbar {
   background: var(--badge-orange);
 }
 
-/* 设置：轻量的线条图标按钮 */
+/* 更多：轻量的图标按钮 */
 .bar-btn {
   position: relative;
   flex: none;
@@ -194,7 +194,7 @@ body.fullscreen .topbar {
   box-shadow: var(--tab-active-shadow);
   color: var(--accent);
 }
-/* 有新版本：齿轮右上角一个小红点 */
+/* 有新版本：右上角一个小红点 */
 .bar-btn.has-update::after {
   content: "";
   position: absolute;
