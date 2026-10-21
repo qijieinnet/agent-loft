@@ -80,6 +80,12 @@ export async function runSmoke({ openPopover }) {
     junk = junkIn(await js(`document.getElementById("panel").innerText`));
     if (junk) return fail(`设置页（有服务器时）里有渲染残渣：「${junk}」`);
 
+    // 防休眠开关：画得出来，点了能存上（新服务器连不上时面板显示的是出错页，先切回设置页）
+    await js(`window.loft.call("manage")`);
+    await until(() => js(`!!document.getElementById("p-keepAwake")`), "「不休眠」开关");
+    await js(`document.getElementById("p-keepAwake").click()`);
+    await until(() => js(`window.loft.state().then((s) => s.prefs.keepAwake === true)`), "「不休眠」设置保存");
+
     const pop = openPopover();
     await until(() => pop.executeJavaScript(`document.body.innerText.includes("冒烟测试")`), "菜单栏面板里的服务器");
     junk = junkIn(await pop.executeJavaScript("document.body.innerText"));

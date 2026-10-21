@@ -19,7 +19,9 @@ import path from "node:path";
  * @typedef {{
  *   openAtLogin: boolean, quotaRefreshMin: number,
  *   autoUpdate: boolean, updateCheckHours: number,
+ *   keepAwake: boolean,
  * }} Prefs
+ *   keepAwake：本机服务端有会话在跑（或在等授权 / 回答）时不让这台 Mac 休眠；只管本机，不管远程服务器。
  */
 
 /** @type {Prefs} */
@@ -28,6 +30,7 @@ const DEFAULT_PREFS = {
   quotaRefreshMin: 10,
   autoUpdate: true,
   updateCheckHours: 24,
+  keepAwake: false,
 };
 
 let data = {

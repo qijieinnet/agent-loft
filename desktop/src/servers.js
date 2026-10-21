@@ -31,7 +31,7 @@ const CF_LOGIN_HOST = /(^|\.)cloudflareaccess\.com$/i;
  *   access?: { kind: "cloudflare" | "gateway", url: string },
  *   loadFailed?: { code: number, message: string },
  *   cert?: { fingerprint: string, subject: string, issuer: string, error: string },
- *   quotas?: any[], quotaAt?: number, quotaError?: string,
+ *   quotas?: any[], quotaAt?: number, quotaFullAt?: number, quotaError?: string,
  *   server?: { at: number, unsupported?: boolean, version?: string, latest?: string | null, updateAvailable?: boolean,
  *              canUpgrade?: boolean, reason?: string, service?: string | null },
  *   upgrading?: boolean,
@@ -538,7 +538,7 @@ export async function probe(id) {
     const status = body?.authed ? "online" : body?.needsSetup ? "setup" : "login";
     const wasOnline = rt(id).status === "online";
     patch(id, { status, error: undefined, access: undefined });
-    if (status === "online" && (!wasOnline || !rt(id).quotaAt)) void refreshQuota(id);
+    if (status === "online" && (!wasOnline || !rt(id).quotaAt)) void refreshQuota([id]);
     // 服务端版本：上线时、以及每 6 小时看一次有没有新版
     const info = rt(id).server;
     if (status === "online" && !rt(id).upgrading && (!info || Date.now() - info.at > 6 * 3600_000)) void refreshServerVersion(id);
@@ -547,29 +547,146 @@ export async function probe(id) {
   }
 }
 
-const quotaLoading = new Set();
+// ---------- 额度 ----------
+//
+// 额度由桌面端统一去查，查到后推给各服务器的页面（新版页面在桌面端里不再自己查）。
+// 服务端每条额度带着账号标识 account（同一个账号在哪台服务器上都一样）：
+//   - 一轮刷新里，同一个 agent + account 只在一台服务器上问，结果分给登着同一个账号的其他几台；
+//   - 第一次、以及每隔 FULL_EVERY 对每台做一次全量查询，好发现新启用的 agent、换了的账号；
+//   - 没有 account 的（老版本服务端、API key 登录）照旧逐台去问。
 
-/** 额度：和网页侧栏同一个接口，服务端会缓存 60 秒 */
-export async function refreshQuota(id) {
+/** 服务端对额度缓存 60 秒，这之内再问拿到的还是旧数 */
+const SERVER_CACHE = 60_000;
+const FULL_EVERY = 30 * 60_000;
+const quotaLoading = new Set();
+const quotaTimers = new Map();
+
+const accountOf = (q) => (q?.agent && q?.account ? `${q.agent}:${q.account}` : null);
+
+/** 把这台的额度推给它的页面：页面侧栏显示的就是这份 */
+function pushQuota(id) {
+  const r = rt(id);
+  const wc = r.view?.webContents;
+  const server = store.server(id);
+  if (!wc || wc.isDestroyed() || !server || !wc.getURL().startsWith(server.url)) return;
+  wc.send("page:quota-update", { quotas: r.quotas ?? [], at: r.quotaAt ?? 0, error: r.quotaError ?? null });
+}
+
+function patchQuota(id, values) {
+  patch(id, values);
+  pushQuota(id);
+}
+
+/** 只换掉 agents 里这几个的额度，其余照旧；顺序不变，新出现的接在后面 */
+function mergeAgents(old, fresh, agents) {
+  const byAgent = new Map(fresh.map((q) => [q.agent, q]));
+  const out = [];
+  for (const q of old) {
+    if (!agents.includes(q.agent)) out.push(q);
+    else if (byAgent.has(q.agent)) {
+      out.push(byAgent.get(q.agent));
+      byAgent.delete(q.agent);
+    }
+  }
+  return [...out, ...byAgent.values()];
+}
+
+/** 刚从 from 查到的额度，分给登着同一个账号的其他服务器 */
+function shareQuota(from, fresh, at) {
+  const byAccount = new Map(fresh.map((q) => [accountOf(q), q]).filter(([k]) => k));
+  if (byAccount.size === 0) return;
+  for (const server of store.servers()) {
+    if (server.id === from) continue;
+    const r = rt(server.id);
+    if (!r.quotas?.length) continue;
+    let hits = 0;
+    const quotas = r.quotas.map((q) => {
+      const same = byAccount.get(accountOf(q));
+      if (!same) return q;
+      hits++;
+      return same;
+    });
+    if (!hits) continue;
+    // 全部都换成了新的，才算这台「刚更新过」
+    patchQuota(server.id, { quotas, ...(hits === quotas.length ? { quotaAt: Math.max(r.quotaAt ?? 0, at), quotaError: undefined } : {}) });
+  }
+}
+
+/** 查一台的额度。agents 给了就只问这几个 agent，不给就全问。 */
+async function fetchQuota(id, agents) {
   if (quotaLoading.has(id) || !store.server(id)) return;
   quotaLoading.add(id);
   try {
-    const result = await getJson(id, "/api/quota", 30_000);
-    if (result.gate) gated(id, result.gate);
-    else if (result.unauthorized) patch(id, { status: "login" });
-    else patch(id, { quotas: result.body.quotas ?? [], quotaAt: Date.now(), quotaError: undefined });
+    const query = agents ? `?agent=${agents.map(encodeURIComponent).join(",")}` : "";
+    const result = await getJson(id, `/api/quota${query}`, 30_000);
+    if (result.gate) return gated(id, result.gate);
+    if (result.unauthorized) return patch(id, { status: "login" });
+    const fresh = Array.isArray(result.body?.quotas) ? result.body.quotas.slice(0, 20) : [];
+    const now = Date.now();
+    // 老版本服务端不认 ?agent，会把全部都返回来：当成全量
+    const full = !agents || fresh.some((q) => !agents.includes(q.agent));
+    const quotas = full ? fresh : mergeAgents(rt(id).quotas ?? [], fresh, agents);
+    patchQuota(id, { quotas, quotaAt: now, quotaError: undefined, ...(full ? { quotaFullAt: now } : {}) });
+    shareQuota(id, fresh, now);
   } catch (err) {
-    patch(id, { quotaError: err instanceof Error ? err.message : String(err) });
+    patchQuota(id, { quotaError: err instanceof Error ? err.message : String(err) });
   } finally {
     quotaLoading.delete(id);
   }
 }
 
-export function refreshAll({ quota = false } = {}) {
-  for (const server of store.servers()) {
-    void probe(server.id);
-    if (quota && rt(server.id).status === "online") void refreshQuota(server.id);
+/**
+ * 刷新额度。ids 不给就是所有在线的服务器；full 表示这几台都全量问一遍（页面上点了刷新、
+ * 刚跑完一轮的那台：就是要它自己的最新数）。
+ */
+export async function refreshQuota(ids, { full = false } = {}) {
+  const targets = (ids ?? store.servers().filter((s) => rt(s.id).status === "online").map((s) => s.id)).filter((id) => store.server(id));
+  const now = Date.now();
+  const needFull = (id) => full || !rt(id).quotas || now - (rt(id).quotaFullAt ?? 0) > FULL_EVERY;
+  /** @type {[string, string[] | undefined][]} */
+  const plan = [];
+  const covered = new Set();
+  for (const id of targets.filter(needFull)) {
+    plan.push([id, undefined]);
+    for (const q of rt(id).quotas ?? []) if (accountOf(q)) covered.add(accountOf(q));
   }
+  // 上次出过错的排后面：同一个账号尽量挑能查到的那台
+  const rest = targets.filter((id) => !needFull(id)).sort((a, b) => Number(!!rt(a).quotaError) - Number(!!rt(b).quotaError));
+  for (const id of rest) {
+    const agents = [];
+    for (const q of rt(id).quotas) {
+      const key = accountOf(q);
+      if (key && covered.has(key)) continue;
+      if (key) covered.add(key);
+      agents.push(q.agent);
+    }
+    if (agents.length) plan.push([id, agents]);
+  }
+  await Promise.all(plan.map(([id, agents]) => fetchQuota(id, agents)));
+}
+
+/** 跑完一轮：等服务端那 60 秒缓存过期再全量问这台（至少等 10 秒），连着跑完几轮只问一次 */
+function quotaAfterTurn(id) {
+  const wait = Math.max(10_000, (rt(id).quotaAt ?? 0) + SERVER_CACHE + 1000 - Date.now());
+  clearTimeout(quotaTimers.get(id));
+  quotaTimers.set(
+    id,
+    setTimeout(() => {
+      quotaTimers.delete(id);
+      void refreshQuota([id], { full: true });
+    }, wait),
+  );
+}
+
+/** 页面要额度（刚加载完）：有就直接推，还没有就去查 */
+export function pageWantsQuota(id) {
+  if (rt(id).quotaAt) pushQuota(id);
+  else void refreshQuota([id], { full: true });
+}
+
+export function refreshAll({ quota = false } = {}) {
+  for (const server of store.servers()) void probe(server.id);
+  if (quota) void refreshQuota();
 }
 
 // ---------- 页面上报 ----------
@@ -585,13 +702,17 @@ export function setPageState(id, state) {
   const busy = Number.isFinite(state?.busy) ? Math.max(0, Math.min(999, state.busy)) : 0;
   const r = rt(id);
   // 有会话从「运行中」变成空闲：跑完一轮了，额度多半变了
-  if (busy < r.busy) setTimeout(() => void refreshQuota(id), 3000);
+  if (busy < r.busy) quotaAfterTurn(id);
   patch(id, { pending, busy, status: "online" });
 }
 
+/** 老版本页面自己查了额度报上来（新版页面在桌面端里不查，等这边推） */
 export function setPageQuota(id, quotas) {
   if (!Array.isArray(quotas)) return;
-  patch(id, { quotas: quotas.slice(0, 20), quotaAt: Date.now(), quotaError: undefined });
+  const now = Date.now();
+  const fresh = quotas.slice(0, 20);
+  patch(id, { quotas: fresh, quotaAt: now, quotaFullAt: now, quotaError: undefined });
+  shareQuota(id, fresh, now);
 }
 
 export function addUnread(id) {

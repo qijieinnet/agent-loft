@@ -4,7 +4,7 @@
 // 当前服务器自己的 Web 界面。每台服务器的页面常驻后台，WebSocket 一直连着；服务器推来的提醒由页面经
 // preload 转给这里，弹 macOS 系统通知（桌面端收不到 Web Push）。菜单栏另有图标，
 // 鼠标移上去弹出各服务器的额度和待处理（见 tray.js）。
-import { app, BaseWindow, dialog, ipcMain, Menu, Notification, WebContentsView } from "electron";
+import { app, BaseWindow, dialog, ipcMain, Menu, Notification, powerSaveBlocker, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { localUrl, readSetupToken } from "./local-server.js";
@@ -15,6 +15,7 @@ import {
   clearUnread,
   dispose,
   pageOwner,
+  pageWantsQuota,
   probe,
   publicState,
   refreshAll,
@@ -76,6 +77,7 @@ function snapshot() {
     onboarded: store.onboarded(),
     localId: localServerId(),
     system: systemState(),
+    keepingAwake: keepAwakeId !== null,
     // 全屏时没有红绿灯，顶栏左边不用让位
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(),
   };
@@ -98,7 +100,31 @@ function ensureLocalServer() {
   return server.id;
 }
 
+// ---------- 防休眠 ----------
+
+/** powerSaveBlocker 的 id；没在阻止休眠时是 null */
+let keepAwakeId = null;
+
+/**
+ * 本机服务端有会话在跑、或在等授权 / 回答时，不让这台 Mac 休眠（屏幕照常可以关）。
+ * 只看本机那一项：远程服务器在别的机器上跑，这台睡不睡和它无关。
+ * 会话状态来自本机页面经 preload 报上来的 busy / pending，页面连不上（不在线）时不算。
+ */
+function updateKeepAwake() {
+  const id = localServerId();
+  const r = id ? rt(id) : null;
+  const active = !!r && r.status === "online" && (r.busy > 0 || r.pending.length > 0);
+  const want = store.prefs().keepAwake && active;
+  if (want && keepAwakeId === null) {
+    keepAwakeId = powerSaveBlocker.start("prevent-app-suspension");
+  } else if (!want && keepAwakeId !== null) {
+    powerSaveBlocker.stop(keepAwakeId);
+    keepAwakeId = null;
+  }
+}
+
 function broadcast() {
+  updateKeepAwake();
   const state = snapshot();
   for (const wc of [shellView?.webContents, popoverWebContents()]) {
     if (wc && !wc.isDestroyed()) wc.send("shell:state", state);
@@ -345,9 +371,21 @@ ipcMain.on("page:state", (e, state) => {
   if (id) setPageState(id, state);
 });
 
+// 老版本页面：自己查了额度报上来
 ipcMain.on("page:quota", (e, quotas) => {
   const id = pageOwner(e);
   if (id) setPageQuota(id, quotas);
+});
+
+// 新版页面：额度由这边统一查好推过去。页面加载完来要一次；点了侧栏的额度要求刷新
+ipcMain.on("page:quota-want", (e) => {
+  const id = pageOwner(e);
+  if (id) pageWantsQuota(id);
+});
+
+ipcMain.on("page:quota-refresh", (e) => {
+  const id = pageOwner(e);
+  if (id) void refreshQuota([id], { full: true });
 });
 
 // ---------- 主窗口和菜单栏面板发来的（经 preload-shell.cjs） ----------
@@ -544,11 +582,12 @@ app.whenReady().then(() => {
     refresh: () => refreshAll({ quota: true }),
     quit,
     onPopoverShown: () => {
-      // 面板打开时，过时超过一分钟的额度顺手刷一下
-      for (const s of store.servers()) {
+      // 面板打开时，过时超过一分钟的额度顺手刷一下（同一个账号只问一台）
+      const stale = store.servers().filter((s) => {
         const r = rt(s.id);
-        if (r.status === "online" && Date.now() - (r.quotaAt ?? 0) > 60_000) void refreshQuota(s.id);
-      }
+        return r.status === "online" && Date.now() - (r.quotaAt ?? 0) > 60_000;
+      });
+      if (stale.length) void refreshQuota(stale.map((s) => s.id));
     },
   });
 

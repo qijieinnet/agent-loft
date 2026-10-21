@@ -104,7 +104,8 @@ function duplicateQuotas(servers) {
   const dup = new Map();
   for (const s of servers) {
     for (const q of s.quotas ?? []) {
-      const sig = JSON.stringify([
+      // 服务端给了账号标识就按它认；老版本服务端没有，退回到「额度数字一模一样」来猜
+      const sig = q.account ? `account:${q.agent}:${q.account}` : JSON.stringify([
         q.agent,
         q.plan ?? "",
         (q.windows ?? []).map((w) => [w.short, Math.round(w.percent), Math.round((w.resetsAt ?? 0) / 60000)]),
