@@ -1,0 +1,253 @@
+// 桌面端自己的配置：连哪些服务器、偏好设置、窗口位置。
+// 存在 ~/Library/Application Support/Agent Loft/config.json。登录态不在这里，
+// 每台服务器的 cookie 存在各自的 Electron 分区（persist:server-<id>）里。
+import { app, safeStorage } from "electron";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+
+/**
+ * @typedef {{
+ *   id: string, name: string, url: string, certFingerprint?: string, partitionGen?: number,
+ *   authDomains?: string[],
+ *   serviceToken?: { clientId: string, secret: string },
+ * }} Server
+ *   authDomains：前面挡着的登录网关的域名（Cloudflare Access 的 *.cloudflareaccess.com 不用填），
+ *     登录流程走到这些域名时留在窗口里，不扔给系统浏览器。
+ *   serviceToken：Cloudflare Access 的 Service Token。secret 用 safeStorage 加密
+ *     （密钥在 macOS 钥匙串里），base64 存放，配置文件里没有明文。
+ * @typedef {{
+ *   hoverPopover: boolean, trayTitle: boolean, openAtLogin: boolean, quotaRefreshMin: number,
+ *   autoUpdate: boolean, updateCheckHours: number,
+ * }} Prefs
+ */
+
+/** @type {Prefs} */
+const DEFAULT_PREFS = {
+  hoverPopover: true,
+  trayTitle: true,
+  openAtLogin: false,
+  quotaRefreshMin: 10,
+  autoUpdate: true,
+  updateCheckHours: 24,
+};
+
+let data = {
+  /** @type {Server[]} */
+  servers: [],
+  prefs: { ...DEFAULT_PREFS },
+  /** @type {string | null} */
+  lastActive: null,
+  /** @type {Electron.Rectangle | null} */
+  bounds: null,
+  /** 首次启动向导走完了没有（老用户已经有服务器的，也当走完了） */
+  onboarded: false,
+  /** 已经弹过通知的新版本号：同一个版本只提醒一次 */
+  /** @type {string | null} */
+  notifiedUpdate: null,
+};
+
+const file = () => path.join(app.getPath("userData"), "config.json");
+
+export function loadStore() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file(), "utf8"));
+    data = { ...data, ...raw, prefs: { ...DEFAULT_PREFS, ...raw.prefs } };
+  } catch {
+    // 第一次打开，或文件坏了：用默认
+  }
+}
+
+function save() {
+  const target = file();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, target);
+}
+
+/**
+ * 用户随手填的地址规整成 origin：「192.168.1.5:8800」→「http://192.168.1.5:8800」。
+ * agent-loft 的页面全用绝对路径（/api、/ws），只能挂在根上，所以路径一律丢掉。
+ */
+export function normalizeUrl(input) {
+  let text = String(input ?? "").trim();
+  if (!text) throw new Error("请填写服务器地址");
+  if (!/^[a-z]+:\/\//i.test(text)) text = `http://${text}`;
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error("地址格式不对，例如 http://192.168.1.5:8800 或 https://loft.example.com");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("只支持 http:// 或 https://");
+  return url.origin;
+}
+
+/** 「a.com, https://b.com/x」→ ["a.com", "b.com"]：只留主机名 */
+export function normalizeDomains(input) {
+  const list = Array.isArray(input) ? input : String(input ?? "").split(/[\s,，;；]+/);
+  const out = [];
+  for (const raw of list) {
+    // 「*.example.com」当作 example.com 及其子域名
+    const text = String(raw).trim().toLowerCase().replace(/^([a-z]+:\/\/)?\*\./, "$1");
+    if (!text) continue;
+    let host;
+    try {
+      host = new URL(/^[a-z]+:\/\//.test(text) ? text : `https://${text}`).hostname;
+    } catch {
+      throw new Error(`登录域名格式不对：${raw}`);
+    }
+    if (!host.includes(".")) throw new Error(`登录域名格式不对：${raw}`);
+    if (!out.includes(host)) out.push(host);
+  }
+  return out.slice(0, 20);
+}
+
+function encryptSecret(secret) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("系统钥匙串不可用，没法安全保存 Secret");
+  return safeStorage.encryptString(secret).toString("base64");
+}
+
+/** 解密后的 Service Token，缓存在内存里（每个请求都要用） */
+const tokenCache = new Map();
+
+export const store = {
+  /** @returns {Server[]} */
+  servers: () => data.servers,
+  /** @returns {Server | undefined} */
+  server: (id) => data.servers.find((s) => s.id === id),
+  prefs: () => data.prefs,
+  lastActive: () => data.lastActive,
+  bounds: () => data.bounds,
+
+  addServer(name, url) {
+    const origin = normalizeUrl(url);
+    if (data.servers.some((s) => s.url === origin)) throw new Error("这台服务器已经添加过了");
+    const server = { id: crypto.randomBytes(6).toString("hex"), name: String(name ?? "").trim() || new URL(origin).hostname, url: origin };
+    data.servers.push(server);
+    save();
+    return server;
+  },
+
+  /** 解密后的 Service Token；没配就是 null */
+  serviceToken(id) {
+    const server = store.server(id);
+    if (!server?.serviceToken) return null;
+    const cached = tokenCache.get(id);
+    if (cached && cached.enc === server.serviceToken.secret) return cached.token;
+    try {
+      const secret = safeStorage.decryptString(Buffer.from(server.serviceToken.secret, "base64"));
+      const token = { clientId: server.serviceToken.clientId, secret };
+      tokenCache.set(id, { enc: server.serviceToken.secret, token });
+      return token;
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * 改认证相关的设置。
+   * serviceToken：null 清掉；{ clientId, secret }，secret 为空表示沿用原来的。
+   * @returns {boolean} 有没有实际变化
+   */
+  updateAuth(id, { authDomains, serviceToken } = {}) {
+    const server = store.server(id);
+    if (!server) throw new Error("服务器不存在");
+    const before = JSON.stringify([server.authDomains ?? [], server.serviceToken ?? null]);
+    if (authDomains !== undefined) {
+      const list = normalizeDomains(authDomains);
+      if (list.length) server.authDomains = list;
+      else delete server.authDomains;
+    }
+    if (serviceToken === null) {
+      delete server.serviceToken;
+    } else if (serviceToken !== undefined) {
+      const clientId = String(serviceToken.clientId ?? "").trim();
+      const secret = String(serviceToken.secret ?? "").trim();
+      if (!clientId && !secret) {
+        delete server.serviceToken;
+      } else {
+        if (!clientId) throw new Error("请填写 Service Token 的 Client ID");
+        if (!secret && !server.serviceToken) throw new Error("请填写 Service Token 的 Client Secret");
+        if (clientId.length > 200 || secret.length > 500) throw new Error("Service Token 太长了，检查一下是不是粘错了");
+        server.serviceToken = { clientId, secret: secret ? encryptSecret(secret) : server.serviceToken.secret };
+      }
+    }
+    const changedAuth = JSON.stringify([server.authDomains ?? [], server.serviceToken ?? null]) !== before;
+    if (changedAuth) {
+      tokenCache.delete(id);
+      save();
+    }
+    return changedAuth;
+  },
+
+  /** @returns {{ server: Server, urlChanged: boolean }} */
+  updateServer(id, patch) {
+    const server = store.server(id);
+    if (!server) throw new Error("服务器不存在");
+    let urlChanged = false;
+    if (patch.url !== undefined) {
+      const origin = normalizeUrl(patch.url);
+      if (origin !== server.url) {
+        if (data.servers.some((s) => s.id !== id && s.url === origin)) throw new Error("这台服务器已经添加过了");
+        server.url = origin;
+        // 换了地址，原来信任的证书就不作数了
+        delete server.certFingerprint;
+        urlChanged = true;
+      }
+    }
+    if (patch.name !== undefined) server.name = String(patch.name).trim() || new URL(server.url).hostname;
+    if (patch.certFingerprint !== undefined) server.certFingerprint = patch.certFingerprint;
+    if (patch.partitionGen !== undefined) server.partitionGen = patch.partitionGen;
+    save();
+    return { server, urlChanged };
+  },
+
+  removeServer(id) {
+    tokenCache.delete(id);
+    data.servers = data.servers.filter((s) => s.id !== id);
+    if (data.lastActive === id) data.lastActive = null;
+    save();
+  },
+
+  moveServer(id, delta) {
+    const from = data.servers.findIndex((s) => s.id === id);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= data.servers.length) return;
+    const [server] = data.servers.splice(from, 1);
+    data.servers.splice(to, 0, server);
+    save();
+  },
+
+  setPref(key, value) {
+    if (!(key in DEFAULT_PREFS)) throw new Error(`未知设置：${key}`);
+    if (typeof value !== typeof DEFAULT_PREFS[key]) throw new Error(`设置 ${key} 的值类型不对`);
+    if (key === "quotaRefreshMin") value = Math.max(1, Math.min(1440, Math.round(value)));
+    if (key === "updateCheckHours") value = Math.max(1, Math.min(24 * 30, Math.round(value)));
+    data.prefs[key] = value;
+    save();
+  },
+
+  onboarded: () => data.onboarded || data.servers.length > 0,
+  setOnboarded() {
+    data.onboarded = true;
+    save();
+  },
+  notifiedUpdate: () => data.notifiedUpdate,
+  setNotifiedUpdate(version) {
+    data.notifiedUpdate = version;
+    save();
+  },
+
+  setLastActive(id) {
+    if (data.lastActive === id) return;
+    data.lastActive = id;
+    save();
+  },
+
+  setBounds(bounds) {
+    data.bounds = bounds;
+    save();
+  },
+};

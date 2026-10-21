@@ -1,0 +1,495 @@
+:root {
+  --rail: 72px;
+}
+
+body {
+  display: flex;
+}
+
+/* ---------- 左侧服务器栏 ---------- */
+
+.rail {
+  width: var(--rail);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 14px;
+  -webkit-app-region: drag;
+}
+.rail-top {
+  height: 40px;
+  flex: none;
+}
+.rail-fill {
+  flex: 1;
+}
+.servers {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.rail button {
+  -webkit-app-region: no-drag;
+}
+
+.srv {
+  position: relative;
+  width: 44px;
+  height: 44px;
+}
+.srv .avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  transition: border-radius 0.15s ease, transform 0.1s ease;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.srv:hover .avatar {
+  border-radius: 15px;
+}
+.srv:active .avatar {
+  transform: scale(0.96);
+}
+.srv.offline .avatar,
+.srv.unknown .avatar {
+  filter: saturate(0.35);
+  opacity: 0.75;
+}
+/* 当前服务器：左边一条竖线 */
+.srv::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 4px;
+  height: 0;
+  border-radius: 0 3px 3px 0;
+  background: var(--fg);
+  transform: translateY(-50%);
+  transition: height 0.15s ease;
+}
+.srv.active::before {
+  height: 28px;
+}
+.srv:not(.active):hover::before {
+  height: 10px;
+}
+.srv .status {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 3px solid var(--rail-bg, var(--bg-2));
+}
+.srv .badge {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--bad);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.srv .badge.pending {
+  background: var(--warn);
+}
+
+.rail-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-2);
+  background: var(--hover);
+}
+.rail-btn:hover {
+  color: var(--fg);
+  background: var(--line);
+}
+.rail-btn.on {
+  color: #fff;
+  background: var(--accent);
+}
+
+/* ---------- 右侧面板（管理 / 连不上 / 证书） ---------- */
+
+.panel {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+  -webkit-app-region: no-drag;
+}
+.panel-inner {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 32px 64px;
+}
+.panel h1 {
+  font-size: 22px;
+  font-weight: 650;
+  margin: 0 0 6px;
+}
+.panel h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-2);
+  margin: 32px 0 10px;
+}
+.panel p {
+  margin: 0 0 12px;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.card + .card {
+  margin-top: 10px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.row + .row {
+  border-top: 1px solid var(--line);
+}
+.row .grow {
+  flex: 1;
+  min-width: 0;
+}
+.row .name {
+  font-weight: 600;
+}
+.row .sub {
+  color: var(--fg-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row .mini-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 600;
+  flex: none;
+}
+.row .actions {
+  display: flex;
+  gap: 6px;
+}
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-2);
+}
+.icon-btn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.icon-btn:disabled {
+  opacity: 0.3;
+}
+
+form.server-form {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+.field {
+  display: grid;
+  gap: 4px;
+}
+.field label {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.field input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  outline: none;
+  user-select: text;
+}
+.field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.form-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.error-text {
+  color: var(--bad);
+  font-size: 12px;
+}
+.hint {
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.switch-row label {
+  flex: 1;
+  min-width: 0;
+}
+.switch {
+  appearance: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--track);
+  position: relative;
+  transition: background 0.15s;
+  flex: none;
+  margin: 0;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s;
+}
+.switch:checked {
+  background: var(--ok);
+}
+.switch:checked::after {
+  transform: translateX(14px);
+}
+input.num {
+  width: 64px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  text-align: right;
+}
+
+.notice {
+  text-align: center;
+  padding-top: 18vh;
+}
+.notice .big-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  margin: 0 auto 18px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 600;
+}
+.notice .actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 18px;
+}
+.fingerprint {
+  margin: 14px auto 0;
+  max-width: 460px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  text-align: left;
+  word-break: break-all;
+}
+
+.empty {
+  text-align: center;
+  padding: 18vh 0 0;
+}
+.empty img {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 14px;
+}
+
+/* 表单里折叠的「登录网关」 */
+details.advanced {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+details.advanced[open] {
+  padding-bottom: 12px;
+}
+details.advanced > summary {
+  font-size: 12px;
+  color: var(--fg-2);
+  list-style: none;
+}
+details.advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 14px;
+  transition: transform 0.15s;
+}
+details.advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+details.advanced > :not(summary) {
+  margin-top: 10px;
+}
+details.advanced .field input {
+  background: var(--bg);
+}
+
+/* 齿轮上的新版本提示 */
+.rail-btn.has-update {
+  position: relative;
+}
+.rail-btn.has-update::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bad);
+}
+
+.row .sub.wrap {
+  white-space: normal;
+}
+.row .sub.accent {
+  color: var(--accent);
+  font-weight: 600;
+}
+.row.sub-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2);
+  padding-bottom: 4px;
+}
+.agent-env .row {
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- 首次启动向导 ---------- */
+
+.wizard {
+  padding-top: 10vh;
+}
+.wizard h1 {
+  font-size: 24px;
+}
+.wizard > p {
+  margin-bottom: 22px;
+}
+.wizard-logo {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 14px;
+}
+.choices {
+  display: grid;
+  gap: 12px;
+}
+.choice {
+  display: grid;
+  gap: 4px;
+  padding: 16px 18px;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.choice:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.choice:disabled {
+  opacity: 0.55;
+}
+.choice-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.choice-desc {
+  color: var(--fg-2);
+  font-size: 12.5px;
+}
+.spinner-lg {
+  width: 36px;
+  height: 36px;
+  margin: 0 0 18px;
+  border-radius: 50%;
+  border: 3px solid var(--track);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 服务器列表里展开的 Agent 环境 */
+.expand {
+  background: var(--bg-2);
+  border-top: 1px solid var(--line);
+}
+.expand .agent-env > .row:first-child {
+  border-top: 0;
+}
+.btn.on {
+  background: var(--line);
+}
+.cmd {
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.row .actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}

@@ -180,31 +180,45 @@ function convName(key: string): string {
   return conv.title?.trim() || hub.label(conv.agent);
 }
 
-/** 只推 Web 自己的会话：飞书会话的动静飞书已经会提醒 */
-function notifiable(key: string): boolean {
-  return getConversation(key)?.channel === "web" && hasSubscriptions() && !watching(key);
+/** 只提醒 Web 自己的会话：飞书会话的动静飞书已经会提醒 */
+function isWebConv(key: string): boolean {
+  return getConversation(key)?.channel === "web";
+}
+
+type Notice = { title: string; body: string; tag: string };
+
+/**
+ * 一条要提醒的动静，走两条路：
+ *   - 广播给所有连着的页面（t: "notice"）：桌面端据此弹系统通知，要不要弹由它自己判断
+ *     （它知道自己是不是正看着这条会话）。普通网页忽略。
+ *   - Web Push：只在没有页面正看着这条会话时推。
+ */
+function notify(key: string, notice: Notice): void {
+  if (!isWebConv(key)) return;
+  for (const client of clients) send(client, { t: "notice", key, ...notice });
+  if (hasSubscriptions() && !watching(key)) void pushToAll({ ...notice, url: `/#${encodeURIComponent(key)}` });
 }
 
 function pushEvent(env: EventEnvelope): void {
   const ev = env.ev;
   if (ev.type !== "result" && ev.type !== "error") return;
-  if (!notifiable(env.key)) return;
+  if (!isWebConv(env.key)) return;
   const name = convName(env.key);
   const payload =
     ev.type === "result"
       ? { title: `${name} · 回复完成`, body: plainPreview(ev.text) || "（没有文字回复）" }
       : { title: `${name} · 出错了`, body: plainPreview(ev.message) };
-  void pushToAll({ ...payload, tag: `reply:${env.key}`, url: `/#${encodeURIComponent(env.key)}` });
+  notify(env.key, { ...payload, tag: `reply:${env.key}` });
 }
 
 function pushInteraction(i: Interaction): void {
-  if (!notifiable(i.convKey)) return;
+  if (!isWebConv(i.convKey)) return;
   const name = convName(i.convKey);
   const payload =
     i.spec.kind === "approval"
       ? { title: `${name} · 需要授权`, body: plainPreview(i.spec.title) }
       : { title: `${name} · 有问题要你回答`, body: plainPreview(i.spec.questions[0]?.question ?? i.spec.title) };
-  void pushToAll({ ...payload, tag: `ix:${i.id}`, url: `/#${encodeURIComponent(i.convKey)}` });
+  notify(i.convKey, { ...payload, tag: `ix:${i.id}` });
 }
 
 const BY = "已在 Web 处理";

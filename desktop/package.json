@@ -1,0 +1,49 @@
+{
+  "name": "agent-loft-desktop",
+  "productName": "Agent Loft",
+  "version": "0.1.0",
+  "private": true,
+  "description": "agent-loft 的 macOS 桌面端：同时连多台 agent-loft 服务器，菜单栏显示额度和待处理，检测并升级服务端",
+  "author": "qijieinnet",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "icons": "electron scripts/icons.js",
+    "dist": "electron-builder --mac --arm64 --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "^44.9.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.qijieinnet.agentloft",
+    "productName": "Agent Loft",
+    "artifactName": "Agent-Loft-${version}-${arch}.${ext}",
+    "files": [
+      "src/**",
+      "assets/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "minimumSystemVersion": "12.0"
+    },
+    "dmg": {
+      "title": "Agent Loft ${version}"
+    }
+  }
+}

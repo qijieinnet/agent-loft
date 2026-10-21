@@ -12,6 +12,8 @@ import { getConversation, updateConversation } from "../../core/store.js";
 import { resolveUploadFile, saveBuffer, sniff } from "../../core/uploads.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
+import { agentHealth, invalidateHealth } from "../../agents/health.js";
+import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
 import { beginRegistration, initRegistration, pollRegistration, qrSvg } from "../feishu/register.js";
 import { FeishuClient } from "../feishu/client.js";
@@ -539,6 +541,27 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   // 侧栏的账号额度：各 agent 自己缓存（60 秒），这里并发问一遍，单个失败 / 超时不影响别的
+  if (p === "/api/server/version" && method === "GET") {
+    sendJson(res, 200, await versionInfo(url.searchParams.get("refresh") === "1"));
+    return;
+  }
+  if (p === "/api/server/upgrade" && method === "POST") {
+    sendJson(res, 200, await upgrade().catch((err) => {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }));
+    return;
+  }
+  if (p === "/api/agents/codex/install" && method === "POST") {
+    const result = await installCodex();
+    if (result.ok) useInstalledCodex();
+    invalidateHealth();
+    sendJson(res, 200, result);
+    return;
+  }
+  if (p === "/api/agents/health" && method === "GET") {
+    sendJson(res, 200, { agents: await agentHealth(url.searchParams.get("refresh") === "1") });
+    return;
+  }
   if (p === "/api/quota" && method === "GET") {
     const results = await Promise.all(
       hub.enabledAgents().map(async (d) => {

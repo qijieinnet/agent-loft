@@ -1,0 +1,83 @@
+# 打包 macOS 桌面端，发到 GitHub Release。
+#
+# 发版：改 desktop/package.json 的 version，打一个 desktop-v 开头的 tag 推上来，例如
+#   git tag desktop-v0.1.0 && git push origin desktop-v0.1.0
+# 和服务端的 v* tag（publish.yml，发 npm）互不影响：桌面端只是个壳，很少需要发版。
+#
+# 产物：Apple 芯片和 Intel 各一个 DMG（首次安装）和 zip（App 内一键更新用）。
+# 没有 Apple 开发者账号，只做 ad-hoc 签名：首次打开会被 Gatekeeper 拦，要在
+# 系统设置 → 隐私与安全性 里点「仍要打开」。App 内更新不经过 Gatekeeper，之后就不会再拦。
+name: desktop
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  # 手动触发只打包、存成构建产物，不发 Release
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: tag 要和 desktop/package.json 的版本对上
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        run: |
+          want="${GITHUB_REF_NAME#desktop-v}"
+          have="$(node -p "require('./package.json').version")"
+          if [ "$want" != "$have" ]; then
+            echo "tag 是 $want，desktop/package.json 里是 $have，先改成一致再打 tag"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: 打包（arm64 + x64，ad-hoc 签名）
+        env:
+          # 没有证书：别去钥匙串里找，直接 ad-hoc
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist
+
+      - name: 存成构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-loft-desktop
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#desktop-v}"
+          notes="Agent Loft 桌面端 ${version}
+
+          - Apple 芯片：Agent-Loft-${version}-arm64.dmg
+          - Intel：Agent-Loft-${version}-x64.dmg
+
+          首次打开如果提示「无法验证开发者」，到 系统设置 → 隐私与安全性 里点「仍要打开」。
+          已经装过的，在 App 的 设置 → 更新 里点「更新并重启」即可。"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip --title "桌面端 ${version}" --notes "$notes"
+          fi

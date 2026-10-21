@@ -49,6 +49,20 @@ agent-loft service install        # 注册为开机自启服务（systemd / laun
 
 打开 `http://<机器 IP>:8800`：第一次需要输入日志里的设置码，然后设一个登录密码。
 
+设置 → 通用 里能看到服务端版本，有新版本时点「升级」即可（`npm install -g agent-loft@latest`，以系统服务运行时会自动重启）；设置 → Agent 里能检查 Claude Code、Codex 装好、登录了没有，Codex 可以一键装到服务端上。
+
+### macOS 桌面端
+
+到 [Releases](https://github.com/qijieinnet/agent-loft/releases) 下载 `desktop-v*` 里对应芯片的 DMG（Apple 芯片选 arm64，Intel 选 x64），拖进「应用程序」。还没有 Apple 开发者签名，第一次打开如果提示无法验证，到 系统设置 → 隐私与安全性 里点「仍要打开」。
+
+- 同时连多台服务器，左边一栏切换；每台各自登录，切走了也在后台连着，回复完成、需要授权时弹系统通知。
+- 菜单栏图标：悬停看各服务器的 Claude / Codex 额度、待处理和运行中的会话。
+- 支持前面挡着 Cloudflare Access 的服务器：验证页直接在窗口里完成，过期会提醒；也可以配 Service Token 免验证。
+- 首次打开可以选「这台 Mac 也作为服务端」：一键在终端里安装 agent-loft（没有 Node.js 会先用 Homebrew 装）并开机自启，装好自动连上。
+- 服务端有新版本时在服务器列表里点「升级服务端」；桌面端自己的更新在 设置 → 更新 里点「更新并重启」。
+
+桌面端只是个壳（代码在 `desktop/`），服务端照常用 npm 安装和升级。
+
 ### 从旧桥接器迁移
 
 ```bash

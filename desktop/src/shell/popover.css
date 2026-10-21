@@ -1,0 +1,215 @@
+/* 窗口本身是 macOS 的 popover 毛玻璃，页面背景保持透明 */
+body {
+  overflow: hidden;
+}
+#root {
+  padding: 6px 0 4px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 8px;
+}
+.head .title {
+  font-weight: 650;
+  flex: 1;
+}
+.head .ago {
+  color: var(--fg-3);
+  font-size: 11px;
+}
+.tool {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-2);
+}
+.tool:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.tool.spin svg {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.server {
+  margin: 0 6px;
+  padding: 8px;
+  border-radius: 10px;
+}
+.server + .server {
+  margin-top: 2px;
+}
+.server-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 6px;
+  border-radius: 6px;
+}
+.server-head:hover {
+  background: var(--hover);
+}
+.server-head .av {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 650;
+  flex: none;
+}
+.server-head .name {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.server-head .meta {
+  color: var(--fg-2);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.quota {
+  padding: 4px 2px 2px 30px;
+}
+.quota-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 12px;
+}
+.quota-head .agent {
+  font-weight: 600;
+}
+.quota-head .plan {
+  color: var(--fg-3);
+  font-size: 11px;
+}
+.quota-head .reached {
+  color: var(--bad);
+  font-size: 11px;
+  margin-left: auto;
+}
+.quota-extra {
+  font-size: 11px;
+}
+.same {
+  padding: 4px 2px 2px 30px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.note {
+  padding: 2px 2px 2px 30px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.note.warn {
+  color: var(--warn);
+}
+
+.pending {
+  margin: 6px 0 0 28px;
+  display: grid;
+  gap: 2px;
+}
+.pending button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 12px;
+  min-width: 0;
+}
+.pending button:hover {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.pending .what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pending .conv {
+  color: var(--fg-2);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: 18px 16px;
+  text-align: center;
+  color: var(--fg-2);
+}
+
+.foot {
+  display: flex;
+  gap: 2px;
+  margin: 6px 6px 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.foot button {
+  flex: 1;
+  height: 28px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.foot button:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.access-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.access-note span {
+  flex: 1;
+}
+.access-note .go {
+  flex: none;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: var(--warn);
+  color: #fff;
+  font-size: 12px;
+}
+.access-note .go:hover {
+  filter: brightness(1.08);
+}
+
+.update-note {
+  display: block;
+  color: var(--accent);
+  text-align: left;
+}
+.update-note:hover {
+  text-decoration: underline;
+}

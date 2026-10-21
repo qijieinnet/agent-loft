@@ -3152,3 +3152,65 @@ button.list-item:hover {
 .lightbox-dl:hover {
   background: rgba(255, 255, 255, 0.26);
 }
+
+/* 设置 → Agent → 运行环境 */
+.health-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.health-row + .health-row {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.health-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex: none;
+}
+.health-dot.ok {
+  background: var(--ok);
+}
+.health-state {
+  color: var(--fg-soft);
+}
+.health-off,
+.health-meta {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+.health-fix {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  font-size: 13px;
+}
+.health-fix small {
+  color: var(--fg-soft);
+}
+.health-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.health-cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--code-bg);
+  font-size: 12px;
+}

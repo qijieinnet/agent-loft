@@ -260,6 +260,12 @@ const S = {
 
 const ui = {};
 
+/**
+ * 运行在 macOS 桌面端（agent-loft-desktop）里时，由它的 preload 注入。
+ * 桌面端收不到 Web Push，系统通知、Dock 角标、菜单栏的待处理数都交给它。
+ */
+const desktop = window.agentLoftDesktop ?? null;
+
 // ---------- WebSocket ----------
 
 const WS = {
@@ -445,6 +451,12 @@ function onWsMessage(msg) {
     case "ix":
       upsertInteraction(msg.interaction);
       return;
+    case "notice":
+      // 正看着这条会话就不打扰；普通网页靠 Web Push，这里只给桌面端
+      if (!desktop) return;
+      if (document.visibilityState === "visible" && document.hasFocus() && msg.key === S.current) return;
+      desktop.notify({ key: msg.key, title: msg.title, body: msg.body, tag: msg.tag });
+      return;
   }
 }
 
@@ -519,6 +531,7 @@ async function boot() {
   const enabled = S.agents.filter((a) => a.enabled).map((a) => a.id);
   if (!S.draftAgent || !enabled.includes(S.draftAgent)) S.draftAgent = enabled[0] ?? null;
   renderLayout();
+  reportDesktop();
   WS.connect();
   void loadQuota();
   const fromHash = decodeURIComponent(location.hash.slice(1));
@@ -527,6 +540,10 @@ async function boot() {
   if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
   else if (latest) await openConversation(latest.key);
   else newDraft();
+  // 点了桌面端的系统通知 / 菜单栏里的待处理项：跳到对应会话
+  desktop?.onOpen((key) => {
+    if (key && S.convs.has(key) && key !== S.current) void openConversation(key);
+  });
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
     clearAppBadge();
@@ -660,6 +677,7 @@ async function loadQuota() {
     const data = await api("/api/quota");
     quotaState.data = data.quotas;
     quotaState.at = Date.now();
+    desktop?.setQuota(data.quotas);
   } catch {
     // 保留旧数据
   } finally {
@@ -829,6 +847,7 @@ function scheduleSidebar() {
   requestAnimationFrame(() => {
     sidebarScheduled = false;
     renderSidebar();
+    reportDesktop();
   });
 }
 
@@ -922,6 +941,16 @@ function toggleSide(list, id) {
 let autoOpenedFor = null;
 const RECENT_LIMIT = 10;
 const PROJECT_LIMIT = 5;
+
+/** 待处理的授权 / 提问和正在跑的会话，报给桌面端显示在菜单栏里 */
+function reportDesktop() {
+  if (!desktop) return;
+  const pending = [...S.pending.values()]
+    .filter((i) => !i.settled)
+    .map((i) => ({ id: i.id, key: i.convKey, title: i.spec.title, conv: convTitle(S.convs.get(i.convKey)) }));
+  const busy = [...S.convs.values()].filter((c) => c.busy).length;
+  desktop.setState({ pending, busy });
+}
 
 function renderSidebar() {
   if (!ui.convList) return;
@@ -1838,7 +1867,8 @@ function upsertInteraction(ix) {
 }
 
 function notifyIfHidden(ix) {
-  if (document.visibilityState === "visible" || !("Notification" in window)) return;
+  // 桌面端由服务端的 notice 统一弹，这里再弹就重复了
+  if (desktop || document.visibilityState === "visible" || !("Notification" in window)) return;
   if (Notification.permission === "granted") {
     try {
       new Notification("Agent Loft 需要你处理", { body: ix.spec.title, tag: ix.id });
@@ -3047,6 +3077,7 @@ async function openSettings() {
 function pushSupport() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  if (desktop) return { ok: false, why: "桌面端会直接弹出 macOS 系统通知，不需要在这里开启。" };
   if (!window.isSecureContext) return { ok: false, why: "通知需要 HTTPS 访问（localhost 除外）。请通过 HTTPS 的反向代理地址打开。" };
   if (ios && !standalone) {
     return { ok: false, why: "iPhone / iPad 上要先在 Safari 里点「分享 → 添加到主屏幕」，再从桌面图标打开，才能开启通知（需 iOS 16.4+）。" };
@@ -3197,7 +3228,60 @@ function field(label, input, hint) {
   return h("label", { class: "field" }, h("span", {}, label), input, hint ? h("small", {}, hint) : null);
 }
 
+/** 服务端版本：有新版就能一键升级（npm install -g，系统服务下自动重启） */
+function serverVersionSection() {
+  const box = h("div", { class: "section" });
+  const load = async (refresh) => {
+    box.replaceChildren(h("h4", {}, "服务端版本", h("span", { class: "grow" }), h("span", { class: "spinner" })));
+    let v;
+    try {
+      v = await api(`/api/server/version${refresh ? "?refresh=1" : ""}`);
+    } catch (err) {
+      box.replaceChildren(h("h4", {}, "服务端版本"), h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    const recheck = h("button", { class: "btn small", onclick: () => load(true) }, "检查更新");
+    const status = v.updateAvailable
+      ? `有新版本 ${v.latest}`
+      : v.latest
+        ? "已是最新版本"
+        : `查不到最新版本${v.latestError ? `：${v.latestError}` : ""}`;
+    const upgradeBtn =
+      v.updateAvailable && v.canUpgrade
+        ? h(
+            "button",
+            {
+              class: "btn small primary",
+              onclick: async () => {
+                upgradeBtn.disabled = true;
+                upgradeBtn.textContent = "正在升级…";
+                try {
+                  const r = await api("/api/server/upgrade", { method: "POST" });
+                  toast(r.restarting ? `已升级到 ${r.to}，服务正在重启，页面会自动重连` : `已升级到 ${r.to}，重启 agent-loft 后生效`, 6000);
+                  void load(false);
+                } catch (err) {
+                  toast(`升级失败：${err.message}`, 6000);
+                  upgradeBtn.disabled = false;
+                  upgradeBtn.textContent = "升级";
+                }
+              },
+            },
+            "升级",
+          )
+        : null;
+    box.replaceChildren(
+      h("h4", {}, "服务端版本", h("span", { class: "grow" }), upgradeBtn, recheck),
+      h("div", { class: "health-meta" }, `当前 ${v.version} · ${status}`),
+      v.updateAvailable && !v.canUpgrade && v.reason ? h("div", { class: "health-meta" }, v.reason) : null,
+      v.updateAvailable && v.canUpgrade && !v.service ? h("div", { class: "health-meta" }, "agent-loft 是在前台手动运行的，升级后要自己重启一下。") : null,
+    );
+  };
+  void load(false);
+  return box;
+}
+
 function generalTab(cfg, panel) {
+  panel.append(serverVersionSection());
   const root = h("input", { value: cfg.workspaceRoot });
   const approval = h("input", { type: "number", min: 1, value: Math.round(cfg.approvalTimeoutMs / 60000) });
   const ttl = h("input", { type: "number", min: 0, value: Math.round(cfg.sessionTtlMs / 3600000) });
@@ -3678,7 +3762,85 @@ function modelChecklist(agent, selected) {
   };
 }
 
+/** Agent 运行环境：装没装、登没登录；没好的给出在终端里执行的命令 */
+function agentHealthSection() {
+  const box = h("div", { class: "section" });
+  const load = async (refresh) => {
+    const recheck = h("button", { class: "btn small", onclick: () => load(true) }, "重新检查");
+    box.replaceChildren(h("h4", {}, "运行环境", h("span", { class: "grow" }), h("span", { class: "spinner" })));
+    let data;
+    try {
+      data = await api(`/api/agents/health${refresh ? "?refresh=1" : ""}`);
+    } catch (err) {
+      box.replaceChildren(h("h4", {}, "运行环境", h("span", { class: "grow" }), recheck), h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    box.replaceChildren(
+      h("h4", {}, "运行环境", h("span", { class: "grow" }), recheck),
+      ...data.agents.map((a) => {
+        const ok = a.installed && a.loggedIn === true;
+        const state = !a.installed ? "未安装" : a.loggedIn === false ? "未登录" : a.loggedIn === null ? "无法确认" : "正常";
+        return h(
+          "div",
+          { class: "health-row" },
+          h(
+            "div",
+            { class: "health-head" },
+            h("span", { class: `health-dot ${ok ? "ok" : "bad"}` }),
+            h("b", {}, a.label),
+            h("span", { class: "health-state" }, state),
+            a.enabled ? null : h("span", { class: "health-off" }, "（未启用）"),
+          ),
+          a.account || a.version ? h("div", { class: "health-meta" }, [a.account, a.version].filter(Boolean).join(" · ")) : null,
+          a.problem ? h("div", { class: "health-meta" }, a.problem) : null,
+          a.fix
+            ? h(
+                "div",
+                { class: "health-fix" },
+                h("div", {}, `${a.fix.title}：在运行 agent-loft 的机器上打开终端执行${a.fix.commands.length > 1 ? "（任选一条）" : ""}`),
+                a.fix.commands.map((cmd) => {
+                  const copy = h("button", { class: "btn small", onclick: () => copyText(cmd, copy) }, "复制");
+                  return h("div", { class: "health-cmd" }, h("code", {}, cmd), copy);
+                }),
+                a.fix.note ? h("small", {}, a.fix.note) : null,
+                a.id === "codex" && a.fix.action === "install" ? installCodexButton(() => load(true)) : null,
+              )
+            : null,
+        );
+      }),
+    );
+  };
+  void load(false);
+  return box;
+}
+
+/** 直接在服务端那台机器上装 Codex（Homebrew 或 npm），装完重新检查 */
+function installCodexButton(after) {
+  const btn = h(
+    "button",
+    {
+      class: "btn small primary",
+      onclick: async () => {
+        btn.disabled = true;
+        btn.textContent = "正在安装，可能要几分钟…";
+        try {
+          const r = await api("/api/agents/codex/install", { method: "POST" });
+          toast(r.ok ? `已用 ${r.via} 装好 Codex` : `安装失败：${r.output.slice(-200)}`, 6000);
+          after();
+        } catch (err) {
+          toast(`安装失败：${err.message}`, 6000);
+          btn.disabled = false;
+          btn.textContent = "直接在服务器上安装";
+        }
+      },
+    },
+    "直接在服务器上安装",
+  );
+  return h("div", {}, btn);
+}
+
 function agentsTab(cfg, panel) {
+  panel.append(agentHealthSection());
   const a = structuredClone(cfg.agents);
   const claudeOn = h("input", { type: "checkbox", checked: a.claude.enabled });
   const claudePick = modelPicker("claude", a.claude.defaultModel, a.claude.defaultEffort, "跟随 Claude Code 默认");
