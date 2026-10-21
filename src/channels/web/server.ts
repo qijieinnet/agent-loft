@@ -162,8 +162,8 @@ function watching(key: string): boolean {
   return false;
 }
 
-/** 通知正文用：去掉 markdown 记号，压成一行 */
-export function plainPreview(text: string, max = 120): string {
+/** 通知正文用：去掉 markdown 记号，压成一行。40 字在 iPhone 通知收起时能完整显示 */
+export function plainPreview(text: string, max = 40): string {
   const plain = text
     .replace(/```[\s\S]*?```/g, " [代码] ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " [图片] ")
