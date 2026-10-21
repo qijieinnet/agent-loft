@@ -116,6 +116,11 @@ export type QuotaInfo = {
   extra?: string;
   /** 已撞上限 */
   reached?: boolean;
+  /**
+   * 账号标识（邮箱等信息的哈希，见 core/account-key.ts）。多台服务器登的同一个账号时相同，
+   * 桌面端据此只问其中一台。认不出账号时不给。
+   */
+  account?: string;
 };
 
 // ---------- agent ----------

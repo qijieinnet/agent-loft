@@ -565,8 +565,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/quota" && method === "GET") {
+    // ?agent=claude,codex：只问这几个。桌面端连着多台同账号的服务器时，同一个账号只在一台上问
+    const only = url.searchParams.get("agent")?.split(",").filter(Boolean);
     const results = await Promise.all(
-      hub.enabledAgents().map(async (d) => {
+      hub.enabledAgents().filter((d) => !only || only.includes(d.id)).map(async (d) => {
         if (!d.quota) return null;
         try {
           const quota = await Promise.race([

@@ -265,6 +265,8 @@ const ui = {};
  * 桌面端收不到 Web Push，系统通知、Dock 角标、菜单栏的待处理数都交给它。
  */
 const desktop = window.agentLoftDesktop ?? null;
+/** 新版桌面端：额度由它统一查好推过来，页面自己不查（老版本桌面端没有 onQuota，照旧自己查） */
+const desktopQuota = typeof desktop?.onQuota === "function";
 // 桌面端里：顶栏、侧栏顶部可以按住拖动窗口（样式见 style.css 的 .in-desktop）
 if (desktop) document.documentElement.classList.add("in-desktop");
 
@@ -535,7 +537,8 @@ async function boot() {
   renderLayout();
   reportDesktop();
   WS.connect();
-  void loadQuota();
+  if (desktopQuota) desktop.onQuota(applyDesktopQuota);
+  else void loadQuota();
   const fromHash = decodeURIComponent(location.hash.slice(1));
   // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
   const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
@@ -666,12 +669,19 @@ function stopMarquee() {
 //   - 有会话跑完一轮：10 秒后拉；若那时服务端缓存还没过期，就推迟到过期之后，保证拿到新数据；
 //   - 切回前台：距上次超过一个刷新间隔就拉；
 //   - 点一下额度区域：立刻拉（可能拿到 60 秒内的缓存）。
+// 在桌面端里（desktopQuota）以上全都不做：桌面端统一去查（同一个账号的多台服务器只问一台），
+// 查好推过来；点一下额度区域是请桌面端去刷新。
 
 const quotaState = { data: null, at: 0, loading: false, timer: 0, idle: 0 };
 const QUOTA_SERVER_CACHE = 60_000;
 const quotaInterval = () => (S.quotaRefreshMin ?? 10) * 60_000;
 
 async function loadQuota() {
+  if (desktopQuota) {
+    ui.quota?.classList.add("loading");
+    desktop.refreshQuota();
+    return;
+  }
   if (quotaState.loading) return;
   quotaState.loading = true;
   ui.quota?.classList.add("loading");
@@ -690,10 +700,20 @@ async function loadQuota() {
   }
 }
 
+/** 桌面端推来的额度。查失败（error）时保留旧数据 */
+function applyDesktopQuota(payload) {
+  if (Array.isArray(payload?.quotas) && !payload.error) {
+    quotaState.data = payload.quotas;
+    quotaState.at = payload.at || Date.now();
+  }
+  ui.quota?.classList.remove("loading");
+  renderQuota();
+}
+
 /** 空闲定时：每次拉完重新计时，所以刚因为跑完一轮拉过，就不会紧接着又拉 */
 function scheduleIdleQuota() {
   clearTimeout(quotaState.idle);
-  if (!quotaInterval()) return;
+  if (desktopQuota || !quotaInterval()) return;
   quotaState.idle = setTimeout(() => {
     // 页面不可见就先不拉，等切回来再说
     if (document.visibilityState === "visible") void loadQuota();
@@ -702,13 +722,15 @@ function scheduleIdleQuota() {
 
 /** 一轮跑完：10 秒后拉；服务端缓存那时还没过期就推迟到过期之后 */
 function scheduleQuota() {
+  // 桌面端里：它从页面报的运行数看出跑完了一轮，自己会去查
+  if (desktopQuota) return;
   const wait = Math.max(10_000, quotaState.at + QUOTA_SERVER_CACHE + 1000 - Date.now());
   clearTimeout(quotaState.timer);
   quotaState.timer = setTimeout(() => void loadQuota(), wait);
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "visible" || !ui.quota || !quotaInterval()) return;
+  if (desktopQuota || document.visibilityState !== "visible" || !ui.quota || !quotaInterval()) return;
   if (Date.now() - quotaState.at >= quotaInterval()) void loadQuota();
 });
 
@@ -3308,7 +3330,13 @@ function generalTab(cfg, panel) {
       field("工作目录（workspace）", root, "所有会话的默认目录，/cd 只能在它之内"),
       field("授权等待超时（分钟）", approval, "超时按拒绝处理"),
       field("会话闲置多久自动开新会话（小时）", ttl, "0 表示永不过期"),
-      field("额度自动刷新间隔（分钟）", quotaMin, "侧栏底部的额度，空闲时多久刷新一次；0 表示不自动刷新（跑完一轮、点击额度区域仍会刷新）"),
+      field(
+        "额度自动刷新间隔（分钟）",
+        quotaMin,
+        desktopQuota
+          ? "在桌面端里额度由桌面端统一刷新，以桌面端设置里的间隔为准；这里只对浏览器打开的页面生效"
+          : "侧栏底部的额度，空闲时多久刷新一次；0 表示不自动刷新（跑完一轮、点击额度区域仍会刷新）",
+      ),
       h(
         "div",
         { class: "row" },

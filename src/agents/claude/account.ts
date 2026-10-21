@@ -5,6 +5,7 @@
 //
 // 注意：SDK 把它标成了 EXPERIMENTAL，方法名以后会改。改了的话这里只会读失败，
 // /status 少几行而已，不影响别的。
+import { accountKey } from "../../core/account-key.js";
 import type { QuotaInfo } from "../../core/types.js";
 import { cachedProbe, withProbe } from "./probe.js";
 
@@ -22,6 +23,8 @@ type LimitRow = {
 export type ClaudeUsage = {
   subscriptionType: string | null;
   rows: { label: string; short: string; percent: number; resetsAt: string | null; severity?: string }[];
+  /** 账号标识（见 core/account-key.ts）；读不到账号信息时没有 */
+  account?: string;
 };
 
 function labelOf(row: LimitRow): string {
@@ -70,10 +73,16 @@ function normalize(res: {
 }
 
 async function fetchUsage(): Promise<ClaudeUsage | null> {
-  const res = await withProbe((q) =>
-    q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }),
+  // 账号信息顺带在同一个探针进程里问，不多起进程；读不到不影响额度
+  const [res, info] = await withProbe((q) =>
+    Promise.all([
+      q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }),
+      q.accountInfo().catch(() => null),
+    ]),
   );
-  return normalize(res as Parameters<typeof normalize>[0]);
+  const usage = normalize(res as Parameters<typeof normalize>[0]);
+  const account = info?.email ? accountKey("claude", info.email, info.organization) : undefined;
+  return usage && account ? { ...usage, account } : usage;
 }
 
 /**
@@ -107,6 +116,7 @@ export function toQuota(usage: ClaudeUsage | null): QuotaInfo | null {
       return { label: r.label, short: r.short, percent: r.percent, ...(Number.isNaN(at) ? {} : { resetsAt: at }) };
     }),
     ...(usage.rows.some((r) => r.percent >= 100) ? { reached: true } : {}),
+    ...(usage.account ? { account: usage.account } : {}),
   };
 }
 

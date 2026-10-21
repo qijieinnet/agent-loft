@@ -4,6 +4,7 @@
 // 而agent-loft的 `/status` 是另一条命令（同名而已），本来只报会话和目录。
 // 用的人不会关心这个区别，他只知道「同样敲 /status，这边少了额度」。
 // 与其解释，不如把它显示出来 —— app-server 本来就给了。
+import { accountKey } from "../../core/account-key.js";
 import type { QuotaInfo } from "../../core/types.js";
 import { appServer } from "./app-server.js";
 
@@ -47,6 +48,28 @@ export async function readRateLimits(): Promise<RateLimits | null> {
   return cache.value;
 }
 
+type Account = { type: "chatgpt"; email: string | null; planType?: string | null } | { type: string } | null;
+
+let accountCache: { at: number; value: string | undefined } | null = null;
+
+/**
+ * 账号标识（见 core/account-key.ts）：只有 ChatGPT 登录、拿得到邮箱时才有。
+ * app-server 常驻着，问一下很便宜；和额度同样缓存 60 秒，换了账号一分钟内就能反映出来。
+ */
+export async function readAccountKey(): Promise<string | undefined> {
+  if (accountCache && Date.now() - accountCache.at < CACHE_MS) return accountCache.value;
+  let value: string | undefined;
+  try {
+    const res = await appServer.call<{ account?: Account }>("account/read", {});
+    const acc = res.account;
+    if (acc?.type === "chatgpt" && "email" in acc) value = accountKey("codex", acc.email, acc.planType);
+  } catch (err) {
+    console.error("[账号] 读取失败:", err instanceof Error ? err.message : err);
+  }
+  accountCache = { at: Date.now(), value };
+  return value;
+}
+
 /** 300 → 「5h」，10080 → 「7d」 */
 function windowShort(mins: number): string {
   if (mins % (60 * 24) === 0) return `${mins / (60 * 24)}d`;
@@ -55,7 +78,7 @@ function windowShort(mins: number): string {
 }
 
 /** 侧栏用的结构化额度 */
-export function toQuota(limits: RateLimits | null): QuotaInfo | null {
+export function toQuota(limits: RateLimits | null, account?: string): QuotaInfo | null {
   if (!limits) return null;
   const windows = [limits.primary, limits.secondary]
     .filter((w): w is UsageWindow => !!w)
@@ -73,6 +96,7 @@ export function toQuota(limits: RateLimits | null): QuotaInfo | null {
     windows,
     ...(extra ? { extra } : {}),
     ...(limits.rateLimitReachedType ? { reached: true } : {}),
+    ...(account ? { account } : {}),
   };
 }
 
