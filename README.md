@@ -37,6 +37,7 @@ Logo 就是这个意思：一大两小几颗星（多个 agent）站在同一张
   - 侧栏分「最近」和「项目」两组：Web 会话按工作目录归类，飞书机器人各占一行并带飞书图标；分叉出来的对话挂在主对话下面，用虚线连起来；分组可折叠，宽度可拖动，双击会话重命名，名字太长时悬停滚动显示。
   - 侧栏底部显示 Claude / Codex 的订阅额度（5 小时 / 7 天窗口，悬停看重置时间）；空闲时按设置的间隔自动刷新（默认 10 分钟），跑完一轮后也会刷新。
 - **跨渠道同步**：飞书里的会话在 Web 上也能打开，接着聊。同一个授权请求同时出现在飞书卡片和网页上，哪边先点算哪边，另一边自动变成「已处理」。
+- **在飞书里接着 Web 会话**：飞书里发 `/web` 列出最近的 Web 会话，点「接上」后这个飞书聊天说的话、发的命令都进那条会话，它的回复、授权和提问也发到飞书，Web 上说的话同步过来；发 `/detach` 回到这个聊天自己的会话。也可以在 Web 侧栏右键会话 →「在飞书继续…」，选一个机器人聊过的飞书聊天直接接上（只有一个聊天时不用选）。Web 会话被删除时飞书那边自动退回来。
 - **设置都在网页上**：工作目录、各 agent 的默认模型和思考程度、Codex 沙箱、飞书机器人、配对批准、Claude 的「总是允许」名单、登录设备管理。
 
 ## 安装
@@ -85,7 +86,7 @@ agent-loft service install
 | `agent-loft service install \| uninstall \| restart \| status` | 开机自启 |
 | `agent-loft doctor` | 体检 |
 
-聊天里的命令（飞书和 Web 通用；Web 输入框打 `/` 会弹出命令补全，飞书里打 `/` 会弹出机器人的指令面板（agent-loft 自动注册，约 5～8 分钟生效；只发一个 `/` 也会回一张可点击的命令卡片），顺序和显示项在 设置 → 命令 里调整）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/approve <id> allow-once|allow-always|allow-session|deny` `/help`
+聊天里的命令（飞书和 Web 通用；Web 输入框打 `/` 会弹出命令补全，飞书里打 `/` 会弹出机器人的指令面板（agent-loft 自动注册，约 5～8 分钟生效；只发一个 `/` 也会回一张可点击的命令卡片），顺序和显示项在 设置 → 命令 里调整）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/approve <id> allow-once|allow-always|allow-session|deny` `/help`；只在飞书里有的：`/web` `/detach`
 
 自定义命令：设置 → 命令 → 「添加命令」，填命令名、说明和一段提示词，之后发 `/命令名 参数` 就会把这段提示词发给 agent（提示词里的 `$ARGUMENTS` 换成参数，没写就把参数接在后面）。按 agent 分开存，可以编辑、删除，也会同步到飞书指令面板。
 

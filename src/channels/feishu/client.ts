@@ -112,6 +112,28 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 群名 / 是不是私聊，Web 上选「在哪个飞书聊天继续」时显示用。
+   * 要 im:chat 读权限，没有就返回 undefined，调用方退回显示 chat_id。成功的结果缓存起来。
+   */
+  private chatInfoCache = new Map<string, { name?: string; mode?: string }>();
+  async chatInfo(chatId: string): Promise<{ name?: string; mode?: string } | undefined> {
+    const cached = this.chatInfoCache.get(chatId);
+    if (cached) return cached;
+    try {
+      const res = await this.lark.im.v1.chat.get({ path: { chat_id: chatId } });
+      if (res.code !== 0 || !res.data) return undefined;
+      const info = {
+        ...(res.data.name ? { name: res.data.name } : {}),
+        ...(res.data.chat_mode ? { mode: res.data.chat_mode } : {}),
+      };
+      rememberBounded(this.chatInfoCache, chatId, info, 200);
+      return info;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** 飞书没有给机器人开放 typing 指示器，表情回复是最接近的替代。 */
   async addTypingReaction(messageId: string): Promise<string | undefined> {
     try {

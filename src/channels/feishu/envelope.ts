@@ -23,7 +23,11 @@ export type EnvelopeAction =
   | { a: "agent"; g: string; k: string }
   | { a: "resume"; s: string; k: string; c?: string }
   /** 命令列表卡上的「执行」：c 是命令名，不带斜杠 */
-  | { a: "cmd"; c: string; k: string };
+  | { a: "cmd"; c: string; k: string }
+  /** 把飞书会话 k 挂到 Web 会话 w 上 */
+  | { a: "attach"; w: string; k: string }
+  /** 飞书会话 k 不再挂着 Web 会话 */
+  | { a: "detach"; k: string };
 
 export type CardEnvelope = EnvelopeAction & {
   oc: typeof ENVELOPE_VERSION;
@@ -103,6 +107,10 @@ function validAction(v: Record<string, unknown>): boolean {
     case "cmd":
       // 只放行命令名该有的字符（skill 名会带冒号），别让参数、换行之类混进来
       return str(v.c) && /^[\w:.-]+$/.test(v.c) && str(v.k);
+    case "attach":
+      return str(v.w) && v.w.startsWith("web:") && str(v.k);
+    case "detach":
+      return str(v.k);
     default:
       return false;
   }

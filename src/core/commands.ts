@@ -84,7 +84,7 @@ export function parseCommand(raw: string): ParsedCommand {
   }
 }
 
-export function helpText(agents: string[]): string {
+export function helpText(agents: string[], channel?: string): string {
   const multi = agents.length > 1;
   return [
     "直接说话即可，会自动接着上次的会话。闲置太久会自动开新会话。",
@@ -94,6 +94,7 @@ export function helpText(agents: string[]): string {
     "**命令**（需整条消息只有命令；只发一个 `/` 可以列出全部命令，包括 agent 自己的）",
     "",
     ...BUILTIN_COMMANDS.filter((c) => !c.multiAgentOnly || multi)
+      .filter((c) => !c.feishuOnly || channel === "feishu")
       .filter((c) => !["claude", "codex"].includes(c.name))
       .map((c) =>
         c.name === "agent"

@@ -1428,8 +1428,62 @@ function openConvContextMenu(key, at) {
       },
     },
     { label: "重命名", onclick: () => renameConv(key) },
+    ...(c.channel === "web" && S.bots.length > 0 ? [{ label: "在飞书继续…", onclick: () => continueInFeishu(key) }] : []),
     ...(c.channel === "web" ? [{ label: "删除", danger: true, onclick: () => deleteConv(key) }] : []),
   ]);
+}
+
+/**
+ * 在飞书继续：选一个机器人聊过的飞书聊天，把它接到这条 Web 会话上。
+ * 之后在那个聊天里说话就进这条会话，回复、授权、提问也发过去；飞书里发 /detach 退回来。
+ * 只有一个聊天可选时直接接上，不弹窗。
+ */
+async function continueInFeishu(key) {
+  let data;
+  try {
+    data = await api("/api/feishu/targets");
+  } catch (err) {
+    return toast(err.message);
+  }
+  const targets = data.bots.flatMap((b) => b.chats.map((c) => ({ bot: b, chat: c })));
+  if (data.bots.length === 0) return toast("没有运行中的飞书机器人");
+  if (targets.length === 0) return toast("机器人还没有聊天：先在飞书里给它发一条消息，再回来推过去");
+  const go = async (t, close) => {
+    try {
+      const r = await api(`/api/conversations/${encodeURIComponent(key)}/feishu`, {
+        method: "POST",
+        body: { botId: t.bot.id, chatId: t.chat.chatId },
+      });
+      close?.();
+      toast(r.text);
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  if (targets.length === 1) return go(targets[0]);
+  const multiBot = data.bots.filter((b) => b.chats.length > 0).length > 1;
+  const body = h("div", { class: "modal-body" });
+  const close = modal({ title: "在飞书继续", body });
+  fill(
+    body,
+    h("div", { class: "muted" }, "选一个飞书聊天，之后在那里说话就会发进这条会话，回复和授权也会发过去。在飞书里发 /detach 回到那个聊天自己的会话。"),
+    ...targets.map((t) => {
+      const here = t.chat.attached === key;
+      const other = t.chat.attached && !here ? S.convs.get(t.chat.attached) : null;
+      const note = here ? "已接着这条" : other ? `正接着「${convTitle(other)}」，选它会换过来` : "";
+      return h(
+        "button",
+        { class: `list-item${here ? " on" : ""}`, onclick: () => go(t, close) },
+        h("span", { class: "brand-icon", html: ICON.feishu }),
+        h(
+          "div",
+          { class: "grow" },
+          h("div", { class: "t" }, multiBot ? `${t.bot.name} · ${t.chat.label}` : t.chat.label),
+          h("div", { class: "s" }, [`${relTime(t.chat.activeAt)}活跃`, t.bot.state !== "connected" ? "机器人未连上" : "", note].filter(Boolean).join(" · ")),
+        ),
+      );
+    }),
+  );
 }
 
 /** 飞书机器人的历史会话：这个机器人的所有聊天，按活跃时间排，点一下打开 */
@@ -3519,7 +3573,7 @@ function modelPicker(agent, model, effort, defaultLabel) {
 }
 
 /** agent-loft 内置命令名（和服务端 BUILTIN_COMMANDS 一致），自定义命令不能用 */
-const BUILTIN_NAMES = ["new", "status", "stop", "model", "effort", "sessions", "resume", "fork", "agent", "claude", "codex", "cd", "pwd", "autoedit", "approve", "help"];
+const BUILTIN_NAMES = ["new", "status", "stop", "model", "effort", "sessions", "resume", "fork", "agent", "claude", "codex", "cd", "pwd", "autoedit", "web", "detach", "approve", "help"];
 
 /**
  * 添加 / 编辑一条自定义命令。onSave 返回 true 才关窗；失败（比如服务端校验没过）留着让用户改。

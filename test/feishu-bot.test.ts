@@ -228,6 +228,102 @@ test("提问挂着时，下一条消息被当成作答", async () => {
   assert.deepEqual(outcome.answers, { q1: ["蓝色"] });
 });
 
+/** 在卡片里按按钮文字找回调数据 */
+function buttonValue(card: any, label: string): any {
+  let found: any;
+  JSON.stringify(card, (_k, v) => {
+    if (!found && v && v.tag === "button" && v.text?.content === label) found = v.behaviors[0].value;
+    return v;
+  });
+  return found;
+}
+let cardToken = 100;
+const click = (value: any, chatId = "oc_chat", openId = "ou_owner") =>
+  (bot as any).handleCardAction({
+    token: `t${++cardToken}`,
+    operator: { open_id: openId },
+    context: { open_chat_id: chatId },
+    action: { value },
+  });
+
+test("/web 接上 Web 会话：飞书说的话进那条会话，回复、Web 上的话、授权卡都发到飞书；/detach 回来", async () => {
+  const web = "web:t1";
+  hub.ensure({ key: web, channel: "web", channelId: "web", defaultAgent: "claude", title: "网页上的活" });
+  sent.length = 0;
+  await message("ou_owner", "/web");
+  await tick();
+  const list = sent.at(-1)!;
+  assert.ok(cardText(list.body).includes("网页上的活"));
+  const attachValue = buttonValue(list.body, "接上");
+  assert.equal(attachValue.w, web);
+
+  // 别的聊天拿这张卡点不动
+  const wrong = await click(attachValue, "oc_other");
+  assert.equal(wrong.toast.type, "error");
+
+  sent.length = 0;
+  const res = await click(attachValue);
+  assert.equal(res.toast.type, "success");
+  await tick(100);
+  assert.ok(sent.some((s) => cardText(s.body).includes("已接上 Web 会话")));
+  assert.equal((bot as any).attachedWeb("feishu:b1:oc_chat"), web);
+
+  sent.length = 0;
+  await message("ou_owner", "飞书里接着说");
+  await tick(200);
+  assert.equal(hub.conversation(web)?.perAgent.claude?.sessionId, "claude-session", "消息没进 Web 会话");
+  assert.ok(sent.some((s) => s.chatId === "oc_chat" && cardText(s.body).includes("claude 收到：飞书里接着说")));
+  // 自己在飞书说的话不回显
+  assert.ok(!sent.some((s) => cardText(s.body).includes("**飞书**：飞书里接着说")));
+
+  sent.length = 0;
+  hub.send(web, { text: "网页上补一句", attachments: [] }, { channel: "web", channelId: "web", name: "Web" });
+  await tick(200);
+  assert.ok(sent.some((s) => s.chatId === "oc_chat" && cardText(s.body).includes("💻 **Web**：网页上补一句")));
+  assert.ok(sent.some((s) => s.chatId === "oc_chat" && cardText(s.body).includes("claude 收到：网页上补一句")));
+
+  // Web 会话里的授权：飞书上能点
+  sent.length = 0;
+  outcomes.length = 0;
+  hub.send(web, { text: "需要授权", attachments: [] }, { channel: "web", channelId: "web", name: "Web" });
+  await tick(200);
+  const approval = sent.find((s) => s.chatId === "oc_chat" && cardText(s.body).includes("允许一次"));
+  assert.ok(approval, "授权卡没发到飞书");
+  const allowed = await click(buttonValue(approval!.body, "允许一次"));
+  assert.equal(allowed.toast.type, "success");
+  await tick(200);
+  assert.equal(outcomes[0]?.settlement, "allow-once");
+
+  // 命令也作用在 Web 会话上
+  sent.length = 0;
+  await message("ou_owner", "/pwd");
+  await tick();
+  assert.ok(cardText(sent.at(-1)!.body).includes(hub.conversation(web)!.cwd));
+
+  sent.length = 0;
+  await message("ou_owner", "/detach");
+  await tick();
+  assert.ok(cardText(sent.at(-1)!.body).includes("已回到这个聊天自己的会话"));
+  assert.equal((bot as any).attachedWeb("feishu:b1:oc_chat"), undefined);
+  sent.length = 0;
+  hub.send(web, { text: "回来之后网页说的", attachments: [] }, { channel: "web", channelId: "web", name: "Web" });
+  await tick(200);
+  assert.equal(sent.filter((s) => s.chatId === "oc_chat").length, 0, "退回来之后不该再收到 Web 会话的消息");
+});
+
+test("接着的 Web 会话被删了：自动退回来并提示", async () => {
+  const web = "web:t2";
+  hub.ensure({ key: web, channel: "web", channelId: "web", defaultAgent: "codex", title: "要删的" });
+  await (bot as any).attachTo("feishu:b1:oc_chat", web);
+  sent.length = 0;
+  const { updateConversation } = await import("../src/core/store.js");
+  updateConversation(web, { hidden: true });
+  hub.emitEvent(web, { type: "meta" });
+  await tick();
+  assert.ok(sent.some((s) => cardText(s.body).includes("已经被删除")));
+  assert.equal((bot as any).attachedWeb("feishu:b1:oc_chat"), undefined);
+});
+
 test("收尾", () => {
   bot.stop();
   fs.rmSync(home, { recursive: true, force: true });

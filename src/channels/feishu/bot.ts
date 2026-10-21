@@ -13,15 +13,17 @@ import { interactions, type Interaction } from "../../core/interactions.js";
 import { parseCommand } from "../../core/commands.js";
 import { Dedup } from "../../core/dedup.js";
 import { isPaired, requestPairing } from "../../core/pairing.js";
-import { getConversation, updateConversation } from "../../core/store.js";
+import { getConversation, listConversations, updateConversation } from "../../core/store.js";
 import { adoptFile, KIND_LABEL } from "../../core/uploads.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { FeishuClient } from "./client.js";
 import { SlashSync } from "./slash-sync.js";
 import type { CommandEntry } from "../../core/command-catalog.js";
+import { attach, attachedTarget, detach, watchersOf } from "./attach.js";
 import {
   agentPickerCard,
   approvalCard,
+  attachedCard,
   commandListCard,
   modelPickerCard,
   progressCard,
@@ -29,6 +31,8 @@ import {
   replyCard,
   sessionListCard,
   settledCard,
+  webListCard,
+  type WebConvEntry,
 } from "./cards.js";
 import { decodeEnvelope, DECODE_FAILURE_TEXT, type CardCtx, type CardEnvelope } from "./envelope.js";
 import { parseMessage, unsupportedTypeLabel, type AttachmentRef } from "./message.js";
@@ -41,15 +45,27 @@ type CardResponse = {
 
 export type BotStatus = { state: string; since: number; error?: string };
 
+/** 只在飞书里认的命令：挂到 Web 会话上 / 退回来。整条消息只有命令才算 */
+function feishuCommandOf(text: string): "web" | "detach" | null {
+  const t = text.trim().replace(/^／/, "/").toLowerCase();
+  if (t === "/web") return "web";
+  if (t === "/detach") return "detach";
+  return null;
+}
+
+/** 一条会话画到某个飞书聊天里：流式卡片、操作人都按这一对记 */
+const pairKey = (key: string, chatId: string) => `${key}\n${chatId}`;
+
 export class FeishuBot {
   readonly client: FeishuClient;
   private ws: Lark.WSClient | null = null;
   private dedup = new Dedup();
+  /** (会话键, 聊天) → 这一轮的输出编排。一条 Web 会话可能同时画在好几个飞书聊天里 */
   private streams = new Map<string, TurnStream>();
   private typing = new Map<string, { messageId: string; reactionId: string }>();
-  /** 交互 id → 飞书卡片的 message_id */
-  private cards = new Map<string, string>();
-  /** 会话键 → 最后一个在飞书上说话的人。卡片默认只让他点 */
+  /** 交互 id → 发出去的飞书卡片（可能发在好几个聊天里） */
+  private cards = new Map<string, { chatId: string; messageId: string }[]>();
+  /** (会话键, 聊天) → 最后一个在这个聊天里说话的人。卡片默认只让他点 */
   private operators = new Map<string, string>();
   /** 附件要先下载才能送，紧跟着的文字不能抢在前面 —— 每条会话一条串行链 */
   private chains = new Map<string, Promise<void>>();
@@ -77,7 +93,7 @@ export class FeishuBot {
     const out: CommandEntry[] = [];
     for (const agent of agents) {
       if (!hub.driver(agent)) continue;
-      out.push(...(await hub.commandCatalog(agent, { allowedAgents: this.cfg.agents })));
+      out.push(...(await hub.commandCatalog(agent, { allowedAgents: this.cfg.agents, channel: "feishu" })));
     }
     return out;
   }
@@ -112,6 +128,159 @@ export class FeishuBot {
     return this.cfg.agents.filter((a) => enabled.has(a));
   }
 
+  /** 某条会话能切到哪些 agent：自己的会话按机器人的勾选；接着的 Web 会话和 Web 上一样，启用的都行 */
+  private allowedFor(key: string): string[] {
+    return this.mine(key) ? this.allowedAgents() : hub.enabledAgents().map((d) => d.id);
+  }
+
+  // ---------- 接着 Web 会话 ----------
+
+  /** 飞书会话键挂着的 Web 会话（还在、没被删的）；没挂着返回 undefined */
+  attachedWeb(feishuKey: string): string | undefined {
+    const target = attachedTarget(feishuKey);
+    if (!target) return undefined;
+    const conv = getConversation(target);
+    return conv && !conv.hidden ? target : undefined;
+  }
+
+  /** 这条会话的事件该画到哪些飞书聊天里：自己的那个聊天，加上挂着它的聊天 */
+  chatsOf(key: string): string[] {
+    const out = new Set<string>();
+    if (this.mine(key)) out.add(this.chatIdOf(key));
+    for (const k of watchersOf(key, this.prefix)) out.add(this.chatIdOf(k));
+    return [...out];
+  }
+
+  /** 这个聊天能不能操作这条会话（卡片按钮里带的会话键） */
+  private controls(key: string, chatId: string | undefined): boolean {
+    if (!chatId) return false;
+    if (this.mine(key)) return this.chatIdOf(key) === chatId;
+    return watchersOf(key, this.prefix).some((k) => this.chatIdOf(k) === chatId);
+  }
+
+  private webEntry(key: string): WebConvEntry | undefined {
+    const info = hub.info(key);
+    if (!info) return undefined;
+    return {
+      key,
+      title: info.title || "（未命名）",
+      agentLabel: hub.label(info.agent),
+      cwd: info.cwd,
+      busy: info.busy,
+      activeAt: info.activeAt,
+    };
+  }
+
+  /** 这个机器人聊过的飞书聊天 → 最近活跃时间 */
+  private chatActivity(): Map<string, number> {
+    const latest = new Map<string, number>();
+    for (const c of listConversations()) {
+      if (c.channel !== "feishu" || c.channelId !== this.cfg.id) continue;
+      const chatId = this.chatIdOf(c.key);
+      latest.set(chatId, Math.max(latest.get(chatId) ?? 0, c.activeAt));
+    }
+    return latest;
+  }
+
+  hasChat(chatId: string): boolean {
+    return this.chatActivity().has(chatId);
+  }
+
+  /** 这个机器人聊过的飞书聊天（Web 上选「在哪继续」用），按最近活跃排 */
+  async knownChats(): Promise<{ chatId: string; label: string; activeAt: number; attached?: string }[]> {
+    const chats = [...this.chatActivity()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+    return Promise.all(
+      chats.map(async ([chatId, activeAt]) => {
+        const info = await this.client.chatInfo(chatId);
+        const label =
+          info?.mode === "p2p" ? "私聊" : info?.name ? info.name : `聊天 ${chatId.slice(-6)}`;
+        const attached = this.attachedWeb(this.keyOf(chatId));
+        return { chatId, label, activeAt, ...(attached ? { attached } : {}) };
+      }),
+    );
+  }
+
+  /**
+   * 把飞书会话 feishuKey 挂到 Web 会话 webKey 上，并在聊天里发一张「已接上」卡（带最近几句）。
+   * 返回给人看的结果；挂不上时抛错。
+   */
+  async attachTo(feishuKey: string, webKey: string, operatorOpenId?: string): Promise<string> {
+    const conv = getConversation(webKey);
+    if (!conv || conv.channel !== "web" || conv.hidden) throw new Error("这条 Web 会话已不存在");
+    const chatId = this.chatIdOf(feishuKey);
+    // 本聊天自己的会话也得有：之后 /detach 回来、侧栏里显示机器人都要它
+    const allowed = this.allowedAgents();
+    if (allowed.length > 0) {
+      hub.ensure({
+        key: feishuKey,
+        channel: "feishu",
+        channelId: this.cfg.id,
+        defaultAgent: allowed.includes(this.cfg.defaultAgent) ? this.cfg.defaultAgent : allowed[0]!,
+      });
+    }
+    const already = attachedTarget(feishuKey) === webKey;
+    attach(feishuKey, webKey);
+    if (operatorOpenId) this.operators.set(pairKey(webKey, chatId), operatorOpenId.trim().toLowerCase());
+    const entry = this.webEntry(webKey)!;
+    console.log(`${this.tag} ${feishuKey} 接上 Web 会话 ${webKey}`);
+    // 最近几句：读历史可能要一会儿，读不到也不影响接上
+    const history = await hub.history(webKey).catch(() => []);
+    const recent = history
+      .filter((m) => m.text.trim())
+      .slice(-4)
+      .map((m) => ({ role: m.role, text: m.text }));
+    await this.client.sendCard(
+      chatId,
+      attachedCard({ conv: entry, recent, sessionKey: feishuKey, ctx: this.cardCtx(feishuKey, chatId) }),
+    );
+    // 已经挂着的授权 / 提问：这个聊天也要能点
+    for (const i of interactions.listPending(webKey)) {
+      if (!this.cards.get(i.id)?.some((c) => c.chatId === chatId)) await this.showInteractionIn(i, chatId);
+    }
+    return already ? `已经接着「${entry.title}」了` : `已在飞书接上「${entry.title}」`;
+  }
+
+  /** 不再接着 Web 会话。返回给人看的结果 */
+  detachFrom(feishuKey: string): string {
+    const prev = detach(feishuKey);
+    if (!prev) return "这个聊天没有接着 Web 会话，本来就在用自己的会话。";
+    console.log(`${this.tag} ${feishuKey} 不再接着 Web 会话 ${prev}`);
+    const title = getConversation(prev)?.title;
+    return `已回到这个聊天自己的会话${title ? `，不再接着「${title}」` : ""}。之后发 \`/web\` 可以再接上。`;
+  }
+
+  /** 发 /web：列最近的 Web 会话 */
+  private async sendWebList(feishuKey: string, chatId: string): Promise<void> {
+    const current = this.attachedWeb(feishuKey);
+    const convs = hub
+      .list()
+      .filter((c) => c.channel === "web" && !c.hidden)
+      .slice(0, 10)
+      .map((c) => this.webEntry(c.key)!)
+      .filter(Boolean);
+    await this.client.sendCard(
+      chatId,
+      webListCard({
+        convs,
+        ...(current ? { current } : {}),
+        sessionKey: feishuKey,
+        ctx: this.cardCtx(feishuKey, chatId),
+      }),
+    );
+  }
+
+  /** 挂着的 Web 会话被删了 / 没了：自动退回来，告诉一声 */
+  private dropStale(feishuKey: string): boolean {
+    const target = attachedTarget(feishuKey);
+    if (!target || this.attachedWeb(feishuKey)) return false;
+    detach(feishuKey);
+    void this.client.sendCard(
+      this.chatIdOf(feishuKey),
+      replyCard("之前接着的 Web 会话已经被删除，已回到这个聊天自己的会话。"),
+    );
+    return true;
+  }
+
   isAuthorized(openId: string | undefined): boolean {
     if (!openId) return false;
     const id = openId.trim().toLowerCase();
@@ -123,14 +292,20 @@ export class FeishuBot {
   start(): void {
     this.stopped = false;
     const onEvent = (env: EventEnvelope) => {
-      if (this.mine(env.key)) this.render(env);
+      // 流式片段飞书不画（回复走整段），先挡掉，免得每个片段都去翻一遍挂载表
+      if (env.ev.type === "delta") return;
+      if (env.ev.type === "meta") {
+        for (const k of watchersOf(env.key, this.prefix)) this.dropStale(k);
+        return;
+      }
+      for (const chatId of this.chatsOf(env.key)) this.render(env, chatId);
     };
     hub.on("event", onEvent);
     this.offs.push(() => hub.off("event", onEvent));
 
-    const onCreated = (i: Interaction) => this.mine(i.convKey) && void this.showInteraction(i);
-    const onUpdated = (i: Interaction) => this.mine(i.convKey) && void this.refreshInteraction(i);
-    const onSettled = (i: Interaction) => this.mine(i.convKey) && void this.refreshInteraction(i);
+    const onCreated = (i: Interaction) => void this.showInteraction(i);
+    const onUpdated = (i: Interaction) => this.cards.has(i.id) && void this.refreshInteraction(i);
+    const onSettled = (i: Interaction) => this.cards.has(i.id) && void this.refreshInteraction(i);
     interactions.on("created", onCreated);
     interactions.on("updated", onUpdated);
     interactions.on("settled", onSettled);
@@ -250,10 +425,10 @@ export class FeishuBot {
 
   // ---------- 渲染 hub 事件 ----------
 
-  private stream(key: string): TurnStream {
-    let stream = this.streams.get(key);
+  private stream(key: string, chatId: string): TurnStream {
+    const id = pairKey(key, chatId);
+    let stream = this.streams.get(id);
     if (stream) return stream;
-    const chatId = this.chatIdOf(key);
     stream = new TurnStream({
       sendCard: (card) => this.client.sendCard(chatId, card),
       updateCard: (messageId, card) => this.client.updateCard(messageId, card),
@@ -261,35 +436,38 @@ export class FeishuBot {
       sendReply: (text) => this.client.sendCard(chatId, replyCard(text)),
       onError: (err) => console.error(`${this.tag} 卡片更新失败:`, err),
     });
-    this.streams.set(key, stream);
+    this.streams.set(id, stream);
     return stream;
   }
 
-  private render(env: EventEnvelope): void {
+  private render(env: EventEnvelope, chatId: string): void {
     const { key, ev } = env;
-    const chatId = this.chatIdOf(key);
     switch (ev.type) {
-      case "user":
-        // 别的渠道（Web）说的话，同步一句过来，不然飞书这边看着没头没尾
-        if (ev.origin.channel !== "feishu" || ev.origin.channelId !== this.cfg.id) {
+      case "user": {
+        // 别处（Web、别的飞书聊天）说的话，同步一句过来，不然这边看着没头没尾
+        const o = ev.origin;
+        const here = o.channel === "feishu" && o.channelId === this.cfg.id && (!o.chatId || o.chatId === chatId);
+        if (!here) {
           const files = ev.attachments.length ? `\n\n📎 ${ev.attachments.join("、")}` : "";
-          void this.client.sendCard(chatId, replyCard(`💻 **${ev.origin.name ?? "Web"}**：${ev.text}${files}`));
+          const icon = o.channel === "web" ? "💻" : "💬";
+          void this.client.sendCard(chatId, replyCard(`${icon} **${o.name ?? "Web"}**：${ev.text}${files}`));
         }
         return;
+      }
       case "step":
-        this.stream(key).addStep(ev.text);
+        this.stream(key, chatId).addStep(ev.text);
         return;
       case "text":
-        this.stream(key).addText(ev.text);
+        this.stream(key, chatId).addText(ev.text);
         return;
       case "result": {
-        const stream = this.stream(key);
+        const stream = this.stream(key, chatId);
         stream.finish(ev.text, ev.footer);
         void stream.drain().then(() => this.clearTyping(key));
         return;
       }
       case "error": {
-        const stream = this.stream(key);
+        const stream = this.stream(key, chatId);
         stream.finish("", "出错");
         void stream.drain().then(() => {
           this.clearTyping(key);
@@ -305,37 +483,44 @@ export class FeishuBot {
     }
   }
 
-  private cardCtx(key: string): CardCtx {
-    const operator = this.operators.get(key);
+  private cardCtx(key: string, chatId: string): CardCtx {
+    const operator = this.operators.get(pairKey(key, chatId));
     return {
       ...(operator ? { operatorOpenId: operator } : {}),
-      chatId: this.chatIdOf(key),
+      chatId,
       expiresAt: Date.now() + config().approvalTimeoutMs,
     };
   }
 
-  private interactionCard(i: Interaction, ctx?: CardCtx) {
+  private interactionCard(i: Interaction, chatId: string, ctx?: CardCtx) {
     if (i.settled) return settledCard(i);
-    const c = ctx ?? this.cardCtx(i.convKey);
+    const c = ctx ?? this.cardCtx(i.convKey, chatId);
     if (i.spec.kind === "approval") return approvalCard(i, c);
     return questionCard(i, c, hub.label(getConversation(i.convKey)?.agent ?? ""));
   }
 
   private async showInteraction(i: Interaction): Promise<void> {
-    const messageId = await this.client.sendCard(this.chatIdOf(i.convKey), this.interactionCard(i));
+    for (const chatId of this.chatsOf(i.convKey)) await this.showInteractionIn(i, chatId);
+  }
+
+  private async showInteractionIn(i: Interaction, chatId: string): Promise<void> {
+    const messageId = await this.client.sendCard(chatId, this.interactionCard(i, chatId));
     if (!messageId) return;
-    this.cards.set(i.id, messageId);
+    const list = this.cards.get(i.id) ?? [];
+    list.push({ chatId, messageId });
+    this.cards.set(i.id, list);
     // 发卡的空当里可能已经在 Web 上处理掉了
     const latest = interactions.get(i.id);
     if (latest?.settled) await this.refreshInteraction(latest);
   }
 
   private async refreshInteraction(i: Interaction): Promise<void> {
-    const messageId = this.cards.get(i.id);
-    if (!messageId) return;
+    const list = this.cards.get(i.id);
+    if (!list) return;
     if (i.settled) this.cards.delete(i.id);
-    await this.client.updateCard(messageId, this.interactionCard(i));
+    await Promise.all(list.map((c) => this.client.updateCard(c.messageId, this.interactionCard(i, c.chatId))));
   }
+
 
   // ---------- 正在输入 ----------
 
@@ -400,24 +585,36 @@ export class FeishuBot {
       return;
     }
 
-    const key = this.keyOf(chatId, message.thread_id);
+    const ownKey = this.keyOf(chatId, message.thread_id);
     const conv = hub.ensure({
-      key,
+      key: ownKey,
       channel: "feishu",
       channelId: this.cfg.id,
       defaultAgent: allowed.includes(this.cfg.defaultAgent) ? this.cfg.defaultAgent : allowed[0]!,
     });
     // 配置改过（这个机器人不再能用当前 agent）：退回默认
     if (!allowed.includes(conv.agent)) {
-      updateConversation(key, { agent: allowed.includes(this.cfg.defaultAgent) ? this.cfg.defaultAgent : allowed[0]! });
+      updateConversation(ownKey, { agent: allowed.includes(this.cfg.defaultAgent) ? this.cfg.defaultAgent : allowed[0]! });
     }
-    this.operators.set(key, openId!.trim().toLowerCase());
+    const operator = openId!.trim().toLowerCase();
+    this.operators.set(pairKey(ownKey, chatId), operator);
+
+    const feishuCmd = attachments.length > 0 ? null : feishuCommandOf(text);
+    if (feishuCmd) {
+      await this.runFeishuCommand(feishuCmd, ownKey, chatId);
+      return;
+    }
+
+    // 挂着 Web 会话：说的话、命令都送进那条会话
+    this.dropStale(ownKey);
+    const key = this.attachedWeb(ownKey) ?? ownKey;
+    this.operators.set(pairKey(key, chatId), operator);
 
     const command = attachments.length > 0 ? ({ kind: "chat", text } as const) : parseCommand(text);
     if (command.kind !== "chat") {
       try {
-        const reply = await hub.command(key, command, { allowedAgents: allowed, by: "飞书命令" });
-        await this.renderReply(key, reply);
+        const reply = await hub.command(key, command, { allowedAgents: this.allowedFor(key), by: "飞书命令", channel: "feishu" });
+        await this.renderReply(key, chatId, reply);
       } catch (err) {
         await this.client.sendText(chatId, `出错了：${err instanceof Error ? err.message : String(err)}`);
       }
@@ -425,7 +622,7 @@ export class FeishuBot {
     }
 
     void this.markTyping(key, message.message_id);
-    const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书" };
+    const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书", chatId };
     // 收到消息这一刻的代次：下载附件期间点了 /stop、或者 /cd /new 换了会话，这条就作废
     const gen = hub.generation(key);
     this.enqueue(key, async () => {
@@ -476,9 +673,18 @@ export class FeishuBot {
     return { saved, failed };
   }
 
-  private async renderReply(key: string, reply: CommandReply): Promise<void> {
-    const chatId = this.chatIdOf(key);
-    const ctx = this.cardCtx(key);
+  /** /web、/detach：只认飞书会话自己的键，不管现在挂没挂着 */
+  private async runFeishuCommand(cmd: "web" | "detach", ownKey: string, chatId: string): Promise<void> {
+    try {
+      if (cmd === "web") await this.sendWebList(ownKey, chatId);
+      else await this.client.sendCard(chatId, replyCard(this.detachFrom(ownKey)));
+    } catch (err) {
+      await this.client.sendText(chatId, `出错了：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async renderReply(key: string, chatId: string, reply: CommandReply): Promise<void> {
+    const ctx = this.cardCtx(key, chatId);
     switch (reply.type) {
       case "text":
         await this.client.sendCard(chatId, replyCard(reply.text));
@@ -602,7 +808,7 @@ export class FeishuBot {
         }
         return {
           toast: { type: "info", content: "已勾选" },
-          card: { type: "raw", data: this.interactionCard(state.interaction) },
+          card: { type: "raw", data: this.interactionCard(state.interaction, chatId ?? "") },
         };
       }
       case "ask-submit": {
@@ -619,19 +825,39 @@ export class FeishuBot {
         return { toast: { type: "info", content: "已跳过" }, card: { type: "raw", data: settledCard(result) } };
       }
       case "resume":
-        this.background(envelope.k, () => hub.resume(envelope.k, envelope.s, envelope.c));
-        return { toast: { type: "info", content: "正在恢复该会话…" } };
+        return this.background(envelope.k, chatId, "正在恢复该会话…", () => hub.resume(envelope.k, envelope.s, envelope.c));
       case "model":
-        this.background(envelope.k, () => hub.setModel(envelope.k, envelope.m));
-        return { toast: { type: "success", content: `正在切换到 ${envelope.m}` } };
+        return this.background(envelope.k, chatId, `正在切换到 ${envelope.m}`, () => hub.setModel(envelope.k, envelope.m));
       case "effort":
-        this.background(envelope.k, () => hub.setEffort(envelope.k, envelope.f));
-        return { toast: { type: "success", content: `思考程度设为 ${envelope.f}` } };
+        return this.background(envelope.k, chatId, `思考程度设为 ${envelope.f}`, () => hub.setEffort(envelope.k, envelope.f));
       case "agent":
-        this.background(envelope.k, () => hub.setAgent(envelope.k, envelope.g, this.allowedAgents()));
-        return { toast: { type: "success", content: `正在切换到 ${hub.label(envelope.g)}` } };
+        return this.background(envelope.k, chatId, `正在切换到 ${hub.label(envelope.g)}`, () =>
+          hub.setAgent(envelope.k, envelope.g, this.allowedFor(envelope.k)),
+        );
       case "cmd":
-        return this.runCardCommand(envelope.k, `/${envelope.c}`);
+        return this.runCardCommand(envelope.k, chatId, operatorOpenId, `/${envelope.c}`);
+      case "attach": {
+        // k 必须是这个聊天自己的会话：卡片被转发到别处点，挂的也只能是那个聊天
+        if (!this.mine(envelope.k) || this.chatIdOf(envelope.k) !== chatId) {
+          return { toast: { type: "error", content: DECODE_FAILURE_TEXT.wrong_conversation } };
+        }
+        const conv = getConversation(envelope.w);
+        if (!conv || conv.channel !== "web" || conv.hidden) {
+          return { toast: { type: "error", content: "这条 Web 会话已不存在，请重新发 /web。" } };
+        }
+        void this.attachTo(envelope.k, envelope.w, operatorOpenId).catch((err) =>
+          this.client.sendText(chatId!, `出错了：${err instanceof Error ? err.message : String(err)}`),
+        );
+        return { toast: { type: "success", content: `正在接上「${conv.title ?? "Web 会话"}」` } };
+      }
+      case "detach": {
+        if (!this.mine(envelope.k) || this.chatIdOf(envelope.k) !== chatId) {
+          return { toast: { type: "error", content: DECODE_FAILURE_TEXT.wrong_conversation } };
+        }
+        const text = this.detachFrom(envelope.k);
+        void this.client.sendCard(chatId!, replyCard(text));
+        return { toast: { type: "success", content: "已回到本聊天" } };
+      }
     }
   }
 
@@ -639,31 +865,47 @@ export class FeishuBot {
    * 命令表上点「执行」：等同于用户自己发了这条命令。
    * agent-loft 的命令就地执行并回卡片；agent 原生命令（skills 等）当一条消息发给 agent。
    */
-  private runCardCommand(key: string, text: string): CardResponse {
-    if (!this.mine(key) || !getConversation(key)) {
+  private runCardCommand(key: string, chatId: string | undefined, operatorOpenId: string | undefined, text: string): CardResponse {
+    if (!this.controls(key, chatId) || !getConversation(key)) {
       return { toast: { type: "error", content: "这条会话已不存在，请重新发一次「/」。" } };
     }
+    const chat = chatId!;
+    // /web、/detach 作用在这个聊天自己的会话上：命令表可能是接着 Web 会话时发的，k 是 Web 会话
+    const feishuCmd = feishuCommandOf(text);
+    if (feishuCmd) {
+      const ownKey = this.mine(key) ? key : this.keyOf(chat);
+      void this.runFeishuCommand(feishuCmd, ownKey, chat);
+      return { toast: { type: "info", content: `正在执行 ${text}` } };
+    }
+    if (operatorOpenId) this.operators.set(pairKey(key, chat), operatorOpenId.trim().toLowerCase());
     const command = parseCommand(text);
     if (command.kind === "chat") {
-      const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书" };
+      const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书", chatId: chat };
       const gen = hub.generation(key);
       this.enqueue(key, async () => hub.send(key, { text, attachments: [] }, origin, gen));
       return { toast: { type: "success", content: `已发送 ${text}` } };
     }
-    const chatId = this.chatIdOf(key);
     void hub
-      .command(key, command, { allowedAgents: this.allowedAgents(), by: "飞书命令" })
-      .then((reply) => this.renderReply(key, reply))
-      .catch((err) => this.client.sendText(chatId, `出错了：${err instanceof Error ? err.message : String(err)}`));
+      .command(key, command, { allowedAgents: this.allowedFor(key), by: "飞书命令", channel: "feishu" })
+      .then((reply) => this.renderReply(key, chat, reply))
+      .catch((err) => this.client.sendText(chat, `出错了：${err instanceof Error ? err.message : String(err)}`));
     return { toast: { type: "info", content: `正在执行 ${text}` } };
   }
 
-  /** 卡片回调里耗时的操作：先应答，做完在会话里回一句。 */
-  private background(key: string, task: () => Promise<string>): void {
-    if (!this.mine(key) || !getConversation(key)) return;
-    const chatId = this.chatIdOf(key);
+  /** 卡片回调里耗时的操作：先应答，做完在点的那个聊天里回一句。 */
+  private background(
+    key: string,
+    chatId: string | undefined,
+    toast: string,
+    task: () => Promise<string>,
+  ): CardResponse {
+    if (!this.controls(key, chatId) || !getConversation(key)) {
+      return { toast: { type: "error", content: "这条会话已不存在，或者这个聊天已经不接着它了。" } };
+    }
+    const chat = chatId!;
     void task()
-      .then((text) => this.client.sendCard(chatId, replyCard(text)))
-      .catch((err) => this.client.sendText(chatId, `出错了：${err instanceof Error ? err.message : String(err)}`));
+      .then((text) => this.client.sendCard(chat, replyCard(text)))
+      .catch((err) => this.client.sendText(chat, `出错了：${err instanceof Error ? err.message : String(err)}`));
+    return { toast: { type: "info", content: toast } };
   }
 }

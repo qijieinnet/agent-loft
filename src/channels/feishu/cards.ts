@@ -363,3 +363,100 @@ export function relativeTime(ts: number, now = Date.now()): string {
   if (days < 30) return `${days} 天前`;
   return new Date(ts).toLocaleDateString("zh-CN");
 }
+
+// ---------- 接着 Web 会话 ----------
+
+export type WebConvEntry = {
+  key: string;
+  title: string;
+  agentLabel: string;
+  cwd: string;
+  busy: boolean;
+  activeAt: number;
+};
+
+/** /web：最近的 Web 会话，点「接上」后这个聊天就接着它聊 */
+export function webListCard(params: {
+  convs: WebConvEntry[];
+  /** 当前挂着的 Web 会话 */
+  current?: string;
+  /** 这个飞书聊天自己的会话键 */
+  sessionKey: string;
+  ctx: CardCtx;
+}) {
+  const elements: unknown[] = [
+    {
+      tag: "markdown",
+      content: params.current
+        ? "这个聊天正接着下面标 ✅ 的 Web 会话。点别的「接上」换一条，或者回到这个聊天自己的会话。"
+        : "点「接上」后，在这里说的话都发进那条 Web 会话，它的回复、授权和提问也会发到这里。发 `/detach` 回到这个聊天自己的会话。",
+    },
+  ];
+  if (params.current) {
+    elements.push(buttonRow([button("回到本聊天", { a: "detach", k: params.sessionKey }, params.ctx)]));
+  }
+  if (params.convs.length === 0) {
+    elements.push({ tag: "hr" }, { tag: "markdown", content: "还没有 Web 会话。" });
+  }
+  params.convs.forEach((c, index) => {
+    const isCurrent = c.key === params.current;
+    elements.push({ tag: "hr" });
+    elements.push({
+      tag: "column_set",
+      horizontal_spacing: "8px",
+      columns: [
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 1,
+          vertical_align: "center",
+          elements: [
+            {
+              tag: "markdown",
+              content:
+                `**${index + 1}. ${clip(c.title, 60)}**${isCurrent ? "　✅ 当前" : ""}${c.busy ? "　⏳ 回复中" : ""}\n` +
+                `<font color='grey'>${c.agentLabel} · \`${c.cwd}\` · ${relativeTime(c.activeAt)}</font>`,
+            },
+          ],
+        },
+        {
+          tag: "column",
+          width: "auto",
+          vertical_align: "center",
+          elements: isCurrent ? [] : [button("接上", { a: "attach", w: c.key, k: params.sessionKey }, params.ctx)],
+        },
+      ],
+    });
+  });
+  return card(elements, { title: "Web 会话", template: "blue" });
+}
+
+/** 接上之后发一张：接的是哪条、最近聊到哪，以及回来的按钮 */
+export function attachedCard(params: {
+  conv: WebConvEntry;
+  recent: { role: "user" | "assistant"; text: string }[];
+  sessionKey: string;
+  ctx: CardCtx;
+}) {
+  const { conv } = params;
+  const elements: unknown[] = [
+    {
+      tag: "markdown",
+      content: `**${clip(conv.title, 80)}**\n<font color='grey'>${conv.agentLabel} · \`${conv.cwd}\`</font>`,
+    },
+  ];
+  if (params.recent.length > 0) {
+    const lines = params.recent.map((m) => {
+      const who = m.role === "user" ? "**你**" : `**${conv.agentLabel}**`;
+      return `${who}：${clip(m.text.trim(), 400)}`;
+    });
+    elements.push({ tag: "hr" }, { tag: "markdown", content: clip(`最近的对话：\n\n${lines.join("\n\n")}`, 3000) });
+  }
+  elements.push({ tag: "hr" });
+  elements.push({
+    tag: "markdown",
+    content: `${conv.busy ? "它正在回复，后面的进度会接着发到这里。\n" : ""}直接在这里说话就会发进这条会话；Web 上说的话也会同步过来。发 \`/detach\` 回到这个聊天自己的会话。`,
+  });
+  elements.push(buttonRow([button("回到本聊天", { a: "detach", k: params.sessionKey }, params.ctx)]));
+  return card(elements, { title: "已接上 Web 会话", template: "turquoise" });
+}

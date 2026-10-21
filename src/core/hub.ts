@@ -50,6 +50,8 @@ export type Origin = {
   channelId: string;
   /** 显示用的人名 / 设备名 */
   name?: string;
+  /** 飞书：从哪个聊天说的（一条会话可能同时挂在好几个飞书聊天上，回显时要分清） */
+  chatId?: string;
 };
 
 export type ConvEvent =
@@ -1113,14 +1115,24 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   }
 
   /** 执行一条已解析的命令。chat 不在这里处理。 */
-  async command(key: string, cmd: ParsedCommand, ctx: { allowedAgents: string[]; by: string }): Promise<CommandReply> {
+  /** ctx.channel：命令是从哪个渠道发的（飞书聊天挂在 Web 会话上时，和会话自己的渠道不一样） */
+  async command(
+    key: string,
+    cmd: ParsedCommand,
+    ctx: { allowedAgents: string[]; by: string; channel?: string },
+  ): Promise<CommandReply> {
     const text = (t: string): CommandReply => ({ type: "text", text: t });
+    const channel = ctx.channel ?? getConversation(key)?.channel;
     switch (cmd.kind) {
       case "help":
-        return text(helpText(ctx.allowedAgents));
+        return text(helpText(ctx.allowedAgents, channel));
       case "commands": {
         const conv = getConversation(key)!;
-        const all = await this.commandCatalog(conv.agent, { cwd: conv.cwd, allowedAgents: ctx.allowedAgents });
+        const all = await this.commandCatalog(conv.agent, {
+          cwd: conv.cwd,
+          allowedAgents: ctx.allowedAgents,
+          ...(channel ? { channel } : {}),
+        });
         return { type: "commands", agent: conv.agent, commands: all.filter((c) => !c.hidden) };
       }
       case "pwd":
@@ -1180,7 +1192,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    */
   async commandCatalog(
     agent: string,
-    opts: { cwd?: string; allowedAgents: string[] },
+    opts: { cwd?: string; allowedAgents: string[]; channel?: string },
   ): Promise<CommandEntry[]> {
     const driver = this.enabledAgents().find((d) => d.id === agent);
     let native: AgentCommand[] = [];
@@ -1191,7 +1203,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       });
     }
     const prefs = (config().commands as Record<string, CommandPrefs | undefined>)[agent];
-    return buildCatalog({ allowedAgents: opts.allowedAgents, native, prefs });
+    return buildCatalog({ allowedAgents: opts.allowedAgents, native, prefs, ...(opts.channel ? { channel: opts.channel } : {}) });
   }
 
   async shutdown(): Promise<void> {

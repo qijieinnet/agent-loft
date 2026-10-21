@@ -518,6 +518,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { info: hub.info(newKey) });
       return;
     }
+    if (sub === "feishu" && method === "POST") {
+      // 在飞书继续：把选中的飞书聊天挂到这条 Web 会话上
+      if (conv.channel !== "web" || conv.hidden) throw new HttpError(400, "只有 Web 会话能到飞书继续");
+      const body = await readJsonBody<{ botId?: string; chatId?: string }>(req);
+      const bot = feishuBots().find((b) => b.id === body.botId);
+      if (!bot) throw new HttpError(404, "这个飞书机器人没有在运行");
+      const chatId = String(body.chatId ?? "");
+      // 只能挂到这个机器人聊过的聊天上，不能拿它往任意 chat_id 发消息
+      if (!bot.hasChat(chatId)) {
+        throw new HttpError(404, "这个机器人没在那个聊天里说过话");
+      }
+      sendJson(res, 200, { text: await bot.attachTo(bot.keyOf(chatId), key) });
+      return;
+    }
     if (sub === "sessions" && method === "GET") {
       sendJson(res, 200, await hub.sessions(key, url.searchParams.get("all") === "1"));
       return;
@@ -652,6 +666,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const commands = await hub.commandCatalog(m[1]!, {
         ...(conv ? { cwd: conv.cwd } : {}),
         allowedAgents: hub.enabledAgents().map((d) => d.id),
+        // 带 key 是输入框补全：只列 Web 能用的；不带是设置页排序，全列
+        ...(conv ? { channel: "web" } : {}),
       });
       sendJson(res, 200, { commands });
       return;
@@ -710,6 +726,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p === "/api/feishu/slash/sync" && method === "POST") {
     for (const b of feishuBots()) b.slash.request(0);
     sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (p === "/api/feishu/targets" && method === "GET") {
+    // 「在飞书继续」能选的地方：每个运行中的机器人，以及它聊过的聊天
+    const bots = await Promise.all(
+      feishuBots().map(async (b) => ({ id: b.id, name: b.cfg.name, state: b.status.state, chats: await b.knownChats() })),
+    );
+    sendJson(res, 200, { bots });
     return;
   }
   if (p === "/api/feishu/status" && method === "GET") {

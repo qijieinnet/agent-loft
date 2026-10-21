@@ -7,7 +7,14 @@
 // 顺序和隐藏按 agent 分开存在配置里（设置 → 命令），用户自己排。
 
 /** agent-loft 内置命令。name 不带斜杠；args 里尖括号是必填、方括号是可选 */
-export type BuiltinSpec = { name: string; args?: string; description: string; multiAgentOnly?: boolean };
+export type BuiltinSpec = {
+  name: string;
+  args?: string;
+  description: string;
+  multiAgentOnly?: boolean;
+  /** 只在飞书里有意义（挂到 Web 会话上 / 退回来），Web 的补全里不列 */
+  feishuOnly?: boolean;
+};
 
 export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "new", args: "[模型]", description: "开一条新会话" },
@@ -24,6 +31,8 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "cd", args: "<相对目录>", description: "切换工作目录（限 workspace 内）" },
   { name: "pwd", description: "显示当前工作目录" },
   { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（Bash 仍询问）" },
+  { name: "web", description: "接上一条 Web 会话，在飞书里查看和回复", feishuOnly: true },
+  { name: "detach", description: "不再接着 Web 会话，回到这个聊天自己的会话", feishuOnly: true },
   { name: "approve", args: "<请求ID> allow-once|allow-always|allow-session|deny", description: "审批兜底（卡片失效时用）" },
   { name: "help", description: "显示帮助" },
 ];
@@ -129,11 +138,14 @@ export function buildCatalog(params: {
   allowedAgents: string[];
   native: AgentCommand[];
   prefs: CommandPrefs | undefined;
+  /** 给哪个渠道看：不是飞书就不列飞书专用的命令。不给就全列（设置页排序用） */
+  channel?: string;
 }): CommandEntry[] {
   const multi = params.allowedAgents.length > 1;
   const builtin: CommandEntry[] = BUILTIN_COMMANDS.filter(
     (c) =>
       (!c.multiAgentOnly || multi) &&
+      (!c.feishuOnly || params.channel === undefined || params.channel === "feishu") &&
       // /claude /codex 只在这个渠道能用对应 agent 时才有意义
       (!["claude", "codex"].includes(c.name) || params.allowedAgents.includes(c.name)),
   ).map((c) => ({
