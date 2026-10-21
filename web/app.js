@@ -2174,9 +2174,11 @@ const VOICE_ERR = {
 };
 
 /** rec：当前识别实例；before/after：开始时光标前后的文字；committed：已确认的识别结果 */
-const voice = { rec: null, want: false, before: "", after: "", committed: "", target: null };
+const voice = { rec: null, want: false, before: "", after: "", committed: "", target: null, stopTimer: null };
 
 function toggleVoice() {
+  // 点过停止、正在等收尾（按钮已经不亮了）：再点就是要重新开始，先丢掉旧的
+  if (voice.rec && !voice.want) cancelVoice();
   if (voice.rec) stopVoice();
   else startVoice();
 }
@@ -2199,61 +2201,121 @@ function startVoice() {
   updateMicBtn();
 }
 
+/**
+ * 正常结束的识别实例留着下次复用：iOS Safari 每次 new 一个新实例，
+ * 第二次开始往往一个结果都不回。被 abort / 卡住的实例不复用，下次换新的。
+ */
+let spareRec = null;
+
+/** voice.rec 是一轮识别（run）：{ rec, heard, shown, done }，事件都按 run 对号入座 */
 function listenOnce() {
-  const rec = new SpeechRec();
-  rec.lang = navigator.language || "zh-CN";
-  rec.continuous = voiceContinuous;
-  rec.interimResults = true;
-  let heard = "";
-  rec.onresult = (e) => {
-    let fin = "";
-    let interim = "";
-    for (const r of e.results) {
-      if (r.isFinal) fin += r[0].transcript;
-      else interim += r[0].transcript;
-    }
-    heard = fin;
-    showVoiceText(joinVoice(voice.committed, fin + interim));
-  };
-  rec.onerror = (e) => {
-    if (e.error === "no-speech" || e.error === "aborted") return;
-    voice.want = false;
-    toast(VOICE_ERR[e.error] ?? `语音识别出错：${e.error}`);
-  };
-  rec.onend = () => {
-    if (voice.rec !== rec) return; // 已被取消
-    voice.committed = joinVoice(voice.committed, heard);
-    showVoiceText(voice.committed);
-    // 这一轮什么都没听到就当说完了，避免麦克风一直开着
-    if (voice.want && heard) {
-      try {
-        listenOnce();
-        return;
-      } catch {
-        // 续不上就结束
+  const run = { rec: null, heard: "", shown: "", done: false };
+  const wire = (rec) => {
+    rec.lang = navigator.language || "zh-CN";
+    rec.continuous = voiceContinuous;
+    rec.interimResults = true;
+    rec.onresult = (e) => {
+      if (voice.rec !== run) return;
+      let fin = "";
+      let interim = "";
+      for (const r of e.results) {
+        if (r.isFinal) fin += r[0].transcript;
+        else interim += r[0].transcript;
       }
-    }
-    voice.rec = null;
-    voice.want = false;
-    updateMicBtn();
+      run.heard = fin;
+      run.shown = fin + interim;
+      showVoiceText(joinVoice(voice.committed, run.shown));
+    };
+    rec.onerror = (e) => {
+      if (voice.rec !== run) return;
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      voice.want = false;
+      toast(VOICE_ERR[e.error] ?? `语音识别出错：${e.error}`);
+    };
+    rec.onend = () => {
+      if (voice.rec !== run) return; // 已被取消 / 已被强制结束
+      finishRun(run, true);
+    };
+    return rec;
   };
-  voice.rec = rec;
-  rec.start();
+  let rec = wire(spareRec ?? new SpeechRec());
+  spareRec = null;
+  run.rec = rec;
+  voice.rec = run;
+  try {
+    rec.start();
+  } catch (err) {
+    // 复用的实例还没完全停下（InvalidStateError）：换个新的再来
+    if (err?.name !== "InvalidStateError") throw err;
+    rec = wire(new SpeechRec());
+    run.rec = rec;
+    rec.start();
+  }
+}
+
+/** 一轮识别结束：把这轮听到的定下来，需要的话接着听下一轮 */
+function finishRun(run, clean) {
+  if (run.done) return;
+  run.done = true;
+  clearTimeout(voice.stopTimer);
+  // Safari 有时整轮都不给 isFinal：没有定稿就以屏幕上显示的为准，不能把已经显示的字吞掉
+  const heard = run.heard || run.shown;
+  voice.committed = joinVoice(voice.committed, heard);
+  showVoiceText(voice.committed);
+  if (clean) spareRec = run.rec;
+  // 这一轮什么都没听到就当说完了，避免麦克风一直开着
+  if (clean && voice.want && heard) {
+    try {
+      listenOnce();
+      return;
+    } catch {
+      // 续不上就结束
+    }
+  }
+  voice.rec = null;
+  voice.want = false;
+  updateMicBtn();
 }
 
 /** 用户点停止：让浏览器把最后一句定稿后再结束 */
 function stopVoice() {
+  const run = voice.rec;
+  if (!run) return;
   voice.want = false;
-  voice.rec?.stop();
+  // 先把按钮恢复，用户能立刻看到已经停了
+  if (ui.micBtn) ui.micBtn.classList.remove("recording");
+  try {
+    run.rec.stop();
+  } catch {
+    // 已经停了
+  }
+  // iOS 上 stop() 之后有时永远等不来 onend，按钮就一直卡在「录音中」，再点只会又 stop 一次。
+  // 等一会儿还没结束就强制收尾，这个实例不再复用
+  clearTimeout(voice.stopTimer);
+  voice.stopTimer = setTimeout(() => {
+    if (voice.rec !== run) return;
+    try {
+      run.rec.abort();
+    } catch {
+      // 忽略
+    }
+    finishRun(run, false);
+  }, 1500);
 }
 
 /** 发送、切会话、用户手动改输入框时：立刻丢掉识别，不再往输入框写 */
 function cancelVoice() {
-  const rec = voice.rec;
-  if (!rec) return;
+  const run = voice.rec;
+  if (!run) return;
+  clearTimeout(voice.stopTimer);
+  run.done = true;
   voice.rec = null;
   voice.want = false;
-  rec.abort();
+  try {
+    run.rec.abort();
+  } catch {
+    // 忽略
+  }
   updateMicBtn();
 }
 
@@ -2292,6 +2354,13 @@ function hasDraft() {
 
 function updateSendBtn() {
   if (!ui.sendBtn) return;
+  // 已经点了发送、还在等服务器确认：转圈，不能再点，避免以为没点上又点一次
+  if (S.sending) {
+    ui.sendBtn.innerHTML = '<span class="send-spinner"></span>';
+    ui.sendBtn.title = "发送中…";
+    ui.sendBtn.disabled = true;
+    return;
+  }
   const stop = S.busy && !hasDraft();
   ui.sendBtn.innerHTML = stop ? ICON.stop : ICON.send;
   ui.sendBtn.title = stop ? "停止" : "发送";
@@ -2402,7 +2471,18 @@ async function addFiles(files) {
   }
 }
 
+/** 发送中：按钮转圈、输入框只读（确认后要清空它，期间再打的字会丢） */
+function setSending(on) {
+  S.sending = on;
+  if (ui.input) {
+    ui.input.readOnly = on;
+    ui.input.classList.toggle("sending", on);
+  }
+  updateSendBtn();
+}
+
 async function sendMessage() {
+  if (S.sending) return;
   cancelVoice();
   const text = ui.input.value;
   if (!text.trim() && S.uploads.length === 0) return;
@@ -2413,6 +2493,7 @@ async function sendMessage() {
   closeSlashMenu();
   let key;
   let res;
+  setSending(true);
   try {
     key = await ensureConversation();
     if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
@@ -2421,6 +2502,8 @@ async function sendMessage() {
   } catch (err) {
     toast(err.message);
     return;
+  } finally {
+    setSending(false);
   }
   if (!res?.reply) {
     sentKeys.add(key);
