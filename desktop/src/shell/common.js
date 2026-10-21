@@ -111,3 +111,14 @@ function duplicateQuotas(servers) {
 function fill(el, ...children) {
   el.replaceChildren(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
 }
+
+/**
+ * 服务器图标：选了 emoji 就显示 emoji；没选的（老数据）退回到彩色底的名字首字。
+ * @param {{ id: string, name: string, icon?: string | null }} s
+ * @param {string} cls 尺寸用的 class（avatar / mini-avatar / big-avatar / av）
+ */
+function serverIcon(s, cls) {
+  return s.icon
+    ? h("div", { class: `${cls} emoji` }, s.icon)
+    : h("div", { class: cls, style: { background: serverColor(s.id) } }, initials(s.name));
+}

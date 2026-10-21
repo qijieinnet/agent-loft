@@ -7,6 +7,7 @@
 import { app, BaseWindow, dialog, ipcMain, Menu, Notification, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { hideHoverLabel, showHoverLabel } from "./hover-label.js";
 import { localUrl, readSetupToken } from "./local-server.js";
 import {
   addUnread,
@@ -32,11 +33,11 @@ import {
 import { loadStore, store } from "./store.js";
 import { applyUpdate, checkUpdates, local, loginAgent, refreshLocal, scheduleUpdates, system, systemState } from "./system.js";
 import { runSmoke, prepareSmoke, smoke } from "./smoke.js";
-import { createTray, hidePopover, openPopoverForTest, popoverHover, popoverResize, popoverWebContents, updateTray } from "./tray.js";
+import { createTray, hidePopover, openPopoverForTest, popoverResize, popoverWebContents, updateTray } from "./tray.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 /** 左侧服务器栏的宽度，和 shell/shell.css 里的 --rail 一致 */
-const RAIL = 72;
+const RAIL = 88;
 
 /** @type {BaseWindow | null} */
 let win = null;
@@ -61,6 +62,7 @@ function snapshot() {
     servers: store.servers().map((s) => ({
       id: s.id,
       name: s.name,
+      icon: s.icon ?? null,
       url: s.url,
       trusted: !!s.certFingerprint,
       authDomains: s.authDomains ?? [],
@@ -89,7 +91,7 @@ function localServerId() {
 function ensureLocalServer() {
   const existing = localServerId();
   if (existing) return existing;
-  const server = store.addServer("本机", localUrl());
+  const server = store.addServer("本机", localUrl(), "💻");
   viewFor(server.id);
   broadcast();
   return server.id;
@@ -143,7 +145,7 @@ function createWindow() {
     show: false,
     title: "Agent Loft",
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 18 },
+    trafficLightPosition: { x: 20, y: 20 },
     vibrancy: "sidebar",
     backgroundColor: "#00000000",
   });
@@ -166,6 +168,8 @@ function createWindow() {
 
   win.on("resize", layout);
   for (const ev of ["resized", "moved"]) win.on(ev, saveBounds);
+  win.on("blur", hideHoverLabel);
+  win.on("hide", hideHoverLabel);
   win.on("focus", () => {
     if (activeId && !managing) {
       clearUnread(activeId);
@@ -216,6 +220,7 @@ function showMain() {
 
 function select(id) {
   if (id && !store.server(id)) return;
+  hideHoverLabel();
   activeId = id;
   managing = !id;
   if (id) {
@@ -228,6 +233,7 @@ function select(id) {
 }
 
 function showManage(what = "manage") {
+  hideHoverLabel();
   showMain();
   managing = true;
   broadcast();
@@ -366,8 +372,8 @@ const calls = {
   },
   open: (id, key) => openTarget(id, key),
 
-  addServer: (name, url, auth) => {
-    const server = store.addServer(name, url);
+  addServer: (name, url, auth, icon) => {
+    const server = store.addServer(name, url, icon);
     // 认证设置要在页面第一次加载前就位，不然第一下就被网关拦住
     if (auth) {
       try {
@@ -382,7 +388,7 @@ const calls = {
     return server.id;
   },
   updateServer: (id, values, auth) => {
-    const { urlChanged } = store.updateServer(id, { name: values?.name, url: values?.url });
+    const { urlChanged } = store.updateServer(id, { name: values?.name, url: values?.url, icon: values?.icon });
     const authChanged = auth ? store.updateAuth(id, auth) : false;
     if (urlChanged) {
       dispose(id);
@@ -497,8 +503,19 @@ const calls = {
   checkUpdates: () => checkUpdates({ manual: true }),
   applyUpdate: () => applyUpdate(quit),
 
-  popoverHover: (inside) => popoverHover(!!inside),
   popoverResize: (height) => popoverResize(Number(height) || 0),
+  /** 侧栏里鼠标移到某台服务器的图标上（null = 移开了）。名称和状态由这里按 id 取，不信页面传的文字 */
+  hoverLabel: (info) => {
+    const server = info && store.server(info.id);
+    if (!server || !win) return hideHoverLabel();
+    const r = rt(server.id);
+    const STATUS = { online: "在线", login: "需要登录", setup: "还没设置密码", offline: "连不上", unknown: "连接中", access: "需要验证" };
+    const detail = [STATUS[r.status] ?? r.status, r.busy ? `${r.busy} 个运行中` : "", r.pending.length ? `${r.pending.length} 个待处理` : ""]
+      .filter(Boolean)
+      .join(" · ");
+    const rect = { top: Number(info.rect?.top) || 0, right: Number(info.rect?.right) || RAIL, height: Number(info.rect?.height) || 0 };
+    void showHoverLabel(win, { rect, name: server.name, detail, tone: r.status });
+  },
   quit: () => quit(),
 };
 
@@ -540,7 +557,6 @@ app.whenReady().then(() => {
     showMain,
     refresh: () => refreshAll({ quota: true }),
     quit,
-    setPref: (key, value) => calls.setPref(key, value),
     onPopoverShown: () => {
       // 面板打开时，过时超过一分钟的额度顺手刷一下
       for (const s of store.servers()) {

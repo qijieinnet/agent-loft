@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld("loft", {
   /** 让侧栏切到某个面板（菜单里的「添加服务器」「设置」） */
   onShow: (handler) => ipcRenderer.on("shell:show", (_e, what) => handler(what)),
   call: (method, ...args) => ipcRenderer.invoke("shell:call", method, ...args),
+  /** 悬停名称气泡（label.html）收到要显示的内容 */
+  onLabel: (handler) => ipcRenderer.on("label:show", (_e, info) => handler(info)),
 });

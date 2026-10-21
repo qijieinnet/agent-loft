@@ -4,6 +4,7 @@
 // 首次启动向导 → 点「只连接其他服务器」→ 设置页的各个区块 → 菜单栏面板。
 // 这些界面是普通脚本拼的，没有类型检查，改坏了只会表现成「一片空白、点什么都没反应」。
 import { app, webContents } from "electron";
+import { tooltipText } from "./tray.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -42,6 +43,11 @@ async function until(check, what, ms = 15_000) {
   throw new Error(`等不到：${what}`);
 }
 
+/** 界面上不该出现的东西：null、undefined、[object …]、NaN */
+function junkIn(text) {
+  return /.{0,20}(\bnull\b|\bundefined\b|\[object [^\]]*\]|\bNaN\b).{0,20}/.exec(text)?.[0] ?? null;
+}
+
 /** @param {{ openPopover: () => Electron.WebContents }} hooks */
 export async function runSmoke({ openPopover }) {
   const fail = (msg) => {
@@ -56,13 +62,44 @@ export async function runSmoke({ openPopover }) {
 
     await until(() => js(`document.querySelectorAll(".choice").length === 2`), "首次启动向导的两个选项");
     await js(`[...document.querySelectorAll(".choice")].find((b) => b.textContent.includes("只连接其他服务器")).click()`);
-    await until(() => js(`!!(document.getElementById("f-url") && document.getElementById("update-card")?.children.length)`), "设置页（添加服务器表单、更新）");
-    const text = await js(`document.getElementById("panel").innerText`);
-    const junk = /.{0,20}(\bnull\b|\[object [^\]]*\]|undefined).{0,20}/.exec(text);
-    if (junk) return fail(`设置页里有渲染残渣：「${junk[0]}」`);
+    // 「只连接其他服务器」之后弹出添加服务器的弹窗：真的填一遍（地址连不上也没关系，要看的是画出来的东西）
+    await until(() => js(`!!(document.getElementById("d-url") && document.querySelectorAll(".emoji-btn").length > 10)`), "添加服务器弹窗");
+    let junk = junkIn(await js(`document.querySelector(".dialog").innerText`));
+    if (junk) return fail(`添加服务器弹窗里有渲染残渣：「${junk}」`);
+    await js(`(() => {
+      document.querySelector('.emoji-btn[data-emoji="🚀"]').click();
+      const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event("input")); };
+      set("d-url", "127.0.0.1:9");
+      set("d-name", "冒烟测试");
+      document.querySelector(".dialog").requestSubmit();
+    })()`);
+    await until(() => js(`!document.querySelector(".dialog")`), "弹窗提交后关闭").catch(async (err) => {
+      throw new Error(`${err.message}（弹窗里的错误：${await js(`document.querySelector(".dialog .error-text")?.textContent`)}）`);
+    });
+    await until(() => js(`document.getElementById("panel").innerText.includes("冒烟测试")`), "服务器列表里的新服务器");
+    if (!(await js(`[...document.querySelectorAll("#servers .avatar")].some((a) => a.textContent === "🚀")`))) return fail("左侧栏没有显示选的图标 🚀");
+    junk = junkIn(await js(`document.getElementById("panel").innerText`));
+    if (junk) return fail(`设置页（有服务器时）里有渲染残渣：「${junk}」`);
 
     const pop = openPopover();
-    await until(() => pop.executeJavaScript(`!!document.querySelector(".head .title")`), "菜单栏面板");
+    await until(() => pop.executeJavaScript(`document.body.innerText.includes("冒烟测试")`), "菜单栏面板里的服务器");
+    junk = junkIn(await pop.executeJavaScript("document.body.innerText"));
+    if (junk) return fail(`菜单栏面板里有渲染残渣：「${junk}」`);
+
+    // 悬停提示：用一份典型的额度数据检查拼出来的文字
+    const tip = tooltipText([
+      {
+        name: "本机",
+        status: "online",
+        busy: 1,
+        pending: [{ id: "1" }],
+        quotaAt: Date.now(),
+        quotas: [{ agent: "codex", label: "Codex", plan: "plus", windows: [{ label: "5 小时", short: "5h", percent: 12.4, resetsAt: Date.now() + 3600_000 }] }],
+      },
+      { name: "公司", status: "offline", busy: 0, pending: [] },
+    ]);
+    junk = junkIn(tip);
+    if (junk || !tip.includes("12%") || !tip.includes("公司 · 连不上")) return fail(`悬停提示不对：\n${tip}`);
 
     await sleep(500);
     if (errors.length) return fail("界面里有脚本报错");

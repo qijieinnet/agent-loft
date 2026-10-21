@@ -14,7 +14,8 @@ function render() {
   refreshBtn.innerHTML =
     '<svg viewBox="0 0 20 20" width="14" height="14"><path d="M16 10a6 6 0 1 1-1.8-4.3M16 4v3.5h-3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-  $root.replaceChildren(
+  fill(
+    $root,
     h("div", { class: "head" }, h("span", { class: "title" }, "Agent Loft"), lastAt ? h("span", { class: "ago" }, `更新于${agoText(lastAt)}`) : null, refreshBtn),
     state.servers.length ? state.servers.map((s) => serverBlock(s, dup)) : h("div", { class: "empty" }, "还没有添加服务器"),
     h(
@@ -38,7 +39,7 @@ function serverBlock(s, dup) {
     h(
       "button",
       { class: "server-head", style: { width: "100%" }, title: `打开 ${s.name}`, onclick: () => call("open", s.id) },
-      h("span", { class: "av", style: { background: serverColor(s.id) } }, initials(s.name)),
+      serverIcon(s, "av"),
       h("span", { class: "name" }, s.name),
       h("span", { class: "meta" }, meta.join(" · "), h("span", { class: `dot ${s.status}` })),
     ),
@@ -110,8 +111,6 @@ function reportSize() {
   requestAnimationFrame(() => void call("popoverResize", $root.getBoundingClientRect().height));
 }
 
-document.documentElement.addEventListener("mouseenter", () => void call("popoverHover", true));
-document.documentElement.addEventListener("mouseleave", () => void call("popoverHover", false));
 
 window.loft.onState((s) => {
   state = s;

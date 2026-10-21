@@ -8,7 +8,7 @@ import path from "node:path";
 
 /**
  * @typedef {{
- *   id: string, name: string, url: string, certFingerprint?: string, partitionGen?: number,
+ *   id: string, name: string, url: string, icon?: string, certFingerprint?: string, partitionGen?: number,
  *   authDomains?: string[],
  *   serviceToken?: { clientId: string, secret: string },
  * }} Server
@@ -17,15 +17,13 @@ import path from "node:path";
  *   serviceToken：Cloudflare Access 的 Service Token。secret 用 safeStorage 加密
  *     （密钥在 macOS 钥匙串里），base64 存放，配置文件里没有明文。
  * @typedef {{
- *   hoverPopover: boolean, trayTitle: boolean, openAtLogin: boolean, quotaRefreshMin: number,
+ *   openAtLogin: boolean, quotaRefreshMin: number,
  *   autoUpdate: boolean, updateCheckHours: number,
  * }} Prefs
  */
 
 /** @type {Prefs} */
 const DEFAULT_PREFS = {
-  hoverPopover: true,
-  trayTitle: true,
   openAtLogin: false,
   quotaRefreshMin: 10,
   autoUpdate: true,
@@ -109,6 +107,14 @@ function encryptSecret(secret) {
   return safeStorage.encryptString(secret).toString("base64");
 }
 
+/** 服务器图标：一个 emoji（组合 emoji 由好几个码点组成，所以按长度限制而不是按字符数） */
+function normalizeIcon(icon) {
+  const text = String(icon ?? "").trim();
+  if (!text) return undefined;
+  if (text.length > 16 || /\s/.test(text)) throw new Error("图标只能是一个 emoji");
+  return text;
+}
+
 /** 解密后的 Service Token，缓存在内存里（每个请求都要用） */
 const tokenCache = new Map();
 
@@ -121,10 +127,12 @@ export const store = {
   lastActive: () => data.lastActive,
   bounds: () => data.bounds,
 
-  addServer(name, url) {
+  addServer(name, url, icon) {
     const origin = normalizeUrl(url);
     if (data.servers.some((s) => s.url === origin)) throw new Error("这台服务器已经添加过了");
     const server = { id: crypto.randomBytes(6).toString("hex"), name: String(name ?? "").trim() || new URL(origin).hostname, url: origin };
+    const emoji = normalizeIcon(icon);
+    if (emoji) server.icon = emoji;
     data.servers.push(server);
     save();
     return server;
@@ -198,6 +206,11 @@ export const store = {
       }
     }
     if (patch.name !== undefined) server.name = String(patch.name).trim() || new URL(server.url).hostname;
+    if (patch.icon !== undefined) {
+      const emoji = normalizeIcon(patch.icon);
+      if (emoji) server.icon = emoji;
+      else delete server.icon;
+    }
     if (patch.certFingerprint !== undefined) server.certFingerprint = patch.certFingerprint;
     if (patch.partitionGen !== undefined) server.partitionGen = patch.partitionGen;
     save();

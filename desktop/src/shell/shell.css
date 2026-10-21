@@ -1,12 +1,36 @@
 :root {
-  --rail: 72px;
+  --rail: 88px;
 }
 
 body {
   display: flex;
 }
 
-/* ---------- 左侧服务器栏 ---------- */
+/* ---------- 左侧服务器栏 ----------
+ * 透出窗口的毛玻璃（vibrancy: sidebar），图标不带框；悬停一层淡淡的底，
+ * 选中是浮起来的白色圆角块，和 macOS 侧栏 / 分段控件一个路子。
+ * 状态只在有问题时出现：连不上变灰，要登录 / 验证挂个小橙点。 */
+
+:root {
+  --rail-hover: rgba(0, 0, 0, 0.055);
+  --rail-press: rgba(0, 0, 0, 0.09);
+  --rail-active: rgba(255, 255, 255, 0.92);
+  --rail-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.07);
+  --rail-icon: rgba(0, 0, 0, 0.5);
+  --rail-divider: rgba(0, 0, 0, 0.08);
+  --badge-red: #ff3b30;
+  --badge-orange: #ff9500;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rail-hover: rgba(255, 255, 255, 0.07);
+    --rail-press: rgba(255, 255, 255, 0.11);
+    --rail-active: rgba(255, 255, 255, 0.15);
+    --rail-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), inset 0 0.5px 0 rgba(255, 255, 255, 0.1);
+    --rail-icon: rgba(255, 255, 255, 0.55);
+    --rail-divider: rgba(255, 255, 255, 0.1);
+  }
+}
 
 .rail {
   width: var(--rail);
@@ -14,12 +38,12 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding-bottom: 14px;
+  gap: 4px;
+  padding-bottom: 12px;
   -webkit-app-region: drag;
 }
 .rail-top {
-  height: 40px;
+  height: 48px;
   flex: none;
 }
 .rail-fill {
@@ -29,105 +53,142 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
 }
 .rail button {
   -webkit-app-region: no-drag;
 }
+.rail-divider {
+  width: 22px;
+  height: 1px;
+  margin: 6px 0;
+  background: var(--rail-divider);
+}
 
+/* 一台服务器 */
 .srv {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.srv:hover {
+  background: var(--rail-hover);
+}
+.srv:active {
+  background: var(--rail-press);
+}
+.srv.active {
+  background: var(--rail-active);
+  box-shadow: var(--rail-active-shadow);
 }
 .srv .avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   display: grid;
   place-items: center;
   color: #fff;
   font-weight: 600;
-  font-size: 15px;
-  letter-spacing: 0.02em;
-  transition: border-radius 0.15s ease, transform 0.1s ease;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-}
-.srv:hover .avatar {
-  border-radius: 15px;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  transition: transform 0.12s ease, filter 0.2s ease, opacity 0.2s ease;
 }
 .srv:active .avatar {
-  transform: scale(0.96);
+  transform: scale(0.92);
 }
+.srv .avatar.emoji {
+  width: auto;
+  height: auto;
+  background: none;
+  font-size: 26px;
+  line-height: 1;
+}
+/* 连不上 / 还在连：图标褪色 */
 .srv.offline .avatar,
 .srv.unknown .avatar {
-  filter: saturate(0.35);
-  opacity: 0.75;
+  filter: grayscale(1);
+  opacity: 0.45;
 }
-/* 当前服务器：左边一条竖线 */
-.srv::before {
-  content: "";
-  position: absolute;
-  left: -14px;
-  top: 50%;
-  width: 4px;
-  height: 0;
-  border-radius: 0 3px 3px 0;
-  background: var(--fg);
-  transform: translateY(-50%);
-  transition: height 0.15s ease;
+.srv.active.offline .avatar {
+  opacity: 0.6;
 }
-.srv.active::before {
-  height: 28px;
-}
-.srv:not(.active):hover::before {
-  height: 10px;
-}
+/* 状态点只给「要你处理」的：需要登录、没设密码、要过网关验证 */
 .srv .status {
+  display: none;
   position: absolute;
-  right: -3px;
-  bottom: -3px;
-  width: 14px;
-  height: 14px;
+  right: 7px;
+  bottom: 7px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  border: 3px solid var(--rail-bg, var(--bg-2));
+  background: var(--badge-orange);
+  box-shadow: 0 0 0 2px var(--bg-2);
 }
+.srv.login .status,
+.srv.setup .status,
+.srv.access .status {
+  display: block;
+}
+/* 未读 / 待处理数 */
 .srv .badge {
   position: absolute;
-  top: -5px;
-  right: -7px;
-  min-width: 18px;
-  height: 18px;
+  top: 3px;
+  right: 2px;
+  min-width: 17px;
+  height: 17px;
   padding: 0 5px;
   border-radius: 9px;
-  background: var(--bad);
+  background: var(--badge-red);
   color: #fff;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 17px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--bg-2);
 }
 .srv .badge.pending {
-  background: var(--warn);
+  background: var(--badge-orange);
 }
 
+/* 添加、设置：轻量的线条图标按钮 */
 .rail-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
   display: grid;
   place-items: center;
-  color: var(--fg-2);
-  background: var(--hover);
+  color: var(--rail-icon);
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 .rail-btn:hover {
+  background: var(--rail-hover);
   color: var(--fg);
-  background: var(--line);
+}
+.rail-btn:active {
+  background: var(--rail-press);
 }
 .rail-btn.on {
-  color: #fff;
-  background: var(--accent);
+  background: var(--rail-active);
+  box-shadow: var(--rail-active-shadow);
+  color: var(--accent);
+}
+/* 有新版本：齿轮右上角一个小红点 */
+.rail-btn.has-update::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--badge-red);
+  box-shadow: 0 0 0 2px var(--bg-2);
 }
 
 /* ---------- 右侧面板（管理 / 连不上 / 证书） ---------- */
@@ -378,21 +439,6 @@ details.advanced .field input {
   background: var(--bg);
 }
 
-/* 齿轮上的新版本提示 */
-.rail-btn.has-update {
-  position: relative;
-}
-.rail-btn.has-update::after {
-  content: "";
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--bad);
-}
-
 .row .sub.wrap {
   white-space: normal;
 }
@@ -492,4 +538,147 @@ details.advanced .field input {
 .row .actions {
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+/* 列表、提示页里的 emoji 图标 */
+.mini-avatar.emoji,
+.big-avatar.emoji {
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.mini-avatar.emoji {
+  font-size: 19px;
+}
+.big-avatar.emoji {
+  font-size: 34px;
+}
+
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.list-head h1 {
+  margin: 0;
+}
+
+/* ---------- 添加 / 编辑服务器弹窗 ---------- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.28);
+  -webkit-app-region: no-drag;
+  animation: fade-in 0.12s ease;
+}
+.dialog {
+  width: min(540px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 14px;
+  padding: 22px 24px 20px;
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28), 0 0 0 1px var(--line);
+  animation: pop-in 0.14s ease;
+}
+.dialog-title {
+  margin: 0 0 2px;
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--fg);
+}
+.dialog .field input {
+  height: 34px;
+}
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.dialog-actions .grow {
+  flex: 1;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+.icon-pick {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.icon-preview {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  font-size: 36px;
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.icon-preview .muted {
+  font-size: 12px;
+}
+.icon-side {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 4px;
+}
+.emoji-btn {
+  height: 34px;
+  border-radius: 8px;
+  font-size: 19px;
+  line-height: 1;
+}
+.emoji-btn:hover {
+  background: var(--hover);
+}
+.emoji-btn.on {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.icon-custom {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  outline: none;
+  user-select: text;
+}
+.icon-custom:focus {
+  border-color: var(--accent);
+}
+
+.drag-strip {
+  position: fixed;
+  top: 0;
+  left: var(--rail);
+  right: 0;
+  height: 38px;
+  -webkit-app-region: drag;
 }

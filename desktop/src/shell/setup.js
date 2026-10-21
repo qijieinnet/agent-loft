@@ -170,7 +170,7 @@ function wizardChoose() {
           class: "choice",
           onclick: async () => {
             await call("finishOnboarding");
-            showForm(null);
+            void openServerDialog(null);
           },
         },
         h("div", { class: "choice-title" }, "只连接其他服务器"),
