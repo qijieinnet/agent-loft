@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld("agentLoftDesktop", {
   },
   /** 请桌面端马上重新查这台服务器的额度，查完经 onQuota 推回来 */
   refreshQuota: () => ipcRenderer.send("page:quota-refresh"),
+  /** 页面上把服务端端口改了：请桌面端把这台服务器的地址换成新的（只换端口）并重新打开 */
+  serverMoved: (url) => ipcRenderer.send("page:moved", String(url)),
   /** 点了通知 / 菜单栏里的待处理项时，跳到哪条会话。重复注册只保留最后一个。 */
   onOpen: (handler) => {
     openHandler = typeof handler === "function" ? handler : null;

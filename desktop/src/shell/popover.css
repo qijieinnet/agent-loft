@@ -16,7 +16,7 @@ body {
   overflow: hidden;
 }
 #root {
-  padding: 10px 10px 8px;
+  padding: 10px;
 }
 
 .head {
@@ -305,25 +305,6 @@ body {
   background: var(--card);
   text-align: center;
   color: var(--fg-2);
-}
-
-/* ---------- 底部 ---------- */
-
-.foot {
-  display: flex;
-  gap: 4px;
-  margin-top: 8px;
-}
-.foot button {
-  flex: 1;
-  height: 28px;
-  border-radius: 7px;
-  font-size: 12px;
-  color: var(--fg-2);
-}
-.foot button:hover {
-  background: var(--hover);
-  color: var(--fg);
 }
 
 .access-note {

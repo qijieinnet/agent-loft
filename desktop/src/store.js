@@ -227,10 +227,10 @@ export const store = {
     save();
   },
 
-  moveServer(id, delta) {
+  /** 把服务器挪到第 to 个（从 0 数），其余顺延 */
+  moveServer(id, to) {
     const from = data.servers.findIndex((s) => s.id === id);
-    const to = from + delta;
-    if (from < 0 || to < 0 || to >= data.servers.length) return;
+    if (from < 0 || !Number.isInteger(to) || to < 0 || to >= data.servers.length || to === from) return;
     const [server] = data.servers.splice(from, 1);
     data.servers.splice(to, 0, server);
     save();

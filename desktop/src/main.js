@@ -7,7 +7,7 @@
 import { app, BaseWindow, dialog, ipcMain, Menu, Notification, powerSaveBlocker, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { localUrl, readSetupToken } from "./local-server.js";
+import { localPort, localUrl, readSetupToken } from "./local-server.js";
 import {
   addUnread,
   applyAuth,
@@ -88,6 +88,29 @@ function localServerId() {
   const url = new URL(localUrl());
   const candidates = [url.origin, `http://localhost:${url.port}`];
   return store.servers().find((s) => candidates.includes(s.url))?.id ?? null;
+}
+
+/**
+ * 本机服务端的端口改了（网页设置里改的，或者手改了配置文件）：列表里指向旧端口的「本机」跟着换过去。
+ * 在桌面端里改的会经 page:moved 当场换好；这里兜住在浏览器里改的情况。
+ */
+let lastLocalPort = localPort();
+function followLocalPort() {
+  const port = localPort();
+  if (port === lastLocalPort) return;
+  const old = [`http://127.0.0.1:${lastLocalPort}`, `http://localhost:${lastLocalPort}`];
+  lastLocalPort = port;
+  const server = store.servers().find((s) => old.includes(s.url));
+  if (!server) return;
+  try {
+    store.updateServer(server.id, { url: localUrl() });
+  } catch {
+    return; // 新地址已经在列表里了
+  }
+  dispose(server.id);
+  viewFor(server.id);
+  broadcast();
+  void probe(server.id);
 }
 
 /** 本机服务端还不在列表里就加上，叫「本机」 */
@@ -383,6 +406,32 @@ ipcMain.on("page:quota-want", (e) => {
   if (id) pageWantsQuota(id);
 });
 
+// 页面上改了服务端端口：把存着的地址换成新端口再重新打开。只认同一台主机、同一个协议，只换端口
+ipcMain.on("page:moved", (e, url) => {
+  const id = pageOwner(e);
+  const server = id && store.server(id);
+  if (!server) return;
+  let next;
+  let cur;
+  try {
+    next = new URL(String(url));
+    cur = new URL(server.url);
+  } catch {
+    return;
+  }
+  if (next.protocol !== cur.protocol || next.hostname !== cur.hostname || next.port === cur.port) return;
+  try {
+    store.updateServer(id, { url: next.origin });
+  } catch (err) {
+    console.error("[服务器] 改端口后更新地址失败:", err);
+    return;
+  }
+  dispose(id);
+  viewFor(id);
+  broadcast();
+  void probe(id);
+});
+
 ipcMain.on("page:quota-refresh", (e) => {
   const id = pageOwner(e);
   if (id) void refreshQuota([id], { full: true });
@@ -453,8 +502,8 @@ const calls = {
     broadcast();
     return true;
   },
-  moveServer: (id, delta) => {
-    store.moveServer(id, delta === 1 ? 1 : -1);
+  moveServer: (id, to) => {
+    store.moveServer(id, Number(to));
     broadcast();
   },
   reload: (id) => reload(id),
@@ -603,7 +652,10 @@ app.whenReady().then(() => {
   refreshAll();
   scheduleQuota();
   // 在线状态每分钟看一次（只打公开的 /api/me）
-  setInterval(() => refreshAll(), 60_000);
+  setInterval(() => {
+    followLocalPort();
+    refreshAll();
+  }, 60_000);
   scheduleUpdates();
   if (app.isPackaged && store.prefs().autoUpdate && !smoke) setTimeout(() => void checkUpdates(), 15_000);
   if (smoke) void runSmoke({ openPopover: openPopoverForTest });

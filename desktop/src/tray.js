@@ -1,6 +1,7 @@
 // 菜单栏（右上角）图标：只有图标，旁边不显示文字。
 //   - 鼠标移上去：弹出面板（不抢焦点），列出各服务器的额度、待处理、运行中；鼠标离开图标和面板就收起；
-//   - 点击：面板固定住（拿到焦点，可以点里面的东西），点别处收起；右键是菜单。
+//   - 点击：面板固定住（拿到焦点，可以点里面的东西），点别处收起；
+//   - 双击：打开主窗口（面板收起）；右键是菜单（打开主窗口、刷新额度、退出）。
 // 系统自带的悬停文字提示在菜单栏里经常不出来，而且没法排版，所以不用。
 import { BrowserWindow, Menu, nativeImage, screen, Tray } from "electron";
 import path from "node:path";
@@ -31,7 +32,6 @@ export function createTray(handlers) {
   const icon = nativeImage.createFromPath(ICON);
   icon.setTemplateImage(true);
   tray = new Tray(icon);
-  tray.setIgnoreDoubleClickEvents(true);
 
   tray.on("mouse-enter", () => {
     if (popover?.isVisible()) return;
@@ -44,6 +44,12 @@ export function createTray(handlers) {
     // 悬停弹出来的：点一下就固定住；已经固定的：再点收起
     if (popover?.isVisible() && !peeking) return hidePopover();
     showPopover({ peek: false });
+  });
+  // 双击的第一下已经按单击把面板固定出来了，这里收起面板、打开主窗口
+  tray.on("double-click", () => {
+    clearTimeout(peekTimer);
+    hidePopover();
+    actions.showMain();
   });
   tray.on("right-click", () => {
     hidePopover();
@@ -62,6 +68,8 @@ export function createTray(handlers) {
 function ensurePopover() {
   if (popover && !popover.isDestroyed()) return popover;
   popover = new BrowserWindow({
+    // NSPanel：本来就能浮在全屏应用上面，不用为此把整个 App 切成菜单栏应用（见下面 setVisibleOnAllWorkspaces）
+    type: "panel",
     width: POPOVER_WIDTH,
     height: 240,
     show: false,
@@ -88,7 +96,9 @@ function ensurePopover() {
       nodeIntegration: false,
     },
   });
-  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // skipTransformProcessType 必须带：不带的话 Electron 会把整个 App 先切成菜单栏应用再切回来，
+  // 结果顶部菜单栏变空、Dock 上的图标认不出 App 在运行（不显示小点）
+  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   // 点进悬停弹出来的面板，它拿到焦点，就算固定住了
   popover.on("focus", () => {
     peeking = false;

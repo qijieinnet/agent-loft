@@ -86,6 +86,43 @@ export async function runSmoke({ openPopover }) {
     await js(`document.getElementById("p-keepAwake").click()`);
     await until(() => js(`window.loft.state().then((s) => s.prefs.keepAwake === true)`), "「不休眠」设置保存");
 
+    // 拖动排序：再加两台，用真的鼠标事件在设置页列表里竖着拖、在顶栏里横着拖
+    await js(`window.loft.call("addServer", "排序二", "127.0.0.1:10", null, "🐢").then(() => window.loft.call("addServer", "排序三", "127.0.0.1:11", null, "🦊"))`);
+    await js(`window.loft.call("manage")`);
+    await until(() => js(`document.querySelectorAll(".server-list > .server-item").length === 3 && document.querySelectorAll("#servers .tab").length === 3`), "三台服务器");
+    const names = () => js(`window.loft.state().then((s) => s.servers.map((x) => x.name).join(","))`);
+    const center = (sel) => js(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+    const drag = async ([x0, y0], [x1, y1]) => {
+      shell.sendInputEvent({ type: "mouseDown", x: Math.round(x0), y: Math.round(y0), button: "left", clickCount: 1 });
+      for (let i = 1; i <= 12; i++) {
+        const x = Math.round(x0 + ((x1 - x0) * i) / 12);
+        const y = Math.round(y0 + ((y1 - y0) * i) / 12);
+        shell.sendInputEvent({ type: "mouseMove", x, y, modifiers: ["leftButtonDown"] });
+        await sleep(16);
+      }
+      shell.sendInputEvent({ type: "mouseUp", x: Math.round(x1), y: Math.round(y1), button: "left", clickCount: 1 });
+      await sleep(300);
+    };
+    // 第一行（名字上按住）拖到最后一行下半截
+    await drag(await center(".server-list > .server-item:nth-child(1) .name"), await center(".server-list > .server-item:nth-child(3) .sub"));
+    await until(async () => (await names()) === "排序二,排序三,冒烟测试", `列表拖动后的顺序（现在是 ${await names()}）`, 3000);
+    // 顶栏：最后一个标签拖到最前面
+    const [tx, ty] = await center("#servers .tab:nth-child(3)");
+    const [fx] = await center("#servers .tab:nth-child(1)");
+    await drag([tx, ty], [fx - 30, ty]);
+    await until(async () => (await names()) === "冒烟测试,排序二,排序三", `顶栏拖动后的顺序（现在是 ${await names()}）`, 3000);
+    // 拖完不能顺带算一次点击：还停在设置页，没有切到被拖的那台
+    if (!(await js(`window.loft.state().then((s) => s.managing)`))) return fail("顶栏拖完被当成了点击，切走了设置页");
+    // 页面上的顺序和存下来的一致
+    const shown = await js(`[...document.querySelectorAll("#servers .tab .name")].map((n) => n.textContent).join(",")`);
+    if (shown !== (await names())) return fail(`顶栏显示的顺序 ${shown} 和保存的 ${await names()} 不一致`);
+    // 不拖、只点一下标签：照常切换服务器
+    const [cx, cy] = await center("#servers .tab:nth-child(2)");
+    shell.sendInputEvent({ type: "mouseDown", x: Math.round(cx), y: Math.round(cy), button: "left", clickCount: 1 });
+    shell.sendInputEvent({ type: "mouseUp", x: Math.round(cx), y: Math.round(cy), button: "left", clickCount: 1 });
+    await until(() => js(`window.loft.state().then((s) => !s.managing && s.servers.find((x) => x.id === s.activeId)?.name === "排序二")`), "点标签切换到「排序二」", 3000);
+    await js(`window.loft.call("manage")`);
+
     const pop = openPopover();
     await until(() => pop.executeJavaScript(`document.body.innerText.includes("冒烟测试")`), "菜单栏面板里的服务器");
     junk = junkIn(await pop.executeJavaScript("document.body.innerText"));

@@ -24,14 +24,8 @@ function render() {
       lastAt ? h("span", { class: "ago" }, `${agoText(lastAt)}更新`) : null,
       refreshBtn,
     ),
+    // 打开主窗口：双击菜单栏图标；设置、退出：右键菜单 / 主窗口里
     h("div", { class: "servers" }, state.servers.length ? state.servers.map((s) => serverBlock(s, dup)) : h("div", { class: "empty" }, "还没有添加服务器")),
-    h(
-      "div",
-      { class: "foot" },
-      h("button", { onclick: () => call("showMain") }, "打开主窗口"),
-      h("button", { onclick: () => call("manage") }, "设置"),
-      h("button", { onclick: () => call("quit") }, "退出"),
-    ),
   );
   reportSize();
 }

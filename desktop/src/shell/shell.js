@@ -21,7 +21,7 @@ function renderBar() {
         .join(" · ");
       return h(
         "button",
-        { class: `tab ${s.status} ${active ? "active" : ""}`, title: `${s.name}\n${detail}`, onclick: () => call("select", s.id) },
+        { class: `tab ${s.status} ${active ? "active" : ""}`, "data-id": s.id, title: `${s.name}\n${detail}`, onclick: () => call("select", s.id) },
         serverIcon(s, "avatar"),
         h("span", { class: "name" }, s.name),
         h("span", { class: `status` }),
@@ -35,6 +35,9 @@ function renderBar() {
   // 有新版本：齿轮上一个小红点
   $settings.classList.toggle("has-update", !!state.system.update.available || state.servers.some((s) => s.server?.updateAvailable && s.server.canUpgrade));
 }
+
+// 按住标签左右拖：调整服务器顺序
+sortable($servers, { axis: "x", item: ".tab", onDrop: (id, to) => void call("moveServer", id, to), onEnd: flushRender });
 
 $settings.addEventListener("click", () => {
   if (state.managing && state.activeId) void call("select", state.activeId);
@@ -114,7 +117,15 @@ function certNotice(s) {
 const manage = {};
 
 function buildManage() {
-  manage.list = h("div");
+  // 服务器列表：各项是它的直接子元素，按住一行上下拖调整顺序（按钮上按下不算）
+  manage.list = h("div", { class: "card server-list" });
+  sortable(manage.list, {
+    axis: "y",
+    item: ".server-item",
+    ignore: "button, a, input, select, textarea, .expand",
+    onDrop: (id, to) => void call("moveServer", id, to),
+    onEnd: flushRender,
+  });
   manage.prefs = h("div", { class: "card" });
   manage.local = h("div", { class: "card" });
   manage.update = h("div", { class: "card", id: "update-card" });
@@ -156,95 +167,69 @@ function renderManage() {
           h("button", { class: "btn primary", onclick: () => openServerDialog(null) }, "添加服务器"),
         ),
   );
+  manage.list.hidden = empty;
   manage.list.replaceChildren(
-    empty
-      ? ""
-      : h(
+    ...state.servers.map((s) =>
+      h(
+        "div",
+        { class: "server-item", "data-id": s.id },
+        h(
           "div",
-          { class: "card" },
-          state.servers.map((s, i) => [
+          { class: "row" },
+          serverIcon(s, "mini-avatar"),
+          h(
+            "div",
+            { class: "grow" },
+            h("div", { class: "name" }, s.name),
             h(
               "div",
-              { class: "row" },
-              serverIcon(s, "mini-avatar"),
-              h(
-                "div",
-                { class: "grow" },
-                h("div", { class: "name" }, s.name),
-                h(
-                  "div",
-                  { class: "sub" },
-                  h("span", { class: `dot ${s.status}`, style: { marginRight: "6px", verticalAlign: "0" } }),
-                  [
-                    STATUS_TEXT[s.status] ?? s.status,
-                    s.url,
-                    s.trusted ? "已信任自签证书" : "",
-                    s.serviceTokenId ? "Service Token" : "",
-                    s.authDomains.length ? `登录域名 ${s.authDomains.join("、")}` : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" · "),
-                ),
-                serverVersionLine(s),
-              ),
-              h(
-                "div",
-                { class: "actions" },
-                iconBtn("上移", "M10 15V5M5 10l5-5 5 5", () => call("moveServer", s.id, -1), i === 0),
-                iconBtn("下移", "M10 5v10M5 10l5 5 5-5", () => call("moveServer", s.id, 1), i === state.servers.length - 1),
-                serverUpgradeButton(s),
-                s.status === "online"
-                  ? h(
-                      "button",
-                      {
-                        class: `btn ${manage.expanded === s.id ? "on" : ""}`,
-                        title: "Claude Code、Codex 装好、登录了没有",
-                        onclick: () => {
-                          manage.expanded = manage.expanded === s.id ? null : s.id;
-                          if (manage.expanded && agentEnv.id !== s.id) {
-                            agentEnv.data = null;
-                            void loadAgentEnv(s.id);
-                          }
-                          renderManage();
-                        },
-                      },
-                      "Agent 环境",
-                    )
-                  : null,
-                h("button", { class: "btn", onclick: () => openServerDialog(s) }, "编辑"),
-                h("button", { class: "btn", onclick: () => call("select", s.id) }, "打开"),
-              ),
+              { class: "sub" },
+              h("span", { class: `dot ${s.status}`, style: { marginRight: "6px", verticalAlign: "0" } }),
+              [
+                STATUS_TEXT[s.status] ?? s.status,
+                s.url,
+                s.trusted ? "已信任自签证书" : "",
+                s.serviceTokenId ? "Service Token" : "",
+                s.authDomains.length ? `登录域名 ${s.authDomains.join("、")}` : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
             ),
-            manage.expanded === s.id && s.status === "online" ? h("div", { class: "expand" }, agentEnvBox()) : null,
-          ]),
+            serverVersionLine(s),
+          ),
+          h(
+            "div",
+            { class: "actions" },
+            serverUpgradeButton(s),
+            s.status === "online"
+              ? h(
+                  "button",
+                  {
+                    class: `btn ${manage.expanded === s.id ? "on" : ""}`,
+                    title: "Claude Code、Codex 装好、登录了没有",
+                    onclick: () => {
+                      manage.expanded = manage.expanded === s.id ? null : s.id;
+                      if (manage.expanded && agentEnv.id !== s.id) {
+                        agentEnv.data = null;
+                        void loadAgentEnv(s.id);
+                      }
+                      renderManage();
+                    },
+                  },
+                  "Agent 环境",
+                )
+              : null,
+            h("button", { class: "btn", onclick: () => openServerDialog(s) }, "编辑"),
+            h("button", { class: "btn", onclick: () => call("select", s.id) }, "打开"),
+          ),
         ),
+        manage.expanded === s.id && s.status === "online" ? h("div", { class: "expand" }, agentEnvBox()) : null,
+      ),
+    ),
   );
   renderPrefs();
   renderLocalCard(manage.local);
   renderUpdateCard(manage.update);
-}
-
-function iconBtn(title, d, onclick, disabled) {
-  return withPath(h("button", { class: "icon-btn", title, onclick, disabled }), d);
-}
-
-/** h() 建的是 HTML 元素，SVG 得用 createElementNS */
-function withPath(btn, d) {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", "0 0 20 20");
-  svg.setAttribute("width", "16");
-  svg.setAttribute("height", "16");
-  const path = document.createElementNS(ns, "path");
-  path.setAttribute("d", d);
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "currentColor");
-  path.setAttribute("stroke-width", "1.7");
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  svg.append(path);
-  btn.append(svg);
-  return btn;
 }
 
 /** 防休眠只管本机服务端：说清楚现在是什么情况 */
@@ -285,10 +270,23 @@ function renderPrefs() {
 
 // ---------- 状态 ----------
 
+let renderQueued = false;
+
 function render() {
   if (!state) return;
+  // 正在拖着排序：先不重画（会把拖着的元素换掉），拖完再补
+  if (sortDragging) {
+    renderQueued = true;
+    return;
+  }
   renderBar();
   renderPanel();
+}
+
+function flushRender() {
+  if (!renderQueued) return;
+  renderQueued = false;
+  render();
 }
 
 window.loft.onState((s) => {
