@@ -13,6 +13,7 @@ import { parseCommand } from "../../core/commands.js";
 import { hub, type EventEnvelope } from "../../core/hub.js";
 import { interactions, type Interaction } from "../../core/interactions.js";
 import { getConversation } from "../../core/store.js";
+import { RUNNING_VERSION } from "../../core/upgrade.js";
 import type { Settlement } from "../../core/types.js";
 import { authed, handleApi, takeUploads } from "./api.js";
 import { authEvents, ensureSetupToken, validateSession } from "./auth.js";
@@ -60,18 +61,33 @@ const MIME: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
 };
 
-function serveFile(res: http.ServerResponse, file: string, cache: string): void {
+/**
+ * 静态文件一律 no-cache + Last-Modified：每次都向服务端确认一下，没变就回 304。
+ * 升级后 app.js、style.css、vendor 都会变，但地址不变，带 max-age 的话刷新页面还会拿到旧的。
+ */
+function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: string): void {
   fs.stat(file, (err, stat) => {
     if (err || !stat.isFile()) {
       res.writeHead(404, SECURITY_HEADERS);
       res.end("not found");
       return;
     }
-    res.writeHead(200, {
+    const lastModified = new Date(Math.floor(stat.mtimeMs / 1000) * 1000);
+    const since = Date.parse(req.headers["if-modified-since"] ?? "");
+    const headers = {
       ...SECURITY_HEADERS,
+      "Cache-Control": "no-cache",
+      "Last-Modified": lastModified.toUTCString(),
+    };
+    if (!Number.isNaN(since) && lastModified.getTime() <= since) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      ...headers,
       "Content-Type": MIME[path.extname(file)] ?? "application/octet-stream",
       "Content-Length": stat.size,
-      "Cache-Control": cache,
     });
     fs.createReadStream(file).pipe(res);
   });
@@ -81,7 +97,7 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: U
   const vendor = VENDOR[url.pathname];
   if (vendor) {
     try {
-      serveFile(res, vendor(), "public, max-age=86400");
+      serveFile(req, res, vendor());
     } catch {
       res.writeHead(404);
       res.end();
@@ -108,9 +124,7 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: U
     res.end();
     return;
   }
-  // 页面本身别缓存：升级后要立刻生效
-  serveFile(res, file, rel === "/index.html" || rel === "/sw.js" ? "no-cache" : "public, max-age=300");
-  void req;
+  serveFile(req, res, file);
 }
 
 // ---------- WebSocket ----------
@@ -397,7 +411,7 @@ export async function startWeb(): Promise<void> {
         });
         ws.on("close", () => clients.delete(client));
         ws.on("error", () => clients.delete(client));
-        send(client, { t: "hello", seq: hub.currentSeq(), epoch: EPOCH });
+        send(client, { t: "hello", seq: hub.currentSeq(), epoch: EPOCH, version: RUNNING_VERSION });
       });
     } catch (err) {
       console.error("[web] WebSocket 握手出错:", err);

@@ -550,6 +550,11 @@ button.conv-group:hover {
   margin-left: auto;
 }
 
+/* 桌面端里：额度在菜单栏、设置在顶栏「更多」里，侧栏底部整条不要 */
+.desktop-settings .side-bottom {
+  display: none;
+}
+
 /* ---- 侧栏底部的额度 ---- */
 .quota {
   position: relative;
@@ -2137,6 +2142,13 @@ button.ctx-item:hover {
   border-radius: 999px;
   font-size: 12px;
   z-index: 5;
+}
+
+.conn-banner.clickable {
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 /* ---------- 弹层 ---------- */

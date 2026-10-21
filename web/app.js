@@ -38,7 +38,6 @@ const ICON = {
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>',
   clip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
   mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>',
-  more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>',
   fork: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-6 4-11.2 8.6"/></svg>',
@@ -269,6 +268,12 @@ const desktop = window.agentLoftDesktop ?? null;
 const desktopQuota = typeof desktop?.onQuota === "function";
 // 桌面端里：顶栏、侧栏顶部可以按住拖动窗口（样式见 style.css 的 .in-desktop）
 if (desktop) document.documentElement.classList.add("in-desktop");
+/**
+ * 新版桌面端顶栏的「更多」里能打开每台服务器的设置，额度也在它的菜单栏里：侧栏底部的额度和设置就不显示了。
+ * 老版本桌面端没有这个入口，照旧显示，免得设置打不开。
+ */
+const desktopSettings = typeof desktop?.onOpenSettings === "function";
+if (desktopSettings) document.documentElement.classList.add("desktop-settings");
 
 // ---------- WebSocket ----------
 
@@ -402,6 +407,7 @@ function markGone(ix) {
 function onWsMessage(msg) {
   switch (msg.t) {
     case "hello": {
+      if (checkServerVersion(msg.version)) return;
       const restarted = WS.epoch && WS.epoch !== msg.epoch;
       WS.epoch = msg.epoch;
       WS.hellos += 1;
@@ -464,12 +470,29 @@ function onWsMessage(msg) {
   }
 }
 
-function setConnBanner(text) {
+function setConnBanner(text, onclick) {
   ui.banner?.remove();
   ui.banner = null;
   if (!text || !ui.main) return;
-  ui.banner = h("div", { class: "conn-banner" }, text);
+  ui.banner = onclick ? h("button", { class: "conn-banner clickable", onclick }, text) : h("div", { class: "conn-banner" }, text);
   ui.main.append(ui.banner);
+}
+
+/** 页面加载时连上的服务端版本。服务端升级重启后版本变了，页面上跑的还是旧前端，得刷新 */
+let loadedServerVersion = null;
+
+/** 服务端换了版本：刷新页面换上新前端。返回 true 表示已经在刷新了，后面不用再处理 */
+function checkServerVersion(version) {
+  if (!version) return false;
+  if (!loadedServerVersion) loadedServerVersion = version;
+  if (version === loadedServerVersion) return false;
+  // 输入框里有没发出去的字：别直接刷掉，提示一下让用户自己点
+  if (ui.input?.value.trim()) {
+    setConnBanner(`服务端已升级到 ${version}，点这里刷新页面`, () => location.reload());
+    return false;
+  }
+  location.reload();
+  return true;
 }
 
 // ---------- 登录 ----------
@@ -549,6 +572,12 @@ async function boot() {
   desktop?.onOpen((key) => {
     if (key && S.convs.has(key) && key !== S.current) void openConversation(key);
   });
+  // 桌面端「更多」里点了这台服务器的设置；已经开着就不再叠一层
+  if (desktopSettings) {
+    desktop.onOpenSettings(() => {
+      if (!document.querySelector(".overlay .settings")) void openSettings();
+    });
+  }
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
     clearAppBadge();
@@ -579,6 +608,13 @@ function renderLayout() {
     lastDown = { key, at: now };
   });
   ui.convList.addEventListener("contextmenu", (e) => {
+    // 飞书机器人那一行：右键看这个机器人的所有聊天
+    const bot = e.target.closest?.("[data-bot]")?.dataset.bot;
+    if (bot) {
+      e.preventDefault();
+      showMenu({ x: e.clientX, y: e.clientY }, [{ label: "历史会话…", onclick: () => openBotConversations(bot) }]);
+      return;
+    }
     const key = e.target.closest?.("[data-key]")?.dataset.key;
     if (!key || !S.convs.has(key)) return;
     e.preventDefault();
@@ -1025,6 +1061,7 @@ function renderSidebar() {
         "button",
         {
           class: `conv-item${cur?.channel === "feishu" && cur.channelId === bot.id ? " active" : ""}`,
+          "data-bot": bot.id,
           title: latest ? `飞书 · ${bot.name}\n${agentLabel(latest.agent)} · ${latest.cwd}` : `飞书 · ${bot.name}\n还没有会话`,
           onclick: () => (latest ? open(latest.key) : toast("这个机器人还没有会话，先在飞书里给它发条消息")),
         },
@@ -1117,13 +1154,9 @@ function renderSidebar() {
 
 function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
-  const more = h("button", { class: "icon-btn", title: "更多", onclick: (e) => openMoreMenu(e.currentTarget) }, icon("more"));
   fill(ui.topbar,
-    ...[
-      h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
-      h("div", { class: "top-title" }, c ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)) : null),
-      c ? more : null,
-    ].filter(Boolean),
+    h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
+    h("div", { class: "top-title" }, c ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)) : null),
   );
   renderContext();
 }
@@ -1378,24 +1411,6 @@ function closeMenu() {
   document.removeEventListener("pointerdown", onOutsideMenu);
   document.removeEventListener("keydown", onMenuKey);
   removeEventListener("blur", closeMenu);
-}
-
-function openMoreMenu(anchor) {
-  const c = S.convs.get(S.current);
-  if (!c) return;
-  showMenu(anchor, [
-    // 飞书机器人在侧栏只占一行（点开最近活跃的那个聊天），它的其他聊天从这里找
-    ...(c.channel === "feishu" ? [{ label: "历史会话…", onclick: () => openBotConversations(c.channelId) }] : []),
-    { label: "开新会话（清空上下文）", onclick: () => doAction("new") },
-    c.canFork
-      ? { label: "分叉成新对话", onclick: () => forkConversation() }
-      : { label: "分叉当前会话", onclick: () => doAction("fork") },
-    { label: "切换工作目录…", onclick: () => changeCwd() },
-    { label: "查看状态", onclick: () => showStatus() },
-    "sep",
-    { label: "重命名", onclick: () => renameConv(S.current) },
-    ...(c.channel === "web" ? [{ label: "从列表删除", danger: true, onclick: () => deleteConv() }] : []),
-  ]);
 }
 
 /** 侧栏会话的右键菜单：分叉 / 重命名 / 删除 */
@@ -2041,7 +2056,8 @@ function renderComposer() {
     },
   });
   ui.sendBtn = h("button", { class: "send-btn", title: "发送", onclick: () => (S.busy && !hasDraft() ? stopTurn() : sendMessage()) });
-  ui.micBtn = SpeechRec
+  // 桌面端（Electron）里不放语音输入
+  ui.micBtn = SpeechRec && !desktop
     ? h("button", { class: "icon-btn mic-btn", title: "语音输入", onclick: toggleVoice }, icon("mic"))
     : null;
   ui.ctxBar = h("div", { class: "ctx-bar" });
@@ -2943,15 +2959,6 @@ async function changeCwd() {
   const root = S.workspaceRoot ?? "";
   const startRel = root && (current === root || current.startsWith(`${root.replace(/[\\/]+$/, "")}/`)) ? current.slice(root.replace(/[\\/]+$/, "").length + 1) : "";
   await load(startRel);
-}
-
-async function showStatus() {
-  try {
-    const data = await api(`/api/conversations/${encodeURIComponent(S.current)}/status`);
-    modal({ title: "状态", body: h("div", { class: "modal-body" }, renderMarkdown("```\n" + data.text + "\n```")) });
-  } catch (err) {
-    toast(err.message);
-  }
 }
 
 /** 重命名：小弹窗，回车保存、Esc 取消，打开时全选原名 */
