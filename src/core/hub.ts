@@ -38,7 +38,7 @@ import type {
   StepKind,
   UserInput,
 } from "./types.js";
-import { buildCatalog, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
+import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
 import { helpText, type ParsedCommand } from "./commands.js";
 
 // ---------- 事件 ----------
@@ -655,6 +655,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   send(key: string, input: UserInput, origin: Origin, gen?: InputGen): void {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
+    // 用户自定义命令（设置 → 命令）：展开成预设的提示词再发，界面上和 agent 收到的都是展开后的内容
+    const custom = (config().commands as Record<string, CommandPrefs | undefined>)[conv.agent]?.custom;
+    const expanded = expandCustomCommand(input.text, custom);
+    if (expanded !== null) input = { ...input, text: expanded };
     const g = gen ?? this.generation(key);
     const cancelled = () => {
       if (this.stopGeneration(key) !== g.stop) {

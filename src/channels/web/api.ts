@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_IDS, config, listWorkspaceDirs, resolveWorkspacePath, saveConfig, type AppConfig } from "../../core/config.js";
+import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
@@ -183,11 +184,20 @@ function applyConfig(input: Partial<AppConfig>): void {
     const names = (v: unknown) =>
       Array.isArray(v) ? [...new Set(v.filter((s): s is string => typeof s === "string" && s.length > 0 && s.length < 128))] : null;
     for (const id of AGENT_IDS) {
-      const prefs = (input.commands as Record<string, { order?: unknown; hidden?: unknown } | undefined>)[id];
+      const prefs = (input.commands as Record<string, { order?: unknown; hidden?: unknown; custom?: unknown } | undefined>)[id];
       if (!prefs) continue;
+      let custom = next.commands[id].custom;
+      if (prefs.custom !== undefined) {
+        try {
+          custom = cleanCustomCommands(prefs.custom, true);
+        } catch (err) {
+          throw new HttpError(400, err instanceof Error ? err.message : String(err));
+        }
+      }
       next.commands[id] = {
         order: names(prefs.order) ?? next.commands[id].order,
         hidden: names(prefs.hidden) ?? next.commands[id].hidden,
+        custom,
       };
     }
   }

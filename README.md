@@ -73,6 +73,8 @@ agent-loft service install
 
 聊天里的命令（飞书和 Web 通用；Web 输入框打 `/` 会弹出命令补全，飞书里打 `/` 会弹出机器人的指令面板（agent-loft 自动注册，约 5～8 分钟生效；只发一个 `/` 也会回一张可点击的命令卡片），顺序和显示项在 设置 → 命令 里调整）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/approve <id> allow-once|allow-always|allow-session|deny` `/help`
 
+自定义命令：设置 → 命令 → 「添加命令」，填命令名、说明和一段提示词，之后发 `/命令名 参数` 就会把这段提示词发给 agent（提示词里的 `$ARGUMENTS` 换成参数，没写就把参数接在后面）。按 agent 分开存，可以编辑、删除，也会同步到飞书指令面板。
+
 ## 安全
 
 这个服务能让 agent 在你的机器上执行命令，等于一个远程 shell。

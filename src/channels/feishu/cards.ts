@@ -255,7 +255,12 @@ export function commandListCard(params: {
     { tag: "hr" },
   ];
   for (const c of shown) {
-    const tag = c.source === "agent" ? ` <font color='grey'>· ${params.agentLabel}</font>` : "";
+    const tag =
+      c.source === "agent"
+        ? ` <font color='grey'>· ${params.agentLabel}</font>`
+        : c.source === "custom"
+          ? " <font color='grey'>· 自定义</font>"
+          : "";
     const text = `**${usageOf(c)}**${tag}\n<font color='grey'>${oneLine(c.description) || "（无说明）"}</font>`;
     elements.push({
       tag: "column_set",

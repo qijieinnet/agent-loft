@@ -136,12 +136,24 @@ export class ClaudeDriver implements AgentDriver {
       // 运行时带着 timestamp（ISO 字符串），类型声明里没有
       const ts = Date.parse((msg as { timestamp?: string }).timestamp ?? "");
       if (msg.type === "user") {
+        // Claude Code 自己塞进记录的「用户消息」不是人发的：后台命令跑完的 <task-notification> 等，
+        // 记录里 origin.kind 不是 human。老记录可能没有 origin，再按正文开头兜底
+        const origin = (msg as { origin?: { kind?: string } }).origin;
+        // 它触发的那轮回复仍单独成一条（和实时看到的一样），不并进上一条回复
+        if (origin?.kind && origin.kind !== "human") {
+          flush();
+          continue;
+        }
         const texts = blocks.filter((b) => b.type === "text" && b.text).map((b) => b.text!);
         if (texts.length === 0) continue; // 纯 tool_result
         // 我们自己拼进去的附件清单：从正文里拆出来，单独作为附件给前端展示
         const { text, attachments } = splitAttachmentNote(texts.join("\n"));
         if (!text && attachments.length === 0) continue;
         if (text.startsWith("<command-") || text.startsWith("<local-command")) continue;
+        if (text.startsWith("<task-notification>")) {
+          flush();
+          continue;
+        }
         flush();
         out.push({
           role: "user",

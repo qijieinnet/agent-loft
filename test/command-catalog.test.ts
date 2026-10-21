@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildCatalog } from "../src/core/command-catalog.js";
+import { buildCatalog, cleanCustomCommands, expandCustomCommand } from "../src/core/command-catalog.js";
 import { parseCommand } from "../src/core/commands.js";
 
 const native = [
@@ -95,4 +95,52 @@ test("/autoedit 解析：不带参数是切换，认 on/off/开/关，其它当�
   assert.deepEqual(parseCommand("/autoedit on"), { kind: "autoedit", on: true });
   assert.deepEqual(parseCommand("/autoedit 关"), { kind: "autoedit", on: false });
   assert.deepEqual(parseCommand("/autoedit maybe"), { kind: "chat", text: "/autoedit maybe" });
+});
+
+test("自定义命令：展开提示词，$ARGUMENTS 换成参数，没写就把参数接在后面", () => {
+  const custom = [
+    { name: "review", description: "审查", prompt: "请审查这些改动：$ARGUMENTS" },
+    { name: "plan", description: "", prompt: "先列计划，不要动代码" },
+  ];
+  assert.equal(expandCustomCommand("/review src/a.ts", custom), "请审查这些改动：src/a.ts");
+  assert.equal(expandCustomCommand("/review", custom), "请审查这些改动：");
+  assert.equal(expandCustomCommand("/plan", custom), "先列计划，不要动代码");
+  assert.equal(expandCustomCommand("／PLAN 登录页", custom), "先列计划，不要动代码\n\n登录页");
+  // 不是整条命令、不认识的名字：不展开
+  assert.equal(expandCustomCommand("看下 /plan", custom), null);
+  assert.equal(expandCustomCommand("/plan\n第二行", custom), null);
+  assert.equal(expandCustomCommand("/compact", custom), null);
+  assert.equal(expandCustomCommand("/plan", undefined), null);
+});
+
+test("自定义命令进命令表：排在内置后面、原生前面，和原生重名时盖过原生", () => {
+  const list = buildCatalog({
+    allowedAgents: ["claude"],
+    native,
+    prefs: { order: [], hidden: [], custom: [{ name: "compact", description: "我的压缩", prompt: "总结一下：$ARGUMENTS" }] },
+  });
+  const compact = list.filter((c) => c.name === "compact");
+  assert.equal(compact.length, 1);
+  assert.equal(compact[0]!.source, "custom");
+  assert.equal(compact[0]!.args, "[参数]");
+  assert.equal(compact[0]!.runnable, true);
+  const idx = (n: string) => list.findIndex((c) => c.name === n);
+  assert.ok(idx("help") < idx("compact") && idx("compact") < idx("review"));
+});
+
+test("整理自定义命令：保存时不合规直接报错，读配置时悄悄丢掉", () => {
+  assert.deepEqual(cleanCustomCommands([{ name: " /Plan ", description: " d ", prompt: " p " }], true), [
+    { name: "plan", description: "d", prompt: "p" },
+  ]);
+  assert.throws(() => cleanCustomCommands([{ name: "new", description: "", prompt: "x" }], true), /内置命令/);
+  assert.throws(() => cleanCustomCommands([{ name: "a b", description: "", prompt: "x" }], true), /不合规/);
+  assert.throws(() => cleanCustomCommands([{ name: "x", description: "", prompt: " " }], true), /不能为空/);
+  assert.throws(
+    () => cleanCustomCommands([{ name: "x", description: "", prompt: "1" }, { name: "x", description: "", prompt: "2" }], true),
+    /重复/,
+  );
+  assert.deepEqual(cleanCustomCommands([{ name: "new", prompt: "x" }, { name: "ok", prompt: "y" }, null, "junk"]), [
+    { name: "ok", description: "", prompt: "y" },
+  ]);
+  assert.deepEqual(cleanCustomCommands(undefined), []);
 });

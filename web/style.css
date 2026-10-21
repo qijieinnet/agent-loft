@@ -1246,6 +1246,182 @@ a.att-file:hover {
   font-size: 14px;
 }
 
+/* 回复进行中的实时用时，跟在星星动画后面 */
+.ai-elapsed {
+  font-size: 13px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- logo 加载动画：三颗星依次跳起，台面跟着呼吸 ---------- */
+.loft-loader {
+  --size: 26px;
+  display: inline-block;
+  flex-shrink: 0;
+  width: var(--size);
+  height: var(--size);
+  line-height: 0;
+}
+
+.loft-loader.xl {
+  --size: 72px;
+}
+
+.loft-loader svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.loft-loader path {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation-duration: 1.6s;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1);
+  animation-fill-mode: both;
+  animation-delay: calc(var(--t, 0ms) + var(--d, 0ms));
+}
+
+.loft-loader .ll-star {
+  animation-name: loft-star;
+}
+
+.loft-loader .ll-l {
+  --d: 0ms;
+}
+
+.loft-loader .ll-c {
+  --d: 180ms;
+}
+
+.loft-loader .ll-r {
+  --d: 360ms;
+}
+
+.loft-loader .ll-plate {
+  animation-name: loft-plate;
+  --d: 260ms;
+}
+
+.loft-loader .ll-shadow {
+  animation-name: loft-shadow;
+  --d: 320ms;
+}
+
+@keyframes loft-star {
+  0%,
+  70%,
+  100% {
+    transform: translateY(0) scale(0.72);
+    opacity: 0.4;
+  }
+  28% {
+    transform: translateY(-22px) scale(1.06);
+    opacity: 1;
+  }
+  48% {
+    transform: translateY(0) scale(0.92);
+    opacity: 0.85;
+  }
+}
+
+@keyframes loft-plate {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  45% {
+    opacity: 1;
+  }
+}
+
+@keyframes loft-shadow {
+  0%,
+  100% {
+    transform: translateY(-6px);
+    opacity: 0.32;
+  }
+  50% {
+    transform: translateY(6px);
+    opacity: 0.12;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loft-loader .ll-star {
+    animation-name: loft-star-calm;
+    animation-duration: 2.4s;
+  }
+  .loft-loader .ll-shadow {
+    animation: none;
+    opacity: 0.3;
+  }
+}
+
+/* 回复末尾的精简版：只有一颗星，旋转 + 放大缩小 */
+.loft-stars {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  line-height: 0;
+}
+
+/* 打开会话、读历史时用的大一号 */
+.loft-stars.lg {
+  width: 32px;
+  height: 32px;
+}
+
+.loft-stars svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.loft-stars path {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: loft-twirl 1.8s cubic-bezier(0.45, 0, 0.25, 1) infinite both;
+  animation-delay: var(--t, 0ms);
+}
+
+/* 四角星转 90° 正好回到原样，所以每轮转 180° 能无缝接上 */
+@keyframes loft-twirl {
+  0% {
+    transform: rotate(0deg) scale(0.6);
+    opacity: 0.55;
+  }
+  45% {
+    transform: rotate(110deg) scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(180deg) scale(0.6);
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loft-stars path {
+    animation-name: loft-star-calm;
+    animation-duration: 2.4s;
+  }
+}
+
+@keyframes loft-star-calm {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
 .footer-note {
   font-size: 12px;
   color: var(--fg-faint);
@@ -2734,6 +2910,59 @@ button.list-item:hover {
 
 .cmd-row input[type="checkbox"] {
   width: auto;
+}
+
+.cmd-row .icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.cmd-row .icon-btn.danger:hover {
+  color: var(--danger);
+}
+
+.cmd-row .badge.custom {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+/* 筛选框 + 「添加命令」按钮一行 */
+.cmd-tools {
+  flex-wrap: nowrap;
+}
+
+.cmd-tools .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cmd-tools .btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cmd-tools .btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 添加 / 编辑命令：命令名前面固定一个「/」 */
+.cmd-name-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmd-name-input > span {
+  color: var(--fg-faint);
+  font-family: var(--mono);
+}
+
+.field .cmd-name-input input {
+  flex: 1;
+  font-family: var(--mono);
 }
 
 .brand-icon {

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { configPath, ensureDirs, readJson, writeJsonAtomic } from "../home.js";
-import type { CommandPrefs } from "./command-catalog.js";
+import { cleanCustomCommands, type CommandPrefs } from "./command-catalog.js";
 
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -97,7 +97,7 @@ export function defaultConfig(): AppConfig {
       },
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10 },
-    commands: { claude: { order: [], hidden: [] }, codex: { order: [], hidden: [] } },
+    commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] } },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },
   };
 }
@@ -132,6 +132,11 @@ function normalizeBot(raw: Partial<FeishuBotConfig>): FeishuBotConfig {
   };
 }
 
+/** 自定义命令可能是手改进配置文件的：不合规的丢掉，别让一条坏数据把命令列表搞崩 */
+function normalizeCommands(cfg: AppConfig): void {
+  for (const id of AGENT_IDS) cfg.commands[id].custom = cleanCustomCommands(cfg.commands[id].custom);
+}
+
 let current: AppConfig | null = null;
 const listeners = new Set<(next: AppConfig, prev: AppConfig) => void>();
 
@@ -142,6 +147,7 @@ export function loadConfig(): AppConfig {
   const merged = mergeDefaults(defaultConfig(), raw);
   merged.workspaceRoot = path.resolve(merged.workspaceRoot);
   merged.feishu.bots = merged.feishu.bots.map(normalizeBot);
+  normalizeCommands(merged);
   current = merged;
   if (!raw) writeJsonAtomic(configPath, merged);
   watchExternalEdits();
@@ -167,6 +173,7 @@ function watchExternalEdits(): void {
         const next = mergeDefaults(defaultConfig(), raw);
         next.workspaceRoot = path.resolve(next.workspaceRoot);
         next.feishu.bots = next.feishu.bots.map(normalizeBot);
+        normalizeCommands(next);
         if (JSON.stringify(next) === JSON.stringify(current)) return;
         const prev = current;
         current = next;

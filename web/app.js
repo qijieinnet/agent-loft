@@ -45,6 +45,7 @@ const ICON = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>',
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.6l2 2.2h7.4A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5Z"/><path d="M3 10h18"/></svg>',
   folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17.5V7.5A2.5 2.5 0 0 1 5.5 5h3.6l2 2.2h6.4A2.5 2.5 0 0 1 20 9.7V11"/><path d="M3 17.5 5.6 12a2 2 0 0 1 1.8-1.1h13a1 1 0 0 1 .9 1.4l-2.4 6.2a2.2 2.2 0 0 1-2 1.5H5.5A2.5 2.5 0 0 1 3 17.5Z"/></svg>',
   laptop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>',
@@ -67,6 +68,27 @@ ICON.claude = (() => {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="#D97757" stroke-width="2.3" stroke-linecap="round"><path d="${rays}"/></svg>`;
 })();
 ICON.codex = ICON.logo;
+
+/**
+ * 星星加载动画（回复末尾、打开会话时用）。开屏那个带台面的完整 logo 动画直接写在 index.html 里。
+ * 每个实例的渐变 id 唯一，避免页面里有隐藏的同 id 渐变时画不出来。
+ * 回复流式输出时整条消息会反复重建，动画按全局时钟设负的起始延迟，重建后接着播、不会一抖一抖地重来。
+ */
+let loaderSeq = 0;
+
+/** 只有 logo 中间那颗大星，一边旋转一边放大缩小 */
+const STARS_MS = 1800;
+function starsLoader(cls = "") {
+  const id = `loft-g${++loaderSeq}`;
+  const el = h("span", {
+    class: `loft-stars${cls ? ` ${cls}` : ""}`,
+    role: "img",
+    "aria-label": "回复中",
+    html: `<svg viewBox="180 82 152 152" aria-hidden="true"><defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="180" y1="82" x2="332" y2="234"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs><path d="M256 82C268.92 145.08 268.92 145.08 332 158C268.92 170.92 268.92 170.92 256 234C243.08 170.92 243.08 170.92 180 158C243.08 145.08 243.08 145.08 256 82Z" fill="url(#${id})"/></svg>`,
+  });
+  el.style.setProperty("--t", `${-(performance.now() % STARS_MS).toFixed(0)}ms`);
+  return el;
+}
 
 function agentIcon(id, cls = "agent-icon") {
   return h("span", { class: cls, html: ICON[id] ?? ICON.laptop });
@@ -119,6 +141,28 @@ function formatDuration(ms) {
   if (hr > 0) return `${hr}小时${m ? `${m}分` : ""}`;
   return `${m}分${s ? `${s}秒` : ""}`;
 }
+
+/** 回复进行中的实时用时：整秒跳动，12秒 / 3分05秒 / 1小时05分 */
+function liveDuration(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hr = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (hr > 0) return `${hr}小时${String(m).padStart(2, "0")}分`;
+  if (m > 0) return `${m}分${String(s).padStart(2, "0")}秒`;
+  return `${s}秒`;
+}
+
+/** 服务端时间 - 本机时间。事件里的 ts 是服务端时钟，算用时要换算过来，免得两边时钟不准 */
+let clockSkew = 0;
+const serverNow = () => Date.now() + clockSkew;
+
+/** 所有进行中的用时一秒刷一次，只改文字，不重建消息 */
+setInterval(() => {
+  for (const el of document.querySelectorAll(".ai-elapsed[data-start]")) {
+    el.textContent = liveDuration(serverNow() - Number(el.dataset.start));
+  }
+}, 1000);
 
 /** 老版本记下的脚注是「用时 1234.5s」，显示时也换成时 / 分 / 秒 */
 function tidyFooter(footer) {
@@ -478,7 +522,10 @@ async function boot() {
   WS.connect();
   void loadQuota();
   const fromHash = decodeURIComponent(location.hash.slice(1));
+  // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
+  const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
   if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
+  else if (latest) await openConversation(latest.key);
   else newDraft();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -1348,6 +1395,7 @@ function newDraft() {
   S.current = null;
   S.items = [];
   S.turnAi = null;
+  turnStartAt = null;
   S.uploads = [];
   setBusy(false);
   history.replaceState(null, "", location.pathname);
@@ -1387,13 +1435,14 @@ async function openConversation(key) {
   S.current = key;
   S.items = [];
   S.turnAi = null;
+  turnStartAt = null;
   S.uploads = [];
   renderChips();
   history.replaceState(null, "", `#${encodeURIComponent(key)}`);
   WS.presence();
   renderTopbar();
   renderSidebar();
-  fill(ui.msgInner, h("div", { class: "empty" }, h("span", { class: "spinner" })));
+  fill(ui.msgInner, h("div", { class: "empty" }, starsLoader("lg")));
   let data;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -1414,6 +1463,7 @@ async function openConversation(key) {
   if (token !== S.loadToken) return; // 期间又切到别的会话了
   S.convs.set(key, data.info);
   S.allowedAgents = data.allowedAgents;
+  if (Number.isFinite(data.serverTime)) clockSkew = data.serverTime - Date.now();
   fill(ui.msgInner, );
   for (const m of data.messages) {
     if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null });
@@ -1629,7 +1679,19 @@ function renderAi(item) {
     "div",
     { class: "msg-ai" },
     steps,
-    body ? renderMarkdown(body) : working && item.steps.length === 0 ? h("div", { class: "thinking" }, h("span", { class: "shimmer" }, "思考中…")) : null,
+    body ? renderMarkdown(body) : null,
+    // 还在回复：末尾挂上星星动画和实时用时；什么都还没出来时旁边带一句「思考中…」
+    working
+      ? h(
+          "div",
+          { class: "thinking" },
+          starsLoader(),
+          !body && item.steps.length === 0 ? h("span", { class: "shimmer" }, "思考中…") : null,
+          item.startAt
+            ? h("span", { class: "ai-elapsed", "data-start": item.startAt }, liveDuration(serverNow() - item.startAt))
+            : null,
+        )
+      : null,
     item.error ? h("div", { class: "error-box" }, item.error) : null,
     item.done && !item.segment && (body || item.footer)
       ? h(
@@ -1647,9 +1709,17 @@ function renderAi(item) {
   );
 }
 
-function currentAi() {
+/**
+ * 这一轮的开始时间（服务端时钟）：从用户发出那条消息算起。中途插了授权 / 提问卡片、
+ * 回复拆成好几段时，后面的段接着这个时间算，显示的是整轮的总用时。
+ * 没有用户消息就开始的一轮（比如后台任务跑完 agent 自己接着干），从第一个事件算起。
+ */
+let turnStartAt = null;
+
+function currentAi(ts) {
   if (!S.turnAi || S.turnAi.done) {
-    S.turnAi = addItem({ type: "ai", steps: [], committed: "", partial: "", done: false });
+    turnStartAt ??= ts ?? serverNow();
+    S.turnAi = addItem({ type: "ai", steps: [], committed: "", partial: "", done: false, startAt: turnStartAt });
   }
   return S.turnAi;
 }
@@ -1668,31 +1738,33 @@ function applyEvent(env) {
         S.items = S.items.filter((i) => i !== S.turnAi);
         S.turnAi = null;
       }
+      // 上一轮还没结束时发的消息会排队，不改正在进行那一轮的开始时间
+      if (!S.turnAi || S.turnAi.done) turnStartAt = env.ts;
       addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin });
-      currentAi();
+      currentAi(env.ts);
       return;
     }
     case "step": {
-      const ai = currentAi();
+      const ai = currentAi(env.ts);
       ai.steps.push(ev.text);
       updateItem(ai);
       return;
     }
     case "delta": {
-      const ai = currentAi();
+      const ai = currentAi(env.ts);
       ai.partial += ev.text;
       updateItem(ai);
       return;
     }
     case "text": {
-      const ai = currentAi();
+      const ai = currentAi(env.ts);
       ai.committed += (ai.committed ? "\n\n" : "") + ev.text;
       ai.partial = "";
       updateItem(ai);
       return;
     }
     case "result": {
-      const ai = currentAi();
+      const ai = currentAi(env.ts);
       if (!ai.committed && ev.text) ai.committed = ev.text;
       ai.partial = "";
       ai.done = true;
@@ -1701,6 +1773,7 @@ function applyEvent(env) {
       ai.anchor = ev.anchor;
       updateItem(ai);
       S.turnAi = null;
+      turnStartAt = null;
       return;
     }
     case "error": {
@@ -1710,6 +1783,7 @@ function applyEvent(env) {
         updateItem(S.turnAi);
         S.turnAi = null;
       } else addItem({ type: "error", text: ev.message });
+      turnStartAt = null;
       return;
     }
     case "notice":
@@ -1722,6 +1796,7 @@ function applyEvent(env) {
         updateItem(S.turnAi);
         S.turnAi = null;
       }
+      if (!ev.busy) turnStartAt = null;
       return;
     case "meta":
       return;
@@ -2364,6 +2439,7 @@ function renderSlashMenu(items, error) {
           h("span", { class: "slash-name" }, `/${c.name}`),
           c.args ? h("span", { class: "slash-args" }, c.args) : null,
           c.source === "agent" ? h("span", { class: "badge" }, agentLabel(currentAgentId())) : null,
+          c.source === "custom" ? h("span", { class: "badge" }, "自定义") : null,
         ),
         h("div", { class: "slash-desc" }, oneLine(c.description, 120) || "（无说明）"),
       ),
@@ -3110,8 +3186,10 @@ async function saveConfig(cfg, patch) {
     renderTopbar();
     renderSidebar();
     renderContext();
+    return true;
   } catch (err) {
     toast(err.message);
+    return false;
   }
 }
 
@@ -3224,9 +3302,60 @@ function modelPicker(agent, model, effort, defaultLabel) {
   return { modelEl: modelSlot, effortEl: effortSlot, model: () => getModel(), effort: () => getEffort() };
 }
 
+/** agent-loft 内置命令名（和服务端 BUILTIN_COMMANDS 一致），自定义命令不能用 */
+const BUILTIN_NAMES = ["new", "status", "stop", "model", "effort", "sessions", "resume", "fork", "agent", "claude", "codex", "cd", "pwd", "autoedit", "approve", "help"];
+
+/**
+ * 添加 / 编辑一条自定义命令。onSave 返回 true 才关窗；失败（比如服务端校验没过）留着让用户改。
+ * 规则和服务端一致：名字只能小写字母、数字、- _（飞书指令同款规则），不能和其它命令重名。
+ */
+function customDialog({ agent, entry, taken }, onSave) {
+  const name = h("input", { value: entry?.name ?? "", placeholder: "比如 review", autocomplete: "off", spellcheck: "false" });
+  const desc = h("input", { value: entry?.description ?? "", placeholder: "在命令列表里显示的一句话说明（可选）", maxlength: 200 });
+  const prompt = h("textarea", { rows: 8, placeholder: "发送这条命令时，实际发给 agent 的内容" });
+  prompt.value = entry?.prompt ?? "";
+  const err = h("div", { class: "error-text" });
+  const ok = h("button", { class: "btn primary" }, entry ? "保存" : "添加");
+  const builtin = new Set(BUILTIN_NAMES);
+  const submit = async () => {
+    const n = name.value.trim().replace(/^[/／]/, "").toLowerCase();
+    const p = prompt.value.trim();
+    let problem = "";
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(n)) problem = "命令名只能用小写字母、数字、- 和 _，以字母或数字开头，最长 32 个字符";
+    else if (builtin.has(n)) problem = `/${n} 是 agent-loft 内置命令，换个名字`;
+    else if (taken.includes(n)) problem = `已经有 /${n} 这条命令了，换个名字`;
+    else if (!p) problem = "提示词不能为空";
+    err.textContent = problem;
+    if (problem) return;
+    ok.disabled = true;
+    const saved = await onSave({ name: n, description: desc.value.trim(), prompt: p });
+    ok.disabled = false;
+    if (saved) close();
+  };
+  ok.onclick = () => void submit();
+  const close = modal({
+    title: entry ? `编辑 /${entry.name}` : `添加命令 · ${agentLabel(agent)}`,
+    body: h(
+      "div",
+      { class: "modal-body" },
+      field("命令名", h("div", { class: "cmd-name-input" }, h("span", {}, "/"), name), "小写字母、数字、- 和 _，最长 32 个字符（和飞书指令规则一致，才能同步到飞书）"),
+      field("说明", desc),
+      field(
+        "提示词",
+        prompt,
+        "发送「/命令名 参数」时，把这段话发给 agent。提示词里写 $ARGUMENTS 会换成参数；不写的话，参数接在提示词后面。",
+      ),
+      err,
+    ),
+    foot: h("div", { class: "modal-foot" }, ok),
+  });
+  setTimeout(() => (entry ? prompt : name).focus(), 0);
+}
+
 /**
  * 设置 → 命令：每个 agent 一张表，拖动或用箭头排序，取消勾选就不在「/」列表里出现。
  * 保存时把整张表的顺序存下来；以后新装的 skill 不在表里，会自动接在最后。
+ * 用户可以自己添加命令（一段预设的提示词），自己加的可以编辑、删除，增删改后立即保存。
  */
 function commandsTab(cfg, panel) {
   const agentIds = Object.keys(cfg.agents);
@@ -3313,9 +3442,16 @@ function commandsTab(cfg, panel) {
               { class: "t" },
               h("code", {}, commandUsage(c)),
               c.source === "agent" ? h("span", { class: "badge" }, agentLabel(agent)) : null,
+              c.source === "custom" ? h("span", { class: "badge custom" }, "自定义") : null,
             ),
-            h("div", { class: "s" }, oneLine(c.description, 100) || "（无说明）"),
+            h("div", { class: "s" }, oneLine(c.description || c.prompt || "", 100) || "（无说明）"),
           ),
+          c.source === "custom"
+            ? [
+                h("button", { class: "icon-btn", title: "编辑", onclick: () => editCustom(c) }, icon("edit")),
+                h("button", { class: "icon-btn danger", title: "删除", onclick: () => deleteCustom(c) }, icon("trash")),
+              ]
+            : null,
           h("button", { class: "icon-btn", title: "置顶", onclick: () => move(i, 0) }, "⤒"),
           h("button", { class: "icon-btn", title: "上移", onclick: () => move(i, i - 1) }, "↑"),
           h("button", { class: "icon-btn", title: "下移", onclick: () => move(i, i + 1) }, "↓"),
@@ -3326,10 +3462,46 @@ function commandsTab(cfg, panel) {
   };
 
   const save = async (prefs) => {
-    await saveConfig(cfg, { commands: { [agent]: prefs } });
+    const ok = await saveConfig(cfg, { commands: { [agent]: prefs } });
     slash.cache.clear();
     // 服务端 3 秒防抖后才开始同步，稍等再看状态
-    setTimeout(() => void refreshFeishu(), 3500);
+    if (ok) setTimeout(() => void refreshFeishu(), 3500);
+    return ok;
+  };
+  const prefsOf = (rows) => ({
+    order: rows.map((c) => c.name),
+    hidden: rows.filter((c) => c.hidden).map((c) => c.name),
+    custom: rows.filter((c) => c.source === "custom").map(({ name, description, prompt }) => ({ name, description, prompt })),
+  });
+
+  // ---- 自定义命令：增删改都立即保存（连同当前的排序和显示），保存失败就不动列表 ----
+  const commit = async (rows) => {
+    if (!(await save(prefsOf(rows)))) return false;
+    list = rows;
+    renderList();
+    return true;
+  };
+  const addCustom = () =>
+    customDialog({ agent, taken: list.map((c) => c.name) }, async (entry) => {
+      // 新命令放在已有的自定义命令后面；还没有的话放在 agent-loft 内置命令后面
+      const rows = [...list];
+      const lastCustom = rows.findLastIndex((c) => c.source === "custom");
+      const at = lastCustom >= 0 ? lastCustom + 1 : rows.findLastIndex((c) => c.source === "agent-loft") + 1;
+      rows.splice(at, 0, { ...entry, source: "custom", runnable: true, hidden: false });
+      return commit(rows);
+    });
+  const editCustom = (c) =>
+    customDialog({ agent, entry: c, taken: list.filter((x) => x !== c).map((x) => x.name) }, (entry) =>
+      commit(list.map((x) => (x === c ? { ...x, ...entry } : x))),
+    );
+  const deleteCustom = async (c) => {
+    const sure = await confirmDialog({
+      title: `删除 /${c.name}？`,
+      message: "删除后在「/」列表和飞书指令面板里都不再出现。",
+      confirmText: "删除",
+      danger: true,
+    });
+    if (sure) await commit(list.filter((x) => x !== c));
   };
 
   // ---- 飞书指令面板同步状态 ----
@@ -3397,7 +3569,12 @@ function commandsTab(cfg, panel) {
         "在输入框里打「/」时弹出的命令，按这里的顺序排列；保存后会自动同步到飞书机器人的指令面板。取消勾选的不会出现在列表里，但照样可以手动输入。带 agent 名标记的是 agent 自己的命令（skills 等），会原样转给 agent。",
       ),
       tabs,
-      search,
+      h(
+        "div",
+        { class: "row cmd-tools" },
+        search,
+        h("button", { class: "btn", onclick: () => addCustom() }, icon("plus"), "添加命令"),
+      ),
       listBox,
       h(
         "div",
@@ -3406,7 +3583,7 @@ function commandsTab(cfg, panel) {
           "button",
           {
             class: "btn primary",
-            onclick: () => save({ order: list.map((c) => c.name), hidden: list.filter((c) => c.hidden).map((c) => c.name) }),
+            onclick: () => save(prefsOf(list)),
           },
           "保存",
         ),
@@ -3415,7 +3592,7 @@ function commandsTab(cfg, panel) {
           {
             class: "btn",
             onclick: async () => {
-              if (!(await confirmDialog({ title: "恢复默认？", message: `把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认。`, confirmText: "恢复默认" }))) return;
+              if (!(await confirmDialog({ title: "恢复默认？", message: `把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认（自定义命令保留）。`, confirmText: "恢复默认" }))) return;
               await save({ order: [], hidden: [] });
               await load(agent);
             },
