@@ -49,6 +49,10 @@ jobs:
 
       - run: npm ci
 
+      # 自己的几个界面（向导、设置页、菜单栏面板）真的画得出来、没有脚本报错，才打包
+      - name: 冒烟测试
+        run: npm run smoke
+
       - name: 打包（arm64 + x64，ad-hoc 签名）
         env:
           # 没有证书：别去钥匙串里找，直接 ad-hoc

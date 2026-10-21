@@ -1,7 +1,7 @@
 {
   "name": "agent-loft-desktop",
   "productName": "Agent Loft",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "agent-loft 的 macOS 桌面端：同时连多台 agent-loft 服务器，菜单栏显示额度和待处理，检测并升级服务端",
   "author": "qijieinnet",
@@ -10,6 +10,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
+    "smoke": "AGENT_LOFT_DESKTOP_SMOKE=1 electron .",
     "icons": "electron scripts/icons.js",
     "dist": "electron-builder --mac --arm64 --x64 --publish never"
   },

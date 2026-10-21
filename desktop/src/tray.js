@@ -180,6 +180,11 @@ export function popoverResize(height) {
   if (b.height !== h) popover.setBounds({ ...b, height: h });
 }
 
+/** 冒烟测试用：建好菜单栏面板（不显示），返回它的页面 */
+export function openPopoverForTest() {
+  return ensurePopover().webContents;
+}
+
 export function popoverWebContents() {
   return popover && !popover.isDestroyed() ? popover.webContents : null;
 }

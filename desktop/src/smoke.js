@@ -1,0 +1,74 @@
+// 冒烟测试：npm run smoke（AGENT_LOFT_DESKTOP_SMOKE=1 electron .）
+//
+// 用临时配置目录启动，检查自己的几个界面真的画得出来、没有脚本报错：
+// 首次启动向导 → 点「只连接其他服务器」→ 设置页的各个区块 → 菜单栏面板。
+// 这些界面是普通脚本拼的，没有类型检查，改坏了只会表现成「一片空白、点什么都没反应」。
+import { app, webContents } from "electron";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+export const smoke = process.env.AGENT_LOFT_DESKTOP_SMOKE === "1";
+
+const errors = [];
+
+/** 在任何窗口创建之前调用：配置目录换成临时的，开始收集所有页面的报错 */
+export function prepareSmoke() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loft-smoke-"));
+  app.setPath("userData", path.join(tmp, "desktop"));
+  // 本机服务端检测指向一个空目录，别连到这台机器上真在跑的 agent-loft
+  process.env.AGENT_LOFT_HOME = path.join(tmp, "server");
+  app.on("web-contents-created", (_e, wc) => {
+    const name = () => path.basename(wc.getURL()) || "页面";
+    wc.on("console-message", (event) => {
+      if (event.level === "error") errors.push(`[${name()}] ${event.message}`);
+    });
+    wc.on("preload-error", (_e2, file, err) => errors.push(`[${name()}] preload ${file}: ${err.message}`));
+    wc.on("render-process-gone", (_e2, d) => errors.push(`[${name()}] 渲染进程退出：${d.reason}`));
+  });
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function until(check, what, ms = 15_000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const value = await Promise.resolve()
+      .then(check)
+      .catch(() => null);
+    if (value) return value;
+    await sleep(200);
+  }
+  throw new Error(`等不到：${what}`);
+}
+
+/** @param {{ openPopover: () => Electron.WebContents }} hooks */
+export async function runSmoke({ openPopover }) {
+  const fail = (msg) => {
+    console.error(`冒烟测试失败：${msg}`);
+    for (const e of errors) console.error(`  ${e}`);
+    app.exit(1);
+  };
+  setTimeout(() => fail("超时"), 90_000).unref();
+  try {
+    const shell = await until(() => webContents.getAllWebContents().find((w) => w.getURL().endsWith("shell/index.html")), "侧栏页面");
+    const js = (code) => shell.executeJavaScript(code);
+
+    await until(() => js(`document.querySelectorAll(".choice").length === 2`), "首次启动向导的两个选项");
+    await js(`[...document.querySelectorAll(".choice")].find((b) => b.textContent.includes("只连接其他服务器")).click()`);
+    await until(() => js(`!!(document.getElementById("f-url") && document.getElementById("update-card")?.children.length)`), "设置页（添加服务器表单、更新）");
+    const text = await js(`document.getElementById("panel").innerText`);
+    const junk = /.{0,20}(\bnull\b|\[object [^\]]*\]|undefined).{0,20}/.exec(text);
+    if (junk) return fail(`设置页里有渲染残渣：「${junk[0]}」`);
+
+    const pop = openPopover();
+    await until(() => pop.executeJavaScript(`!!document.querySelector(".head .title")`), "菜单栏面板");
+
+    await sleep(500);
+    if (errors.length) return fail("界面里有脚本报错");
+    console.log("冒烟测试通过：向导、设置页、菜单栏面板都正常");
+    app.exit(0);
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+}

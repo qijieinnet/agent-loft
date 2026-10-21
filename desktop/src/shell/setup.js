@@ -137,7 +137,7 @@ function renderWizard() {
   if (wiz.built === wiz.step && (wiz.step === "password" || wiz.step === "agents")) return;
   wiz.built = wiz.step;
   const body = wiz.step === "password" ? wizardPassword() : wiz.step === "agents" ? wizardAgents() : wiz.step === "working" ? wizardWorking() : wizardChoose();
-  $panfill(el, h("div", { class: "panel-inner wizard" }, body));
+  $panel.replaceChildren(h("div", { class: "panel-inner wizard" }, body));
 }
 
 function wizardChoose() {

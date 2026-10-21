@@ -31,7 +31,8 @@ import {
 } from "./servers.js";
 import { loadStore, store } from "./store.js";
 import { applyUpdate, checkUpdates, local, loginAgent, refreshLocal, scheduleUpdates, system, systemState } from "./system.js";
-import { createTray, hidePopover, popoverHover, popoverResize, popoverWebContents, updateTray } from "./tray.js";
+import { runSmoke, prepareSmoke, smoke } from "./smoke.js";
+import { createTray, hidePopover, openPopoverForTest, popoverHover, popoverResize, popoverWebContents, updateTray } from "./tray.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 /** 左侧服务器栏的宽度，和 shell/shell.css 里的 --rail 一致 */
@@ -49,6 +50,7 @@ let quitting = false;
 
 // 开发时用另一个配置目录，不碰日常在用的那份
 if (process.env.AGENT_LOFT_DESKTOP_HOME) app.setPath("userData", path.resolve(process.env.AGENT_LOFT_DESKTOP_HOME));
+if (smoke) prepareSmoke();
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
@@ -562,5 +564,6 @@ app.whenReady().then(() => {
   // 在线状态每分钟看一次（只打公开的 /api/me）
   setInterval(() => refreshAll(), 60_000);
   scheduleUpdates();
-  if (app.isPackaged && store.prefs().autoUpdate) setTimeout(() => void checkUpdates(), 15_000);
+  if (app.isPackaged && store.prefs().autoUpdate && !smoke) setTimeout(() => void checkUpdates(), 15_000);
+  if (smoke) void runSmoke({ openPopover: openPopoverForTest });
 });
