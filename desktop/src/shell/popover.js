@@ -1,4 +1,4 @@
-// 菜单栏面板：各服务器的额度、待处理、运行中。悬停弹出（不抢焦点），点击固定。
+// 菜单栏面板：各服务器的额度、待处理、运行中。鼠标移到菜单栏图标上弹出（不抢焦点），点击固定。
 
 const $root = document.getElementById("root");
 const call = (method, ...args) => window.loft.call(method, ...args);
@@ -16,8 +16,15 @@ function render() {
 
   fill(
     $root,
-    h("div", { class: "head" }, h("span", { class: "title" }, "Agent Loft"), lastAt ? h("span", { class: "ago" }, `更新于${agoText(lastAt)}`) : null, refreshBtn),
-    state.servers.length ? state.servers.map((s) => serverBlock(s, dup)) : h("div", { class: "empty" }, "还没有添加服务器"),
+    h(
+      "div",
+      { class: "head" },
+      h("img", { class: "logo", src: "../../assets/icon.png", alt: "" }),
+      h("span", { class: "title" }, "Agent Loft"),
+      lastAt ? h("span", { class: "ago" }, `${agoText(lastAt)}更新`) : null,
+      refreshBtn,
+    ),
+    h("div", { class: "servers" }, state.servers.length ? state.servers.map((s) => serverBlock(s, dup)) : h("div", { class: "empty" }, "还没有添加服务器")),
     h(
       "div",
       { class: "foot" },
@@ -31,17 +38,18 @@ function render() {
 
 function serverBlock(s, dup) {
   const meta = [];
-  if (s.busy) meta.push(`${s.busy} 个运行中`);
-  if (s.status !== "online") meta.push(STATUS_TEXT[s.status] ?? s.status);
+  if (s.busy) meta.push(h("span", { class: "chip busy" }, h("i", { class: "pulse" }), `${s.busy} 个运行中`));
+  if (s.status !== "online") meta.push(h("span", { class: `chip state ${s.status}` }, h("span", { class: `dot ${s.status}` }), STATUS_TEXT[s.status] ?? s.status));
   const block = h(
     "div",
     { class: "server" },
     h(
       "button",
-      { class: "server-head", style: { width: "100%" }, title: `打开 ${s.name}`, onclick: () => call("open", s.id) },
+      { class: "server-head", title: `打开 ${s.name}`, onclick: () => call("open", s.id) },
       serverIcon(s, "av"),
       h("span", { class: "name" }, s.name),
-      h("span", { class: "meta" }, meta.join(" · "), h("span", { class: `dot ${s.status}` })),
+      meta,
+      h("span", { class: "chev" }, "›"),
     ),
   );
 
@@ -71,7 +79,7 @@ function serverBlock(s, dup) {
   if (s.server?.updateAvailable && s.server.canUpgrade) {
     block.append(h("button", { class: "note update-note", onclick: () => call("manage") }, `服务端有新版本 ${s.server.latest}，点这里去升级`));
   }
-    if (s.pending.length) {
+  if (s.pending.length) {
     const shown = s.pending.slice(0, 4);
     block.append(
       h(
@@ -81,7 +89,6 @@ function serverBlock(s, dup) {
           h(
             "button",
             { title: `${p.conv}：${p.title}`, onclick: () => call("open", s.id, p.key) },
-            h("span", { class: "dot login" }),
             h("span", { class: "what" }, p.title),
             h("span", { class: "conv" }, p.conv),
           ),

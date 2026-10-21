@@ -1,18 +1,36 @@
-/* 窗口本身是 macOS 的 popover 毛玻璃，页面背景保持透明 */
+/* 窗口本身是 macOS 的 popover 毛玻璃，页面背景保持透明；每台服务器一张半透明的卡片 */
+:root {
+  --card: rgba(255, 255, 255, 0.62);
+  --card-line: rgba(0, 0, 0, 0.06);
+  --card-hover: rgba(0, 0, 0, 0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --card: rgba(255, 255, 255, 0.06);
+    --card-line: rgba(255, 255, 255, 0.07);
+    --card-hover: rgba(255, 255, 255, 0.06);
+  }
+}
+
 body {
   overflow: hidden;
 }
 #root {
-  padding: 6px 0 4px;
+  padding: 10px 10px 8px;
 }
 
 .head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 14px 8px;
+  padding: 2px 4px 10px;
+}
+.head .logo {
+  width: 18px;
+  height: 18px;
 }
 .head .title {
+  font-size: 13.5px;
   font-weight: 650;
   flex: 1;
 }
@@ -41,27 +59,35 @@ body {
   }
 }
 
-.server {
-  margin: 0 6px;
-  padding: 8px;
-  border-radius: 10px;
+.servers {
+  display: grid;
+  gap: 8px;
 }
-.server + .server {
-  margin-top: 2px;
+
+/* ---------- 一台服务器 ---------- */
+
+.server {
+  padding: 4px 12px 12px;
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 0 0 0.5px var(--card-line), 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .server-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 2px 6px;
-  border-radius: 6px;
+  width: calc(100% + 12px);
+  height: 36px;
+  margin: 0 -6px;
+  padding: 0 6px;
+  border-radius: 8px;
 }
 .server-head:hover {
-  background: var(--hover);
+  background: var(--card-hover);
 }
 .server-head .av {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 6px;
   display: grid;
   place-items: center;
@@ -70,54 +96,163 @@ body {
   font-weight: 650;
   flex: none;
 }
+.server-head .av.emoji {
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+}
 .server-head .name {
+  font-size: 13.5px;
   font-weight: 600;
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
 }
-.server-head .meta {
-  color: var(--fg-2);
-  font-size: 11px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
+.server-head .chev {
+  color: var(--fg-3);
+  font-size: 16px;
+  line-height: 1;
+  margin-left: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.server-head:hover .chev {
+  opacity: 1;
 }
 
+.chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chip .dot {
+  width: 6px;
+  height: 6px;
+}
+.chip.busy {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.chip.busy .pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.chip.state {
+  color: var(--fg-2);
+  background: var(--track);
+}
+.chip.state.login,
+.chip.state.setup,
+.chip.state.access {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 13%, transparent);
+}
+.chip.state.offline {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 11%, transparent);
+}
+
+/* ---------- 额度 ---------- */
+
 .quota {
-  padding: 4px 2px 2px 30px;
+  margin-top: 6px;
+}
+.quota + .quota,
+.same + .quota,
+.quota + .same {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--line);
 }
 .quota-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   margin-bottom: 2px;
-  font-size: 12px;
 }
 .quota-head .agent {
+  font-size: 12px;
   font-weight: 600;
 }
 .quota-head .plan {
-  color: var(--fg-3);
-  font-size: 11px;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--track);
+  color: var(--fg-2);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 16px;
+  text-transform: capitalize;
 }
 .quota-head .reached {
+  margin-left: auto;
   color: var(--bad);
   font-size: 11px;
-  margin-left: auto;
+  font-weight: 600;
 }
-.quota-extra {
-  font-size: 11px;
+.quota-row {
+  margin-top: 8px;
 }
-.same {
-  padding: 4px 2px 2px 30px;
+.quota-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 5px;
   font-size: 12px;
+  line-height: 1.2;
+}
+.quota-line .label {
   color: var(--fg-2);
 }
+.quota-line .reset {
+  margin-left: auto;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.quota-line .pct {
+  min-width: 34px;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.quota-line .label + .pct {
+  margin-left: auto;
+}
+.quota-row.warn .pct {
+  color: var(--warn);
+}
+.quota-row.bad .pct {
+  color: var(--bad);
+}
+.quota-extra {
+  margin-top: 6px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.same,
 .note {
-  padding: 2px 2px 2px 30px;
+  margin-top: 4px;
   font-size: 12px;
   color: var(--fg-2);
 }
@@ -125,52 +260,59 @@ body {
   color: var(--warn);
 }
 
+/* ---------- 待处理 ---------- */
+
 .pending {
-  margin: 6px 0 0 28px;
+  margin-top: 10px;
   display: grid;
-  gap: 2px;
+  gap: 4px;
 }
 .pending button {
   display: flex;
   align-items: center;
   gap: 8px;
-  text-align: left;
-  padding: 5px 8px;
+  height: 28px;
+  padding: 0 10px;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  text-align: left;
+  background: color-mix(in srgb, var(--warn) 11%, transparent);
+  box-shadow: inset 2px 0 0 var(--warn);
   font-size: 12px;
   min-width: 0;
 }
 .pending button:hover {
-  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  background: color-mix(in srgb, var(--warn) 19%, transparent);
 }
 .pending .what {
   flex: 1;
   min-width: 0;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .pending .conv {
   color: var(--fg-2);
-  max-width: 40%;
+  max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .empty {
-  padding: 18px 16px;
+  padding: 22px 16px;
+  border-radius: 12px;
+  background: var(--card);
   text-align: center;
   color: var(--fg-2);
 }
 
+/* ---------- 底部 ---------- */
+
 .foot {
   display: flex;
-  gap: 2px;
-  margin: 6px 6px 0;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
+  gap: 4px;
+  margin-top: 8px;
 }
 .foot button {
   flex: 1;
@@ -207,14 +349,10 @@ body {
 
 .update-note {
   display: block;
+  margin-top: 10px;
   color: var(--accent);
   text-align: left;
 }
 .update-note:hover {
   text-decoration: underline;
-}
-
-.server-head .av.emoji {
-  background: transparent;
-  font-size: 16px;
 }

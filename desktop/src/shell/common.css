@@ -1,4 +1,4 @@
-/* 侧栏和菜单栏面板共用的颜色和基础样式。配色和 Web 界面的蓝青渐变一致。 */
+/* 主窗口和菜单栏面板共用的颜色和基础样式。配色和 Web 界面的蓝青渐变一致。 */
 :root {
   color-scheme: light dark;
   --fg: #1d1d1f;
@@ -120,24 +120,8 @@ input {
 }
 
 /* 额度条 */
-.quota-row {
-  display: grid;
-  grid-template-columns: 26px 1fr 38px;
-  align-items: center;
-  gap: 8px;
-  height: 18px;
-}
-.quota-row .short {
-  color: var(--fg-2);
-  font-size: 11px;
-}
-.quota-row .pct {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-}
 .bar {
-  height: 6px;
+  height: 5px;
   border-radius: 3px;
   background: var(--track);
   overflow: hidden;
@@ -147,10 +131,11 @@ input {
   height: 100%;
   border-radius: 3px;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.3s ease;
 }
-.bar.warn > i {
+.warn > .bar > i {
   background: var(--warn);
 }
-.bar.bad > i {
+.bad > .bar > i {
   background: var(--bad);
 }

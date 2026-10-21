@@ -1,54 +1,47 @@
-// 左侧服务器栏 + 右侧面板（服务器管理、连不上、证书确认）。
-// 当前服务器正常时，右侧被服务器自己的页面盖住，这里的面板看不到。
+// 顶栏（服务器标签、设置）+ 下面的面板（服务器管理、连不上、证书确认）。
+// 当前服务器正常时，面板被服务器自己的页面盖住，看不到。
 
 let state = null;
 const $servers = document.getElementById("servers");
 const $panel = document.getElementById("panel");
-const $add = document.getElementById("add");
 const $settings = document.getElementById("settings");
 
 const call = (method, ...args) => window.loft.call(method, ...args);
 
-// ---------- 服务器栏 ----------
+// ---------- 顶栏 ----------
 
-function renderRail() {
+function renderBar() {
+  document.body.classList.toggle("fullscreen", !!state.fullscreen);
   $servers.replaceChildren(
     ...state.servers.map((s) => {
       const active = s.id === state.activeId && !state.managing;
       const count = s.unread || s.pending.length;
-      // 只显示图标；名称在鼠标移上来时由主进程的小气泡显示（画在这个页面里会被右边的服务器页面挡住）
+      const detail = [STATUS_TEXT[s.status] ?? s.status, s.busy ? `${s.busy} 个运行中` : "", s.pending.length ? `${s.pending.length} 个待处理` : ""]
+        .filter(Boolean)
+        .join(" · ");
       return h(
         "button",
-        {
-          class: `srv ${s.status} ${active ? "active" : ""}`,
-          "aria-label": s.name,
-          onclick: () => call("select", s.id),
-          onmouseenter: (e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            void call("hoverLabel", { id: s.id, rect: { top: r.top, right: r.right, height: r.height } });
-          },
-          onmouseleave: () => void call("hoverLabel", null),
-        },
+        { class: `tab ${s.status} ${active ? "active" : ""}`, title: `${s.name}\n${detail}`, onclick: () => call("select", s.id) },
         serverIcon(s, "avatar"),
-        h("span", { class: `status dot ${s.status}` }),
+        h("span", { class: "name" }, s.name),
+        h("span", { class: `status` }),
         count ? h("span", { class: `badge ${s.unread ? "" : "pending"}` }, count > 99 ? "99+" : count) : null,
       );
     }),
   );
+  // 选中的标签滚进可见范围（标签多、窗口窄时）
+  $servers.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   $settings.classList.toggle("on", state.managing);
-  // 还没有服务器时不要那条分隔线
-  document.getElementById("rail-divider").hidden = state.servers.length === 0;
   // 有新版本：齿轮上一个小红点
   $settings.classList.toggle("has-update", !!state.system.update.available || state.servers.some((s) => s.server?.updateAvailable && s.server.canUpgrade));
 }
 
-$add.addEventListener("click", () => void openServerDialog(null));
 $settings.addEventListener("click", () => {
   if (state.managing && state.activeId) void call("select", state.activeId);
   else void call("manage");
 });
 
-// ---------- 右侧面板 ----------
+// ---------- 下面的面板 ----------
 
 let mode = null;
 
@@ -153,7 +146,7 @@ function renderManage() {
           "div",
           { style: { textAlign: "center", padding: "6vh 0 8px" } },
           h("h1", {}, "连接你的 agent-loft"),
-          h("p", { class: "muted" }, "填上运行 agent-loft 的机器地址。可以添加多台，在左边切换。"),
+          h("p", { class: "muted" }, "填上运行 agent-loft 的机器地址。可以添加多台，在顶栏切换。"),
           h("button", { class: "btn primary", style: { marginTop: "10px" }, onclick: () => openServerDialog(null) }, "添加服务器"),
         )
       : h(
@@ -286,7 +279,7 @@ function renderPrefs() {
 
 function render() {
   if (!state) return;
-  renderRail();
+  renderBar();
   renderPanel();
 }
 

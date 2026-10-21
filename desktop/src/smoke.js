@@ -4,7 +4,6 @@
 // 首次启动向导 → 点「只连接其他服务器」→ 设置页的各个区块 → 菜单栏面板。
 // 这些界面是普通脚本拼的，没有类型检查，改坏了只会表现成「一片空白、点什么都没反应」。
 import { app, webContents } from "electron";
-import { tooltipText } from "./tray.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -77,7 +76,7 @@ export async function runSmoke({ openPopover }) {
       throw new Error(`${err.message}（弹窗里的错误：${await js(`document.querySelector(".dialog .error-text")?.textContent`)}）`);
     });
     await until(() => js(`document.getElementById("panel").innerText.includes("冒烟测试")`), "服务器列表里的新服务器");
-    if (!(await js(`[...document.querySelectorAll("#servers .avatar")].some((a) => a.textContent === "🚀")`))) return fail("左侧栏没有显示选的图标 🚀");
+    if (!(await js(`[...document.querySelectorAll("#servers .tab")].some((t) => t.textContent.includes("🚀") && t.textContent.includes("冒烟测试"))`))) return fail("顶栏没有显示选的图标 🚀 和名称");
     junk = junkIn(await js(`document.getElementById("panel").innerText`));
     if (junk) return fail(`设置页（有服务器时）里有渲染残渣：「${junk}」`);
 
@@ -85,21 +84,6 @@ export async function runSmoke({ openPopover }) {
     await until(() => pop.executeJavaScript(`document.body.innerText.includes("冒烟测试")`), "菜单栏面板里的服务器");
     junk = junkIn(await pop.executeJavaScript("document.body.innerText"));
     if (junk) return fail(`菜单栏面板里有渲染残渣：「${junk}」`);
-
-    // 悬停提示：用一份典型的额度数据检查拼出来的文字
-    const tip = tooltipText([
-      {
-        name: "本机",
-        status: "online",
-        busy: 1,
-        pending: [{ id: "1" }],
-        quotaAt: Date.now(),
-        quotas: [{ agent: "codex", label: "Codex", plan: "plus", windows: [{ label: "5 小时", short: "5h", percent: 12.4, resetsAt: Date.now() + 3600_000 }] }],
-      },
-      { name: "公司", status: "offline", busy: 0, pending: [] },
-    ]);
-    junk = junkIn(tip);
-    if (junk || !tip.includes("12%") || !tip.includes("公司 · 连不上")) return fail(`悬停提示不对：\n${tip}`);
 
     await sleep(500);
     if (errors.length) return fail("界面里有脚本报错");

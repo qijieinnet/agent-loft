@@ -1,13 +1,12 @@
 // Agent Loft 桌面端（macOS）。
 //
-// 一个窗口：左边一条窄的服务器栏（本地页面 shell/index.html），右边是当前服务器自己的
-// Web 界面。每台服务器的页面常驻后台，WebSocket 一直连着；服务器推来的提醒由页面经
+// 一个窗口：顶上一条服务器标签栏（本地页面 shell/index.html，红绿灯也在这条里），下面整块是
+// 当前服务器自己的 Web 界面。每台服务器的页面常驻后台，WebSocket 一直连着；服务器推来的提醒由页面经
 // preload 转给这里，弹 macOS 系统通知（桌面端收不到 Web Push）。菜单栏另有图标，
-// 悬停显示各服务器的额度和待处理（见 tray.js）。
+// 鼠标移上去弹出各服务器的额度和待处理（见 tray.js）。
 import { app, BaseWindow, dialog, ipcMain, Menu, Notification, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { hideHoverLabel, showHoverLabel } from "./hover-label.js";
 import { localUrl, readSetupToken } from "./local-server.js";
 import {
   addUnread,
@@ -33,11 +32,11 @@ import {
 import { loadStore, store } from "./store.js";
 import { applyUpdate, checkUpdates, local, loginAgent, refreshLocal, scheduleUpdates, system, systemState } from "./system.js";
 import { runSmoke, prepareSmoke, smoke } from "./smoke.js";
-import { createTray, hidePopover, openPopoverForTest, popoverResize, popoverWebContents, updateTray } from "./tray.js";
+import { createTray, hidePopover, openPopoverForTest, popoverResize, popoverWebContents } from "./tray.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-/** 左侧服务器栏的宽度，和 shell/shell.css 里的 --rail 一致 */
-const RAIL = 88;
+/** 顶栏的高度，和 shell/shell.css 里的 --bar 一致 */
+const BAR = 40;
 
 /** @type {BaseWindow | null} */
 let win = null;
@@ -45,7 +44,7 @@ let win = null;
 let shellView = null;
 /** @type {string | null} */
 let activeId = null;
-/** 侧栏正显示「服务器管理」面板（这时不挂服务器页面） */
+/** 正显示「服务器管理」面板（这时不挂服务器页面） */
 let managing = false;
 let quitting = false;
 
@@ -77,6 +76,8 @@ function snapshot() {
     onboarded: store.onboarded(),
     localId: localServerId(),
     system: systemState(),
+    // 全屏时没有红绿灯，顶栏左边不用让位
+    fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(),
   };
 }
 
@@ -102,7 +103,6 @@ function broadcast() {
   for (const wc of [shellView?.webContents, popoverWebContents()]) {
     if (wc && !wc.isDestroyed()) wc.send("shell:state", state);
   }
-  updateTray(state);
   const unread = state.servers.reduce((n, s) => n + s.unread, 0);
   app.dock?.setBadge(unread ? String(unread) : "");
   layout();
@@ -145,7 +145,8 @@ function createWindow() {
     show: false,
     title: "Agent Loft",
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 20, y: 20 },
+    // 红绿灯竖直居中在顶栏里（按钮约 14px 高）
+    trafficLightPosition: { x: 14, y: (BAR - 14) / 2 },
     vibrancy: "sidebar",
     backgroundColor: "#00000000",
   });
@@ -167,9 +168,8 @@ function createWindow() {
   });
 
   win.on("resize", layout);
+  for (const ev of ["enter-full-screen", "leave-full-screen"]) win.on(ev, broadcast);
   for (const ev of ["resized", "moved"]) win.on(ev, saveBounds);
-  win.on("blur", hideHoverLabel);
-  win.on("hide", hideHoverLabel);
   win.on("focus", () => {
     if (activeId && !managing) {
       clearUnread(activeId);
@@ -196,7 +196,7 @@ function saveBounds() {
   }, 500);
 }
 
-/** 右边挂当前服务器的页面；管理面板、连不上时只显示侧栏自己的内容 */
+/** 顶栏下面挂当前服务器的页面；管理面板、连不上时只显示桌面端自己的内容 */
 function layout() {
   if (!win || win.isDestroyed() || !shellView) return;
   const { width, height } = win.getContentBounds();
@@ -207,7 +207,7 @@ function layout() {
   }
   if (want) {
     if (!win.contentView.children.includes(want)) win.contentView.addChildView(want);
-    want.setBounds({ x: RAIL, y: 0, width: Math.max(0, width - RAIL), height });
+    want.setBounds({ x: 0, y: BAR, width, height: Math.max(0, height - BAR) });
   }
 }
 
@@ -220,7 +220,6 @@ function showMain() {
 
 function select(id) {
   if (id && !store.server(id)) return;
-  hideHoverLabel();
   activeId = id;
   managing = !id;
   if (id) {
@@ -233,7 +232,6 @@ function select(id) {
 }
 
 function showManage(what = "manage") {
-  hideHoverLabel();
   showMain();
   managing = true;
   broadcast();
@@ -352,7 +350,7 @@ ipcMain.on("page:quota", (e, quotas) => {
   if (id) setPageQuota(id, quotas);
 });
 
-// ---------- 侧栏和菜单栏面板发来的（经 preload-shell.cjs） ----------
+// ---------- 主窗口和菜单栏面板发来的（经 preload-shell.cjs） ----------
 
 /** 只接受桌面端自己的本地页面 */
 function fromShell(e) {
@@ -504,18 +502,6 @@ const calls = {
   applyUpdate: () => applyUpdate(quit),
 
   popoverResize: (height) => popoverResize(Number(height) || 0),
-  /** 侧栏里鼠标移到某台服务器的图标上（null = 移开了）。名称和状态由这里按 id 取，不信页面传的文字 */
-  hoverLabel: (info) => {
-    const server = info && store.server(info.id);
-    if (!server || !win) return hideHoverLabel();
-    const r = rt(server.id);
-    const STATUS = { online: "在线", login: "需要登录", setup: "还没设置密码", offline: "连不上", unknown: "连接中", access: "需要验证" };
-    const detail = [STATUS[r.status] ?? r.status, r.busy ? `${r.busy} 个运行中` : "", r.pending.length ? `${r.pending.length} 个待处理` : ""]
-      .filter(Boolean)
-      .join(" · ");
-    const rect = { top: Number(info.rect?.top) || 0, right: Number(info.rect?.right) || RAIL, height: Number(info.rect?.height) || 0 };
-    void showHoverLabel(win, { rect, name: server.name, detail, tone: r.status });
-  },
   quit: () => quit(),
 };
 
@@ -570,7 +556,7 @@ app.whenReady().then(() => {
   for (const s of store.servers()) viewFor(s.id);
   const last = store.lastActive();
   activeId = last && store.server(last) ? last : (store.servers()[0]?.id ?? null);
-  // 还没走过首次启动向导：侧栏显示向导
+  // 还没走过首次启动向导：主窗口显示向导
   managing = !activeId || !store.onboarded();
 
   createWindow();

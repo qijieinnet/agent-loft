@@ -1,4 +1,4 @@
-// 侧栏面板里的几块「系统」界面：首次启动向导、本机服务端、Agent 环境、服务端版本、桌面端更新。
+// 主窗口面板里的几块「系统」界面：首次启动向导、本机服务端、Agent 环境、服务端版本、桌面端更新。
 // 普通脚本，和 shell.js 共用全局的 h / call / state（shell.js 在后面加载，这里的函数都是调用时才用到它们）。
 
 const errText = (err) => String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
@@ -294,7 +294,7 @@ function renderLocalCard(el) {
   if (!L) {
     [title, sub, dot] = ["检测中…", "", "unknown"];
   } else if (busy === "install") {
-    [title, sub, dot] = ["正在安装…", "安装在「终端」窗口里进行，装好后会自动加到左边。", "unknown"];
+    [title, sub, dot] = ["正在安装…", "安装在「终端」窗口里进行，装好后会自动加到顶栏。", "unknown"];
   } else if (L.running) {
     title = busy === "restart" ? "正在重启…" : busy === "uninstall" ? "正在停止…" : L.service ? "运行中 · 开机自动运行" : "运行中（手动启动的，没有开机自启）";
     sub = L.url;

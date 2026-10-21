@@ -16,7 +16,7 @@ let dialogClose = null;
 /** 打开弹窗：s 为空是添加，否则编辑 s */
 async function openServerDialog(s) {
   dialogClose?.();
-  // 弹窗画在侧栏页面里：右边要是挂着服务器页面会把它挡住，先切到管理面板
+  // 弹窗画在桌面端自己的页面里：下面要是挂着服务器页面会把它挡住，先切到管理面板
   if (!state.managing) await call("manage");
 
   let icon = s?.icon ?? (s ? "" : "🖥️");
@@ -118,7 +118,7 @@ async function openServerDialog(s) {
       h("div", { class: "icon-pick" }, preview, h("div", { class: "icon-side" }, grid, custom)),
     ),
     h("div", { class: "field" }, h("label", { for: "d-url" }, "地址"), url),
-    h("div", { class: "field" }, h("label", { for: "d-name" }, "名称（可选，鼠标移到左侧图标上时显示）"), name),
+    h("div", { class: "field" }, h("label", { for: "d-name" }, "名称（可选，显示在顶栏上）"), name),
     advanced,
     error,
     h(

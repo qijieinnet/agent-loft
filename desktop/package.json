@@ -1,7 +1,7 @@
 {
   "name": "agent-loft-desktop",
   "productName": "Agent Loft",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "agent-loft 的 macOS 桌面端：同时连多台 agent-loft 服务器，菜单栏显示额度和待处理，检测并升级服务端",
   "author": "qijieinnet",

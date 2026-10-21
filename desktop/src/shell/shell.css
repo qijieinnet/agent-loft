@@ -1,210 +1,226 @@
+/* 顶栏高度，和 main.js 里的 BAR 一致；红绿灯竖直居中在这一条里 */
 :root {
-  --rail: 88px;
+  --bar: 40px;
 }
 
 body {
   display: flex;
+  flex-direction: column;
 }
 
-/* ---------- 左侧服务器栏 ----------
- * 透出窗口的毛玻璃（vibrancy: sidebar），图标不带框；悬停一层淡淡的底，
- * 选中是浮起来的白色圆角块，和 macOS 侧栏 / 分段控件一个路子。
- * 状态只在有问题时出现：连不上变灰，要登录 / 验证挂个小橙点。 */
+/* ---------- 顶栏：服务器标签 ----------
+ * 透出窗口的毛玻璃（vibrancy），标签不带框；悬停一层淡淡的底，选中是浮起来的白色圆角块，
+ * 和 Safari 的标签栏、macOS 分段控件一个路子。
+ * 状态只在有问题时出现：连不上整块变淡，要登录 / 验证在名称后挂个小橙点。 */
 
 :root {
-  --rail-hover: rgba(0, 0, 0, 0.055);
-  --rail-press: rgba(0, 0, 0, 0.09);
-  --rail-active: rgba(255, 255, 255, 0.92);
-  --rail-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.07);
-  --rail-icon: rgba(0, 0, 0, 0.5);
-  --rail-divider: rgba(0, 0, 0, 0.08);
+  --tab-hover: rgba(0, 0, 0, 0.05);
+  --tab-press: rgba(0, 0, 0, 0.085);
+  --tab-active: rgba(255, 255, 255, 0.95);
+  --tab-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+  --bar-icon: rgba(0, 0, 0, 0.5);
   --badge-red: #ff3b30;
   --badge-orange: #ff9500;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --rail-hover: rgba(255, 255, 255, 0.07);
-    --rail-press: rgba(255, 255, 255, 0.11);
-    --rail-active: rgba(255, 255, 255, 0.15);
-    --rail-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), inset 0 0.5px 0 rgba(255, 255, 255, 0.1);
-    --rail-icon: rgba(255, 255, 255, 0.55);
-    --rail-divider: rgba(255, 255, 255, 0.1);
+    --tab-hover: rgba(255, 255, 255, 0.07);
+    --tab-press: rgba(255, 255, 255, 0.11);
+    --tab-active: rgba(255, 255, 255, 0.14);
+    --tab-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), inset 0 0.5px 0 rgba(255, 255, 255, 0.1);
+    --bar-icon: rgba(255, 255, 255, 0.55);
   }
 }
 
-.rail {
-  width: var(--rail);
+.topbar {
+  height: var(--bar);
   flex: none;
   display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 4px;
-  padding-bottom: 12px;
+  /* 左边让出红绿灯，和第一个标签之间留点空 */
+  padding: 0 8px 0 86px;
   -webkit-app-region: drag;
 }
-.rail-top {
-  height: 48px;
-  flex: none;
+/* 全屏时没有红绿灯 */
+body.fullscreen .topbar {
+  padding-left: 12px;
 }
-.rail-fill {
-  flex: 1;
-}
-.servers {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-.rail button {
+.topbar button {
   -webkit-app-region: no-drag;
 }
-.rail-divider {
-  width: 22px;
-  height: 1px;
-  margin: 6px 0;
-  background: var(--rail-divider);
+.bar-fill {
+  flex: 1;
+  min-width: 12px;
+  align-self: stretch;
+}
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  /* 标签多了横向滚，留出选中块的阴影 */
+  padding: 3px 2px;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 
 /* 一台服务器 */
-.srv {
+.tab {
   position: relative;
-  width: 48px;
-  height: 48px;
-  border-radius: 13px;
-  display: grid;
-  place-items: center;
-  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 180px;
+  padding: 0 10px 0 7px;
+  border-radius: 7px;
+  color: var(--fg-2);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
 }
-.srv:hover {
-  background: var(--rail-hover);
+.tab:hover {
+  background: var(--tab-hover);
+  color: var(--fg);
 }
-.srv:active {
-  background: var(--rail-press);
+.tab:active {
+  background: var(--tab-press);
 }
-.srv.active {
-  background: var(--rail-active);
-  box-shadow: var(--rail-active-shadow);
+.tab.active {
+  background: var(--tab-active);
+  box-shadow: var(--tab-active-shadow);
+  color: var(--fg);
 }
-.srv .avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
+.tab .avatar {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
   display: grid;
   place-items: center;
   color: #fff;
-  font-weight: 600;
-  font-size: 13px;
+  font-weight: 650;
+  font-size: 8px;
   letter-spacing: 0.01em;
   transition: transform 0.12s ease, filter 0.2s ease, opacity 0.2s ease;
 }
-.srv:active .avatar {
-  transform: scale(0.92);
+.tab:active .avatar {
+  transform: scale(0.9);
 }
-.srv .avatar.emoji {
-  width: auto;
-  height: auto;
+.tab .avatar.emoji {
   background: none;
-  font-size: 26px;
+  font-size: 14px;
   line-height: 1;
 }
-/* 连不上 / 还在连：图标褪色 */
-.srv.offline .avatar,
-.srv.unknown .avatar {
-  filter: grayscale(1);
-  opacity: 0.45;
+.tab .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
 }
-.srv.active.offline .avatar {
+.tab.active .name {
+  font-weight: 600;
+}
+/* 连不上 / 还在连：整块褪色 */
+.tab.offline .avatar,
+.tab.unknown .avatar {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+.tab.offline .name,
+.tab.unknown .name {
   opacity: 0.6;
 }
 /* 状态点只给「要你处理」的：需要登录、没设密码、要过网关验证 */
-.srv .status {
+.tab .status {
   display: none;
-  position: absolute;
-  right: 7px;
-  bottom: 7px;
-  width: 9px;
-  height: 9px;
+  flex: none;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--badge-orange);
-  box-shadow: 0 0 0 2px var(--bg-2);
 }
-.srv.login .status,
-.srv.setup .status,
-.srv.access .status {
+.tab.login .status,
+.tab.setup .status,
+.tab.access .status {
   display: block;
 }
 /* 未读 / 待处理数 */
-.srv .badge {
-  position: absolute;
-  top: 3px;
-  right: 2px;
-  min-width: 17px;
-  height: 17px;
+.tab .badge {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  margin-right: -4px;
   padding: 0 5px;
   border-radius: 9px;
   background: var(--badge-red);
   color: #fff;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
-  line-height: 17px;
+  line-height: 16px;
   text-align: center;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 0 0 2px var(--bg-2);
 }
-.srv .badge.pending {
+.tab .badge.pending {
   background: var(--badge-orange);
 }
 
-/* 添加、设置：轻量的线条图标按钮 */
-.rail-btn {
+/* 设置：轻量的线条图标按钮 */
+.bar-btn {
   position: relative;
-  width: 40px;
-  height: 40px;
-  border-radius: 11px;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
   display: grid;
   place-items: center;
-  color: var(--rail-icon);
+  color: var(--bar-icon);
   transition: background-color 0.15s ease, color 0.15s ease;
 }
-.rail-btn:hover {
-  background: var(--rail-hover);
+.bar-btn:hover {
+  background: var(--tab-hover);
   color: var(--fg);
 }
-.rail-btn:active {
-  background: var(--rail-press);
+.bar-btn:active {
+  background: var(--tab-press);
 }
-.rail-btn.on {
-  background: var(--rail-active);
-  box-shadow: var(--rail-active-shadow);
+.bar-btn.on {
+  background: var(--tab-active);
+  box-shadow: var(--tab-active-shadow);
   color: var(--accent);
 }
 /* 有新版本：齿轮右上角一个小红点 */
-.rail-btn.has-update::after {
+.bar-btn.has-update::after {
   content: "";
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 3px;
+  right: 3px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--badge-red);
-  box-shadow: 0 0 0 2px var(--bg-2);
+  box-shadow: 0 0 0 1.5px var(--bg-2);
 }
 
-/* ---------- 右侧面板（管理 / 连不上 / 证书） ---------- */
+/* ---------- 下面的面板（管理 / 连不上 / 证书） ---------- */
 
 .panel {
   flex: 1;
-  min-width: 0;
+  min-height: 0;
   background: var(--bg);
-  border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line);
   overflow-y: auto;
   -webkit-app-region: no-drag;
 }
 .panel-inner {
   max-width: 640px;
   margin: 0 auto;
-  padding: 48px 32px 64px;
+  padding: 36px 32px 64px;
 }
 .panel h1 {
   font-size: 22px;
@@ -674,11 +690,3 @@ details.advanced .field input {
   border-color: var(--accent);
 }
 
-.drag-strip {
-  position: fixed;
-  top: 0;
-  left: var(--rail);
-  right: 0;
-  height: 38px;
-  -webkit-app-region: drag;
-}

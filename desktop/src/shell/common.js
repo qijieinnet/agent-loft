@@ -1,4 +1,4 @@
-// 侧栏和菜单栏面板共用的小工具（普通脚本，挂在全局上）。
+// 主窗口和菜单栏面板共用的小工具（普通脚本，挂在全局上）。
 
 /** 建 DOM：h("div", { class: "x", onclick }, "文字", child) */
 function h(tag, attrs = {}, ...children) {
@@ -59,7 +59,11 @@ function agoText(at) {
   return `${Math.floor(s / 3600)} 小时前`;
 }
 
-/** 一个 agent 的额度：每个窗口一行进度条 */
+/**
+ * 一个 agent 的额度：标题一行（名称、套餐），每个额度窗口两行——
+ *   5 小时                15:20 重置    12%
+ *   ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+ */
 function quotaBlock(q) {
   return h(
     "div",
@@ -76,13 +80,18 @@ function quotaBlock(q) {
       const level = pct >= 90 ? "bad" : pct >= 70 ? "warn" : "";
       return h(
         "div",
-        { class: "quota-row", title: `${w.label}：已用 ${pct}%${w.resetsAt ? `，${resetText(w.resetsAt)}` : ""}` },
-        h("span", { class: "short" }, w.short),
-        h("div", { class: `bar ${level}` }, h("i", { style: { width: `${pct}%` } })),
-        h("span", { class: "pct" }, `${pct}%`),
+        { class: `quota-row ${level}`, title: `${w.label}：已用 ${pct}%${w.resetsAt ? `，${resetText(w.resetsAt)}` : ""}` },
+        h(
+          "div",
+          { class: "quota-line" },
+          h("span", { class: "label" }, w.label || w.short),
+          w.resetsAt ? h("span", { class: "reset" }, resetText(w.resetsAt)) : null,
+          h("span", { class: "pct" }, `${pct}%`),
+        ),
+        h("div", { class: "bar" }, h("i", { style: { width: `${Math.max(pct, pct ? 2 : 0)}%` } })),
       );
     }),
-    q.extra ? h("div", { class: "quota-extra muted" }, q.extra) : null,
+    q.extra ? h("div", { class: "quota-extra" }, q.extra) : null,
   );
 }
 

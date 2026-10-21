@@ -1,19 +1,27 @@
 // 菜单栏（右上角）图标：只有图标，旁边不显示文字。
-//   - 鼠标悬停：系统自带的文字提示，列出各服务器的额度、待处理、运行中；
-//   - 点击：弹出面板（同样的内容，可以点进去），点别处收起；右键是菜单。
+//   - 鼠标移上去：弹出面板（不抢焦点），列出各服务器的额度、待处理、运行中；鼠标离开图标和面板就收起；
+//   - 点击：面板固定住（拿到焦点，可以点里面的东西），点别处收起；右键是菜单。
+// 系统自带的悬停文字提示在菜单栏里经常不出来，而且没法排版，所以不用。
 import { BrowserWindow, Menu, nativeImage, screen, Tray } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ICON = path.join(here, "../assets/trayTemplate.png");
-const POPOVER_WIDTH = 340;
+const POPOVER_WIDTH = 360;
+/** 鼠标停在图标上多久弹出、离开多久收起 */
+const PEEK_DELAY = 150;
+const LEAVE_DELAY = 300;
 
 /** @type {Tray | null} */
 let tray = null;
 /** @type {BrowserWindow | null} */
 let popover = null;
 let actions = null;
+/** 面板是鼠标悬停弹出来的（还没点过）：鼠标一离开就收 */
+let peeking = false;
+let peekTimer = null;
+let watchTimer = null;
 
 /**
  * @param {{ showMain: () => void, refresh: () => void, quit: () => void, onPopoverShown: () => void }} handlers
@@ -24,11 +32,18 @@ export function createTray(handlers) {
   icon.setTemplateImage(true);
   tray = new Tray(icon);
   tray.setIgnoreDoubleClickEvents(true);
-  tray.setToolTip("Agent Loft");
 
+  tray.on("mouse-enter", () => {
+    if (popover?.isVisible()) return;
+    clearTimeout(peekTimer);
+    peekTimer = setTimeout(() => showPopover({ peek: true }), PEEK_DELAY);
+  });
+  tray.on("mouse-leave", () => clearTimeout(peekTimer));
   tray.on("click", () => {
-    if (popover?.isVisible()) return hidePopover();
-    showPopover();
+    clearTimeout(peekTimer);
+    // 悬停弹出来的：点一下就固定住；已经固定的：再点收起
+    if (popover?.isVisible() && !peeking) return hidePopover();
+    showPopover({ peek: false });
   });
   tray.on("right-click", () => {
     hidePopover();
@@ -64,6 +79,8 @@ function ensurePopover() {
     transparent: true,
     backgroundColor: "#00000000",
     roundedCorners: true,
+    // 悬停弹出时面板没有焦点：第一下点击也要算数
+    acceptFirstMouse: true,
     webPreferences: {
       preload: path.join(here, "preload-shell.cjs"),
       contextIsolation: true,
@@ -72,7 +89,14 @@ function ensurePopover() {
     },
   });
   popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  popover.on("blur", () => hidePopover());
+  // 点进悬停弹出来的面板，它拿到焦点，就算固定住了
+  popover.on("focus", () => {
+    peeking = false;
+    clearInterval(watchTimer);
+  });
+  popover.on("blur", () => {
+    if (!peeking) hidePopover();
+  });
   void popover.loadFile(path.join(here, "shell/popover.html"));
   return popover;
 }
@@ -86,15 +110,49 @@ function place(win) {
   win.setBounds({ x, y: Math.round(trayBounds.y + trayBounds.height + 4), width: POPOVER_WIDTH, height });
 }
 
-function showPopover() {
+/** @param {{ peek: boolean }} opts peek：悬停弹出，不抢焦点 */
+function showPopover({ peek }) {
   const win = ensurePopover();
-  place(win);
-  win.show();
-  win.focus();
-  actions.onPopoverShown();
+  const wasVisible = win.isVisible();
+  peeking = peek;
+  clearInterval(watchTimer);
+  if (!wasVisible) place(win);
+  if (peek) {
+    win.showInactive();
+    watchLeave();
+  } else {
+    win.show();
+    win.focus();
+  }
+  if (!wasVisible) actions.onPopoverShown();
+}
+
+/**
+ * 悬停弹出时盯着鼠标：离开图标和面板（中间那几像素的缝也算在内）一小会儿就收起。
+ * 面板没有焦点时页面里的鼠标事件不一定可靠，直接问系统鼠标在哪。
+ */
+function watchLeave() {
+  let outSince = 0;
+  watchTimer = setInterval(() => {
+    if (!peeking || !popover || popover.isDestroyed() || !popover.isVisible()) return clearInterval(watchTimer);
+    const p = screen.getCursorScreenPoint();
+    const t = tray.getBounds();
+    const b = popover.getBounds();
+    const inside = (r, pad) => p.x >= r.x - pad && p.x <= r.x + r.width + pad && p.y >= r.y - pad && p.y <= r.y + r.height + pad;
+    // 图标和面板之间的竖条
+    const bridge = { x: Math.min(t.x, b.x), y: t.y, width: Math.max(t.width, b.width), height: b.y - t.y };
+    if (inside(t, 2) || inside(b, 4) || (inside(bridge, 0) && p.x >= t.x - 8 && p.x <= t.x + t.width + 8)) {
+      outSince = 0;
+      return;
+    }
+    if (!outSince) outSince = Date.now();
+    else if (Date.now() - outSince >= LEAVE_DELAY) hidePopover();
+  }, 80);
 }
 
 export function hidePopover() {
+  clearInterval(watchTimer);
+  peeking = false;
   if (popover && !popover.isDestroyed() && popover.isVisible()) popover.hide();
 }
 
@@ -113,67 +171,4 @@ export function popoverWebContents() {
 /** 冒烟测试用：建好菜单栏面板（不显示），返回它的页面 */
 export function openPopoverForTest() {
   return ensurePopover().webContents;
-}
-
-// ---------- 悬停提示 ----------
-
-function resetText(at) {
-  if (!at) return "";
-  const d = new Date(at);
-  const hm = d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
-  return d.toDateString() === new Date().toDateString() ? `${hm} 重置` : `${d.getMonth() + 1}/${d.getDate()} ${hm} 重置`;
-}
-
-/** 10 格的进度条：▰▰▰▱▱▱▱▱▱▱ */
-function bar(percent) {
-  const n = Math.max(0, Math.min(10, Math.round(percent / 10)));
-  return "▰".repeat(n) + "▱".repeat(10 - n);
-}
-
-const STATUS = { online: "在线", login: "未登录", setup: "未设置密码", offline: "连不上", unknown: "连接中", access: "需要验证" };
-
-/**
- * 悬停提示的文字。系统提示用的是比例字体，没法按列对齐，所以每个额度窗口单独一行，
- * 长度固定的进度条放在最前面，看起来就是齐的：
- *
- *   本机 · 在线
- *   Codex（plus）
- *       ▰▱▱▱▱▱▱▱▱▱   12%  5 小时 · 15:20 重置
- *       ▱▱▱▱▱▱▱▱▱▱    4%  7 天 · 10/27 重置
- *   2 个运行中 · 1 个待处理
- */
-export function tooltipText(servers) {
-  if (!servers.length) return "Agent Loft\n还没有添加服务器";
-  const blocks = [];
-  // 同一个账号登在好几台服务器上，额度一模一样：后面的只写一句
-  const seen = new Map();
-  for (const s of servers) {
-    const lines = [`${s.name} · ${STATUS[s.status] ?? s.status}`];
-    if (s.status === "online") {
-      for (const q of s.quotas ?? []) {
-        const sig = JSON.stringify([q.agent, (q.windows ?? []).map((w) => [w.short, Math.round(w.percent)])]);
-        if (seen.has(sig)) {
-          lines.push(`${q.label}：和「${seen.get(sig)}」是同一个账号`);
-          continue;
-        }
-        seen.set(sig, s.name);
-        lines.push(`${q.label}${q.plan ? `（${q.plan}）` : ""}${q.reached ? " · 已到上限" : ""}`);
-        for (const w of q.windows ?? []) {
-          const pct = Math.max(0, Math.min(100, Math.round(w.percent)));
-          lines.push(`    ${bar(pct)}  ${String(pct).padStart(3, " ")}%  ${[w.label, resetText(w.resetsAt)].filter(Boolean).join(" · ")}`);
-        }
-      }
-      if (!s.quotas?.length) lines.push(s.quotaAt ? "没有可显示的额度" : "正在读取额度…");
-      const activity = [s.busy ? `${s.busy} 个运行中` : "", s.pending.length ? `${s.pending.length} 个待处理` : ""].filter(Boolean);
-      if (activity.length) lines.push(activity.join(" · "));
-    }
-    blocks.push(lines.join("\n"));
-  }
-  return blocks.join("\n\n");
-}
-
-/** @param {{ servers: any[] }} state */
-export function updateTray(state) {
-  if (!tray) return;
-  tray.setToolTip(tooltipText(state.servers));
 }
