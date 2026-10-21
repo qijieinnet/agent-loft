@@ -28,6 +28,11 @@ export type Conversation = {
   /** 渠道实例：飞书是机器人 id，Web 固定 web */
   channelId: string;
   title?: string;
+  /**
+   * 标题是自动起的（先用首条消息占位，之后换成 agent 生成的标题），可以继续被 agent 的标题覆盖。
+   * 用户手动改过名就清掉，之后不再动它。
+   */
+  titleAuto?: boolean;
   agent: string;
   cwd: string;
   /** cwd 是否用户显式指定。没指定过的跟随 workspaceRoot 变化 */

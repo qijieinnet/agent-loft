@@ -201,6 +201,8 @@ export interface AgentDriver {
   /** cwd 为 undefined 时列全部目录 */
   listSessions(cwd: string | undefined, limit?: number): Promise<SessionSummary[]>;
   sessionExists(id: string, cwd: string): Promise<boolean>;
+  /** agent 自己给会话起的标题（模型总结的或在别处改过的）；还没生成就返回 undefined，不拿首条消息凑数 */
+  sessionTitle?(id: string, cwd: string): Promise<string | undefined>;
   readHistory(id: string, cwd: string): Promise<HistoryMessage[]>;
   /**
    * 把会话复制出一条新的、返回新会话 id。anchor（HistoryMessage / TurnResult 里的）给了就只保留到

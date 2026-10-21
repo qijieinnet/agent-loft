@@ -61,8 +61,8 @@ export function approvalCard(interaction: Interaction, ctx: CardCtx) {
   const id = interaction.id;
   const buttons = [
     button("允许一次", { a: "approval", r: id, d: "allow-once" }, ctx, "primary"),
-    ...(spec.alwaysLabel ? [button(spec.alwaysLabel, { a: "approval", r: id, d: "allow-always" }, ctx)] : []),
     ...(spec.allowSession ? [button("本会话全部允许", { a: "approval", r: id, d: "allow-session" }, ctx)] : []),
+    ...(spec.alwaysLabel ? [button(spec.alwaysLabel, { a: "approval", r: id, d: "allow-always" }, ctx)] : []),
     button("拒绝", { a: "approval", r: id, d: "deny" }, ctx, "danger"),
   ];
   return card(

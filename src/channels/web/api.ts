@@ -434,7 +434,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (!sub && method === "PATCH") {
       const body = await readJsonBody<{ title?: string; hidden?: boolean }>(req);
       updateConversation(key, {
-        ...(typeof body.title === "string" ? { title: body.title.trim().slice(0, 80) } : {}),
+        // 手动改过名，就不再拿 agent 生成的标题覆盖
+        ...(typeof body.title === "string" ? { title: body.title.trim().slice(0, 80), titleAuto: false } : {}),
         ...(typeof body.hidden === "boolean" ? { hidden: body.hidden } : {}),
       });
       hub.emitEvent(key, { type: "meta" });

@@ -159,6 +159,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   private locks = new Map<string, Promise<unknown>>();
   /** 最近一次点停止的时间：紧接着冒出来的「被打断」错误是预期内的，不当错误显示 */
   private stoppedAt = new Map<string, number>();
+  /** 正在等 agent 标题的对话，避免一轮轮叠加重试 */
+  private titleSyncing = new Set<string>();
   /**
    * 每条会话的「生命周期代次」：开新会话、分叉、恢复、切 agent、切目录时加一。
    * 渠道收到消息后还要先做异步的事（飞书下载附件），期间会话被换掉了的话，
@@ -497,6 +499,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           recordFooter(holder.session?.sessionId ?? (conv ? agentBinding(conv, agent).sessionId : undefined), result.text, footer);
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
           this.refreshRuntimeOnce(key, liveId);
+          this.syncTitle(key, agent);
         },
         onError: (err) => {
           if (!alive()) return;
@@ -553,6 +556,47 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     holder.session = session;
     this.live.set(key, { id: liveId, agent, cwd: conv.cwd, session });
     return session;
+  }
+
+  /**
+   * 自动标题换成 agent 自己起的。agent 的标题是异步生成的，一轮结束时未必已经有了，
+   * 所以隔一会儿再问几次。每轮结束都会再同步一次：agent 后来改了标题（比如在终端里 /rename）也能跟上。
+   */
+  private syncTitle(key: string, agent: string, attempt = 0): void {
+    const delays = [1_000, 5_000, 15_000, 45_000];
+    const driver = this.drivers.get(agent);
+    if (!driver?.sessionTitle) return;
+    if (attempt === 0) {
+      if (this.titleSyncing.has(key)) return; // 上一轮的重试还在跑
+      this.titleSyncing.add(key);
+    }
+    if (attempt >= delays.length) {
+      this.titleSyncing.delete(key);
+      return;
+    }
+    setTimeout(() => {
+      void (async () => {
+        const conv = getConversation(key);
+        const sessionId = conv && conv.agent === agent ? agentBinding(conv, agent).sessionId : undefined;
+        if (!conv?.titleAuto || !sessionId) return this.titleSyncing.delete(key);
+        const title = await driver.sessionTitle!(sessionId, conv.cwd).catch((err) => {
+          console.error(`[${agent}] 读取会话标题失败:`, err instanceof Error ? err.message : err);
+          return undefined;
+        });
+        // 等待期间用户可能改了名、切了会话
+        const now = getConversation(key);
+        if (!now?.titleAuto || now.agent !== agent || agentBinding(now, agent).sessionId !== sessionId) {
+          return this.titleSyncing.delete(key);
+        }
+        if (!title) return this.syncTitle(key, agent, attempt + 1);
+        this.titleSyncing.delete(key);
+        const clipped = title.slice(0, 80);
+        if (clipped !== now.title) {
+          updateConversation(key, { title: clipped });
+          this.emitEvent(key, { type: "meta" });
+        }
+      })();
+    }, delays[attempt]);
   }
 
   /** 丢掉活着的会话（不动绑定）。挂着的审批一并取消，否则阻塞的那一轮永远走不完。 */
@@ -713,7 +757,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const lastActive = conv.activeAt;
     touchConversation(key);
     if (!conv.title && conv.channel === "web" && input.text.trim()) {
-      updateConversation(key, { title: input.text.trim().replace(/\s+/g, " ").slice(0, 40) });
+      // 先用首条消息占位，第一轮结束后换成 agent 自己生成的短标题（syncTitle）
+      updateConversation(key, { title: input.text.trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
       this.emitEvent(key, { type: "meta" });
     }
     this.emitEvent(key, shown);

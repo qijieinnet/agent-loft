@@ -116,6 +116,13 @@ export class ClaudeDriver implements AgentDriver {
     }
   }
 
+  async sessionTitle(id: string, cwd: string): Promise<string | undefined> {
+    if (!SESSION_ID.test(id)) return undefined;
+    // SDK 的 customTitle 已经是「手动改的名 || 自动生成的 aiTitle」，不含首条消息兜底
+    const info = await getSessionInfo(id, { dir: cwd });
+    return info?.customTitle?.replace(/\s+/g, " ").trim() || undefined;
+  }
+
   /**
    * 把会话记录整理成「一问一答」：用户一条，助手把这一轮所有文本拼成一条，
    * 中间的工具调用作为过程摘要挂在助手那条上。工具结果（type=user 的 tool_result）

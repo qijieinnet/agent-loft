@@ -102,6 +102,11 @@ export class CodexDriver implements AgentDriver {
     }
   }
 
+  async sessionTitle(id: string): Promise<string | undefined> {
+    const res = await appServer.call<{ thread: Thread }>("thread/read", { threadId: id, includeTurns: false });
+    return res.thread.name?.replace(/\s+/g, " ").trim() || undefined;
+  }
+
   async readHistory(id: string): Promise<HistoryMessage[]> {
     const res = await appServer.call<{
       thread: { turns?: { id?: string; items?: HistoryItem[]; startedAt?: number | null; completedAt?: number | null }[] };
