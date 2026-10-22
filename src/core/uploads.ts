@@ -230,6 +230,18 @@ export function resolveUploadFile(p: string): string | undefined {
   }
 }
 
+/** 上传目录里的文件属于哪条会话（resolveUploadFile 返回的真实路径）。认不出来返回 undefined */
+export function uploadKeyOf(file: string): string | undefined {
+  try {
+    const rel = path.relative(fs.realpathSync(uploadsRoot), file);
+    const first = rel.split(path.sep)[0];
+    if (!first || first.startsWith("..") || path.isAbsolute(rel)) return undefined;
+    return decodeURIComponent(first);
+  } catch {
+    return undefined;
+  }
+}
+
 /** 附件清单的文字说明，两个 agent 都用它告诉模型文件在哪。 */
 export function describeAttachments(
   saved: SavedAttachment[],

@@ -52,7 +52,8 @@ Logo 就是这个意思：一大两小几颗星（多个 agent）站在同一张
 - **系统通知**：Web 会话回复完成、出错、需要授权或提问时推送到手机 / 电脑（设置 → 通知 → 「在此设备开启通知」，可以发测试通知）。飞书会话由飞书提醒，正在前台看着的会话不推。需要 HTTPS 访问，iPhone 需 iOS 16.4+ 且从主屏幕图标打开。
 - **跨渠道同步**：飞书里的会话在 Web 上也能打开接着聊。同一个授权请求同时出现在飞书卡片和网页上，哪边先点算哪边，另一边自动变成「已处理」。
 - **授权**：允许一次 / 本会话全部允许 / 总是允许（按钮上写明放行范围）/ 拒绝。`/autoedit on` 让 Claude Code 在这条会话里改工作目录内的文件不再询问（Bash 仍询问）。超时一律按拒绝处理。
-- **设置都在网页上**：工作目录、会话闲置过期时间、局域网访问和端口、各 agent 的默认模型和思考程度、可选模型、Codex 沙箱、飞书机器人、配对批准、Claude 的「总是允许」名单、通知设备、登录设备管理、服务端升级。
+- **设置都在网页上**：工作目录、会话闲置过期时间、局域网访问和端口、各 agent 的默认模型和思考程度、可选模型、Codex 沙箱、飞书机器人、配对批准、Claude 的「总是允许」名单、通知设备、登录设备管理、用户管理、服务端升级。
+- **多用户**（信任型）：管理员在 设置 → 用户 里给别人建账号。每个人只看得到自己的对话、授权和通知，设置只有管理员能改，见下面「安全」。
 
 ## 安装
 
@@ -64,7 +65,7 @@ agent-loft start                  # 前台运行，日志里会打印首次登�
 agent-loft service install        # 注册为开机自启服务（systemd / launchd），日志在 ~/.agent-loft/logs/
 ```
 
-打开 `http://<机器 IP>:8800`（本机用 `http://localhost:8800`）：第一次需要输入日志里的设置码，然后设一个登录密码。设置码找不到的话，直接运行 `agent-loft passwd` 设密码。
+打开 `http://<机器 IP>:8800`（本机用 `http://localhost:8800`）：第一次需要输入日志里的设置码，然后建一个管理员账号（用户名默认 `admin`）。设置码找不到的话，直接运行 `agent-loft passwd` 设密码。
 
 到 设置 → Agent 检查 Claude Code、Codex 装好、登录了没有：Claude Code 随 agent-loft 一起安装，只需在服务端终端里登录；Codex 可以点「直接在服务器上安装」。设置 → 系统 里能看到服务端版本，有新版本时点「升级」即可（`npm install -g agent-loft@latest`，以系统服务运行时会自动重启，打开的页面会自动刷新）。
 
@@ -106,7 +107,8 @@ agent-loft service install
 | `agent-loft start` | 启动 |
 | `agent-loft import [--only claude\|codex] [--disabled] [--dry-run]` | 从旧桥接器导入 |
 | `agent-loft pair list \| approve <码> \| revoke <机器人id> <open_id>` | 配对管理（Web 设置页里也能做） |
-| `agent-loft passwd [新密码]` | 重置 Web 登录密码，所有设备下线 |
+| `agent-loft passwd [新密码] [--user 用户名]` | 重置 Web 登录密码（默认是最早的管理员），他的设备全部下线 |
+| `agent-loft user list \| add <用户名> [--admin] \| passwd <用户名> \| role <用户名> admin\|member \| disable \| enable \| remove` | 管理 Web 登录用户（设置 → 用户 里也能做） |
 | `agent-loft service install \| uninstall \| restart \| status` | 开机自启 |
 | `agent-loft doctor` | 体检 |
 
@@ -120,7 +122,9 @@ agent-loft service install
 
 这个服务能让 agent 在你的机器上执行命令，等于一个远程 shell。
 
-- Web 登录密码用 scrypt 哈希保存。首次设置必须用启动日志里的一次性设置码，防止「谁先打开页面谁就成了主人」。
+- Web 登录密码用 scrypt 哈希保存。首次建管理员必须用启动日志里的一次性设置码，防止「谁先打开页面谁就成了主人」。
+- 多用户只隔开**界面上**的东西：会话列表、授权 / 提问卡、通知、`/sessions` 能列出和恢复的 agent 会话；设置、飞书机器人和飞书会话只给管理员；会落盘、对所有人生效的「总是允许」（Claude 的总是允许名单、Codex 的 execpolicy）只有管理员能点。**它不是安全边界**：所有 agent 都以同一个系统用户运行，任何用户都能让 agent 读到这台机器上的文件（别人的对话记录、配置里的密钥），用的也是同一个 Claude / Codex 订阅。只给信任的人开账号；要真正隔离，就每人用自己的系统用户各跑一份 agent-loft。
+- 从老版本升级：原来的登录密码自动变成管理员 `admin`，已登录的设备不用重新登录。
 - 登录态通过 HttpOnly cookie 保存，服务端只存它的哈希。同一 IP 连续输错 5 次锁 15 分钟。所有写请求和 WebSocket 都校验 Origin。页面开启了严格的 CSP。
 - 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）或 Cloudflare Tunnel 访问，并把不在本机的反代 IP 加进 `web.trustedProxies`（只有从这些地址来的连接才采信 `X-Forwarded-*`）。不要直接把 8800 端口映射出去。局域网访问可以在 设置 → 系统 → 网络访问 里关掉。
 - 审批超时一律按拒绝处理。Codex 默认沙箱为 `workspace-write`，不会因为 `~/.codex/config.toml` 里配了 `never` 或 `danger-full-access` 就绕过审批。
@@ -135,6 +139,7 @@ src/
     interactions.ts 审批与提问：一个请求，多个渠道都能处理
     store.ts       会话持久化（每个 agent 的会话 id 各自保存）
     config.ts      配置（Web 可改，改完热加载）
+    users.ts       Web 登录用户和归属规则（谁能看到哪条会话）
     pairing.ts uploads.ts commands.ts …
   agents/
     claude/        Claude Agent SDK 驱动

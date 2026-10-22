@@ -18,6 +18,7 @@ import {
   getConversation,
   isExpired,
   listConversations,
+  recordSessionOwner,
   touchConversation,
   updateAgentBinding,
   updateConversation,
@@ -130,6 +131,9 @@ export type ConversationInfo = {
   /** 当前 agent 能不能从某条回复处分叉成新对话 */
   canFork?: boolean;
 };
+
+/** 普通成员点了会落盘的「总是允许」 */
+export const GLOBAL_ALWAYS_DENIED = "「总是允许」会对所有人的会话生效，只有管理员能点。可以用「允许一次」或「本会话全部允许」。";
 
 const BUFFER_MAX = 400;
 const CONTEXT_MAX = 500;
@@ -384,6 +388,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     channelId: string;
     defaultAgent: string;
     title?: string;
+    /** 谁的对话（用户 id）。只有 Web 上新建的有 */
+    owner?: string;
   }): Conversation {
     return ensureConversation({
       key: params.key,
@@ -391,6 +397,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       channelId: params.channelId,
       agent: params.defaultAgent,
       ...(params.title ? { title: params.title } : {}),
+      ...(params.owner ? { owner: params.owner } : {}),
     });
   }
 
@@ -429,8 +436,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     };
   }
 
-  list(): ConversationInfo[] {
+  /** visible：只列这些（按用户过滤，见 core/users.ts 的 ownedBy） */
+  list(visible?: (conv: Conversation) => boolean): ConversationInfo[] {
     return listConversations()
+      .filter((c) => !visible || visible(c))
       .map((c) => this.info(c.key)!)
       .sort((a, b) => b.activeAt - a.activeAt);
   }
@@ -546,6 +555,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           // 分叉中还报的是原会话 id：分叉尚未生效，什么都不改
           if (forkFrom && sessionId === forkFrom) return;
           updateAgentBinding(key, agent, { sessionId, forkFrom: undefined });
+          recordSessionOwner(sessionId, current?.owner);
           this.emitEvent(key, { type: "meta" });
         },
       },
@@ -887,13 +897,21 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return `已恢复会话 ${sessionId}，直接接着说就行。${note}`;
   }
 
-  async sessions(key: string, all: boolean): Promise<Extract<CommandReply, { type: "sessions" }>> {
+  /** visible：这个用户能看到哪些 agent 会话（多用户时按人过滤）。不给就是全部 */
+  async sessions(
+    key: string,
+    all: boolean,
+    visible?: (sessionId: string) => boolean,
+  ): Promise<Extract<CommandReply, { type: "sessions" }>> {
     const conv = getConversation(key)!;
     const driver = this.requireDriver(conv.agent);
+    // 要过滤的话多拿一些，滤完再截到 10 条
+    const list = async (cwd: string | undefined) =>
+      visible ? (await driver.listSessions(cwd, 100)).filter((s) => visible(s.id)).slice(0, 10) : driver.listSessions(cwd, 10);
     // 先按当前目录列，一条都没有就自动退回全局 —— 回一句「没有历史」是误导
-    let sessions = all ? [] : await driver.listSessions(conv.cwd, 10);
+    let sessions = all ? [] : await list(conv.cwd);
     const fellBack = !all && sessions.length === 0;
-    if (all || fellBack) sessions = await driver.listSessions(undefined, 10);
+    if (all || fellBack) sessions = await list(undefined);
     const current = agentBinding(conv).sessionId;
     return {
       type: "sessions",
@@ -1051,7 +1069,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    * 分叉成一条新的 Web 对话：agent 会话复制一份（给了 anchor 就只到那条回复为止），
    * 原对话完全不动。返回新对话的 key。和 /fork 不同 —— /fork 是在同一条对话里换成分叉出来的会话。
    */
-  async forkConversation(key: string, anchor?: string): Promise<string> {
+  /** owner：新对话归谁（分叉的人）。不给就沿用原对话的 */
+  async forkConversation(key: string, anchor?: string, owner?: string): Promise<string> {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
     const driver = this.requireDriver(conv.agent);
@@ -1062,8 +1081,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     if (!source) throw new Error("这条对话还没有可分叉的会话");
     const sessionId = await withTimeout(driver.forkAt(source, conv.cwd, anchor), "分叉会话");
     copyFooters(source, sessionId);
+    owner ??= conv.owner;
     const newKey = `web:${crypto.randomBytes(6).toString("hex")}`;
-    ensureConversation({ key: newKey, channel: "web", channelId: "web", agent: conv.agent });
+    ensureConversation({ key: newKey, channel: "web", channelId: "web", agent: conv.agent, ...(owner ? { owner } : {}) });
+    recordSessionOwner(sessionId, owner);
     updateConversation(newKey, {
       title: `${conv.title ?? "会话"} · 分叉`.slice(0, 80),
       cwd: conv.cwd,
@@ -1119,7 +1140,17 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
   async command(
     key: string,
     cmd: ParsedCommand,
-    ctx: { allowedAgents: string[]; by: string; channel?: string },
+    ctx: {
+      allowedAgents: string[];
+      by: string;
+      channel?: string;
+      /** 多用户：发命令的人能看到哪些 agent 会话（/sessions 列哪些、/resume 能恢复哪些） */
+      sessionVisible?: (sessionId: string) => boolean;
+      /** 多用户：/approve 只能处理这些会话里的请求 */
+      convVisible?: (convKey: string) => boolean;
+      /** 多用户：false = 不能点会落盘的「总是允许」（见 InteractionSpec.alwaysGlobal） */
+      allowGlobalAlways?: boolean;
+    },
   ): Promise<CommandReply> {
     const text = (t: string): CommandReply => ({ type: "text", text: t });
     const channel = ctx.channel ?? getConversation(key)?.channel;
@@ -1148,10 +1179,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       case "fork":
         return text(await this.fork(key));
       case "sessions": {
-        const reply = await this.sessions(key, cmd.all);
+        const reply = await this.sessions(key, cmd.all, ctx.sessionVisible);
         return reply.sessions.length === 0 ? text("还没有任何历史会话。") : reply;
       }
       case "resume":
+        if (ctx.sessionVisible && !ctx.sessionVisible(cmd.sessionId)) {
+          return text(`找不到会话 ${cmd.sessionId}。\n发 /sessions 看看有哪些可恢复的。`);
+        }
         return text(await this.resume(key, cmd.sessionId));
       case "model":
         return cmd.model ? text(await this.setModel(key, cmd.model)) : await this.models(key);
@@ -1173,6 +1207,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       case "stop":
         return text(await this.stop(key));
       case "approve": {
+        const target = interactions.get(cmd.requestId);
+        if (target && ctx.convVisible && !ctx.convVisible(target.convKey)) {
+          return text(`请求 ${cmd.requestId} 不存在或已处理。`);
+        }
+        if (target?.spec.kind === "approval" && target.spec.alwaysGlobal && cmd.decision === "allow-always" && ctx.allowGlobalAlways === false) {
+          return text(GLOBAL_ALWAYS_DENIED);
+        }
         const settled = interactions.decide(cmd.requestId, cmd.decision as ApprovalDecision, ctx.by);
         if (!settled && interactions.isPending(cmd.requestId)) {
           return text(`请求 ${cmd.requestId} 不支持 ${cmd.decision}。`);

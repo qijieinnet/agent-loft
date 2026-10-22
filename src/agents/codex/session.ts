@@ -508,6 +508,7 @@ export class CodexSession implements AgentSession {
           detail: describeCommand(req),
           // 「总是允许」到底记多宽取决于 Codex 有没有给 execpolicy 补丁，差别很大，得写在按钮上
           alwaysLabel: amendment ? "以后同类不再问" : "本会话内不再问",
+          ...(amendment ? { alwaysGlobal: true } : {}),
         });
         const s = outcome.settlement;
         if (s === "allow-once") return { decision: "accept" };

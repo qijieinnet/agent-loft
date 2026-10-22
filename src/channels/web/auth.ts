@@ -1,8 +1,8 @@
 // Web 登录鉴权。
 //
 // 这个页面能让 agent 在这台机器上执行命令，等同于一个远程 shell，所以：
-//   - 密码用 scrypt 哈希存，不存明文；
-//   - 首次没有密码时，必须拿终端 / 日志里打印的一次性设置码才能设密码
+//   - 密码用 scrypt 哈希存，不存明文（账号见 core/users.ts）；
+//   - 一个用户都没有时，必须拿终端 / 日志里打印的一次性设置码才能建第一个管理员
 //     （否则谁先打开页面谁就成了主人）；
 //   - 登录态是随机 token，服务端只存它的哈希，HttpOnly cookie；
 //   - 同一 IP 连续输错会被锁一段时间。
@@ -11,16 +11,20 @@ import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { config, saveConfig } from "../../core/config.js";
+import { createUser, getUser, hasUsers, legacyOwnerId, updateUser, userEvents, type PublicUser, type User } from "../../core/users.js";
 import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** 登录态被撤销（退出、改密码、踢设备）时通知 WebSocket 那边立刻断开对应连接 */
+/** 登录态被撤销（退出、改密码、踢设备、用户被停用 / 删除）时通知 WebSocket 那边立刻断开对应连接 */
 export const authEvents = new EventEmitter<{ revoked: [] }>();
+userEvents.on("changed", () => authEvents.emit("revoked"));
 const sessionsPath = path.join(dataDir, "web-sessions.json");
 const setupTokenPath = path.join(dataDir, "web-setup-token");
 
 export type WebSession = {
+  /** 升级前的登录态没有这个字段：读的时候认给迁移出来的那个管理员（legacyOwnerId） */
+  userId?: string;
   createdAt: number;
   expiresAt: number;
   lastSeen: number;
@@ -47,7 +51,19 @@ function loadSessions(): Record<string, WebSession> {
     loadedMtime = mtime;
   }
   const now = Date.now();
-  for (const [id, s] of Object.entries(sessions)) if (s.expiresAt < now) delete sessions[id];
+  let stamped = false;
+  for (const [id, s] of Object.entries(sessions)) {
+    if (s.expiresAt < now) delete sessions[id];
+    else if (!s.userId) {
+      // 升级前的登录态：认给迁移出来的管理员，并且记下来，之后那个管理员被删了也不会换人
+      const owner = legacyOwnerId();
+      if (owner) {
+        s.userId = owner;
+        stamped = true;
+      }
+    }
+  }
+  if (stamped) saveSessions();
   return sessions;
 }
 
@@ -60,43 +76,34 @@ function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-// ---------- 密码 ----------
-
-export function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16);
-  const key = crypto.scryptSync(password, salt, 32, { N: 16384, r: 8, p: 1 });
-  return `scrypt$${salt.toString("hex")}$${key.toString("hex")}`;
+function ownerOf(s: WebSession): string | undefined {
+  return s.userId;
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
-  const [scheme, saltHex, keyHex] = stored.split("$");
-  if (scheme !== "scrypt" || !saltHex || !keyHex) return false;
-  const expected = Buffer.from(keyHex, "hex");
-  const actual = crypto.scryptSync(password, Buffer.from(saltHex, "hex"), expected.length, { N: 16384, r: 8, p: 1 });
-  return crypto.timingSafeEqual(expected, actual);
+// ---------- 首次设置 ----------
+
+/** 还一个用户都没有：页面上要先建管理员 */
+export function needsSetup(): boolean {
+  return !hasUsers();
 }
 
-export function hasPassword(): boolean {
-  return !!config().web.passwordHash;
-}
-
-export function setPassword(password: string): void {
-  if (password.length < 8) throw new Error("密码至少 8 位");
-  const cfg = structuredClone(config());
-  cfg.web.passwordHash = hashPassword(password);
-  saveConfig(cfg);
-  // 改密码 = 所有已登录设备下线
+/**
+ * 建第一个管理员（页面上用设置码，或终端里 agent-loft passwd）。
+ * 之前残留的登录态全部作废：否则它们没记用户，会被当成升级前的登录态认给这个新管理员。
+ */
+export function setupFirstAdmin(name: string, password: string): PublicUser {
+  if (hasUsers()) throw new Error("已经设置过了");
+  const user = createUser({ name: name.trim() || "admin", password, role: "admin" });
   sessions = {};
   saveSessions();
   fs.rmSync(setupTokenPath, { force: true });
   authEvents.emit("revoked");
+  return user;
 }
 
-// ---------- 首次设置码 ----------
-
-/** 没有密码时生成（或沿用）一次性设置码，打印到日志里。 */
+/** 一个用户都没有时生成（或沿用）一次性设置码，打印到日志里。 */
 export function ensureSetupToken(): string | null {
-  if (hasPassword()) return null;
+  if (hasUsers()) return null;
   try {
     const existing = fs.readFileSync(setupTokenPath, "utf8").trim();
     if (existing) return existing;
@@ -117,26 +124,54 @@ export function checkSetupToken(token: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// ---------- 密码 ----------
+
+/**
+ * 改某个用户的密码：他所有已登录的设备下线。
+ * 升级前那个全局密码（config.web.passwordHash）也一并清掉，旧密码从此不再有效。
+ */
+export function setUserPassword(userId: string, password: string): void {
+  patchUser(userId, { password });
+}
+
+/**
+ * 改用户（一次写盘，要么全改要么全不改），再处理副作用：
+ * 改了密码或者停用了，他所有设备下线；改了密码，升级前的全局密码也作废。
+ */
+export function patchUser(userId: string, patch: Parameters<typeof updateUser>[1]): PublicUser {
+  const updated = updateUser(userId, patch);
+  if (patch.password !== undefined || patch.disabled === true) revokeUserSessions(userId);
+  if (patch.password !== undefined && config().web.passwordHash) {
+    const cfg = structuredClone(config());
+    cfg.web.passwordHash = "";
+    saveConfig(cfg);
+  }
+  return updated;
+}
+
 // ---------- 登录态 ----------
 
-export function createSession(ip: string, userAgent: string): string {
+export function createSession(userId: string, ip: string, userAgent: string): string {
   const token = crypto.randomBytes(32).toString("base64url");
   const now = Date.now();
-  loadSessions()[sha256(token)] = { createdAt: now, expiresAt: now + SESSION_TTL_MS, lastSeen: now, ip, userAgent };
+  loadSessions()[sha256(token)] = { userId, createdAt: now, expiresAt: now + SESSION_TTL_MS, lastSeen: now, ip, userAgent };
   saveSessions();
   return token;
 }
 
-export function validateSession(token: string | undefined): WebSession | undefined {
-  if (!token || !hasPassword()) return undefined;
+/** 登录态对应的用户。用户被停用、删掉了也算无效 */
+export function sessionUser(token: string | undefined): User | undefined {
+  if (!token || !hasUsers()) return undefined;
   const s = loadSessions()[sha256(token)];
   if (!s) return undefined;
+  const user = getUser(ownerOf(s));
+  if (!user || user.disabled) return undefined;
   const now = Date.now();
   if (now - s.lastSeen > 60_000) {
     s.lastSeen = now;
     saveSessions();
   }
-  return s;
+  return user;
 }
 
 export function destroySession(token: string | undefined): void {
@@ -146,18 +181,37 @@ export function destroySession(token: string | undefined): void {
   authEvents.emit("revoked");
 }
 
-export function listSessions(): (WebSession & { id: string })[] {
-  return Object.entries(loadSessions()).map(([id, s]) => ({ id: id.slice(0, 12), ...s }));
+export type SessionView = WebSession & { id: string; userId?: string; userName?: string };
+
+/** 已登录的设备。给了 userId 就只列这个用户的 */
+export function listSessions(userId?: string): SessionView[] {
+  return Object.entries(loadSessions())
+    .filter(([, s]) => !userId || ownerOf(s) === userId)
+    .map(([id, s]) => {
+      const owner = ownerOf(s);
+      const name = getUser(owner)?.name;
+      return { ...s, id: id.slice(0, 12), ...(owner ? { userId: owner } : {}), ...(name ? { userName: name } : {}) };
+    });
 }
 
-export function revokeSession(idPrefix: string): boolean {
+/** 踢掉一个设备。给了 userId 就只能踢这个用户自己的 */
+export function revokeSession(idPrefix: string, userId?: string): boolean {
+  if (!idPrefix) return false;
   const all = loadSessions();
-  const hit = Object.keys(all).find((id) => id.startsWith(idPrefix));
+  const hit = Object.keys(all).find((id) => id.startsWith(idPrefix) && (!userId || ownerOf(all[id]!) === userId));
   if (!hit) return false;
   delete all[hit];
   saveSessions();
   authEvents.emit("revoked");
   return true;
+}
+
+/** 某个用户的所有设备下线 */
+export function revokeUserSessions(userId: string): void {
+  const all = loadSessions();
+  for (const [id, s] of Object.entries(all)) if (ownerOf(s) === userId) delete all[id];
+  saveSessions();
+  authEvents.emit("revoked");
 }
 
 // ---------- 防爆破 ----------

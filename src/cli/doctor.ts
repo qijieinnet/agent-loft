@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { config, loadConfig } from "../core/config.js";
 import { FeishuClient } from "../channels/feishu/client.js";
 import { configPath } from "../home.js";
+import { hasUsers, listUsers } from "../core/users.js";
 
 loadConfig();
 const cfg = config();
@@ -36,4 +37,4 @@ for (const bot of cfg.feishu.bots) {
 }
 
 console.log("\nWeb");
-console.log(`  ${cfg.web.enabled ? `http://${cfg.web.host}:${cfg.web.port}` : "未启用"}${cfg.web.passwordHash ? "" : "（还没设密码，首次打开需要启动日志里的设置码）"}`);
+console.log(`  ${cfg.web.enabled ? `http://${cfg.web.host}:${cfg.web.port}` : "未启用"}${hasUsers() ? `（${listUsers().length} 个用户）` : "（还没设密码，首次打开需要启动日志里的设置码）"}`);

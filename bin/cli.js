@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 统一入口：agent-loft <start|import|pair|passwd|service|doctor>
+// 统一入口：agent-loft <start|import|pair|passwd|user|service|doctor>
 //
 // 源码是 TypeScript，用 tsx 的 ESM loader 直接加载，装完即可运行，不需要先 build。
 import { register } from "tsx/esm/api";
@@ -9,6 +9,7 @@ const COMMANDS = {
   import: "../src/cli/import.ts",
   pair: "../src/cli/pair.ts",
   passwd: "../src/cli/passwd.ts",
+  user: "../src/cli/user.ts",
   service: "../src/cli/service.ts",
   doctor: "../src/cli/doctor.ts",
 };
@@ -19,7 +20,8 @@ const USAGE = `agent-loft —— 用飞书 / Web 驱动本机的 Claude Code 和
   agent-loft start            启动（默认命令）
   agent-loft import           从旧的 feishu-claude-bridge / feishu-codex-bridge 导入配置和会话
   agent-loft pair ...         配对管理：list | approve <配对码> | revoke <机器人id> <open_id>
-  agent-loft passwd           重置 Web 登录密码
+  agent-loft passwd           重置 Web 登录密码（--user 名字 指定用户，默认是管理员）
+  agent-loft user ...         Web 登录用户：list | add <名字> [--admin] | passwd | role | disable | enable | remove
   agent-loft service ...      开机自启：install | uninstall | restart | status
   agent-loft doctor           体检：配置 / agent / 飞书连通性
 

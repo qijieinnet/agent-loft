@@ -255,7 +255,11 @@ const S = {
   allowedAgents: [],
   search: "",
   loadToken: 0,
+  /** 登录的用户 { id, name, role } */
+  user: null,
 };
+
+const isAdmin = () => S.user?.role === "admin";
 
 const ui = {};
 
@@ -509,6 +513,14 @@ async function showAuth() {
   const err = h("div", { class: "error-text" });
   const pw = h("input", { type: "password", placeholder: "密码", autocomplete: me.needsSetup ? "new-password" : "current-password" });
   const token = h("input", { placeholder: "设置码（在启动日志里）", autocomplete: "off" });
+  // 只有一个用户时和以前一样只要密码；多个用户才要填用户名
+  const askName = me.needsSetup || me.multiUser;
+  const name = h("input", {
+    placeholder: me.needsSetup ? "admin" : "用户名",
+    autocomplete: "username",
+    autocapitalize: "off",
+    spellcheck: "false",
+  });
   const btn = h("button", { class: "btn primary", type: "submit" }, me.needsSetup ? "设置密码并进入" : "登录");
   const form = h(
     "form",
@@ -519,8 +531,11 @@ async function showAuth() {
         err.textContent = "";
         btn.disabled = true;
         try {
-          if (me.needsSetup) await api("/api/setup", { method: "POST", body: { token: token.value, password: pw.value } });
-          else await api("/api/login", { method: "POST", body: { password: pw.value } });
+          if (me.needsSetup) {
+            await api("/api/setup", { method: "POST", body: { token: token.value, name: name.value.trim() || "admin", password: pw.value } });
+          } else {
+            await api("/api/login", { method: "POST", body: { ...(askName ? { name: name.value.trim() } : {}), password: pw.value } });
+          }
           await boot();
         } catch (e2) {
           err.textContent = e2.message;
@@ -530,14 +545,15 @@ async function showAuth() {
       },
     },
     h("h1", {}, "Agent Loft"),
-    h("p", {}, me.needsSetup ? "首次使用：输入启动日志里的设置码，并设一个登录密码（至少 8 位）" : "登录以继续"),
+    h("p", {}, me.needsSetup ? "首次使用：输入启动日志里的设置码，建一个管理员账号（密码至少 8 位）" : "登录以继续"),
     me.needsSetup ? h("label", { class: "field" }, h("span", {}, "设置码"), token) : null,
+    askName ? h("label", { class: "field" }, h("span", {}, me.needsSetup ? "管理员用户名" : "用户名"), name) : null,
     h("label", { class: "field" }, h("span", {}, me.needsSetup ? "新密码" : "密码"), pw),
     btn,
     err,
   );
   fill($app, h("div", { class: "auth" }, form));
-  (me.needsSetup ? token : pw).focus();
+  (me.needsSetup ? token : askName ? name : pw).focus();
 }
 
 // ---------- 主界面 ----------
@@ -549,6 +565,7 @@ async function boot() {
   WS.epoch = null;
   WS.hellos = 0;
   const data = await api("/api/bootstrap");
+  S.user = data.user ?? me.user ?? null;
   S.agents = data.agents;
   S.bots = data.bots;
   S.workspaceRoot = data.workspaceRoot;
@@ -581,6 +598,7 @@ async function boot() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
     clearAppBadge();
+    void releaseForeignPushSub().catch(() => {});
     // 点了系统通知、页面本来就开着：跳到通知对应的会话
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data?.type !== "open") return;
@@ -2020,7 +2038,8 @@ function renderInteraction(item) {
             spec.allowSession
               ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
               : null,
-            spec.alwaysLabel
+            // 会落盘、对所有人生效的「总是允许」只给管理员
+            spec.alwaysLabel && (!spec.alwaysGlobal || isAdmin())
               ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-always" }) }, spec.alwaysLabel)
               : null,
             h("button", { class: "btn danger", onclick: () => ixOp(ix.id, "decide", { decision: "deny" }) }, "拒绝"),
@@ -3225,6 +3244,21 @@ async function openSettings() {
   const panel = h("div", { class: "settings-body" });
   // 设置弹窗高度固定，切标签页时不跟着内容一伸一缩
   modal({ title: "设置", wide: true, tall: true, body: h("div", { class: "settings" }, nav, panel) });
+  // 普通成员只能管自己的通知、密码和登录设备；其余设置都是管理员的
+  if (!isAdmin()) {
+    const tabs = [
+      ["通知", () => notifyTab(panel)],
+      ["账号", () => securityTab(panel)],
+    ];
+    const select = (i) => {
+      nav.querySelectorAll("button").forEach((b, j) => b.classList.toggle("on", i === j));
+      fill(panel);
+      tabs[i][1]();
+    };
+    nav.append(...tabs.map(([name], i) => h("button", { onclick: () => select(i) }, name)));
+    select(0);
+    return;
+  }
   let cfg;
   try {
     cfg = await api("/api/config");
@@ -3239,7 +3273,8 @@ async function openSettings() {
     ["飞书机器人", () => feishuTab(cfg, panel)],
     ["授权", () => authTab(panel)],
     ["通知", () => notifyTab(panel)],
-    ["安全", () => securityTab(panel)],
+    ["账号", () => securityTab(panel)],
+    ["用户", () => usersTab(panel)],
     ["系统", () => systemTab(cfg, panel)],
   ];
   const select = (i) => {
@@ -3298,6 +3333,25 @@ async function enablePush() {
     });
   }
   await api("/api/push/subscribe", { method: "POST", body: { subscription: sub.toJSON() } });
+}
+
+/** 这台设备不再收通知：服务端删掉订阅，浏览器也退订 */
+async function dropPushSub() {
+  const sub = await currentPushSub();
+  if (!sub) return;
+  await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: sub.endpoint } }).catch(() => {});
+  await sub.unsubscribe().catch(() => {});
+}
+
+/**
+ * 登录后：这个浏览器上的通知订阅如果不是当前账号的（上一个人没退出就换了账号），
+ * 退订掉 —— 推送服务随后会让服务端那条订阅失效，上一个人的通知就不会再推到这里。
+ */
+async function releaseForeignPushSub() {
+  const sub = await currentPushSub();
+  if (!sub) return;
+  const { subscriptions } = await api("/api/push");
+  if (!subscriptions.some((d) => d.endpoint === sub.endpoint)) await sub.unsubscribe().catch(() => {});
 }
 
 async function notifyTab(panel) {
@@ -4459,7 +4513,18 @@ async function securityTab(panel) {
   const old = h("input", { type: "password", autocomplete: "current-password" });
   const pw = h("input", { type: "password", autocomplete: "new-password" });
   const sessions = await api("/api/web-sessions");
+  // 管理员看到的是所有人的设备：不止一个人时标上是谁的
+  const owners = new Set(sessions.map((s) => s.userId));
+  const showOwner = isAdmin() && owners.size > 1;
   panel.append(
+    S.user
+      ? h(
+          "div",
+          { class: "section" },
+          h("h4", {}, "当前账号"),
+          h("div", {}, S.user.name, " ", h("span", { class: "status-tag" }, S.user.role === "admin" ? "管理员" : "成员")),
+        )
+      : null,
     h(
       "div",
       { class: "section" },
@@ -4476,7 +4541,7 @@ async function securityTab(panel) {
             onclick: async () => {
               try {
                 await api("/api/password", { method: "POST", body: { old: old.value, password: pw.value } });
-                toast("密码已修改，其它设备已下线");
+                toast("密码已修改，你的其它设备已下线");
                 old.value = pw.value = "";
               } catch (err) {
                 toast(err.message);
@@ -4490,12 +4555,17 @@ async function securityTab(panel) {
     h(
       "div",
       { class: "section" },
-      h("h4", {}, "已登录的设备"),
+      h("h4", {}, showOwner ? "已登录的设备（所有用户）" : "已登录的设备"),
       sessions.map((s) =>
         h(
           "div",
           { class: "list-item" },
-          h("div", { class: "grow" }, h("div", { class: "t" }, s.userAgent.slice(0, 80) || "未知设备"), h("div", { class: "s" }, `${s.ip} · 最近活动 ${relTime(s.lastSeen)}`)),
+          h(
+            "div",
+            { class: "grow" },
+            h("div", { class: "t" }, s.userAgent.slice(0, 80) || "未知设备"),
+            h("div", { class: "s" }, `${showOwner ? `${s.userName ?? "已删除的用户"} · ` : ""}${s.ip} · 最近活动 ${relTime(s.lastSeen)}`),
+          ),
           h(
             "button",
             {
@@ -4519,6 +4589,8 @@ async function securityTab(panel) {
         {
           class: "btn danger",
           onclick: async () => {
+            // 退出了就别再收这个账号的通知：换个人在这台设备上登录，不能收到上一个人的
+            await dropPushSub().catch(() => {});
             await api("/api/logout", { method: "POST" });
             location.reload();
           },
@@ -4526,6 +4598,124 @@ async function securityTab(panel) {
         "退出登录",
       ),
     ),
+  );
+}
+
+// ---------- 用户（管理员） ----------
+
+async function usersTab(panel) {
+  const box = h("div", { class: "section" }, h("h4", {}, "用户"), h("span", { class: "spinner" }));
+  const addBox = h("div", { class: "section" });
+  fill(panel, box, addBox);
+  const reload = () => {
+    fill(panel);
+    void usersTab(panel);
+  };
+  let data;
+  try {
+    data = await api("/api/users");
+  } catch (err) {
+    fill(box, h("h4", {}, "用户"), h("div", { class: "error-text" }, err.message));
+    return;
+  }
+  const act = (btn, fn) => async () => {
+    btn.disabled = true;
+    try {
+      if ((await fn()) !== false) reload();
+    } catch (err) {
+      toast(err.message);
+    }
+    btn.disabled = false;
+  };
+  const patch = (u, body) => api(`/api/users/${encodeURIComponent(u.id)}`, { method: "PATCH", body });
+
+  /** 重置密码：就地展开一个输入框 */
+  const resetRow = (u, holder) => {
+    const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: "新密码（至少 8 位）" });
+    const ok = h("button", { class: "btn small primary" }, "确定");
+    ok.onclick = act(ok, async () => {
+      await patch(u, { password: pw.value });
+      toast(`已重置「${u.name}」的密码，他的设备已下线`);
+    });
+    fill(holder, h("div", { class: "row" }, pw, ok));
+    pw.focus();
+  };
+
+  fill(
+    box,
+    h("h4", {}, "用户"),
+    h(
+      "div",
+      { class: "muted" },
+      "每个人只看得到自己的对话、授权和通知。管理员能改所有设置，还能看到飞书机器人的对话。",
+    ),
+    h(
+      "div",
+      { class: "error-text" },
+      "注意：账号不是安全隔离。所有 agent 都以服务器上的同一个系统用户运行，任何用户都能让 agent 读到这台机器上的文件（包括别人的对话记录和配置里的密钥），用的也是同一个 Claude / Codex 订阅。只把账号给你信任的人。",
+    ),
+    data.users.map((u) => {
+      const self = u.id === data.me;
+      const extra = h("div");
+      const pwBtn = h("button", { class: "btn small" }, "重置密码");
+      pwBtn.onclick = () => resetRow(u, extra);
+      const roleBtn = h("button", { class: "btn small", disabled: self }, u.role === "admin" ? "设为成员" : "设为管理员");
+      roleBtn.onclick = act(roleBtn, () => patch(u, { role: u.role === "admin" ? "member" : "admin" }));
+      const disBtn = h("button", { class: "btn small", disabled: self }, u.disabled ? "启用" : "停用");
+      disBtn.onclick = act(disBtn, () => patch(u, { disabled: !u.disabled }));
+      const rmBtn = h("button", { class: "btn small danger", disabled: self }, "删除");
+      rmBtn.onclick = act(rmBtn, async () => {
+        const sure = await confirmDialog({
+          title: `删除用户「${u.name}」？`,
+          message: "他的设备会立刻下线。他的对话不会删除，之后归管理员。",
+          confirmText: "删除",
+          danger: true,
+        });
+        if (!sure) return false;
+        await api(`/api/users/${encodeURIComponent(u.id)}`, { method: "DELETE" });
+        toast("已删除");
+      });
+      return h(
+        "div",
+        { class: "list-item", style: { flexWrap: "wrap" } },
+        h(
+          "div",
+          { class: "grow" },
+          h(
+            "div",
+            { class: "t" },
+            u.name,
+            self ? "（你）" : "",
+            " ",
+            h("span", { class: "status-tag" }, u.role === "admin" ? "管理员" : "成员"),
+            u.disabled ? h("span", { class: "status-tag bad" }, "已停用") : null,
+          ),
+          h("div", { class: "s" }, `创建于 ${relTime(u.createdAt)} · ${u.devices} 台设备已登录`),
+          extra,
+        ),
+        pwBtn,
+        roleBtn,
+        disBtn,
+        rmBtn,
+      );
+    }),
+  );
+
+  const name = h("input", { autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "登录用的名字" });
+  const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: "至少 8 位" });
+  const role = h("select", {}, h("option", { value: "member" }, "成员"), h("option", { value: "admin" }, "管理员"));
+  const add = h("button", { class: "btn primary" }, "添加");
+  add.onclick = act(add, async () => {
+    await api("/api/users", { method: "POST", body: { name: name.value.trim(), password: pw.value, role: role.value } });
+    toast(`已添加「${name.value.trim()}」`);
+  });
+  fill(
+    addBox,
+    h("h4", {}, "添加用户"),
+    field("用户名", name),
+    field("密码", pw, "告诉对方，让他登录后在 设置 → 账号 里自己改掉"),
+    field("角色", role, "成员只能用自己的对话；管理员能改所有设置、管理用户"),
+    h("div", { class: "row" }, add),
   );
 }
 

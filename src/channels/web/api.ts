@@ -9,7 +9,19 @@ import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
 import { getConversation, updateConversation } from "../../core/store.js";
-import { resolveUploadFile, saveBuffer, sniff } from "../../core/uploads.js";
+import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
+import {
+  createUser,
+  getUser,
+  isAdmin,
+  legacyOwnerId,
+  listUsers,
+  removeUser,
+  verifyLogin,
+  verifyPassword,
+  type Role,
+  type User,
+} from "../../core/users.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
@@ -23,16 +35,19 @@ import {
   clearAttempts,
   createSession,
   destroySession,
-  hasPassword,
   listSessions as listWebSessions,
-  takeAttempt,
+  needsSetup,
   revokeSession,
-  setPassword,
-  validateSession,
-  verifyPassword,
+  revokeUserSessions,
+  sessionUser,
+  patchUser,
+  setUserPassword,
+  setupFirstAdmin,
+  takeAttempt,
 } from "./auth.js";
+import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
-import { addSubscription, listSubscriptions, pushToAll, removeSubscription, vapidPublicKey } from "./push.js";
+import { addSubscription, listSubscriptions, pushToAll, removeSubscription, removeSubscriptionsOf, vapidPublicKey } from "./push.js";
 
 export const COOKIE = "aim_session";
 const startedAt = Date.now();
@@ -67,9 +82,13 @@ setInterval(() => {
  */
 const INLINE_IMAGE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-function serveUpload(res: ServerResponse, requested: string, download: boolean): void {
+function serveUpload(res: ServerResponse, user: User, requested: string, download: boolean): void {
   const file = requested ? resolveUploadFile(requested) : undefined;
-  if (!file) throw new HttpError(404, "文件不存在（可能会话重置时已清理）");
+  // 只能看自己会话里的附件。会话已经没了的，只有管理员能看
+  const key = file ? uploadKeyOf(file) : undefined;
+  const conv = key ? getConversation(key) : undefined;
+  const allowed = conv ? canSeeConv(user, conv) : isAdmin(user);
+  if (!file || !allowed) throw new HttpError(404, "文件不存在（可能会话重置时已清理）");
   const head = Buffer.alloc(12);
   const fd = fs.openSync(file, "r");
   try {
@@ -153,7 +172,7 @@ function publicConfig(): unknown {
   const cfg = structuredClone(config()) as AppConfig & { web: { passwordHash?: string } };
   return {
     ...cfg,
-    web: { ...cfg.web, passwordHash: undefined, hasPassword: !!config().web.passwordHash },
+    web: { ...cfg.web, passwordHash: undefined },
     feishu: { ...cfg.feishu, bots: cfg.feishu.bots.map((b) => ({ ...b, appSecret: maskSecret(b.appSecret) })) },
   };
 }
@@ -268,7 +287,46 @@ function setCookie(req: IncomingMessage, res: ServerResponse, token: string, max
 }
 
 export function authed(req: IncomingMessage): boolean {
-  return !!validateSession(cookies(req)[COOKIE]);
+  return !!currentUser(req);
+}
+
+/** 这个请求是哪个用户的（没登录 / 登录态失效返回 undefined） */
+export function currentUser(req: IncomingMessage): User | undefined {
+  return sessionUser(cookies(req)[COOKIE]);
+}
+
+function newSession(req: IncomingMessage, res: ServerResponse, userId: string): void {
+  setCookie(req, res, createSession(userId, clientIp(req), String(req.headers["user-agent"] ?? "")), 30 * 24 * 3600);
+}
+
+/**
+ * 只有管理员能用的接口：所有设置（Agent、飞书、配对、总是允许名单、网络、升级、重启）和用户管理。
+ * 写在一处，方便核对。普通成员只能用自己的会话、通知、密码和登录设备。
+ */
+function adminOnly(p: string): boolean {
+  return (
+    p === "/api/config" ||
+    p === "/api/server/upgrade" ||
+    p === "/api/agents/codex/install" ||
+    p.startsWith("/api/pairing") ||
+    p.startsWith("/api/claude/") ||
+    p.startsWith("/api/feishu/") ||
+    p.startsWith("/api/system") ||
+    p.startsWith("/api/users")
+  );
+}
+
+function publicMe(user: User) {
+  return { id: user.id, name: user.name, role: user.role };
+}
+
+/** users.ts 抛的是给人看的错误，转成 400 */
+function userOp<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    throw new HttpError(400, err instanceof Error ? err.message : String(err));
+  }
 }
 
 // ---------- 路由 ----------
@@ -297,32 +355,38 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 无需登录 -----
   if (p === "/api/me" && method === "GET") {
-    sendJson(res, 200, { authed: authed(req), needsSetup: !hasPassword() });
+    const user = currentUser(req);
+    sendJson(res, 200, {
+      authed: !!user,
+      needsSetup: needsSetup(),
+      // 不止一个人能登录：登录页要填用户名
+      multiUser: listUsers().filter((u) => !u.disabled).length > 1,
+      ...(user ? { user: publicMe(user) } : {}),
+    });
     return;
   }
   if (p === "/api/setup" && method === "POST") {
-    if (hasPassword()) throw new HttpError(400, "已经设置过密码了");
-    const body = await readJsonBody<{ token?: string; password?: string }>(req);
+    if (!needsSetup()) throw new HttpError(400, "已经设置过了，直接登录");
+    const body = await readJsonBody<{ token?: string; name?: string; password?: string }>(req);
     const left = takeAttempt(ip);
     if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     if (!checkSetupToken(String(body.token ?? ""))) {
       throw new HttpError(403, "设置码不对。它打印在 agent-loft 的启动日志里");
     }
-    setPassword(String(body.password ?? ""));
+    const user = userOp(() => setupFirstAdmin(String(body.name ?? ""), String(body.password ?? "")));
     clearAttempts(ip);
-    setCookie(req, res, createSession(ip, String(req.headers["user-agent"] ?? "")), 30 * 24 * 3600);
+    newSession(req, res, user.id);
     sendJson(res, 200, { ok: true });
     return;
   }
   if (p === "/api/login" && method === "POST") {
-    const body = await readJsonBody<{ password?: string }>(req);
+    const body = await readJsonBody<{ name?: string; password?: string }>(req);
     const left = takeAttempt(ip);
     if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
-    if (!hasPassword() || !verifyPassword(String(body.password ?? ""), config().web.passwordHash)) {
-      throw new HttpError(403, "密码不对");
-    }
+    const user = verifyLogin(typeof body.name === "string" ? body.name : undefined, String(body.password ?? ""));
+    if (!user) throw new HttpError(403, listUsers().filter((u) => !u.disabled).length > 1 ? "用户名或密码不对" : "密码不对");
     clearAttempts(ip);
-    setCookie(req, res, createSession(ip, String(req.headers["user-agent"] ?? "")), 30 * 24 * 3600);
+    newSession(req, res, user.id);
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -333,11 +397,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
 
-  if (!authed(req)) throw new HttpError(401, "请先登录");
+  const user = currentUser(req);
+  if (!user) throw new HttpError(401, "请先登录");
+  if (adminOnly(p) && !isAdmin(user)) throw new HttpError(403, "只有管理员能做这个操作");
+  const admin = isAdmin(user);
+  const visible = (c: Parameters<typeof canSeeConv>[1]) => canSeeConv(user, c);
 
   // ----- 附件预览 / 下载：只给上传目录里的文件 -----
   if (p === "/api/file" && method === "GET") {
-    serveUpload(res, url.searchParams.get("path") ?? "", url.searchParams.get("download") === "1");
+    serveUpload(res, user, url.searchParams.get("path") ?? "", url.searchParams.get("download") === "1");
     return;
   }
 
@@ -357,11 +425,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           ...(agentAvailability(id) ?? {}),
         };
       }),
-      bots: config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })),
+      // 飞书机器人是管理员配的，飞书会话也只给管理员看
+      bots: admin ? config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })) : [],
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
-      conversations: hub.list(),
-      pending: interactions.listPending(),
+      conversations: hub.list(visible),
+      pending: interactions.listPending().filter((i) => visible(getConversation(i.convKey))),
+      user: publicMe(user),
       serverTime: Date.now(),
     });
     return;
@@ -369,13 +439,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 系统通知（Web Push） -----
   if (p === "/api/push" && method === "GET") {
-    sendJson(res, 200, { publicKey: vapidPublicKey(), subscriptions: listSubscriptions() });
+    sendJson(res, 200, { publicKey: vapidPublicKey(), subscriptions: listSubscriptions(pushOwnedBy(user.id)) });
     return;
   }
   if (p === "/api/push/subscribe" && method === "POST") {
     const body = await readJsonBody<{ subscription?: unknown }>(req);
     try {
-      const record = addSubscription(body.subscription, String(req.headers["user-agent"] ?? ""));
+      const record = addSubscription(body.subscription, String(req.headers["user-agent"] ?? ""), user.id);
       sendJson(res, 200, { ok: true, label: record.label });
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
@@ -384,11 +454,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/push/unsubscribe" && method === "POST") {
     const body = await readJsonBody<{ endpoint?: string }>(req);
-    sendJson(res, 200, { ok: removeSubscription(String(body.endpoint ?? "")) });
+    sendJson(res, 200, { ok: removeSubscription(String(body.endpoint ?? ""), pushOwnedBy(user.id)) });
     return;
   }
   if (p === "/api/push/test" && method === "POST") {
-    const sent = await pushToAll({ title: "Agent Loft", body: "测试通知：能看到这条，说明通知已经通了。", tag: "test", url: "/" });
+    const sent = await pushToAll(
+      { title: "Agent Loft", body: "测试通知：能看到这条，说明通知已经通了。", tag: "test", url: "/" },
+      pushOwnedBy(user.id),
+    );
     if (sent === 0) throw new HttpError(502, "没有推送成功：还没有设备开启通知，或推送服务拒绝了（看服务日志）");
     sendJson(res, 200, { sent });
     return;
@@ -404,7 +477,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 会话 -----
   if (p === "/api/conversations" && method === "GET") {
-    sendJson(res, 200, hub.list());
+    sendJson(res, 200, hub.list(visible));
     return;
   }
   if (p === "/api/conversations" && method === "POST") {
@@ -419,7 +492,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       if (!cwd) throw new HttpError(400, `目录必须存在，且在 ${config().workspaceRoot} 之内`);
     }
     const key = `web:${crypto.randomBytes(6).toString("hex")}`;
-    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent });
+    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent, owner: user.id });
     if (cwd && cwd !== config().workspaceRoot) updateConversation(key, { cwd, cwdExplicit: true });
     sendJson(res, 200, hub.info(key));
     return;
@@ -430,6 +503,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const key = decodeURIComponent(convMatch[1]!);
     const sub = convMatch[2];
     const conv = conversationOr404(key);
+    // 别人的会话：当它不存在
+    if (!visible(conv)) throw new HttpError(404, "会话不存在");
 
     if (!sub && method === "PATCH") {
       const body = await readJsonBody<{ title?: string; hidden?: boolean }>(req);
@@ -514,12 +589,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (sub === "fork" && method === "POST") {
       const body = await readJsonBody<{ anchor?: string }>(req);
       const anchor = typeof body.anchor === "string" && body.anchor ? body.anchor : undefined;
-      const newKey = await hub.forkConversation(key, anchor);
+      const newKey = await hub.forkConversation(key, anchor, user.id);
       sendJson(res, 200, { info: hub.info(newKey) });
       return;
     }
     if (sub === "feishu" && method === "POST") {
-      // 在飞书继续：把选中的飞书聊天挂到这条 Web 会话上
+      // 在飞书继续：把选中的飞书聊天挂到这条 Web 会话上。飞书机器人是管理员的
+      if (!admin) throw new HttpError(403, "只有管理员能用飞书机器人");
       if (conv.channel !== "web" || conv.hidden) throw new HttpError(400, "只有 Web 会话能到飞书继续");
       const body = await readJsonBody<{ botId?: string; chatId?: string }>(req);
       const bot = feishuBots().find((b) => b.id === body.botId);
@@ -533,7 +609,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     if (sub === "sessions" && method === "GET") {
-      sendJson(res, 200, await hub.sessions(key, url.searchParams.get("all") === "1"));
+      sendJson(res, 200, await hub.sessions(key, url.searchParams.get("all") === "1", sessionVisibleTo(user)));
       return;
     }
     if (sub === "models" && method === "GET") {
@@ -556,7 +632,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           text = await hub.fork(key);
           break;
         case "resume":
-          text = await hub.resume(key, value, body.cwd);
+          text = (sessionVisibleTo(user)?.(value) ?? true)
+            ? await hub.resume(key, value, body.cwd)
+            : `找不到会话 ${value}。\n发 /sessions 看看有哪些可恢复的。`;
           break;
         case "model":
           text = await hub.setModel(key, value);
@@ -662,7 +740,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         sendJson(res, 404, { error: `没有 agent「${m[1]}」` });
         return;
       }
-      const conv = getConversation(url.searchParams.get("key") ?? "");
+      const found = getConversation(url.searchParams.get("key") ?? "");
+      const conv = found && visible(found) ? found : undefined;
       const commands = await hub.commandCatalog(m[1]!, {
         ...(conv ? { cwd: conv.cwd } : {}),
         allowedAgents: hub.enabledAgents().map((d) => d.id),
@@ -674,24 +753,79 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
   }
   if (p === "/api/password" && method === "POST") {
+    // 改自己的密码：自己所有设备下线，当前这台换一个新的登录态
     const body = await readJsonBody<{ old?: string; password?: string }>(req);
     const left = takeAttempt(ip);
     if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
-    if (!verifyPassword(String(body.old ?? ""), config().web.passwordHash)) throw new HttpError(403, "原密码不对");
+    if (!verifyPassword(String(body.old ?? ""), user.passwordHash)) throw new HttpError(403, "原密码不对");
     clearAttempts(ip);
-    setPassword(String(body.password ?? ""));
-    setCookie(req, res, createSession(ip, String(req.headers["user-agent"] ?? "")), 30 * 24 * 3600);
+    userOp(() => setUserPassword(user.id, String(body.password ?? "")));
+    newSession(req, res, user.id);
     sendJson(res, 200, { ok: true });
     return;
   }
   if (p === "/api/web-sessions" && method === "GET") {
-    sendJson(res, 200, listWebSessions());
+    // 管理员看所有人的设备，成员只看自己的
+    sendJson(res, 200, listWebSessions(admin ? undefined : user.id));
     return;
   }
   if (p === "/api/web-sessions/revoke" && method === "POST") {
     const body = await readJsonBody<{ id?: string }>(req);
-    sendJson(res, 200, { ok: revokeSession(String(body.id ?? "")) });
+    sendJson(res, 200, { ok: revokeSession(String(body.id ?? ""), admin ? undefined : user.id) });
     return;
+  }
+
+  // ----- 用户管理（管理员） -----
+  if (p === "/api/users" && method === "GET") {
+    const devices = listWebSessions();
+    sendJson(res, 200, {
+      users: listUsers().map((u) => ({ ...u, devices: devices.filter((d) => d.userId === u.id).length })),
+      me: user.id,
+    });
+    return;
+  }
+  if (p === "/api/users" && method === "POST") {
+    const body = await readJsonBody<{ name?: string; password?: string; role?: Role }>(req);
+    sendJson(
+      res,
+      200,
+      userOp(() => createUser({ name: String(body.name ?? ""), password: String(body.password ?? ""), role: body.role === "admin" ? "admin" : "member" })),
+    );
+    return;
+  }
+  const userMatch = /^\/api\/users\/([A-Za-z0-9_]+)$/.exec(p);
+  if (userMatch) {
+    const id = userMatch[1]!;
+    if (!getUser(id)) throw new HttpError(404, "用户不存在");
+    if (method === "PATCH") {
+      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string }>(req);
+      if (id === user.id && (body.disabled === true || (body.role !== undefined && body.role !== "admin"))) {
+        throw new HttpError(400, "不能停用自己，也不能取消自己的管理员");
+      }
+      // 一次改完：密码不合格时别的也不改。重置密码 / 停用会让他的设备全部下线
+      const updated = userOp(() =>
+        patchUser(id, {
+          ...(typeof body.name === "string" ? { name: body.name } : {}),
+          ...(body.role === "admin" || body.role === "member" ? { role: body.role } : {}),
+          ...(typeof body.disabled === "boolean" ? { disabled: body.disabled } : {}),
+          ...(typeof body.password === "string" ? { password: body.password } : {}),
+        }),
+      );
+      // 管理员在用户列表里重置了自己的密码：当前这台换个新登录态，别把自己踢出去
+      if (id === user.id && typeof body.password === "string") newSession(req, res, user.id);
+      sendJson(res, 200, updated);
+      return;
+    }
+    if (method === "DELETE") {
+      if (id === user.id) throw new HttpError(400, "不能删除自己");
+      // 升级前没记主人的推送订阅算在最早的管理员名下：删人之前先记下是谁
+      const legacy = legacyOwnerId();
+      const removed = userOp(() => removeUser(id));
+      removeSubscriptionsOf((owner) => (owner ?? legacy) === id);
+      revokeUserSessions(id);
+      sendJson(res, 200, removed);
+      return;
+    }
   }
   if (p === "/api/pairing" && method === "GET") {
     sendJson(res, 200, { pending: listPending(), approved: listApproved() });

@@ -47,6 +47,11 @@ export type Conversation = {
   autoEdit?: boolean;
   /** 从哪条对话分叉出来的（对话 key），列表里据此显示关联 */
   forkOf?: string;
+  /**
+   * 谁的对话（用户 id，见 core/users.ts）。Web 上新建 / 分叉时记下；
+   * 飞书会话和升级前就有的 Web 会话没有，归管理员。
+   */
+  owner?: string;
 };
 
 type StoreShape = Record<string, Conversation>;
@@ -112,6 +117,7 @@ export function ensureConversation(params: {
   channelId: string;
   agent: string;
   title?: string;
+  owner?: string;
 }): Conversation {
   const existing = getConversation(params.key);
   if (existing) return existing;
@@ -126,6 +132,7 @@ export function ensureConversation(params: {
     activeAt: now,
     createdAt: now,
     ...(params.title ? { title: params.title } : {}),
+    ...(params.owner ? { owner: params.owner } : {}),
   };
   load()[params.key] = conv;
   persist(true);
@@ -180,4 +187,30 @@ export function deleteConversation(key: string): void {
 export function putConversation(conv: Conversation): void {
   load()[conv.key] = conv;
   persist(true);
+}
+
+// ---------- agent 会话的归属 ----------
+//
+// /sessions、/resume 列的是 agent 自己存的全部历史（磁盘上谁开的都有），多用户时要按人过滤：
+// 记下每个 agent 会话 id 是哪个用户的对话里开出来的。没记过的（飞书、终端里开的、升级前的）归管理员。
+
+const sessionOwnersPath = path.join(dataDir, "session-owners.json");
+let sessionOwners: Record<string, string> | null = null;
+
+function owners(): Record<string, string> {
+  sessionOwners ??= readJson<Record<string, string>>(sessionOwnersPath, {});
+  return sessionOwners;
+}
+
+/** 第一次见到这个会话 id 时记下主人；已经有主了不改 */
+export function recordSessionOwner(sessionId: string | undefined, userId: string | undefined): void {
+  if (!sessionId || !userId) return;
+  const all = owners();
+  if (all[sessionId]) return;
+  all[sessionId] = userId;
+  writeJsonAtomic(sessionOwnersPath, all);
+}
+
+export function sessionOwner(sessionId: string): string | undefined {
+  return owners()[sessionId];
 }

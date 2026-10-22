@@ -10,13 +10,15 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { config, onConfigChange } from "../../core/config.js";
 import { parseCommand } from "../../core/commands.js";
-import { hub, type EventEnvelope } from "../../core/hub.js";
+import { GLOBAL_ALWAYS_DENIED, hub, type EventEnvelope } from "../../core/hub.js";
 import { interactions, type Interaction } from "../../core/interactions.js";
 import { getConversation } from "../../core/store.js";
 import { RUNNING_VERSION } from "../../core/upgrade.js";
 import type { Settlement } from "../../core/types.js";
-import { authed, handleApi, takeUploads } from "./api.js";
-import { authEvents, ensureSetupToken, validateSession } from "./auth.js";
+import { getUser, isAdmin, legacyOwnerId, type User } from "../../core/users.js";
+import { currentUser, handleApi, takeUploads } from "./api.js";
+import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
+import { canSeeKey, sessionVisibleTo } from "./access.js";
 import { cookies } from "./http.js";
 import { COOKIE } from "./api.js";
 import { HttpError, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
@@ -134,6 +136,8 @@ type Client = {
   subs: Set<string>;
   alive: boolean;
   token: string;
+  /** 登录的用户。每次复查登录态时刷新（角色可能被改了） */
+  user: User;
   /** 页面在前台，且正看着哪条会话（前端在切会话、切前后台时上报） */
   visible: boolean;
   viewing: string | null;
@@ -142,12 +146,18 @@ type Client = {
 /** 每次进程启动换一个：客户端发现变了，就知道 seq 已经从头计数，得整页重拉 */
 const EPOCH = Math.random().toString(36).slice(2, 10);
 
-/** 登录态已失效的连接：断开。客户端收到 4401 会回到登录页 */
-function checkClient(client: Client): boolean {
-  if (validateSession(client.token)) return true;
+/** 登录态已失效（退出、被踢、用户被停用 / 删除）的连接：断开。客户端收到 4401 会回到登录页 */
+function checkClient(client: Client): User | undefined {
+  const user = sessionUser(client.token);
+  if (user) {
+    client.user = user;
+    // 角色被改了（管理员降成成员）：已经订阅着的、现在看不到的会话，事件不能再推给他
+    for (const key of client.subs) if (!canSeeKey(user, key)) client.subs.delete(key);
+    return user;
+  }
   client.ws.close(4401, "登录已失效");
   clients.delete(client);
-  return false;
+  return undefined;
 }
 const clients = new Set<Client>();
 
@@ -160,13 +170,14 @@ function broadcastEvent(env: EventEnvelope): void {
   const listChanged = ["user", "meta", "state", "result", "error"].includes(env.ev.type);
   const info = listChanged ? hub.info(env.key) : undefined;
   for (const client of [...clients]) {
+    // 订阅时已经核对过是不是他的会话
     if (client.subs.has(env.key)) send(client, { t: "ev", ...env });
-    if (info) send(client, { t: "conv", info });
+    if (info && canSeeKey(client.user, env.key)) send(client, { t: "conv", info });
   }
 }
 
 function broadcastInteraction(i: Interaction): void {
-  for (const client of clients) send(client, { t: "ix", interaction: i });
+  for (const client of clients) if (canSeeKey(client.user, i.convKey)) send(client, { t: "ix", interaction: i });
 }
 
 // ---------- 系统通知（Web Push） ----------
@@ -210,8 +221,14 @@ type Notice = { title: string; body: string; tag: string };
  */
 function notify(key: string, notice: Notice): void {
   if (!isWebConv(key)) return;
-  for (const client of clients) send(client, { t: "notice", key, ...notice });
-  if (hasSubscriptions() && !watching(key)) void pushToAll({ ...notice, url: `/#${encodeURIComponent(key)}` });
+  for (const client of clients) if (canSeeKey(client.user, key)) send(client, { t: "notice", key, ...notice });
+  if (!hasSubscriptions() || watching(key)) return;
+  // 只推给这条会话的主人（没记主人的订阅算迁移出来的那个管理员的）
+  const legacy = legacyOwnerId();
+  void pushToAll({ ...notice, url: `/#${encodeURIComponent(key)}` }, (owner) => {
+    const u = getUser(owner ?? legacy);
+    return !!u && !u.disabled && canSeeKey(u, key);
+  });
 }
 
 function pushEvent(env: EventEnvelope): void {
@@ -240,7 +257,8 @@ const BY = "已在 Web 处理";
 
 function handleClientMessage(client: Client, raw: string): void {
   // 每条消息都复查登录态：握手时有效不代表现在还有效（改了密码、被踢了）
-  if (!checkClient(client)) return;
+  const user = checkClient(client);
+  if (!user) return;
   let msg: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -260,7 +278,7 @@ function handleClientMessage(client: Client, raw: string): void {
         return;
 
       case "sub": {
-        if (!getConversation(key)) return ack(false, { error: "会话不存在" });
+        if (!getConversation(key) || !canSeeKey(user, key)) return ack(false, { error: "会话不存在" });
         client.subs.add(key);
         const since = typeof msg.since === "number" ? msg.since : 0;
         // 客户端的 seq 来自上一个进程（比现在的还大），或者换了实例：补不了，整页重拉
@@ -291,7 +309,7 @@ function handleClientMessage(client: Client, raw: string): void {
         return ack(true);
 
       case "send": {
-        if (!getConversation(key)) return ack(false, { error: "会话不存在" });
+        if (!getConversation(key) || !canSeeKey(user, key)) return ack(false, { error: "会话不存在" });
         const text = typeof msg.text === "string" ? msg.text : "";
         const attachments = takeUploads(key, msg.uploads);
         if (!text.trim() && attachments.length === 0) return ack(false, { error: "空消息" });
@@ -301,7 +319,16 @@ function handleClientMessage(client: Client, raw: string): void {
         if (command && command.kind !== "chat") {
           const allowedAgents = hub.enabledAgents().map((d) => d.id);
           void hub
-            .command(key, command, { allowedAgents, by: "Web 命令" })
+            .command(key, command, {
+              allowedAgents,
+              by: "Web 命令",
+              ...(() => {
+                const sessionVisible = sessionVisibleTo(user);
+                return sessionVisible ? { sessionVisible } : {};
+              })(),
+              convVisible: (k) => canSeeKey(user, k),
+              allowGlobalAlways: isAdmin(user),
+            })
             .then((reply) => ack(true, { reply, info: hub.info(key) }))
             .catch((err) => ack(false, { error: err instanceof Error ? err.message : String(err) }));
           return;
@@ -312,10 +339,15 @@ function handleClientMessage(client: Client, raw: string): void {
 
       case "ix": {
         const id = String(msg.id ?? "");
+        const target = interactions.get(id);
+        if (!target || !canSeeKey(user, target.convKey)) return ack(false, { error: "请求已失效" });
         let ok = false;
         let error: string | undefined;
         switch (msg.op) {
           case "decide":
+            if (msg.decision === "allow-always" && target.spec.kind === "approval" && target.spec.alwaysGlobal && !isAdmin(user)) {
+              return ack(false, { error: GLOBAL_ALWAYS_DENIED });
+            }
             ok = !!interactions.decide(id, String(msg.decision) as Settlement, BY);
             break;
           case "select":
@@ -392,14 +424,15 @@ export async function startWeb(): Promise<void> {
   server.on("upgrade", (req, socket, head) => {
     try {
       const url = new URL(req.url ?? "/", "http://local");
-      if (url.pathname !== "/ws" || !sameOrigin(req) || !authed(req)) {
+      const user = url.pathname === "/ws" && sameOrigin(req) ? currentUser(req) : undefined;
+      if (!user) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
       const token = cookies(req)[COOKIE] ?? "";
       wss!.handleUpgrade(req, socket, head, (ws) => {
-        const client: Client = { ws, subs: new Set(), alive: true, token, visible: false, viewing: null };
+        const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null };
         clients.add(client);
         ws.on("pong", () => (client.alive = true));
         ws.on("message", (data) => {

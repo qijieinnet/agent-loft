@@ -309,7 +309,7 @@ export class ClaudeSession implements AgentSession {
       kind: "approval",
       title: `需要授权：${toolName}`,
       detail: describeToolCall(toolName, input),
-      ...(isRememberableSignature(toolName, signature) ? { alwaysLabel: alwaysLabelOf(toolName, signature) } : {}),
+      ...(isRememberableSignature(toolName, signature) ? { alwaysLabel: alwaysLabelOf(toolName, signature), alwaysGlobal: true } : {}),
       ...(sessionable ? { allowSession: true } : {}),
     });
     if (outcome.settlement === "allow-always" && isRememberableSignature(toolName, signature)) rememberAlways(signature);

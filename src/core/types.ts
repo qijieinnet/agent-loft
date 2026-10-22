@@ -51,6 +51,11 @@ export type InteractionSpec =
       detail: string;
       /** 「总是允许」按钮的文字；不给就没有这个按钮 */
       alwaysLabel?: string;
+      /**
+       * 「总是允许」会落盘、对所有会话生效（Claude 的总是允许名单、Codex 的 execpolicy）。
+       * 多用户时只有管理员能点 —— 否则一个成员就能替所有人放行。
+       */
+      alwaysGlobal?: boolean;
       /** 给了就显示「本会话全部允许」按钮。只有 agent 能真正兑现时才给 */
       allowSession?: boolean;
     }

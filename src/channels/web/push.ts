@@ -8,6 +8,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
+import { legacyOwnerId } from "../../core/users.js";
 
 export type PushSubscriptionRecord = {
   endpoint: string;
@@ -16,7 +17,12 @@ export type PushSubscriptionRecord = {
   label: string;
   createdAt: number;
   lastOkAt?: number;
+  /** 哪个用户开的（core/users.ts）。升级前的没有：第一次读到时认给迁移出来的那个管理员并记下 */
+  userId?: string;
 };
+
+/** 按订阅的主人筛选：拿到的是订阅里记的 userId（可能没有） */
+export type OwnerFilter = (userId: string | undefined) => boolean;
 
 export type PushPayload = {
   title: string;
@@ -42,6 +48,12 @@ function load(): Store {
   if (!store) {
     store = readJson<Store>(FILE(), { subscriptions: [] });
     if (!Array.isArray(store.subscriptions)) store.subscriptions = [];
+    // 升级前的订阅：记到迁移出来的管理员名下。只做一次 —— 之后那个管理员被停用、删掉，
+    // 订阅也不会转给别人（那样别人的通知会推到他的手机上）
+    const owner = legacyOwnerId();
+    const legacy = owner ? store.subscriptions.filter((x) => !x.userId) : [];
+    for (const x of legacy) x.userId = owner;
+    if (legacy.length > 0) writeJsonAtomic(FILE(), store);
   }
   return store;
 }
@@ -134,7 +146,8 @@ function describeUa(ua: string): string {
   return browser ? `${device} · ${browser}` : device;
 }
 
-export function addSubscription(sub: unknown, userAgent: string): PushSubscriptionRecord {
+/** 同一个浏览器换了个账号登录再开通知：订阅归新账号 */
+export function addSubscription(sub: unknown, userAgent: string, userId?: string): PushSubscriptionRecord {
   if (!validSubscription(sub)) throw new Error("订阅信息不完整");
   const s = load();
   const record: PushSubscriptionRecord = {
@@ -142,24 +155,25 @@ export function addSubscription(sub: unknown, userAgent: string): PushSubscripti
     keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
     label: describeUa(userAgent),
     createdAt: Date.now(),
+    ...(userId ? { userId } : {}),
   };
   s.subscriptions = [...s.subscriptions.filter((x) => x.endpoint !== sub.endpoint), record];
   persist();
   return record;
 }
 
-export function removeSubscription(endpoint: string): boolean {
+export function removeSubscription(endpoint: string, mine?: OwnerFilter): boolean {
   const s = load();
   const before = s.subscriptions.length;
-  s.subscriptions = s.subscriptions.filter((x) => x.endpoint !== endpoint);
+  s.subscriptions = s.subscriptions.filter((x) => x.endpoint !== endpoint || (mine && !mine(x.userId)));
   if (s.subscriptions.length === before) return false;
   persist();
   return true;
 }
 
 /** 给设置页看的：不带密钥 */
-export function listSubscriptions(): { endpoint: string; label: string; createdAt: number; lastOkAt?: number }[] {
-  return load().subscriptions.map(({ endpoint, label, createdAt, lastOkAt }) => ({
+export function listSubscriptions(mine?: OwnerFilter): { endpoint: string; label: string; createdAt: number; lastOkAt?: number }[] {
+  return load().subscriptions.filter((x) => !mine || mine(x.userId)).map(({ endpoint, label, createdAt, lastOkAt }) => ({
     endpoint,
     label,
     createdAt,
@@ -201,9 +215,17 @@ async function sendOne(sub: PushSubscriptionRecord, payload: PushPayload): Promi
   return true;
 }
 
-/** 推给所有订阅的设备，返回成功的数量。单个设备失败不影响别的 */
-export async function pushToAll(payload: PushPayload): Promise<number> {
-  const subs = [...load().subscriptions];
+/** 某个用户的订阅全部删掉（删用户时） */
+export function removeSubscriptionsOf(mine: OwnerFilter): void {
+  const s = load();
+  const before = s.subscriptions.length;
+  s.subscriptions = s.subscriptions.filter((x) => !mine(x.userId));
+  if (s.subscriptions.length !== before) persist();
+}
+
+/** 推给订阅的设备（给了 to 就只推给它挑出来的主人），返回成功的数量。单个设备失败不影响别的 */
+export async function pushToAll(payload: PushPayload, to?: OwnerFilter): Promise<number> {
+  const subs = load().subscriptions.filter((x) => !to || to(x.userId));
   if (subs.length === 0) return 0;
   const results = await Promise.all(
     subs.map((sub) =>
