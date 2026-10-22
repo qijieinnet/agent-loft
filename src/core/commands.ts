@@ -91,7 +91,7 @@ export function helpText(agents: string[], channel?: string): string {
     "",
     "Agent 给选项时会发一张提问卡，点按钮作答；都不合适就直接发消息，那条消息会被当成你的回答。",
     "",
-    "**命令**（需整条消息只有命令；只发一个 `/` 可以列出全部命令，包括 agent 自己的）",
+    "**命令**（需整条消息只有命令；只发一个 `/` 可以列出命令；agent 自己的命令默认不在列表里，可以在设置 → 命令里勾选，没勾的照样可以直接发）",
     "",
     ...BUILTIN_COMMANDS.filter((c) => !c.multiAgentOnly || multi)
       .filter((c) => !c.feishuOnly || channel === "feishu")

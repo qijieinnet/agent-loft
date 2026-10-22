@@ -66,7 +66,7 @@ agent-loft service install        # 注册为开机自启服务（systemd / laun
 
 打开 `http://<机器 IP>:8800`（本机用 `http://localhost:8800`）：第一次需要输入日志里的设置码，然后设一个登录密码。设置码找不到的话，直接运行 `agent-loft passwd` 设密码。
 
-到 设置 → Agent 检查 Claude Code、Codex 装好、登录了没有：Claude Code 随 agent-loft 一起安装，只需在服务端终端里登录；Codex 可以点「直接在服务器上安装」。设置 → 通用 里能看到服务端版本，有新版本时点「升级」即可（`npm install -g agent-loft@latest`，以系统服务运行时会自动重启，打开的页面会自动刷新）。
+到 设置 → Agent 检查 Claude Code、Codex 装好、登录了没有：Claude Code 随 agent-loft 一起安装，只需在服务端终端里登录；Codex 可以点「直接在服务器上安装」。设置 → 系统 里能看到服务端版本，有新版本时点「升级」即可（`npm install -g agent-loft@latest`，以系统服务运行时会自动重启，打开的页面会自动刷新）。
 
 在外面只用飞书的话不需要任何网络配置（机器人由服务端主动连向飞书）。在外面用网页、系统推送和语音输入需要 HTTPS，见下面的「安全」和[产品介绍里的「从外网访问」](docs/产品介绍.md#从外网访问)。
 
@@ -122,7 +122,7 @@ agent-loft service install
 
 - Web 登录密码用 scrypt 哈希保存。首次设置必须用启动日志里的一次性设置码，防止「谁先打开页面谁就成了主人」。
 - 登录态通过 HttpOnly cookie 保存，服务端只存它的哈希。同一 IP 连续输错 5 次锁 15 分钟。所有写请求和 WebSocket 都校验 Origin。页面开启了严格的 CSP。
-- 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）或 Cloudflare Tunnel 访问，并把不在本机的反代 IP 加进 `web.trustedProxies`（只有从这些地址来的连接才采信 `X-Forwarded-*`）。不要直接把 8800 端口映射出去。局域网访问可以在 设置 → 通用 → 网络访问 里关掉。
+- 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）或 Cloudflare Tunnel 访问，并把不在本机的反代 IP 加进 `web.trustedProxies`（只有从这些地址来的连接才采信 `X-Forwarded-*`）。不要直接把 8800 端口映射出去。局域网访问可以在 设置 → 系统 → 网络访问 里关掉。
 - 审批超时一律按拒绝处理。Codex 默认沙箱为 `workspace-write`，不会因为 `~/.codex/config.toml` 里配了 `never` 或 `danger-full-access` 就绕过审批。
 - agent 子进程拿不到本服务自己的凭据（`FEISHU_*`、`AGENT_LOFT_*` 等环境变量会被剔除）。
 

@@ -16,25 +16,26 @@ export type BuiltinSpec = {
   feishuOnly?: boolean;
 };
 
+// 按常用程度排：这也是设置 → 命令、「/」列表和 /help 里的默认顺序
 export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "new", args: "[模型]", description: "开一条新会话" },
-  { name: "status", description: "查看当前会话、模型、目录、剩余额度" },
   { name: "stop", description: "中断当前执行" },
   { name: "model", args: "[名称]", description: "切换模型（不带参数弹选择）" },
   { name: "effort", args: "[程度]", description: "切换思考程度" },
+  { name: "status", description: "查看当前会话、模型、目录、剩余额度" },
   { name: "sessions", args: "[all]", description: "列出历史会话，点按钮恢复；加 all 列所有目录" },
   { name: "resume", args: "<会话ID>", description: "恢复指定会话" },
+  { name: "cd", args: "<相对目录>", description: "切换工作目录（限 workspace 内）" },
+  { name: "pwd", description: "显示当前工作目录" },
   { name: "fork", description: "从当前会话分叉，原会话保留" },
+  { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（Bash 仍询问）" },
   { name: "agent", args: "[名称]", description: "查看 / 切换 agent", multiAgentOnly: true },
   { name: "claude", description: "切换到 Claude Code", multiAgentOnly: true },
   { name: "codex", description: "切换到 Codex", multiAgentOnly: true },
-  { name: "cd", args: "<相对目录>", description: "切换工作目录（限 workspace 内）" },
-  { name: "pwd", description: "显示当前工作目录" },
-  { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（Bash 仍询问）" },
   { name: "web", description: "接上一条 Web 会话，在飞书里查看和回复", feishuOnly: true },
   { name: "detach", description: "不再接着 Web 会话，回到这个聊天自己的会话", feishuOnly: true },
-  { name: "approve", args: "<请求ID> allow-once|allow-always|allow-session|deny", description: "审批兜底（卡片失效时用）" },
   { name: "help", description: "显示帮助" },
+  { name: "approve", args: "<请求ID> allow-once|allow-always|allow-session|deny", description: "审批兜底（卡片失效时用）" },
 ];
 
 /** agent 自己报上来的命令 */
@@ -132,7 +133,10 @@ function needsArgs(args: string | undefined): boolean {
  * 合并内置命令和 agent 原生命令，再按用户配置排序。
  * - 只对接得上的 agent 才列 /claude /codex 这类快捷切换；
  * - 和内置命令重名的原生命令丢掉：反正会被 agent-loft 先拦下来，列出来只会误导；
- * - 配置里排过序的在前，按配置的顺序；没排过的（比如新装的 skill）按默认顺序接在后面。
+ * - 配置里排过序的在前，按配置的顺序；没排过的（比如新装的 skill）按默认顺序接在后面；
+ * - 默认顺序：agent-loft 内置命令（按常用程度）→ 自定义命令 → agent 原生命令；
+ * - agent 原生命令默认不显示：只有在设置里保存过（出现在 order 里）且没被隐藏的才显示。
+ *   设置页每次保存都会把整张表的顺序存下来，所以存过的照用户的选择，以后新装的 skill 默认不勾。
  */
 export function buildCatalog(params: {
   allowedAgents: string[];
@@ -202,7 +206,7 @@ export function buildCatalog(params: {
       if (rb !== undefined) return 1;
       return a.i - b.i;
     })
-    .map(({ c }) => ({ ...c, hidden: hidden.has(c.name) }));
+    .map(({ c }) => ({ ...c, hidden: hidden.has(c.name) || (c.source === "agent" && !rank.has(c.name)) }));
 }
 
 /** 「/name args」，给人看的写法 */

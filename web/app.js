@@ -3224,7 +3224,7 @@ async function openSettings() {
   const nav = h("div", { class: "settings-nav" });
   const panel = h("div", { class: "settings-body" });
   // 设置弹窗高度固定，切标签页时不跟着内容一伸一缩
-  const close = modal({ title: "设置", wide: true, tall: true, body: h("div", { class: "settings" }, nav, panel) });
+  modal({ title: "设置", wide: true, tall: true, body: h("div", { class: "settings" }, nav, panel) });
   let cfg;
   try {
     cfg = await api("/api/config");
@@ -3240,7 +3240,7 @@ async function openSettings() {
     ["授权", () => authTab(panel)],
     ["通知", () => notifyTab(panel)],
     ["安全", () => securityTab(panel)],
-    ["系统", () => systemTab(panel, close)],
+    ["系统", () => systemTab(cfg, panel)],
   ];
   const select = (i) => {
     nav.querySelectorAll("button").forEach((b, j) => b.classList.toggle("on", i === j));
@@ -3461,7 +3461,6 @@ function serverVersionSection() {
 }
 
 function generalTab(cfg, panel) {
-  panel.append(serverVersionSection());
   const root = h("input", { value: cfg.workspaceRoot });
   const approval = h("input", { type: "number", min: 1, value: Math.round(cfg.approvalTimeoutMs / 60000) });
   const ttl = h("input", { type: "number", min: 0, value: Math.round(cfg.sessionTtlMs / 3600000) });
@@ -3501,7 +3500,6 @@ function generalTab(cfg, panel) {
       ),
     ),
   );
-  panel.append(networkSection(cfg));
 }
 
 /** 只有本机能连的监听地址（和服务端 listen.ts 的判断一致） */
@@ -3707,7 +3705,8 @@ function customDialog({ agent, entry, taken }, onSave) {
 
 /**
  * 设置 → 命令：每个 agent 一张表，拖动或用箭头排序，取消勾选就不在「/」列表里出现。
- * 保存时把整张表的顺序存下来；以后新装的 skill 不在表里，会自动接在最后。
+ * 默认 agent-loft 内置命令按常用程度排在最前，agent 自己的命令排在后面且默认不勾（服务端 buildCatalog 决定）。
+ * 保存时把整张表的顺序存下来；以后新装的 skill 不在表里，会自动接在最后、默认不勾。
  * 用户可以自己添加命令（一段预设的提示词），自己加的可以编辑、删除，增删改后立即保存。
  */
 function commandsTab(cfg, panel) {
@@ -3919,7 +3918,7 @@ function commandsTab(cfg, panel) {
       h(
         "div",
         { class: "muted" },
-        "在输入框里打「/」时弹出的命令，按这里的顺序排列；保存后会自动同步到飞书机器人的指令面板。取消勾选的不会出现在列表里，但照样可以手动输入。带 agent 名标记的是 agent 自己的命令（skills 等），会原样转给 agent。",
+        "在输入框里打「/」时弹出的命令，按这里的顺序排列；保存后会自动同步到飞书机器人的指令面板。取消勾选的不会出现在列表里，但照样可以手动输入。带 agent 名标记的是 agent 自己的命令（skills 等），默认不勾选，需要的话勾上并保存；它们会原样转给 agent。",
       ),
       tabs,
       h(
@@ -4530,40 +4529,46 @@ async function securityTab(panel) {
   );
 }
 
-async function systemTab(panel) {
-  const sys = await api("/api/system");
-  panel.append(
+async function systemTab(cfg, panel) {
+  // 系统信息要等接口返回，先占好位置，版本和网络访问两节不用等它
+  const sysBox = h("div", { class: "section" }, h("h4", {}, "系统", h("span", { class: "grow" }), h("span", { class: "spinner" })));
+  panel.append(sysBox, serverVersionSection(), networkSection(cfg));
+  let sys;
+  try {
+    sys = await api("/api/system");
+  } catch (err) {
+    fill(sysBox, h("h4", {}, "系统"), h("div", { class: "error-text" }, err.message));
+    return;
+  }
+  fill(
+    sysBox,
+    h("h4", {}, "系统"),
+    h("div", {}, `版本 ${sys.version} · Node ${sys.node} · 已运行 ${Math.round(sys.uptimeMs / 60000)} 分钟`),
+    h("div", { class: "muted" }, sys.underSystemd ? "以系统服务运行" : "前台运行（重启需要在终端里操作）"),
     h(
       "div",
-      { class: "section" },
-      h("h4", {}, "系统"),
-      h("div", {}, `版本 ${sys.version} · Node ${sys.node} · 已运行 ${Math.round(sys.uptimeMs / 60000)} 分钟`),
-      h("div", { class: "muted" }, sys.underSystemd ? "以系统服务运行" : "前台运行（重启需要在终端里操作）"),
+      { class: "row" },
       h(
-        "div",
-        { class: "row" },
-        h(
-          "button",
-          {
-            class: "btn",
-            disabled: !sys.underSystemd,
-            onclick: async () => {
-              if (!(await confirmDialog({ title: "重启 agent-loft？", message: "进行中的对话会被中断。", confirmText: "重启", danger: true }))) return;
-              try {
-                await api("/api/system/restart", { method: "POST" });
-                toast("正在重启…");
-                setTimeout(() => location.reload(), 5000);
-              } catch (err) {
-                toast(err.message);
-              }
-            },
+        "button",
+        {
+          class: "btn",
+          disabled: !sys.underSystemd,
+          onclick: async () => {
+            if (!(await confirmDialog({ title: "重启 agent-loft？", message: "进行中的对话会被中断。", confirmText: "重启", danger: true }))) return;
+            try {
+              await api("/api/system/restart", { method: "POST" });
+              toast("正在重启…");
+              setTimeout(() => location.reload(), 5000);
+            } catch (err) {
+              toast(err.message);
+            }
           },
-          "重启服务",
-        ),
-        "Notification" in window && Notification.permission !== "granted"
-          ? h("button", { class: "btn", onclick: () => Notification.requestPermission() }, "开启浏览器通知")
-          : null,
+        },
+        "重启服务",
       ),
+      "Notification" in window && Notification.permission !== "granted"
+        ? h("button", { class: "btn", onclick: () => Notification.requestPermission() }, "开启浏览器通知")
+        : null,
     ),
   );
 }

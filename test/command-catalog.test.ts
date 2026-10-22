@@ -43,6 +43,20 @@ test("按配置排序：排过的在前，没排过的按默认顺序接在后�
   assert.ok(list.some((c) => c.name === "codex"));
   assert.equal(list.find((c) => c.name === "help")!.hidden, true);
   assert.ok(!list.some((c) => c.name === "gone-skill"), "配置里有但已经不存在的命令不凭空出现");
+  assert.equal(list.find((c) => c.name === "compact")!.hidden, false, "保存过的原生命令照用户的选择");
+  assert.equal(list.find((c) => c.name === "review")!.hidden, true, "没保存过的原生命令默认不勾");
+});
+
+test("默认：内置命令按常用程度排在最前，agent 原生命令排在后面且默认不勾", () => {
+  const list = buildCatalog({ allowedAgents: ["claude"], native, prefs: undefined });
+  assert.deepEqual(
+    list.slice(0, 3).map((c) => c.name),
+    ["new", "stop", "model"],
+  );
+  const firstNative = list.findIndex((c) => c.source === "agent");
+  assert.ok(firstNative > 0 && list.slice(0, firstNative).every((c) => c.source === "agent-loft"));
+  assert.ok(list.slice(firstNative).every((c) => c.source === "agent" && c.hidden));
+  assert.ok(list.filter((c) => c.source === "agent-loft").every((c) => !c.hidden));
 });
 
 const { toFeishuCommands, planSync } = await import("../src/channels/feishu/slash-sync.js");
