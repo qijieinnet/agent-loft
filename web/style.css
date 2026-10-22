@@ -984,6 +984,46 @@ button.conv-group:hover {
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-behavior: auto;
+  /* 留白（.messages-spacer）按消息的 offsetTop 计算，要以滚动容器为准 */
+  position: relative;
+  outline: none;
+}
+
+/* 发出消息后把它顶到最上面用的留白，高度由 app.js 算 */
+.messages-spacer {
+  height: 0;
+  flex-shrink: 0;
+}
+
+/* 自己往上翻了之后出现：点一下回到底部、恢复自动滚动 */
+.to-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
+  z-index: 5;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.to-bottom:hover {
+  color: var(--fg);
+}
+
+.to-bottom[hidden] {
+  display: none;
+}
+
+.to-bottom svg {
+  width: 18px;
+  height: 18px;
 }
 
 .messages-inner {
@@ -3318,4 +3358,103 @@ button.list-item:hover {
 .in-desktop .topbar :is(button, a, input, select, textarea, label, .conv-name),
 .in-desktop .side-top :is(button, a, input, select, textarea, label) {
   -webkit-app-region: no-drag;
+}
+
+/* ---------- 定时发送 ---------- */
+
+.sched-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 14px 6px;
+}
+
+.sched-bar[hidden] {
+  display: none;
+}
+
+.sched-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-soft);
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+
+.sched-item svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.sched-when {
+  flex-shrink: 0;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.sched-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sched-act {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+
+.sched-act:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.sched-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+}
+
+.sched-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sched-presets .btn {
+  font-size: 13px;
+}
+
+.sched-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sched-time {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+  color-scheme: light dark;
 }

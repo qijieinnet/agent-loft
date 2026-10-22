@@ -9,6 +9,7 @@ import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
 import { getConversation, listConversations, updateConversation } from "../../core/store.js";
+import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import {
   createUser,
@@ -577,8 +578,33 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       // 只是从列表里藏起来：agent 侧的会话记录还在，随时能从「历史会话」恢复
       await hub.drop(key, "会话已删除");
       updateConversation(key, { hidden: true });
+      clearScheduled(key);
       hub.emitEvent(key, { type: "meta" });
       sendJson(res, 200, { ok: true });
+      return;
+    }
+    // ----- 定时发送：列表随会话信息（info.scheduled）下发，这里只管增删 -----
+    if (sub === "scheduled" && method === "POST") {
+      const body = await readJsonBody<{ text?: string; at?: number }>(req);
+      const text = typeof body.text === "string" ? body.text : "";
+      const at = Number(body.at);
+      if (!text.trim()) throw new HttpError(400, "定时发送的内容不能为空");
+      if (!Number.isFinite(at) || at < Date.now() - 60_000) throw new HttpError(400, "发送时间要在现在之后");
+      if (at > Date.now() + 30 * 86400_000) throw new HttpError(400, "最多只能排到 30 天以后");
+      try {
+        addScheduled(key, text, at);
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      }
+      hub.emitEvent(key, { type: "meta" });
+      sendJson(res, 200, hub.info(key));
+      return;
+    }
+    if (sub === "scheduled" && method === "DELETE") {
+      const id = url.searchParams.get("id") ?? "";
+      if (!removeScheduled(key, id)) throw new HttpError(404, "这条定时消息已经发出或取消了");
+      hub.emitEvent(key, { type: "meta" });
+      sendJson(res, 200, hub.info(key));
       return;
     }
     if (sub === "history" && method === "GET") {

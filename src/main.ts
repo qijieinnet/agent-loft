@@ -10,6 +10,7 @@ import { startFeishu, stopFeishu } from "./channels/feishu/index.js";
 import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
 import { startMemoryCurator } from "./core/memory-curator.js";
+import { startScheduler, stopScheduler } from "./core/scheduled.js";
 
 async function startDriver(id: "claude" | "codex"): Promise<void> {
   const driver = hub.driver(id);
@@ -45,6 +46,12 @@ async function main(): Promise<void> {
 
   startFeishu();
   if (config().web.enabled) await startWeb();
+  // 定时发送：等 agent 和渠道都起来了再开始，服务停着时到点的这时补发
+  startScheduler((m) => {
+    if (!getConversation(m.key)) return;
+    hub.send(m.key, { text: m.text, attachments: [] }, { channel: "schedule", channelId: "schedule", name: "定时发送" });
+    hub.emitEvent(m.key, { type: "meta" });
+  });
   // 先查一遍 agent 装没装、登没登录，网页打开时新对话里就只列出能用的
   void agentHealth().catch(() => {});
 
@@ -60,6 +67,7 @@ async function main(): Promise<void> {
     console.log(`[退出] 收到 ${signal}，正在收尾…`);
     const force = setTimeout(() => process.exit(0), 8000);
     force.unref();
+    stopScheduler();
     stopFeishu();
     await stopWeb();
     await hub.shutdown().catch(() => {});

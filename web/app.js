@@ -38,6 +38,7 @@ const ICON = {
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>',
   clip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
   mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>',
   fork: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-6 4-11.2 8.6"/></svg>',
@@ -461,6 +462,7 @@ function onWsMessage(msg) {
       if (msg.info.key === S.current) {
         renderTopbar();
         setBusy(msg.info.busy);
+        renderScheduled();
       }
       scheduleSidebar();
       return;
@@ -682,7 +684,11 @@ function renderLayout() {
   );
   ui.topbar = h("div", { class: "topbar" });
   ui.msgInner = h("div", { class: "messages-inner" });
-  ui.messages = h("div", { class: "messages" }, ui.msgInner);
+  ui.spacer = h("div", { class: "messages-spacer", "aria-hidden": "true" });
+  ui.messages = h("div", { class: "messages", tabindex: "-1" }, ui.msgInner, ui.spacer);
+  ui.toBottom = h("button", { class: "to-bottom", title: "回到底部", hidden: true, onclick: () => scrollToBottom() }, icon("down"));
+  ui.follow = true;
+  bindScrollWatch();
   ui.composerWrap = h("div", { class: "composer-wrap" });
   ui.main = h("main", { class: "main" }, ui.topbar, ui.messages, ui.composerWrap);
   ui.layout = h("div", { class: "layout" }, ui.sidebar, h("div", { class: "scrim", onclick: closeSide }), ui.main);
@@ -1711,7 +1717,11 @@ function newDraft() {
   S.turnAi = null;
   turnStartAt = null;
   S.uploads = [];
+  S.pinNext = false;
+  ui.pinEl = null;
+  ui.follow = true;
   setBusy(false);
+  renderScheduled();
   history.replaceState(null, "", location.pathname);
   WS.presence();
   renderTopbar();
@@ -1751,7 +1761,11 @@ async function openConversation(key) {
   S.turnAi = null;
   turnStartAt = null;
   S.uploads = [];
+  S.pinNext = false;
+  ui.pinEl = null;
+  ui.follow = true;
   renderChips();
+  renderScheduled();
   history.replaceState(null, "", `#${encodeURIComponent(key)}`);
   WS.presence();
   renderTopbar();
@@ -1800,18 +1814,82 @@ async function openConversation(key) {
   setBusy(data.info.busy);
   renderTopbar();
   WS.subscribe(key, S.seq.get(key));
-  scrollToBottom(true);
+  renderScheduled();
+  scrollToBottom();
 }
 
 // ---------- 消息渲染 ----------
 
-function nearBottom() {
+// 滚动规则（和 ChatGPT 一样）：
+//   - 自己发出一条消息后，把它顶到视口最上面，下面留白；回复往下长，长到屏幕底部之后才跟着往下滚。
+//     留白靠消息列表后面的 ui.spacer 撑出来：高度 = 刚好够那条消息滚到顶，回复越长它越矮，到 0 为止。
+//   - 回复过程中只要用户自己滚了（滚轮、触摸、拖滚动条、键盘翻页），就不再自动滚，直到下一次发消息。
+//     ui.follow 记着现在要不要自动滚。
+
+function nearBottom(gap = 120) {
   const m = ui.messages;
-  return m.scrollHeight - m.scrollTop - m.clientHeight < 120;
+  return m.scrollHeight - m.scrollTop - m.clientHeight < gap;
 }
 
-function scrollToBottom(force) {
-  if (force || ui.stick) ui.messages.scrollTop = ui.messages.scrollHeight;
+/** 内容变了之后：重算留白，要跟随的话贴到底（有留白时「底」正好就是被顶上去的那条消息） */
+function afterLayout() {
+  if (!ui.messages) return;
+  fitSpacer();
+  if (ui.follow && performance.now() > (ui.smoothUntil ?? 0)) ui.messages.scrollTop = ui.messages.scrollHeight;
+  updateToBottomBtn();
+}
+
+function fitSpacer() {
+  const pin = ui.pinEl;
+  if (!pin?.isConnected) {
+    ui.pinEl = null;
+    ui.spacer.style.height = "0px";
+    return;
+  }
+  // 顶栏是叠在消息区上面的：让出它的高度，再留一点空
+  const covered = Math.max(0, ui.topbar.getBoundingClientRect().bottom - ui.messages.getBoundingClientRect().top);
+  const top = Math.max(0, pin.offsetTop - covered - 12);
+  const need = top + ui.messages.clientHeight - ui.msgInner.offsetHeight;
+  ui.spacer.style.height = `${Math.max(0, Math.ceil(need))}px`;
+}
+
+/** 回到跟随模式并贴到底：打开会话、点「回到底部」时用 */
+function scrollToBottom() {
+  ui.follow = true;
+  afterLayout();
+}
+
+/** 把刚发出的这条消息顶到最上面 */
+function pinToTop(el) {
+  ui.pinEl = el;
+  ui.follow = true;
+  fitSpacer();
+  ui.smoothUntil = performance.now() + 450;
+  ui.messages.scrollTo({ top: ui.messages.scrollHeight, behavior: "smooth" });
+  updateToBottomBtn();
+}
+
+/** 用户自己动了滚动：停止自动滚动 */
+function userScrolled() {
+  ui.follow = false;
+  ui.smoothUntil = 0;
+}
+
+function updateToBottomBtn() {
+  if (ui.toBottom) ui.toBottom.hidden = nearBottom(200);
+}
+
+function bindScrollWatch() {
+  const m = ui.messages;
+  m.addEventListener("wheel", userScrolled, { passive: true });
+  m.addEventListener("touchmove", userScrolled, { passive: true });
+  // 点在滚动条上时事件目标就是滚动容器本身（点在内容上的是里面的元素）
+  m.addEventListener("pointerdown", (e) => e.target === m && userScrolled());
+  m.addEventListener("keydown", (e) => {
+    if (["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "].includes(e.key)) userScrolled();
+  });
+  m.addEventListener("scroll", updateToBottomBtn, { passive: true });
+  addEventListener("resize", () => afterLayout());
 }
 
 /** 只有最后一条回复默认显示底部的操作栏（复制 / 分叉 / 用时…），前面的 hover 才出来 */
@@ -1829,13 +1907,12 @@ function markLatestAi() {
 
 function addItem(item) {
   ui.msgInner.querySelector(".empty")?.remove();
-  const stick = nearBottom();
   item.el = renderItem(item);
   ui.msgInner.append(item.el);
   S.items.push(item);
   markLatestAi();
   updateCtxVisibility();
-  if (stick) scrollToBottom(true);
+  afterLayout();
   return item;
 }
 
@@ -1847,7 +1924,6 @@ function updateItem(item) {
   flushScheduled = true;
   requestAnimationFrame(() => {
     flushScheduled = false;
-    const stick = nearBottom();
     for (const it of dirty) {
       if (!it.el?.isConnected) continue;
       const next = renderItem(it);
@@ -1856,7 +1932,7 @@ function updateItem(item) {
     }
     dirty.clear();
     markLatestAi();
-    if (stick) scrollToBottom(true);
+    afterLayout();
   });
 }
 
@@ -2054,7 +2130,12 @@ function applyEvent(env) {
       }
       // 上一轮还没结束时发的消息会排队，不改正在进行那一轮的开始时间
       if (!S.turnAi || S.turnAi.done) turnStartAt = env.ts;
-      addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin });
+      const it = addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin });
+      // 这个页面刚发的：顶到最上面
+      if (S.pinNext && ev.origin?.channel === "web") {
+        S.pinNext = false;
+        pinToTop(it.el);
+      }
       currentAi(env.ts);
       return;
     }
@@ -2302,6 +2383,7 @@ function renderComposer() {
   ui.modeSlot = h("span", { class: "mode-slot" });
   ui.ctxRing = h("span", { class: "ctx-ring-slot" });
   ui.chips = h("div", { class: "chips" });
+  ui.schedBar = h("div", { class: "sched-bar", hidden: true });
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
   ui.composer = h(
     "div",
@@ -2325,6 +2407,7 @@ function renderComposer() {
       "div",
       { class: "composer-row" },
       h("button", { class: "icon-btn add-btn", title: "添加附件", onclick: () => ui.fileInput.click() }, icon("plus")),
+      h("button", { class: "icon-btn add-btn", title: "定时发送", onclick: () => openSchedule() }, icon("clock")),
       ui.fileInput,
       h("span", { class: "spacer" }),
       ui.ctxRing,
@@ -2335,11 +2418,134 @@ function renderComposer() {
     ),
   );
   fill(ui.composerWrap,
-    h("div", { class: "composer-box" }, ui.ctxBar, ui.composer),
+    ui.toBottom,
+    h("div", { class: "composer-box" }, ui.schedBar, ui.ctxBar, ui.composer),
   );
   ui.input.addEventListener("input", updateSendBtn);
   updateSendBtn();
   renderContext();
+  renderScheduled();
+}
+
+// ---------- 定时发送 ----------
+// 额度用完、要等刷新才能接着干活时：先把下一条排好，到点由服务端发出（页面关了也会发）。只支持文字。
+
+function fmtWhen(ms) {
+  const d = new Date(ms);
+  const now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(d) - day(now)) / 86400000);
+  if (diff === 0) return `今天 ${hm}`;
+  if (diff === 1) return `明天 ${hm}`;
+  if (diff === 2) return `后天 ${hm}`;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+}
+
+/** <input type="datetime-local"> 要的本地时间格式 */
+function toLocalInput(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** 输入框上方：这条对话排着的定时消息，可以取消 */
+function renderScheduled() {
+  if (!ui.schedBar) return;
+  const list = (S.current && S.convs.get(S.current)?.scheduled) || [];
+  ui.schedBar.hidden = list.length === 0;
+  fill(ui.schedBar,
+    list.map((m) =>
+      h(
+        "div",
+        { class: "sched-item", title: m.text },
+        icon("clock"),
+        h("span", { class: "sched-when" }, fmtWhen(m.at)),
+        h("span", { class: "sched-text" }, oneLine(m.text, 200)),
+        h("button", { class: "sched-act", title: "改时间或内容", onclick: () => openSchedule(m) }, "编辑"),
+        h("button", { class: "sched-act", title: "取消这条定时消息", onclick: () => cancelScheduled(m.id) }, "取消"),
+      ),
+    ),
+  );
+}
+
+async function cancelScheduled(id, quiet) {
+  const key = S.current;
+  if (!key) return false;
+  try {
+    const info = await api(`/api/conversations/${encodeURIComponent(key)}/scheduled?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    S.convs.set(info.key, info);
+    renderScheduled();
+    return true;
+  } catch (err) {
+    if (!quiet) toast(err.message);
+    return false;
+  }
+}
+
+/** 选时间的弹窗。edit：改已经排着的那条（先删旧的再排新的） */
+function openSchedule(edit) {
+  if (!edit && S.uploads.length) return toast("定时发送暂不支持附件，先移除附件");
+  const text = h("textarea", { class: "sched-input", rows: 4, placeholder: "到点要发的内容" });
+  text.value = edit ? edit.text : ui.input.value;
+  const when = h("input", { type: "datetime-local", class: "sched-time" });
+  const setAt = (ms) => (when.value = toLocalInput(ms));
+  setAt(edit ? edit.at : Date.now() + 5 * 3600_000);
+  // 快捷时间：当前 agent 的额度窗口重置后一分钟，再加几个常用的
+  const agent = currentAgentId();
+  const presets = [];
+  for (const q of quotaState.data ?? []) {
+    if (q.agent !== agent) continue;
+    for (const w of q.windows) {
+      if (w.resetsAt && w.resetsAt > Date.now()) presets.push({ label: `${w.label}重置后（${fmtWhen(w.resetsAt + 60_000)}）`, at: w.resetsAt + 60_000 });
+    }
+  }
+  const tomorrow9 = new Date();
+  tomorrow9.setDate(tomorrow9.getDate() + 1);
+  tomorrow9.setHours(9, 0, 0, 0);
+  presets.push(
+    { label: "1 小时后", at: Date.now() + 3600_000 },
+    { label: "3 小时后", at: Date.now() + 3 * 3600_000 },
+    { label: "5 小时后", at: Date.now() + 5 * 3600_000 },
+    { label: "明早 9:00", at: tomorrow9.getTime() },
+  );
+  const body = h(
+    "div",
+    { class: "modal-body sched-body" },
+    text,
+    h("div", { class: "sched-presets" }, presets.map((p) => h("button", { class: "btn", onclick: () => setAt(p.at) }, p.label))),
+    h("label", { class: "sched-row" }, h("span", {}, "发送时间"), when),
+    h("div", { class: "muted" }, "到点由服务端发出，关掉页面也会发。到点时 agent 还在忙的话，会排在当前这轮之后。"),
+  );
+  const go = h("button", { class: "btn primary" }, edit ? "保存" : "定时发送");
+  const close = modal({ title: edit ? "编辑定时消息" : "定时发送", body, foot: h("div", { class: "modal-foot" }, go) });
+  text.focus();
+  go.onclick = async () => {
+    const at = new Date(when.value).getTime();
+    if (!text.value.trim()) return toast("内容不能为空");
+    if (!Number.isFinite(at)) return toast("选一下发送时间");
+    if (at <= Date.now()) return toast("发送时间要在现在之后");
+    go.disabled = true;
+    try {
+      const key = await ensureConversation();
+      // 先排新的再删旧的：中途失败也不会把原来那条弄丢
+      const info = await api(`/api/conversations/${encodeURIComponent(key)}/scheduled`, { method: "POST", body: { text: text.value, at } });
+      S.convs.set(info.key, info);
+      if (edit) await cancelScheduled(edit.id, true);
+      renderScheduled();
+      // 用的是输入框里的草稿：排好了就清掉
+      if (!edit && text.value === ui.input.value) {
+        ui.input.value = "";
+        autosize();
+        updateSendBtn();
+      }
+      close();
+      toast(`已排好，${fmtWhen(at)} 发送`);
+    } catch (err) {
+      go.disabled = false;
+      toast(err.message);
+    }
+  };
 }
 
 // ---------- 语音输入（浏览器自带 Web Speech API） ----------
@@ -2682,12 +2888,15 @@ async function sendMessage() {
   let key;
   let res;
   setSending(true);
+  // 发出去之后恢复自动滚动；回显的那条用户消息到了就顶到最上面（见 applyEvent）
+  S.pinNext = true;
   try {
     key = await ensureConversation();
     if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
     // 命令（比如 /status 要现读额度）可能比普通发送慢，多给点时间
     res = await WS.request({ t: "send", key, text, uploads: S.uploads.map((u) => u.id) }, 45000);
   } catch (err) {
+    S.pinNext = false;
     toast(err.message);
     return;
   } finally {
@@ -2703,9 +2912,12 @@ async function sendMessage() {
   S.uploads = [];
   renderChips();
   updateSendBtn();
-  ui.stick = true;
-  if (res?.reply) await showCommandReply(text.trim(), res.reply, res.info);
-  scrollToBottom(true);
+  if (res?.reply) {
+    // 命令不进会话记录，没有回显：直接贴到底看结果
+    S.pinNext = false;
+    await showCommandReply(text.trim(), res.reply, res.info);
+    scrollToBottom();
+  } else if (!ui.pinEl) ui.follow = true;
 }
 
 /** 会改变当前会话（换会话、换目录、换 agent）的命令，执行完要重拉一遍 */
@@ -5308,10 +5520,6 @@ async function systemTab(cfg, panel) {
 
 // ---------- 启动 ----------
 
-boot()
-  .then(() => {
-    ui.messages?.addEventListener("scroll", () => (ui.stick = nearBottom()), { passive: true });
-  })
-  .catch((err) => {
+boot().catch((err) => {
     fill($app, h("div", { class: "auth" }, h("div", { class: "auth-card" }, h("p", {}, `加载失败：${err.message}`))));
   });

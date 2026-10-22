@@ -45,6 +45,7 @@ import type {
 } from "./types.js";
 import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
 import { helpText, type ParsedCommand } from "./commands.js";
+import { listScheduled } from "./scheduled.js";
 
 // ---------- 事件 ----------
 
@@ -138,6 +139,8 @@ export type ConversationInfo = {
   mode: ConversationMode;
   /** 这条对话有主人、会用上主人的记忆（主人自己关了记忆的话实际不会注入，见 personal.ts） */
   personal?: boolean;
+  /** 排着的定时消息（见 core/scheduled.ts），按发送时间先后 */
+  scheduled?: { id: string; text: string; at: number }[];
 };
 
 /** 普通成员点了会落盘的「总是允许」 */
@@ -443,6 +446,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
       mode: conv.mode ?? "work",
       ...(memoryOwnerOf(conv) ? { personal: true } : {}),
+      ...(() => {
+        const list = listScheduled(key);
+        return list.length ? { scheduled: list.map(({ id, text, at }) => ({ id, text, at })) } : {};
+      })(),
     };
   }
 
