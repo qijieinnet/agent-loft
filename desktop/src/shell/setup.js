@@ -131,8 +131,8 @@ function agentRow(a, isLocal) {
 
 /** 「一键安装本机服务端」怎么做的，向导和设置页共用 */
 function localInstallText() {
-  if (IS_MAC) return "一键安装 agent-loft（在终端里执行 npm install -g agent-loft，没有 Node.js 会先用 Homebrew 装上），开机自动运行。";
-  return "一键安装 agent-loft（在终端里执行 npm install -g agent-loft，需要 Node.js 22 以上），注册成 systemd 用户服务开机自动运行。";
+  if (IS_MAC) return "一键将 agent-loft 安装到用户目录 ~/.local，无需管理员权限；需要 Node.js 22 以上，缺少时会先用 Homebrew 安装，开机自动运行。";
+  return "一键将 agent-loft 安装到用户目录 ~/.local，无需管理员权限；需要 Node.js 22 以上，注册成 systemd 用户服务开机自动运行。";
 }
 
 const wiz = { step: "choose", error: null, id: null, built: null };

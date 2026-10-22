@@ -1,6 +1,6 @@
 // 本机服务端：桌面端不带服务端，只负责「检测 / 一键安装 / 重启 / 停止」这台电脑上的 agent-loft。
 //
-// 安装走和命令行完全一样的路：npm install -g agent-loft + agent-loft service install
+// 安装用 npm --prefix ~/.local install -g agent-loft + ~/.local/bin/agent-loft service install
 // （macOS 是 launchd，Linux 是 systemd 用户服务，开机自启）。Windows 上服务端还没有开机自启，
 // 只能检测、连接已经在跑的（比如 WSL 里的）。
 // 退出桌面端不影响它，手机、飞书照常能用；升级由服务端自己做（设置里「升级」，或桌面端里点）。
@@ -219,7 +219,7 @@ export function runInTerminal(name, script) {
   if (MAC) {
     // .command 文件交给「终端」打开
     const file = path.join(os.tmpdir(), `agent-loft-${name}.command`);
-    fs.writeFileSync(file, `#!/bin/zsh -il\n${script}\n${done}\n`, { mode: 0o755 });
+    fs.writeFileSync(file, `#!/bin/zsh -il\n(\n${script}\n)\n${done}\n`, { mode: 0o755 });
     return new Promise((resolve, reject) => {
       execFile("open", ["-a", "Terminal", file], (err) => (err ? reject(err) : resolve()));
     });
@@ -244,58 +244,82 @@ export function runInTerminal(name, script) {
   });
 }
 
-/** 一键安装本机服务端：没有 Node 22+ 就先用 Homebrew 装（Linux 上提示怎么装），再装 agent-loft、注册开机自启 */
-export function installLocalInTerminal() {
-  const problem = localUnsupported();
-  if (problem) return Promise.reject(new Error(problem));
-  if (LINUX) {
-    return runInTerminal(
-      "install-server",
-      `need_node() {
-  command -v node >/dev/null 2>&1 || return 0
-  [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]
-}
-if need_node; then
-  echo "需要 Node.js 22 以上。"
-  echo "推荐用 nvm 安装（https://github.com/nvm-sh/nvm）：装好 nvm 后执行 nvm install 22；"
-  echo "也可以用发行版的包管理器，或者到 https://nodejs.org 下载。装好后回到 Agent Loft 再点「安装」。"
-  exit 1
-fi
-echo "安装 agent-loft…"; echo
-npm install -g agent-loft || {
-  echo
-  echo "安装失败。如果上面提示 EACCES（没有权限），说明 Node 装在系统目录里，"
-  echo "建议改用 nvm 装的 Node 后重试，不要用 sudo npm install -g。"
-  exit 1
-}
-echo; echo "注册开机自启（systemd 用户服务）…"; echo
-agent-loft service install`,
-    );
-  }
-  return runInTerminal(
-    "install-server",
-    `need_node() {
-  command -v node >/dev/null 2>&1 || return 0
-  [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]
-}
+/** 安装到用户目录，不依赖 npm 的全局 prefix，也不修改用户的 npm / shell 配置。 */
+export function localInstallScript(platform = process.platform) {
+  const prepareNode = platform === "darwin" ? `
 if need_node; then
   if command -v brew >/dev/null 2>&1; then
     echo "需要 Node.js 22 以上，用 Homebrew 安装…"; echo
     brew install node || exit 1
+    # 系统旧 Node 可能仍排在 PATH 前面，明确选中刚安装的 Homebrew Node。
+    NODE_PREFIX=$(brew --prefix node) || exit 1
+    export PATH="$NODE_PREFIX/bin:$PATH"
   else
     echo "需要 Node.js 22 以上。"
     echo "先安装 Homebrew（https://brew.sh）或者到 https://nodejs.org 下载安装 Node.js，再回到 Agent Loft 点「安装」。"
     exit 1
   fi
+fi` : "";
+  return `need_node() {
+  command -v node >/dev/null 2>&1 || return 0
+  ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'
+}
+${prepareNode}
+if need_node; then
+  echo "需要 Node.js 22 以上。请安装或升级 Node.js 后回到 Agent Loft 再点「安装」。"
+  exit 1
 fi
-echo "安装 agent-loft…"; echo
-npm install -g agent-loft || {
+command -v npm >/dev/null 2>&1 || { echo "没有找到 npm，请重新安装 Node.js。"; exit 1; }
+INSTALL_PREFIX="$HOME/.local"
+export PATH="$INSTALL_PREFIX/bin:$PATH"
+echo "安装 agent-loft 到 $INSTALL_PREFIX…"; echo
+npm install -g --prefix "$INSTALL_PREFIX" agent-loft || {
   echo
-  echo "安装失败。如果上面提示 EACCES（没有权限），说明 Node 装在系统目录里，"
-  echo "建议改用 Homebrew 的 Node（brew install node）后重试。"
+  echo "安装失败，请查看上面的 npm 错误，处理后回到 Agent Loft 重试。"
   exit 1
 }
 echo; echo "注册开机自启…"; echo
-agent-loft service install`,
-  );
+# 用本次安装的绝对路径，避免误用 PATH 中已有的其他版本。
+"$INSTALL_PREFIX/bin/agent-loft" service install || exit 1`;
+}
+
+/** 在子 shell 退出时写入结果；提示等待回车的外层 shell 不影响安装状态。 */
+export function trackedInstallScript(resultFile, script = localInstallScript()) {
+  const report = `printf '%s\\n' "$?" > ${shQuote(resultFile)}`;
+  return `trap ${shQuote(report)} EXIT
+trap 'exit 130' HUP INT TERM
+${script}`;
+}
+
+/** Terminal 的 open / spawn 只表示窗口打开了，安装结果要由脚本传回来。 */
+export async function waitForInstallResult(resultFile, { timeoutMs = 15 * 60_000, pollMs = 500 } = {}) {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    let code;
+    try {
+      code = fs.readFileSync(resultFile, "utf8").trim();
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+    if (code && /^\d+$/.test(code)) {
+      if (Number(code) !== 0) throw new Error("本机服务端安装失败或已中断，请查看终端里的错误，处理后重试。");
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  throw new Error("等待安装超时，请查看终端里的输出，确认安装进程已结束后重试。");
+}
+
+/** 等到安装脚本结束，再由调用方检查服务启动。每次安装用独立的结果文件。 */
+export async function installLocalInTerminal() {
+  const problem = localUnsupported();
+  if (problem) throw new Error(problem);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loft-install-"));
+  const resultFile = path.join(dir, "result");
+  try {
+    await runInTerminal("install-server", trackedInstallScript(resultFile));
+    await waitForInstallResult(resultFile);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }

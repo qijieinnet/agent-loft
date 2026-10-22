@@ -89,6 +89,15 @@ agent-loft service install        # 注册为开机自启服务（systemd / laun
 
 桌面端只是个壳（代码在 `desktop/`），服务端照常用 npm 安装和升级。
 
+桌面端一键安装的服务端放在 `~/.local`，无需管理员权限，也不修改 npm 的全局配置。如果旧版桌面端安装时出现 `EACCES /usr/local/lib/node_modules/agent-loft`，可以先在终端执行：
+
+```bash
+npm install -g --prefix "$HOME/.local" agent-loft
+PATH="$HOME/.local/bin:$PATH" "$HOME/.local/bin/agent-loft" service install
+```
+
+第一条成功后再执行第二条，然后重新打开桌面端，选择连接本机服务端即可。需要 Node.js 22 以上。
+
 ### 从旧桥接器迁移
 
 ```bash

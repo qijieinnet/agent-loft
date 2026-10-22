@@ -74,11 +74,11 @@ async function busy(action, fn) {
 }
 
 export const local = {
-  /** 在终端里一键安装，然后等它起来（最多 15 分钟：要下载 Node、agent-loft 和它带的 Claude 运行时） */
+  /** 在终端里一键安装（最多 15 分钟），脚本成功后再等服务启动 */
   install: () =>
     busy("install", async () => {
       await installLocalInTerminal();
-      if (!(await waitUntilUp(15 * 60_000))) throw new Error("等了很久服务端还没起来，看一下终端里的输出");
+      if (!(await waitUntilUp(60_000))) throw new Error("安装已完成，但服务端没有启动，请查看终端输出和服务端日志");
     }),
   restart: () =>
     busy("restart", async () => {

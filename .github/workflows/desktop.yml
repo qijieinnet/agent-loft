@@ -77,6 +77,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm test
+
       # 自己的几个界面（向导、设置页、菜单栏 / 托盘面板）真的画得出来、没有脚本报错，才打包。
       # 不用 npm run smoke：那里的 VAR=1 写法 Windows 的 cmd 不认
       - name: 冒烟测试
