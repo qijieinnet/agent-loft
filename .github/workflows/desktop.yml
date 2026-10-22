@@ -98,29 +98,32 @@ jobs:
         run: npm run ${{ matrix.dist }}
 
       - name: 存成构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-loft-desktop-${{ matrix.name }}
           path: ${{ matrix.files }}
           if-no-files-found: error
 
+  # 手动触发时也跑：只把三个平台的产物收齐、列出来（验证下载这一步），不发 Release
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: agent-loft-desktop-*
           path: dist
           merge-multiple: true
 
+      - name: 收齐的产物
+        run: ls -la dist
+
       - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          ls -la dist
           version="${GITHUB_REF_NAME#desktop-v}"
           notes="Agent Loft 桌面端 ${version}
 
