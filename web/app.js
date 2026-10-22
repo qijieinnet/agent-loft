@@ -245,6 +245,8 @@ const S = {
   pending: new Map(),
   current: null,
   draftAgent: localStorage.getItem("aim.agent") || null,
+  /** 新对话用聊天模式还是工作模式，记住上次的选择 */
+  draftMode: localStorage.getItem("aim.mode") === "chat" ? "chat" : "work",
   /** 新对话（还没发消息）选的工作目录，null 表示工作区根目录。开新对话时沿用上次选的 */
   draftCwd: null,
   items: [],
@@ -1429,6 +1431,7 @@ function renderContext() {
     effort = (c ? (c.runtimeEffort ?? c.effort) : pick.effort) ?? defaults.effort;
   }
   renderCtxRing();
+  renderModePill(c);
   fill(
     ui.modelSlot,
     model
@@ -1441,6 +1444,60 @@ function renderContext() {
         )
       : null,
   );
+}
+
+/** 输入框里的「聊天 / 工作」切换。会话里切换走服务端（同一条对话接着聊），新对话里只是记下选择 */
+function renderModePill(c) {
+  if (!ui.modeSlot) return;
+  const mode = c ? (c.mode ?? "work") : S.draftMode;
+  const chat = mode === "chat";
+  fill(
+    ui.modeSlot,
+    h(
+      "button",
+      {
+        class: `mode-pill${chat ? " chat" : ""}`,
+        title: chat
+          ? "聊天模式：精简的系统提示，只能联网搜索，不执行命令、不读写文件，每轮开销小很多。点击切到工作模式"
+          : "工作模式：agent 原装的全部能力。点击切到聊天模式（更省、更快，适合日常聊天和查资料）",
+        onclick: () => void toggleMode(),
+      },
+      chat ? "💬 聊天" : "🛠 工作",
+    ),
+  );
+}
+
+async function toggleMode() {
+  const c = S.current ? S.convs.get(S.current) : null;
+  const next = (c ? (c.mode ?? "work") : S.draftMode) === "chat" ? "work" : "chat";
+  if (!c) {
+    S.draftMode = next;
+    localStorage.setItem("aim.mode", next);
+    renderContext();
+    return;
+  }
+  // 聊过的聊天对话切到工作模式：工作模式会在对话里留下一大段 Claude Code / Codex 的背景，
+  // 之后再切回聊天模式每轮还得带着它，就省不了了。先问一句，建议另开一条工作对话
+  if (next === "work" && S.items.length > 0) {
+    const choice = await confirmDialog({
+      title: "在这条对话里切到工作模式？",
+      message:
+        "切过去以后，这条对话里会留下工作模式的一大段背景（约 1.7 万 token），之后再切回聊天模式每轮也得带着，就省不了了。切换后的第一轮也会稍贵一些。\n\n要干活的话，建议新开一条工作对话（目录和 agent 跟这条一样），这条留着继续聊天。",
+      confirmText: "新开工作对话",
+      altText: "就在这里切",
+    });
+    if (choice === "alt") await doAction("mode", "work");
+    else if (choice === true) {
+      S.draftAgent = c.agent;
+      S.draftCwd = c.cwd;
+      S.draftMode = "work";
+      localStorage.setItem("aim.mode", "work");
+      newDraft();
+      toast("已新开工作对话，目录和 agent 跟原来那条一样");
+    }
+    return;
+  }
+  await doAction("mode", next);
 }
 
 /** 84321 → 84k，1234567 → 1.2M */
@@ -2242,6 +2299,7 @@ function renderComposer() {
     : null;
   ui.ctxBar = h("div", { class: "ctx-bar" });
   ui.modelSlot = h("span", { class: "model-slot" });
+  ui.modeSlot = h("span", { class: "mode-slot" });
   ui.ctxRing = h("span", { class: "ctx-ring-slot" });
   ui.chips = h("div", { class: "chips" });
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
@@ -2270,6 +2328,7 @@ function renderComposer() {
       ui.fileInput,
       h("span", { class: "spacer" }),
       ui.ctxRing,
+      ui.modeSlot,
       ui.modelSlot,
       ui.micBtn,
       ui.sendBtn,
@@ -2532,7 +2591,10 @@ async function ensureConversation() {
   if (!S.draftAgent) throw new Error("没有可用的 agent");
   let info;
   try {
-    info = await api("/api/conversations", { method: "POST", body: { agent: S.draftAgent, cwd: S.draftCwd ?? undefined } });
+    info = await api("/api/conversations", {
+      method: "POST",
+      body: { agent: S.draftAgent, cwd: S.draftCwd ?? undefined, mode: S.draftMode },
+    });
   } catch (err) {
     // 选的目录没了（被删、或工作区改了）：退回根目录，让用户重新确认
     if (err.status === 400 && S.draftCwd) {
@@ -3284,10 +3346,12 @@ function renameConv(key = S.current) {
  * 确认弹窗（替代浏览器自带的 confirm），样式和重命名弹窗一致。
  * 回车确认、Esc / 点外面取消；resolve 成 true / false
  */
-function confirmDialog({ title, message, sub, confirmText = "确定", danger = false }) {
+/** altText：给了就多一个按钮，点它返回 "alt"（确定返回 true，取消返回 false） */
+function confirmDialog({ title, message, sub, confirmText = "确定", danger = false, altText }) {
   return new Promise((resolve) => {
     const ok = h("button", { class: `btn ${danger ? "danger-fill" : "primary"}` }, confirmText);
     const cancel = h("button", { class: "btn ghost" }, "取消");
+    const alt = altText ? h("button", { class: "btn", onclick: () => done("alt") }, altText) : null;
     const done = (v) => {
       overlay.classList.add("leaving");
       setTimeout(() => overlay.remove(), 120);
@@ -3314,7 +3378,7 @@ function confirmDialog({ title, message, sub, confirmText = "确定", danger = f
         h("h3", {}, title),
         sub ? h("p", { class: "dialog-sub" }, sub) : null,
         message ? h("p", { class: "dialog-msg" }, message) : null,
-        h("div", { class: "dialog-foot" }, cancel, ok),
+        h("div", { class: "dialog-foot" }, cancel, alt, ok),
       ),
     );
     document.body.append(overlay);
@@ -3354,6 +3418,7 @@ async function openSettings() {
   // 普通成员只能管自己的通知、密码和登录设备；其余设置都是管理员的
   if (!isAdmin()) {
     const tabs = [
+      ["记忆", () => memoryTab(panel)],
       ["通知", () => notifyTab(panel)],
       ["账号", () => securityTab(panel)],
     ];
@@ -3379,6 +3444,7 @@ async function openSettings() {
     ["命令", () => commandsTab(cfg, panel)],
     ["飞书机器人", () => feishuTab(cfg, panel)],
     ["授权", () => authTab(panel)],
+    ["记忆", () => memoryTab(panel)],
     ["通知", () => notifyTab(panel)],
     ["账号", () => securityTab(panel)],
     ["用户", () => usersTab(panel)],
@@ -4659,6 +4725,7 @@ async function securityTab(panel) {
         ),
       ),
     ),
+    feishuLinkSection(),
     h(
       "div",
       { class: "section" },
@@ -4706,6 +4773,354 @@ async function securityTab(panel) {
       ),
     ),
   );
+}
+
+// ---------- 记忆（每个人自己的） ----------
+
+async function memoryTab(panel) {
+  const box = h("div", { class: "section" }, h("h4", {}, "记忆"), h("span", { class: "spinner" }));
+  fill(panel, box);
+  let mem;
+  try {
+    mem = await api("/api/account/memory");
+  } catch (err) {
+    fill(box, h("h4", {}, "记忆"), h("div", { class: "error-text" }, err.message));
+    return;
+  }
+  const reload = () => void memoryTab(panel);
+  const run = (btn, fn) => async () => {
+    btn.disabled = true;
+    try {
+      if ((await fn()) !== false) reload();
+    } catch (err) {
+      toast(err.message);
+      btn.disabled = false;
+    }
+  };
+
+  const enabled = h("input", { type: "checkbox", checked: mem.enabled });
+  enabled.onchange = async () => {
+    try {
+      await api("/api/account/memory", { method: "PUT", body: { enabled: enabled.checked } });
+      toast(enabled.checked ? "记忆已开启" : "记忆已关闭，已有的内容保留");
+    } catch (err) {
+      enabled.checked = !enabled.checked;
+      toast(err.message);
+    }
+  };
+
+  /** 一个开关：改了立刻存 */
+  const toggle = (key, label, on, off) => {
+    const box = h("input", { type: "checkbox", checked: mem[key] });
+    box.onchange = async () => {
+      try {
+        await api("/api/account/memory", { method: "PUT", body: { [key]: box.checked } });
+        toast(box.checked ? on : off);
+      } catch (err) {
+        box.checked = !box.checked;
+        toast(err.message);
+      }
+    };
+    return h("label", { class: "check" }, box, label);
+  };
+  const history = await api("/api/account/history").catch(() => null);
+  const clearHistory = h("button", { class: "btn small" }, "清空聊天记录索引");
+  clearHistory.onclick = run(clearHistory, async () => {
+    const sure = await confirmDialog({
+      title: "清空聊天记录索引？",
+      message: "agent 将搜不到以前的聊天（对话本身不删，侧栏里照样能打开）。之后的聊天还会继续记进来。",
+      confirmText: "清空",
+      danger: true,
+    });
+    if (!sure) return false;
+    await api("/api/account/history", { method: "DELETE" });
+    toast("已清空");
+  });
+
+  const about = h("textarea", { rows: 5, maxlength: mem.limits.about, placeholder: "比如：我叫小明，在深圳做后端开发，家里有台 QNAP NAS。回答尽量简短，代码用 TypeScript。" });
+  about.value = mem.about;
+  const saveAbout = h("button", { class: "btn primary" }, "保存");
+  saveAbout.onclick = run(saveAbout, async () => {
+    await api("/api/account/memory", { method: "PUT", body: { about: about.value } });
+    toast("已保存，之后的对话会用上");
+  });
+
+  const newItem = h("input", { maxlength: mem.limits.item, style: { flex: "1", minWidth: "0" }, placeholder: "手动加一条，比如：我的软路由是 iStoreOS，地址 192.168.8.2" });
+  const addBtn = h("button", { class: "btn" }, "添加");
+  addBtn.onclick = run(addBtn, async () => {
+    if (!newItem.value.trim()) return false;
+    await api("/api/account/memory/items", { method: "POST", body: { text: newItem.value } });
+  });
+  newItem.onkeydown = (e) => {
+    if (e.key === "Enter" && !e.isComposing) addBtn.click();
+  };
+
+  const items = [...mem.items].sort((a, b) => b.updatedAt - a.updatedAt);
+  const itemRow = (it) => {
+    const from = { user: "你加的", agent: "agent 在聊天里记的", auto: "聊完后自动整理的" }[it.source] ?? "agent 记的";
+    const body = h("div", { class: "grow" }, h("div", { class: "t", style: { whiteSpace: "pre-wrap" } }, it.text), h("div", { class: "s" }, `${from} · ${relTime(it.updatedAt)}`));
+    const edit = h("button", { class: "btn small" }, "编辑");
+    const del = h("button", { class: "btn small danger" }, "删除");
+    edit.onclick = () => {
+      const input = h("textarea", { rows: 2, maxlength: mem.limits.item });
+      input.value = it.text;
+      const ok = h("button", { class: "btn small primary" }, "保存");
+      ok.onclick = run(ok, () => api(`/api/account/memory/items/${it.id}`, { method: "PATCH", body: { text: input.value } }));
+      fill(body, input, h("div", { class: "row" }, ok, h("button", { class: "btn small", onclick: reload }, "取消")));
+      input.focus();
+    };
+    del.onclick = run(del, () => api(`/api/account/memory/items/${it.id}`, { method: "DELETE" }));
+    return h("div", { class: "list-item" }, body, edit, del);
+  };
+
+  const clearBtn = h("button", { class: "btn danger" }, "清空全部记忆");
+  clearBtn.onclick = run(clearBtn, async () => {
+    const sure = await confirmDialog({
+      title: "清空全部记忆？",
+      message: "「关于我」和所有记住的事都会删除，不能恢复。",
+      confirmText: "清空",
+      danger: true,
+    });
+    if (!sure) return false;
+    await api("/api/account/memory", { method: "DELETE" });
+    toast("已清空");
+  });
+
+  fill(
+    panel,
+    h(
+      "div",
+      { class: "section" },
+      h("h4", {}, "记忆", h("span", { class: "grow" }), h("label", { class: "check" }, enabled, "开启")),
+      h(
+        "div",
+        { class: "muted" },
+        "像 ChatGPT 的记忆：对话时 agent 会参考你的「关于我」和记住的事，聊天里遇到长期有用的信息也会主动记一条（会在回复里告诉你）。Claude 和 Codex、Web 和飞书共用这一份。",
+      ),
+      h(
+        "div",
+        { class: "muted" },
+        "用在哪些对话：你在 Web 上的对话；在「账号」里绑定了飞书后，和机器人的私聊也会用。飞书群聊不用。别人（包括管理员）看不到你的记忆，管理员只能清空它。",
+      ),
+    ),
+    h(
+      "div",
+      { class: "section" },
+      h("h4", {}, "自动"),
+      curateSection(mem, reload),
+      toggle("chatHistory", "参考以前的聊天", "已开启：agent 能搜你以前的聊天了", "已关闭：agent 不再搜以前的聊天"),
+      h(
+        "div",
+        { class: "muted" },
+        `agent 遇到「上次说的那个……」时，可以搜你以前的聊天（只有你自己的对话，被删掉的对话不算）。${history ? `现在收录了 ${history.conversations} 段对话、${history.count} 句话。` : ""}`,
+      ),
+      h("div", { class: "row" }, clearHistory),
+    ),
+    h("div", { class: "section" }, h("h4", {}, "关于我"), field("写给 agent 看的自我介绍：你是谁、在做什么、希望它怎么回答", about, `每次对话都会带上，最多 ${mem.limits.about} 字`), h("div", { class: "row" }, saveAbout)),
+    h(
+      "div",
+      { class: "section" },
+      h("h4", {}, `记住的事（${items.length}）`),
+      h("div", { class: "row" }, newItem, addBtn),
+      items.length ? items.map(itemRow) : h("div", { class: "muted" }, "还没有。聊天时说「记住……」，或者在上面手动加。"),
+    ),
+    h(
+      "div",
+      { class: "section" },
+      h("div", { class: "muted" }, "注意：和多用户一样，这不是安全隔离 —— 工作模式下 agent 能读到这台机器上的文件，也包括记忆文件。"),
+      h("div", { class: "row" }, clearBtn),
+    ),
+  );
+}
+
+/** 记忆页里的「整理记忆」：什么时候整理、用哪个 agent 的哪个模型、现在整理、上次的结果 */
+function curateSection(mem, reload) {
+  const c = { ...mem.curate };
+  const box = h("div");
+  const save = async (patch) => {
+    try {
+      await api("/api/account/memory", { method: "PUT", body: { curate: patch } });
+      Object.assign(c, patch);
+      if (patch.agent === "auto") c.model = "";
+      render();
+      toast("已保存");
+    } catch (err) {
+      toast(err.message);
+      render();
+    }
+  };
+  const select = (value, options, onchange) =>
+    h("select", { onchange: (e) => onchange(e.target.value) }, options.map(([v, label]) => h("option", { value: v, selected: String(v) === String(value) }, label)));
+
+  const render = () => {
+    const when = select(
+      c.when,
+      [
+        ["daily", "每天一次，把当天聊过的合起来整理（推荐）"],
+        ["idle", "每段对话聊完后就整理"],
+        ["manual", "只在我点「现在整理」时"],
+        ["off", "不整理"],
+      ],
+      (v) => save({ when: v }),
+    );
+    const timing =
+      c.when === "idle"
+        ? field("停下来多久算聊完", select(c.idleMinutes, [10, 30, 60, 120, 240].map((m) => [m, m < 60 ? `${m} 分钟` : `${m / 60} 小时`]), (v) => save({ idleMinutes: Number(v) })))
+        : c.when === "daily"
+          ? field(
+              "几点整理（服务器所在时区）",
+              select(c.dailyHour, Array.from({ length: 24 }, (_, i) => [i, `${i} 点`]), (v) => save({ dailyHour: Number(v) })),
+              "这个点之后第一次检查时整理；服务器那会儿没开机的话，开机后补上",
+            )
+          : null;
+    const agent = select(
+      c.agent,
+      [
+        ["auto", "自动：有 Claude 就用 Claude，否则 Codex"],
+        ["claude", "Claude Code"],
+        ["codex", "Codex"],
+      ],
+      (v) => save({ agent: v, model: "" }),
+    );
+    const model =
+      c.agent === "auto"
+        ? null
+        : (() => {
+            const sel = h("select", { onchange: (e) => save({ model: e.target.value }) }, h("option", { value: "" }, c.agent === "claude" ? "默认：Haiku（最省）" : "默认模型，思考程度 low（最省）"));
+            if (c.model) sel.append(h("option", { value: c.model, selected: true }, c.model));
+            agentCatalog(c.agent)
+              .then((models) => {
+                for (const m of models) {
+                  if (m.id === "default" || m.id === c.model) continue;
+                  sel.append(h("option", { value: m.id }, m.label || m.id));
+                }
+              })
+              .catch(() => sel.append(h("option", { value: "", disabled: true }, "（这个 agent 没启用，读不到模型列表）")));
+            return field("模型", sel, "整理只是读一遍对话、改几条记忆，用便宜的模型就够了；贵的模型会多占订阅额度");
+          })();
+
+    const nowBtn = h("button", { class: "btn small", disabled: c.when === "off" || !mem.enabled }, "现在整理");
+    nowBtn.onclick = async () => {
+      nowBtn.disabled = true;
+      nowBtn.textContent = "整理中…";
+      try {
+        const r = await api("/api/account/memory/curate", { method: "POST" });
+        toast(
+          r.error
+            ? `整理失败：${r.error}`
+            : r.conversations
+              ? `整理了 ${r.conversations} 段对话：新增 ${r.added.length}、更新 ${r.updated.length}、删除 ${r.removed}`
+              : "没有需要整理的对话（正在回复的那段先不整理）",
+        );
+        reload();
+      } catch (err) {
+        toast(err.message);
+        nowBtn.disabled = false;
+        nowBtn.textContent = "现在整理";
+      }
+    };
+    const last = mem.lastCuration;
+    const lastText = last
+      ? last.error
+        ? `上次整理（${relTime(last.at)}）没成功：${last.error}`
+        : `上次整理：${relTime(last.at)}，${last.conversations} 段对话${last.by ? `，用 ${last.by}` : ""}，新增 ${last.added.length}、更新 ${last.updated.length}、删除 ${last.removed}`
+      : "还没整理过";
+
+    fill(
+      box,
+      field("整理记忆", when),
+      h(
+        "div",
+        { class: "muted" },
+        {
+          daily: "攒一天再整理：每次整理都要把你现有的记忆整份带上，合起来一次最省额度，几段对话放在一起看也更容易合并重复。改了什么只显示在这里，不打扰对话。",
+          idle: "每段对话停下来就整理一次，改了什么会在那条对话里告诉你。最及时，但聊得多时调用次数也多。",
+          manual: "聊过的内容会攒着，你点「现在整理」时一次整理完。",
+          off: "不整理，聊过的内容也不攒着。聊天里 agent 照样可以自己用 remember 记东西。",
+        }[c.when],
+      ),
+      timing,
+      c.when === "off" ? null : field("用哪个 agent", agent),
+      c.when === "off" ? null : model,
+      h("div", { class: "row", style: { alignItems: "center", gap: "10px" } }, nowBtn, h("span", { class: "muted" }, `${mem.pending ? `有 ${mem.pending} 段对话等着整理。` : ""}${lastText}`)),
+      h("div", { class: "muted" }, "整理时会对照现有记忆补充、更新或删掉过时的条目；你自己加的条目它不会动。"),
+    );
+  };
+  render();
+  return box;
+}
+
+/** 「账号」页里的飞书绑定：Web 上生成绑定码，再在飞书私聊里发 /bind，两边都证明是本人 */
+function feishuLinkSection() {
+  const box = h("div", { class: "section" });
+  const load = async () => {
+    let data;
+    try {
+      data = await api("/api/account/feishu");
+    } catch (err) {
+      fill(box, h("h4", {}, "飞书账号"), h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    // 没有飞书机器人、也没绑过：整节不显示
+    if (!data.bots.length && !data.links.length) return fill(box);
+    const codeBox = h("div");
+    const gen = h("button", { class: "btn" }, data.links.length ? "再绑一个" : "生成绑定码");
+    gen.onclick = async () => {
+      gen.disabled = true;
+      try {
+        const { code, expiresAt } = await api("/api/account/feishu/code", { method: "POST" });
+        const cmd = `/bind ${code}`;
+        const copy = h("button", { class: "btn small" }, "复制");
+        copy.onclick = () => copyText(cmd, copy);
+        fill(
+          codeBox,
+          h(
+            "div",
+            { class: "list-item" },
+            h(
+              "div",
+              { class: "grow" },
+              h("div", { class: "t" }, h("code", {}, cmd)),
+              h("div", { class: "s" }, `在飞书里私聊机器人（${data.bots.map((b) => b.name).join("、") || "飞书机器人"}）发这条消息，${Math.round((expiresAt - Date.now()) / 60000)} 分钟内有效。没用过机器人的话，要先让管理员批准你的配对码。`),
+            ),
+            copy,
+          ),
+        );
+      } catch (err) {
+        toast(err.message);
+      }
+      gen.disabled = false;
+    };
+    fill(
+      box,
+      h("h4", {}, "飞书账号"),
+      h("div", { class: "muted" }, "绑定后，你和飞书机器人的私聊就是你的个人会话：用你的记忆，/sessions 只列你的会话，/web 能接上你自己的 Web 会话。群聊不受影响。"),
+      data.links.map((l) => {
+        const rm = h("button", { class: "btn small danger" }, "解除绑定");
+        rm.onclick = async () => {
+          rm.disabled = true;
+          try {
+            await api("/api/account/feishu", { method: "DELETE", body: { botId: l.botId, openId: l.openId } });
+            toast("已解除，那个私聊不再用你的记忆");
+            void load();
+          } catch (err) {
+            toast(err.message);
+            rm.disabled = false;
+          }
+        };
+        return h(
+          "div",
+          { class: "list-item" },
+          h("div", { class: "grow" }, h("div", { class: "t" }, l.botName), h("div", { class: "s" }, `${l.openIdShort} · 绑定于 ${relTime(l.boundAt)}`)),
+          rm,
+        );
+      }),
+      h("div", { class: "row" }, gen),
+      codeBox,
+    );
+  };
+  void load();
+  return box;
 }
 
 // ---------- 用户（管理员） ----------
@@ -4770,11 +5185,30 @@ async function usersTab(panel) {
       roleBtn.onclick = act(roleBtn, () => patch(u, { role: u.role === "admin" ? "member" : "admin" }));
       const disBtn = h("button", { class: "btn small", disabled: self }, u.disabled ? "启用" : "停用");
       disBtn.onclick = act(disBtn, () => patch(u, { disabled: !u.disabled }));
+      const memBtn = h("button", { class: "btn small", title: "删除他的「关于我」和所有记住的事。管理员看不到记忆的内容" }, "清空记忆");
+      memBtn.onclick = act(memBtn, async () => {
+        const sure = await confirmDialog({
+          title: `清空「${u.name}」的记忆？`,
+          message: "他的「关于我」和所有记住的事都会删除，不能恢复。",
+          confirmText: "清空",
+          danger: true,
+        });
+        if (!sure) return false;
+        await api(`/api/users/${encodeURIComponent(u.id)}/memory`, { method: "DELETE" });
+        toast("已清空");
+      });
+      const linkBtn = u.feishuLinks ? h("button", { class: "btn small" }, "解除飞书绑定") : null;
+      if (linkBtn) {
+        linkBtn.onclick = act(linkBtn, async () => {
+          await api(`/api/users/${encodeURIComponent(u.id)}/feishu`, { method: "DELETE" });
+          toast("已解除，他和机器人的私聊交还给管理员");
+        });
+      }
       const rmBtn = h("button", { class: "btn small danger", disabled: self }, "删除");
       rmBtn.onclick = act(rmBtn, async () => {
         const sure = await confirmDialog({
           title: `删除用户「${u.name}」？`,
-          message: "他的设备会立刻下线。他的对话不会删除，之后归管理员。",
+          message: "他的设备会立刻下线，记忆和飞书绑定一起删除。他的对话不会删除，之后归管理员。",
           confirmText: "删除",
           danger: true,
         });
@@ -4797,12 +5231,14 @@ async function usersTab(panel) {
             h("span", { class: "status-tag" }, u.role === "admin" ? "管理员" : "成员"),
             u.disabled ? h("span", { class: "status-tag bad" }, "已停用") : null,
           ),
-          h("div", { class: "s" }, `创建于 ${relTime(u.createdAt)} · ${u.devices} 台设备已登录`),
+          h("div", { class: "s" }, `创建于 ${relTime(u.createdAt)} · ${u.devices} 台设备已登录${u.feishuLinks ? ` · 绑定了 ${u.feishuLinks} 个飞书账号` : ""}`),
           extra,
         ),
         pwBtn,
         roleBtn,
         disBtn,
+        memBtn,
+        linkBtn,
         rmBtn,
       );
     }),

@@ -9,6 +9,7 @@ import { agentHealth } from "./agents/health.js";
 import { startFeishu, stopFeishu } from "./channels/feishu/index.js";
 import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
+import { startMemoryCurator } from "./core/memory-curator.js";
 
 async function startDriver(id: "claude" | "codex"): Promise<void> {
   const driver = hub.driver(id);
@@ -38,6 +39,9 @@ async function main(): Promise<void> {
     const conv = getConversation(key);
     return !!conv && !isExpired(conv);
   });
+
+  // 聊天记录索引和聊完后的记忆整理
+  startMemoryCurator();
 
   startFeishu();
   if (config().web.enabled) await startWeb();

@@ -6,13 +6,17 @@
 import fs from "node:fs";
 import {
   query,
+  type McpServerConfig,
+  type Options,
   type PermissionResult,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { agentEnvironment } from "../../core/agent-env.js";
-import { describeAttachments } from "../../core/uploads.js";
+import { chatSystemPrompt } from "../../core/chat-mode.js";
+import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
+import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
   AgentEvents,
   AgentSession,
@@ -98,11 +102,17 @@ function canInline(a: SavedAttachment): boolean {
   return false;
 }
 
-/** 文字 + 附件清单，后面跟着能直接看的图片和 PDF。没有附件时就是原样的文字。 */
-function buildContent(input: UserInput): string | ContentBlock[] {
+/**
+ * 文字 + 附件清单，后面跟着能直接看的图片和 PDF。没有附件时就是原样的文字。
+ * chat：聊天模式没有读文件的工具，文本附件的内容也直接放进来。
+ */
+function buildContent(input: UserInput, chat: boolean): string | ContentBlock[] {
   if (input.attachments.length === 0) return input.text;
-  const note = describeAttachments(input.attachments, canInline);
-  const blocks: ContentBlock[] = [{ type: "text", text: input.text ? `${input.text}\n\n${note}` : note }];
+  const texts = chat ? readTextAttachments(input.attachments) : new Map<string, string>();
+  const inlined = (a: SavedAttachment) => canInline(a) || texts.has(a.path);
+  const note = describeAttachments(input.attachments, inlined, chat);
+  const head = [input.text, note, chat ? inlineTextBlocks(input.attachments, texts) : ""].filter(Boolean).join("\n\n");
+  const blocks: ContentBlock[] = [{ type: "text", text: head }];
   for (const a of input.attachments) {
     if (!canInline(a)) continue;
     const data = fs.readFileSync(a.path).toString("base64");
@@ -113,6 +123,50 @@ function buildContent(input: UserInput): string | ContentBlock[] {
     );
   }
   return blocks;
+}
+
+/** 记忆工具在 Claude 里的全名 */
+const MEMORY_TOOLS = new Set(["remember", "forget", "search_past_chats"].map((t) => `mcp__${MEMORY_MCP_NAME}__${t}`));
+/** 聊天模式的全部工具：只能联网，碰不到本机 */
+const CHAT_TOOLS = ["WebSearch", "WebFetch"];
+
+/**
+ * 按模式拼 query 的选项。
+ *
+ * 聊天模式：自己的短系统提示、只给联网的两个工具、不读本地设置（技能、插件、CLAUDE.md、MCP 都不加载）。
+ * 实测一句话的输入从约 1.6 万 token 降到约 2 千。
+ * 工作模式：Claude Code 原装，有记忆就追加在它的系统提示后面。
+ * 两种模式下记忆工具都以 MCP 子进程的方式挂上（strictMcpConfig 只认这里给的）。
+ *
+ * 系统提示一律 snapshot: false。SDK 默认会把会话第一次请求时的系统提示记进记录，之后 resume 时传的
+ * 新提示一概忽略（实测：先用聊天提示开的会话，换成工作模式的提示后还是按聊天提示回答）——
+ * 那样切模式、改了记忆都不生效。snapshot: false 每次现渲染，已经记录过的老会话也能换过来（实测）。
+ * 代价只是 Claude Code 升级后提示变了会让缓存失效一次。
+ */
+export function modeOptions(opts: SessionOptions): Partial<Options> {
+  const memory = opts.memory;
+  const mcpServers: Record<string, McpServerConfig> = memory
+    ? { [MEMORY_MCP_NAME]: { type: "stdio", ...memoryMcpSpawn(memory.userId, "claude", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } }
+    : {};
+  if (opts.mode === "chat") {
+    return {
+      systemPrompt: { type: "custom", prompt: chatSystemPrompt("WebSearch（搜索）和 WebFetch（读网页）", memory?.prompt), snapshot: false },
+      tools: CHAT_TOOLS,
+      settingSources: [],
+      strictMcpConfig: true,
+      skills: [],
+      mcpServers,
+    };
+  }
+  // 刚从聊天模式切回来：说一声，不然它会以为之前「不能执行命令」是自己说错了
+  const switched = opts.announceMode
+    ? "这条对话刚从「聊天模式」切到「工作模式」：之前聊天模式下不能执行命令、不能读写文件的限制已经解除，现在可以正常干活。不用为之前说做不到而道歉。"
+    : "";
+  const append = [memory?.prompt, switched].filter(Boolean).join("\n\n");
+  return {
+    systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false },
+    ...(memory ? { mcpServers } : {}),
+  };
 }
 
 export class ClaudeSession implements AgentSession {
@@ -176,7 +230,9 @@ export class ClaudeSession implements AgentSession {
         includePartialMessages: true,
         ...(this.opts.model ? { model: this.opts.model } : {}),
         ...(this.opts.effort ? { effort: this.opts.effort as never } : {}),
-        additionalDirectories: [this.opts.uploadsDir],
+        // 聊天模式不读本地文件，附件内容由 buildContent 直接放进消息
+        additionalDirectories: this.opts.mode === "chat" ? [] : [this.opts.uploadsDir],
+        ...modeOptions(this.opts),
         ...(resume ? { resume } : {}),
         ...(fork ? { forkSession: true } : {}),
         canUseTool: async (toolName, input) => this.canUseTool(toolName, input as Record<string, unknown>),
@@ -292,6 +348,11 @@ export class ClaudeSession implements AgentSession {
    * 对同一 request_id 必须幂等 —— reinitialize 之后 SDK 会重投同一个请求。
    */
   private async canUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
+    // 自家的记忆工具，以及聊天模式下的联网工具：不问。
+    // 不用 allowedTools 放行 —— SDK 会对每个会话打一条「canUseTool 被绕过」的警告
+    if (MEMORY_TOOLS.has(toolName) && this.opts.memory) return { behavior: "allow", updatedInput: input };
+    if (this.opts.mode === "chat" && CHAT_TOOLS.includes(toolName)) return { behavior: "allow", updatedInput: input };
+
     // 提问不是授权：它问的是「你选哪个」
     if (toolName === "AskUserQuestion") {
       const answered = await this.askQuestion(input);
@@ -373,7 +434,7 @@ export class ClaudeSession implements AgentSession {
     // 这条要明确报错并让会话恢复可用，而不是挂在一个永远等不到结果的「忙」上
     let content: string | ContentBlock[];
     try {
-      content = buildContent(input);
+      content = buildContent(input, this.opts.mode === "chat");
     } catch (err) {
       const why = (err as NodeJS.ErrnoException).code === "ENOENT" ? "附件文件已不存在，请重新上传" : String(err);
       this.events.onError(new Error(`这条消息没能发出：${why}`));

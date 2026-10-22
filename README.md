@@ -54,6 +54,9 @@ Logo 就是这个意思：一大两小几颗星（多个 agent）站在同一张
 - **授权**：允许一次 / 本会话全部允许 / 总是允许（按钮上写明放行范围）/ 拒绝。`/autoedit on` 让 Claude Code 在这条会话里改工作目录内的文件不再询问（Bash 仍询问）。超时一律按拒绝处理。
 - **设置都在网页上**：工作目录、会话闲置过期时间、局域网访问和端口、各 agent 的默认模型和思考程度、可选模型、Codex 沙箱、飞书机器人、配对批准、Claude 的「总是允许」名单、通知设备、登录设备管理、用户管理、服务端升级。
 - **多用户**（信任型）：管理员在 设置 → 用户 里给别人建账号。每个人只看得到自己的对话、授权和通知，设置只有管理员能改，见下面「安全」。
+- **聊天模式 / 工作模式**：输入框右下角的「💬 聊天 / 🛠 工作」，或者发 `/chat`、`/work`，同一条对话随时切换、上下文接着。聊天模式换成精简的系统提示，只留联网搜索，不加载技能、MCP、插件，不执行命令、不读写本机文件（文本附件的内容直接放进消息），每轮的固定开销小得多：实测一句话 Claude 约 1.6 万 → 2 千 token，Codex 约 2 万 → 1.2 万（Codex 的基础指令改不了）。适合日常聊天、查资料；要动手干活时切回工作模式。切换后第一轮要重建提示缓存，会贵一些；在工作模式里读过的大段内容还留在历史里。
+- **记忆**：像 ChatGPT 的记忆，设置 → 记忆。「关于我」加上一条条记住的事，每次对话都带上；agent 在聊天里遇到长期有用的信息会自己用 `remember` 记一条（回复里会说），记错了用 `forget` 删。**自动整理**：把上次整理之后新说的话交给模型（不留会话记录的一次性调用），补充、更新或删掉过时的记忆，用户自己加的条目它不动。什么时候整理每个人自己定：每天一次（默认凌晨 4 点，把当天的对话合起来一次整理，最省）／每段对话聊完后（停多久可选，改了什么会在对话里说一声）／只在点「现在整理」时／不整理；用哪个 agent 的哪个模型也能选，默认 Claude Haiku，没有 Claude 就用 Codex 的默认模型、思考程度 low。**参考以前的聊天**：agent 遇到「上次说的那个……」会用 `search_past_chats` 搜你以前的对话（关键词搜索，只有你自己的、没被删掉的对话；第一次用时会把已有对话收录进来）。两项都能在设置里单独关。每个用户一份，Claude 和 Codex、Web 和飞书共用。只用在有主人的对话里：你的 Web 对话，以及绑定了飞书账号后和机器人的私聊；飞书群聊不用。别人（包括管理员）看不到你的记忆，管理员只能清空它；删用户时记忆一起删，不转给管理员。
+- **飞书账号绑定**：设置 → 账号 → 飞书账号 →「生成绑定码」，再在飞书私聊机器人发 `/bind 绑定码`（10 分钟内有效，群里发不算）。绑定后这个私聊就是你的个人会话：用你的记忆，`/sessions` 只列你的会话，`/web` 只能接上你自己的 Web 会话，管理员在 Web 上也看不到它。必须本人在两边各操作一次，管理员不能替人绑定（只能解除），否则就能借飞书读到别人的记忆。
 
 ## 安装
 
@@ -123,7 +126,7 @@ agent-loft service install
 
 `aloft` 是 `agent-loft` 的简写。
 
-聊天里的命令（飞书和 Web 通用；Web 输入框打 `/` 会弹出命令补全，飞书里打 `/` 会弹出机器人的指令面板（agent-loft 自动注册，约 5～8 分钟生效；只发一个 `/` 也会回一张可点击的命令卡片），顺序和显示项在 设置 → 命令 里调整）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/autoedit [on|off]` `/approve <id> allow-once|allow-always|allow-session|deny` `/help`；只在飞书里有的：`/web` `/detach`
+聊天里的命令（飞书和 Web 通用；Web 输入框打 `/` 会弹出命令补全，飞书里打 `/` 会弹出机器人的指令面板（agent-loft 自动注册，约 5～8 分钟生效；只发一个 `/` 也会回一张可点击的命令卡片），顺序和显示项在 设置 → 命令 里调整）：`/new` `/fork` `/sessions [all]` `/resume <id>` `/model [名称]` `/effort <程度>` `/agent [名称]`（或者直接发 `/claude`、`/codex`）`/stop` `/cd <目录>` `/pwd` `/status` `/autoedit [on|off]` `/approve <id> allow-once|allow-always|allow-session|deny` `/chat` `/work` `/help`；只在飞书里有的：`/web` `/detach` `/bind <绑定码>`
 
 自定义命令：设置 → 命令 → 「添加命令」，填命令名、说明和一段提示词，之后发 `/命令名 参数` 就会把这段提示词发给 agent（提示词里的 `$ARGUMENTS` 换成参数，没写就把参数接在后面）。按 agent 分开存，可以编辑、删除，也会同步到飞书指令面板。
 
@@ -132,12 +135,13 @@ agent-loft service install
 这个服务能让 agent 在你的机器上执行命令，等于一个远程 shell。
 
 - Web 登录密码用 scrypt 哈希保存。首次建管理员必须用启动日志里的一次性设置码，防止「谁先打开页面谁就成了主人」。
-- 多用户只隔开**界面上**的东西：会话列表、授权 / 提问卡、通知、`/sessions` 能列出和恢复的 agent 会话；设置、飞书机器人和飞书会话只给管理员；会落盘、对所有人生效的「总是允许」（Claude 的总是允许名单、Codex 的 execpolicy）只有管理员能点。**它不是安全边界**：所有 agent 都以同一个系统用户运行，任何用户都能让 agent 读到这台机器上的文件（别人的对话记录、配置里的密钥），用的也是同一个 Claude / Codex 订阅。只给信任的人开账号；要真正隔离，就每人用自己的系统用户各跑一份 agent-loft。
+- 多用户只隔开**界面上**的东西：会话列表、授权 / 提问卡、通知、记忆、`/sessions` 能列出和恢复的 agent 会话；设置、飞书机器人和飞书会话只给管理员（绑定了账号的飞书私聊除外，它归绑定的人）；会落盘、对所有人生效的「总是允许」（Claude 的总是允许名单、Codex 的 execpolicy）只有管理员能点。**它不是安全边界**：所有 agent 都以同一个系统用户运行，任何用户都能让 agent 读到这台机器上的文件（别人的对话记录、配置里的密钥），用的也是同一个 Claude / Codex 订阅。只给信任的人开账号；要真正隔离，就每人用自己的系统用户各跑一份 agent-loft。
 - 从老版本升级：原来的登录密码自动变成管理员 `admin`，已登录的设备不用重新登录。
 - 登录态通过 HttpOnly cookie 保存，服务端只存它的哈希。同一 IP 连续输错 5 次锁 15 分钟。所有写请求和 WebSocket 都校验 Origin。页面开启了严格的 CSP。
 - 暴露到公网时，只通过 HTTPS 反向代理（比如 Lucky）或 Cloudflare Tunnel 访问，并把不在本机的反代 IP 加进 `web.trustedProxies`（只有从这些地址来的连接才采信 `X-Forwarded-*`）。不要直接把 8800 端口映射出去。局域网访问可以在 设置 → 系统 → 网络访问 里关掉。
 - 审批超时一律按拒绝处理。Codex 默认沙箱为 `workspace-write`，不会因为 `~/.codex/config.toml` 里配了 `never` 或 `danger-full-access` 就绕过审批。
 - agent 子进程拿不到本服务自己的凭据（`FEISHU_*`、`AGENT_LOFT_*` 等环境变量会被剔除）。
+- 记忆存在 `data/memory/<用户 id>.json`，聊天记录索引在 `data/history/<用户 id>.jsonl`。记给谁由 agent-loft 在拉起记忆工具时定死（工具参数里没有用户），模型想写别人的记忆也写不了；但和多用户一样不是安全边界：工作模式下 agent 能读到这些文件。聊天模式没有读写本机文件的工具，网页里的提示注入也骗不走本机文件。
 
 ## 结构
 
@@ -149,7 +153,14 @@ src/
     store.ts       会话持久化（每个 agent 的会话 id 各自保存）
     config.ts      配置（Web 可改，改完热加载）
     users.ts       Web 登录用户和归属规则（谁能看到哪条会话）
+    memory.ts      记忆的存储和注入系统提示的那段文字；personal.ts 定记忆用谁的
+    chat-history.ts 聊天记录索引（每人一个 JSONL）和关键词搜索
+    memory-curator.ts 录入聊天、回填已有对话、聊完后自动整理记忆
+    feishu-links.ts 飞书账号 ↔ 用户的绑定和绑定码
+    chat-mode.ts   聊天模式告诉 agent 的话（Claude 换系统提示，Codex 附在消息后面）
     pairing.ts uploads.ts commands.ts …
+  mcp/
+    memory-server.ts 记忆工具（remember / forget / search_past_chats）的 stdio MCP 服务，两个 agent 共用
   agents/
     claude/        Claude Agent SDK 驱动
     codex/         codex app-server 驱动

@@ -11,6 +11,7 @@ import { loadConfig } from "../core/config.js";
 import { createUser, findUserByName, legacyOwnerId, listUsers, removeUser } from "../core/users.js";
 import { patchUser, revokeUserSessions } from "../channels/web/auth.js";
 import { removeSubscriptionsOf } from "../channels/web/push.js";
+import { purgeUserData } from "../core/personal.js";
 
 loadConfig();
 
@@ -90,6 +91,8 @@ switch (sub) {
     const legacy = legacyOwnerId();
     removeUser(user.id);
     removeSubscriptionsOf((owner) => (owner ?? legacy) === user.id);
+    // 记忆和飞书绑定一起删（飞书私聊下次有人说话时自动交还给管理员）
+    purgeUserData(user.id);
     revokeUserSessions(user.id);
     console.log(`已删除「${user.name}」。他的会话还在，归管理员。`);
     break;

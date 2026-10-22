@@ -18,6 +18,7 @@ export type ParsedCommand =
   | { kind: "status" }
   | { kind: "pwd" }
   | { kind: "autoedit"; on?: boolean }
+  | { kind: "mode"; mode: "chat" | "work" }
   | { kind: "help" }
   /** 只发了一个「/」：列出可用命令 */
   | { kind: "commands" }
@@ -69,6 +70,9 @@ export function parseCommand(raw: string): ParsedCommand {
       if (["off", "关", "0", "false"].includes(v)) return { kind: "autoedit", on: false };
       return { kind: "chat", text };
     }
+    case "chat":
+    case "work":
+      return arg ? { kind: "chat", text } : { kind: "mode", mode: head.toLowerCase() as "chat" | "work" };
     case "help":
       return { kind: "help" };
     case "approve": {

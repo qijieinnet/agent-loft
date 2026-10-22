@@ -7,7 +7,9 @@ import {
   getSessionInfo,
   getSessionMessages,
   listSessions,
+  query,
 } from "@anthropic-ai/claude-agent-sdk";
+import { agentEnvironment } from "../../core/agent-env.js";
 import os from "node:os";
 import type { AgentCommand } from "../../core/command-catalog.js";
 import { splitAttachmentNote } from "../../core/uploads.js";
@@ -16,6 +18,7 @@ import type {
   AgentDriver,
   AgentEvents,
   AgentSession,
+  CompleteRequest,
   HistoryMessage,
   InteractionHost,
   ModelInfo,
@@ -226,6 +229,44 @@ export class ClaudeDriver implements AgentDriver {
 
   async quota(): Promise<QuotaInfo | null> {
     return toQuota(await readUsage());
+  }
+
+  /**
+   * 后台整理记忆：默认 Haiku（最便宜，用户可以在记忆设置里换）、不读本地设置、不给工具、不落会话记录（persistSession: false），
+   * 用结构化输出拿 JSON。跑在临时目录里，碰不到任何项目。
+   */
+  async complete(req: CompleteRequest): Promise<unknown> {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), req.timeoutMs ?? 120_000);
+    try {
+      const q = query({
+        prompt: req.prompt,
+        options: {
+          cwd: os.tmpdir(),
+          env: agentEnvironment(),
+          model: req.model || "haiku",
+          systemPrompt: req.system,
+          tools: [],
+          settingSources: [],
+          strictMcpConfig: true,
+          mcpServers: {},
+          skills: [],
+          persistSession: false,
+          maxTurns: 3,
+          outputFormat: { type: "json_schema", schema: req.schema },
+          abortController: abort,
+          canUseTool: async () => ({ behavior: "deny", message: "后台整理不允许用工具" }),
+        },
+      });
+      for await (const m of q) {
+        if (m.type !== "result") continue;
+        if (m.subtype !== "success") throw new Error(`后台调用失败：${m.subtype}`);
+        return m.structured_output ?? JSON.parse(m.result);
+      }
+      throw new Error("后台调用没有结果");
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   diagnose(err: unknown) {

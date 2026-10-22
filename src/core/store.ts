@@ -19,6 +19,11 @@ export type AgentBinding = {
    * 拿到不同于它的新会话 id 后清掉。
    */
   forkFrom?: string;
+  /**
+   * 上次告诉这个 agent 会话的是哪种模式（没有 = 工作模式，agent 原装的样子）。和对话现在的模式不一样，
+   * 就要在下一条消息里说一声（Codex 换不了系统提示，见 core/chat-mode.ts）。
+   */
+  announcedMode?: "chat" | "work";
 };
 
 export type Conversation = {
@@ -48,10 +53,12 @@ export type Conversation = {
   /** 从哪条对话分叉出来的（对话 key），列表里据此显示关联 */
   forkOf?: string;
   /**
-   * 谁的对话（用户 id，见 core/users.ts）。Web 上新建 / 分叉时记下；
-   * 飞书会话和升级前就有的 Web 会话没有，归管理员。
+   * 谁的对话（用户 id，见 core/users.ts）。Web 上新建 / 分叉时记下；飞书私聊在发消息的人绑定了
+   * 账号时记下（见 core/feishu-links.ts）。飞书群聊、没绑定的私聊和升级前就有的 Web 会话没有，归管理员。
    */
   owner?: string;
+  /** chat：聊天模式（/chat）。没有就是工作模式。属于对话，跨 /new 和切 agent 保留 */
+  mode?: "chat";
 };
 
 type StoreShape = Record<string, Conversation>;

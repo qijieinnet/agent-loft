@@ -5,7 +5,9 @@
 import { appServer } from "./app-server.js";
 import { refusalFor, UnsupportedRequest } from "./refusals.js";
 import { config } from "../../core/config.js";
-import { describeAttachments } from "../../core/uploads.js";
+import { contextBlock } from "../../core/chat-mode.js";
+import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
+import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
   AgentEvents,
   AgentSession,
@@ -14,6 +16,7 @@ import type {
   InteractionSpec,
   QuestionSpec,
   RuntimeInfo,
+  SavedAttachment,
   SessionOptions,
   Settlement,
   UserInput,
@@ -77,6 +80,63 @@ function sandboxPolicyFor(mode: string, cwd: string): unknown {
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   };
+}
+
+// ---------- 聊天模式 ----------
+
+/**
+ * 聊天模式要关掉的东西（thread/start / resume 的 config 覆盖）。实测一句话的输入从约 2 万 token
+ * 降到约 1.1 万，大头是技能清单（约 2.5 万字符）和权限说明（约 1.1 万字符）。剩下的是 Codex 自己的基础指令
+ * （改不得，见 modeParams）和关不掉的工具定义。
+ * 不认识的 feature 名 Codex 会忽略；万一哪天哪个键让 thread 起不来，openOnce 会退回不带这些覆盖再试一次。
+ */
+export const CHAT_CONFIG: Record<string, unknown> = {
+  web_search: "live",
+  "skills.include_instructions": false,
+  include_permissions_instructions: false,
+  include_collaboration_mode_instructions: false,
+  include_apps_instructions: false,
+  include_apply_patch_tool: false,
+  ...Object.fromEntries(
+    [
+      "shell_tool",
+      "unified_exec",
+      "plugins",
+      "apps",
+      "browser_use",
+      "computer_use",
+      "multi_agent",
+      "image_generation",
+      "view_image",
+      "skill_search",
+      "tool_suggest",
+      "sleep_tool",
+      "hooks",
+      "goals",
+      "code_mode_host",
+      "worktrees",
+      "workspace_dependencies",
+      "in_app_browser",
+      "in_app_local_automation",
+      "realtime_conversation",
+    ].map((f) => [`features.${f}`, false]),
+  ),
+};
+
+/** 用户自己配的 MCP 服务（config.toml 里的 mcp_servers）。名字因人而异，只能读出来再逐个关 */
+let userMcpCache: { names: string[]; at: number } | null = null;
+
+export async function userMcpServers(): Promise<string[]> {
+  if (userMcpCache && Date.now() - userMcpCache.at < 60_000) return userMcpCache.names;
+  try {
+    const res = await appServer.call<{ config?: { mcp_servers?: Record<string, unknown> | null } }>("config/read", {});
+    const names = Object.keys(res.config?.mcp_servers ?? {}).filter((n) => n !== MEMORY_MCP_NAME);
+    userMcpCache = { names, at: Date.now() };
+    return names;
+  } catch (err) {
+    console.warn("[codex] 读取 MCP 配置失败，聊天模式下可能仍会加载用户的 MCP:", err instanceof Error ? err.message : err);
+    return [];
+  }
 }
 
 // ---------- 审批正文 ----------
@@ -158,6 +218,13 @@ function parseQuestions(raw: unknown): ParsedQuestion[] | null {
 
 /** 会话已被丢弃，迟到的异步结果直接作废 */
 class DisposedError extends Error {}
+
+/** 聊天模式带着全套配置覆盖开 thread 失败了（见 openOnce 的退路） */
+class ChatConfigRejected extends Error {
+  constructor(readonly cause: unknown) {
+    super("聊天模式的配置覆盖被拒绝");
+  }
+}
 
 export class CodexSession implements AgentSession {
   private threadId: string | undefined;
@@ -277,13 +344,64 @@ export class CodexSession implements AgentSession {
     return this.opening;
   }
 
+  private get chat(): boolean {
+    return this.opts.mode === "chat";
+  }
+
+  /** 沙箱：聊天模式一律只读（它本来就没有执行命令的工具，这是第二道保险） */
+  private get sandboxMode(): string {
+    return this.chat ? "read-only" : config().agents.codex.sandbox;
+  }
+
+  /**
+   * 按模式给 thread 的配置覆盖。thread/start、resume、fork 三条路都带上：配置是每次 resume 现给的，
+   * 换模式时旧会话先退订（dispose），再 resume 回来就换上了（实测）。
+   *
+   * 不动 baseInstructions / developerInstructions：Codex 把它们钉在 thread 上，切回工作模式时还原不了
+   * （见 core/chat-mode.ts）。模式和记忆走 contextBlock，附在第一条消息后面。
+   * minimal：上一次带全套覆盖没能起来，退回只挂记忆工具。
+   */
+  private async modeParams(minimal = false): Promise<Record<string, unknown>> {
+    const memory = this.opts.memory;
+    const mcp = memory ? { [`mcp_servers.${MEMORY_MCP_NAME}`]: memoryMcpSpawn(memory.userId, "codex", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } : {};
+    if (this.chat && !minimal) {
+      const off = Object.fromEntries((await userMcpServers()).map((n) => [`mcp_servers.${n}.enabled`, false]));
+      return { config: { ...CHAT_CONFIG, ...off, ...mcp } };
+    }
+    return memory ? { config: mcp } : {};
+  }
+
+  /**
+   * 这个会话进程还没告诉过 Codex 当前的模式和记忆：第一条消息后面附上 contextBlock。
+   * 进程一换（切模式、记忆改了、服务重启）就是新的 CodexSession，会再附一次最新的。
+   * 工作模式、没有记忆、模式也没换过：什么都不附，和原来一模一样。
+   */
+  private contextSent = false;
+
+  private get contextPending(): boolean {
+    return !this.contextSent && (this.chat || !!this.opts.memory || !!this.opts.announceMode);
+  }
+
   private async openOnce(): Promise<string> {
+    try {
+      return await this.openWith(false);
+    } catch (err) {
+      // 聊天模式的那串配置覆盖是按当前版本的 Codex 测出来的：万一哪个键不认导致起不来，退回最小覆盖
+      if (!(err instanceof ChatConfigRejected) || this.disposed) throw err;
+      console.warn("[codex] 聊天模式的配置覆盖没能生效，退回只换系统提示:", err.cause instanceof Error ? err.cause.message : err.cause);
+      return this.openWith(true);
+    }
+  }
+
+  private async openWith(minimal: boolean): Promise<string> {
     const shared = {
       cwd: this.opts.cwd,
       approvalPolicy: "on-request",
-      sandbox: config().agents.codex.sandbox,
+      sandbox: this.sandboxMode,
       ...(this.opts.model ? { model: this.opts.model } : {}),
+      ...(await this.modeParams(minimal)),
     };
+    if (this.disposed) throw new DisposedError();
     const resumeId = this.threadId ?? this.opts.resumeId;
     const fork = this.opts.fork && !this.forked;
     // 这个 thread 正在别的会话里跑：不接管。接管后它的后续输出和审批请求都按 threadId
@@ -303,6 +421,8 @@ export class CodexSession implements AgentSession {
       } else {
         res = await appServer.call<ThreadResponse>("thread/start", shared);
       }
+    } catch (err) {
+      throw this.chat && !minimal ? new ChatConfigRejected(err) : err;
     } finally {
       opening.delete(this);
     }
@@ -370,10 +490,15 @@ export class CodexSession implements AgentSession {
     this.turnId = undefined;
     this.stopRequested = false;
     const token = ++this.turnSeq;
-    const note = input.attachments.length
-      ? describeAttachments(input.attachments, (a) => a.kind === "image")
-      : "";
-    const text = note ? (input.text ? `${input.text}\n\n${note}` : note) : input.text;
+    // 聊天模式没有执行命令的工具，读不了文件：文本附件的内容直接放进消息
+    const chat = this.chat;
+    const textMap = chat ? readTextAttachments(input.attachments) : new Map<string, string>();
+    const inlined = (a: SavedAttachment) => a.kind === "image" || textMap.has(a.path);
+    const note = input.attachments.length ? describeAttachments(input.attachments, inlined, chat) : "";
+    const texts = chat ? inlineTextBlocks(input.attachments, textMap) : "";
+    // 放在最后：Codex 拿第一条消息的开头当会话预览，不能被这段背景占掉
+    const context = this.contextPending ? contextBlock(chat ? "chat" : "work", this.opts.memory?.prompt, "联网搜索") : "";
+    const text = [input.text, note, texts, context].filter(Boolean).join("\n\n");
     const images = input.attachments.filter((a) => a.kind === "image").map((a) => a.path);
     let startedOn: string | undefined;
     void this.open()
@@ -391,12 +516,14 @@ export class CodexSession implements AgentSession {
           approvalPolicy: "on-request",
           // 每一轮都按当前配置显式给沙箱：thread 是开着复用的，只在 thread/start 时给的话，
           // 设置里收紧了沙箱（比如改成只读），已有会话还会按旧权限干活
-          sandboxPolicy: sandboxPolicyFor(config().agents.codex.sandbox, this.opts.cwd),
+          sandboxPolicy: sandboxPolicyFor(this.sandboxMode, this.opts.cwd),
           ...(this.opts.model ? { model: this.opts.model } : {}),
           ...(this.opts.effort ? { effort: this.opts.effort } : {}),
         });
       })
       .then((res) => {
+        // 轮次开起来了，背景已经进了 thread 的历史；没开起来的话下一条消息再附一次
+        if (context) this.contextSent = true;
         const id = res?.turn?.id;
         if (!id) return;
         if (token === this.turnSeq) {

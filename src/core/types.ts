@@ -172,7 +172,25 @@ export type SessionOptions = {
   uploadsDir: string;
   /** 工作目录内改文件不再询问（/autoedit）。Bash 等照常询问 */
   autoEdit?: boolean;
+  /**
+   * chat：聊天模式 —— 换成精简的系统提示，只留联网搜索，不加载技能 / MCP / 插件，不能执行命令、
+   * 不能读写本地文件，每轮的固定开销小得多。不给就是 work（agent 原装的样子）。
+   */
+  mode?: ConversationMode;
+  /** 这条对话主人的记忆：prompt 拼进系统提示，userId 交给记忆工具（记给谁由这里定死） */
+  memory?: {
+    userId: string;
+    prompt: string;
+    /** 给不给搜以前聊天的工具（用户在记忆设置里开着「参考以前的聊天」） */
+    search?: boolean;
+    /** 当前对话，搜索时跳过 */
+    convKey?: string;
+  };
+  /** 模式换过、这个 agent 会话还不知道：换不了系统提示的 agent（Codex）要在第一条消息里说一声 */
+  announceMode?: boolean;
 };
+
+export type ConversationMode = "chat" | "work";
 
 export interface AgentSession {
   readonly sessionId: string | undefined;
@@ -227,4 +245,20 @@ export interface AgentDriver {
   /** 账号额度，侧栏显示用；读不到 / 没有订阅额度时返回 null */
   quota?(): Promise<QuotaInfo | null>;
   diagnose(err: unknown): Diagnosis;
+  /**
+   * 一次性的后台调用（聊完后整理记忆用）：不留会话记录、不用任何工具，按 schema 返回 JSON。
+   * 用最便宜的模型。不支持的 agent 不实现。
+   */
+  complete?(req: CompleteRequest): Promise<unknown>;
 }
+
+export type CompleteRequest = {
+  system: string;
+  prompt: string;
+  /** JSON Schema（顶层是 object，所有对象都 additionalProperties: false、字段全部 required —— 两家都能吃） */
+  schema: Record<string, unknown>;
+  /** 用哪个模型；不给就用这个 agent 最省的（Claude 用 Haiku，Codex 用默认模型、思考程度 low） */
+  model?: string;
+  /** 超时，毫秒 */
+  timeoutMs?: number;
+};

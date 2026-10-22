@@ -22,6 +22,8 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "stop", description: "中断当前执行" },
   { name: "model", args: "[名称]", description: "切换模型（不带参数弹选择）" },
   { name: "effort", args: "[程度]", description: "切换思考程度" },
+  { name: "chat", description: "切到聊天模式：精简、只能联网搜索，每轮开销小很多" },
+  { name: "work", description: "切到工作模式：agent 原装的全部能力" },
   { name: "status", description: "查看当前会话、模型、目录、剩余额度" },
   { name: "sessions", args: "[all]", description: "列出历史会话，点按钮恢复；加 all 列所有目录" },
   { name: "resume", args: "<会话ID>", description: "恢复指定会话" },
@@ -34,6 +36,7 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "codex", description: "切换到 Codex", multiAgentOnly: true },
   { name: "web", description: "接上一条 Web 会话，在飞书里查看和回复", feishuOnly: true },
   { name: "detach", description: "不再接着 Web 会话，回到这个聊天自己的会话", feishuOnly: true },
+  { name: "bind", args: "<绑定码>", description: "把这个飞书账号绑定到你的 agent-loft 用户（绑定码在 Web 的「设置 → 我的账号」里生成）", feishuOnly: true },
   { name: "help", description: "显示帮助" },
   { name: "approve", args: "<请求ID> allow-once|allow-always|allow-session|deny", description: "审批兜底（卡片失效时用）" },
 ];

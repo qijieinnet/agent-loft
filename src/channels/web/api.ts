@@ -8,7 +8,7 @@ import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
-import { getConversation, updateConversation } from "../../core/store.js";
+import { getConversation, listConversations, updateConversation } from "../../core/store.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import {
   createUser,
@@ -23,6 +23,20 @@ import {
   type User,
 } from "../../core/users.js";
 import type { SavedAttachment } from "../../core/types.js";
+import {
+  addMemoryItem,
+  clearMemory,
+  MEMORY_LIMITS,
+  readMemory,
+  removeMemoryItem,
+  setMemoryOptions,
+  updateMemoryItem,
+  type CurateSettings,
+} from "../../core/memory.js";
+import { createLinkCode, listLinks, unlink, unlinkUser } from "../../core/feishu-links.js";
+import { purgeUserData } from "../../core/personal.js";
+import { purgeHistory, readMeta, readRecords, writeMeta } from "../../core/chat-history.js";
+import { curateNow, pendingCount } from "../../core/memory-curator.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
@@ -329,6 +343,46 @@ function userOp<T>(fn: () => T): T {
   }
 }
 
+// ---------- 记忆、飞书绑定 ----------
+
+/** 飞书 open_id 只给人看个尾巴：认得出是哪个就够了 */
+function maskOpenId(openId: string): string {
+  return openId.length > 10 ? `${openId.slice(0, 3)}…${openId.slice(-6)}` : openId;
+}
+
+function feishuLinksOf(userId: string) {
+  const bots = config().feishu.bots;
+  return listLinks(userId).map((l) => ({
+    botId: l.botId,
+    botName: bots.find((b) => b.id === l.botId)?.name ?? "（已删除的机器人）",
+    openId: l.openId,
+    openIdShort: maskOpenId(l.openId),
+    boundAt: l.boundAt,
+  }));
+}
+
+/**
+ * 解除绑定后，那个人和机器人的私聊立刻不再是他的：交还给管理员的地盘，旧会话不带过去
+ * （见 hub.reassignOwner）。不等他下次发消息 —— 万一他再也不发，那条对话就一直挂在他名下。
+ */
+function releaseFeishuChats(userId: string, botId?: string): void {
+  for (const c of listConversations()) {
+    if (c.channel !== "feishu" || c.owner !== userId || (botId && c.channelId !== botId)) continue;
+    hub.reassignOwner(c.key, undefined);
+  }
+}
+
+function memoryOp<T>(userId: string, fn: () => T, affectsAgents = true): T {
+  try {
+    const result = fn();
+    // 用户在设置里改了记忆：他名下空闲的会话下次说话时换上新的（只改整理时机、用哪个模型的不用）
+    if (affectsAgents) hub.memoryChanged(userId);
+    return result;
+  } catch (err) {
+    throw new HttpError(400, err instanceof Error ? err.message : String(err));
+  }
+}
+
 // ---------- 路由 ----------
 
 function conversationOr404(key: string) {
@@ -481,7 +535,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/conversations" && method === "POST") {
-    const body = await readJsonBody<{ agent?: string; cwd?: string }>(req);
+    const body = await readJsonBody<{ agent?: string; cwd?: string; mode?: string }>(req);
     const enabled = hub.enabledAgents().map((d) => d.id);
     const agent = body.agent && enabled.includes(body.agent) ? body.agent : enabled[0];
     if (!agent) throw new HttpError(400, "没有可用的 agent");
@@ -494,6 +548,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const key = `web:${crypto.randomBytes(6).toString("hex")}`;
     hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent, owner: user.id });
     if (cwd && cwd !== config().workspaceRoot) updateConversation(key, { cwd, cwdExplicit: true });
+    // 新对话页上选的模式
+    if (body.mode === "chat") updateConversation(key, { mode: "chat" });
     sendJson(res, 200, hub.info(key));
     return;
   }
@@ -651,6 +707,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         case "cd":
           text = await hub.cd(key, value);
           break;
+        case "mode":
+          if (value !== "chat" && value !== "work") throw new HttpError(400, "模式只能是 chat 或 work");
+          text = await hub.setMode(key, value);
+          break;
         default:
           throw new HttpError(400, "未知操作");
       }
@@ -775,14 +835,130 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
 
+  // ----- 我的记忆：每个人只能看、改自己的 -----
+  if (p === "/api/account/memory" && method === "GET") {
+    const meta = readMeta(user.id);
+    sendJson(res, 200, {
+      ...readMemory(user.id),
+      limits: MEMORY_LIMITS,
+      // 等着整理的对话有几段、上次整理的结果（设置页显示）
+      pending: pendingCount(user.id),
+      ...(meta.lastCuration ? { lastCuration: meta.lastCuration } : {}),
+    });
+    return;
+  }
+  if (p === "/api/account/memory/curate" && method === "POST") {
+    // 「现在整理」：聊完了的对话合起来整理一次。要等模型回来，可能要几十秒
+    const log = await curateNow(user.id);
+    sendJson(res, 200, log);
+    return;
+  }
+  if (p === "/api/account/memory" && method === "PUT") {
+    const body = await readJsonBody<{ enabled?: boolean; about?: string; curate?: Partial<CurateSettings>; chatHistory?: boolean }>(req);
+    sendJson(
+      res,
+      200,
+      memoryOp(user.id, () =>
+        setMemoryOptions(user.id, {
+          ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+          ...(typeof body.about === "string" ? { about: body.about } : {}),
+          ...(body.curate && typeof body.curate === "object" ? { curate: body.curate } : {}),
+          ...(typeof body.chatHistory === "boolean" ? { chatHistory: body.chatHistory } : {}),
+        }),
+        typeof body.enabled === "boolean" || typeof body.about === "string" || typeof body.chatHistory === "boolean",
+      ),
+    );
+    return;
+  }
+  if (p === "/api/account/history" && method === "GET") {
+    // 只给数量：索引里有多少句、来自多少段对话
+    const records = readRecords(user.id);
+    sendJson(res, 200, { count: records.length, conversations: new Set(records.map((r) => r.k)).size });
+    return;
+  }
+  if (p === "/api/account/history" && method === "DELETE") {
+    // 清掉聊天记录索引。不再回填：清了就是不想让以前的聊天被搜到，只记以后的
+    purgeHistory(user.id);
+    writeMeta(user.id, { backfilled: true, extracted: {} });
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (p === "/api/account/memory" && method === "DELETE") {
+    memoryOp(user.id, () => clearMemory(user.id));
+    sendJson(res, 200, readMemory(user.id));
+    return;
+  }
+  if (p === "/api/account/memory/items" && method === "POST") {
+    const body = await readJsonBody<{ text?: string }>(req);
+    sendJson(res, 200, memoryOp(user.id, () => addMemoryItem(user.id, String(body.text ?? ""), "user")));
+    return;
+  }
+  {
+    const m = /^\/api\/account\/memory\/items\/(m_[a-f0-9]+)$/.exec(p);
+    if (m && method === "PATCH") {
+      const body = await readJsonBody<{ text?: string }>(req);
+      sendJson(res, 200, memoryOp(user.id, () => updateMemoryItem(user.id, m[1]!, String(body.text ?? ""))));
+      return;
+    }
+    if (m && method === "DELETE") {
+      sendJson(res, 200, { ok: !!memoryOp(user.id, () => removeMemoryItem(user.id, m[1]!)) });
+      return;
+    }
+  }
+
+  // ----- 我的飞书账号绑定 -----
+  if (p === "/api/account/feishu" && method === "GET") {
+    sendJson(res, 200, {
+      links: feishuLinksOf(user.id),
+      // 能私聊的机器人（发 /bind 用）。机器人的配置细节照旧只给管理员
+      bots: config().feishu.bots.filter((b) => b.enabled).map((b) => ({ id: b.id, name: b.name })),
+    });
+    return;
+  }
+  if (p === "/api/account/feishu/code" && method === "POST") {
+    sendJson(res, 200, createLinkCode(user.id));
+    return;
+  }
+  if (p === "/api/account/feishu" && method === "DELETE") {
+    const body = await readJsonBody<{ botId?: string; openId?: string }>(req);
+    const botId = String(body.botId ?? "");
+    const ok = unlink(botId, String(body.openId ?? ""), user.id);
+    if (ok) releaseFeishuChats(user.id, botId);
+    sendJson(res, 200, { ok, links: feishuLinksOf(user.id) });
+    return;
+  }
+
   // ----- 用户管理（管理员） -----
   if (p === "/api/users" && method === "GET") {
     const devices = listWebSessions();
     sendJson(res, 200, {
-      users: listUsers().map((u) => ({ ...u, devices: devices.filter((d) => d.userId === u.id).length })),
+      users: listUsers().map((u) => ({
+        ...u,
+        devices: devices.filter((d) => d.userId === u.id).length,
+        // 只给数量：管理员不能看成员的记忆和绑定的是哪个飞书账号
+        feishuLinks: listLinks(u.id).length,
+      })),
       me: user.id,
     });
     return;
+  }
+  {
+    // 管理员能做的只有「清掉」：清空某人的记忆、解除某人的飞书绑定。看不到内容
+    const m = /^\/api\/users\/([A-Za-z0-9_]+)\/(memory|feishu)$/.exec(p);
+    if (m && method === "DELETE") {
+      const id = m[1]!;
+      if (!getUser(id)) throw new HttpError(404, "用户不存在");
+      if (m[2] === "memory") {
+        clearMemory(id);
+        hub.memoryChanged(id);
+        sendJson(res, 200, { ok: true });
+      } else {
+        const n = unlinkUser(id);
+        releaseFeishuChats(id);
+        sendJson(res, 200, { ok: true, removed: n });
+      }
+      return;
+    }
   }
   if (p === "/api/users" && method === "POST") {
     const body = await readJsonBody<{ name?: string; password?: string; role?: Role }>(req);
@@ -823,6 +999,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const removed = userOp(() => removeUser(id));
       removeSubscriptionsOf((owner) => (owner ?? legacy) === id);
       revokeUserSessions(id);
+      // 记忆和飞书绑定一起删：不像会话那样转给管理员（见 core/personal.ts）
+      releaseFeishuChats(id);
+      purgeUserData(id);
+      hub.memoryChanged(id);
       sendJson(res, 200, removed);
       return;
     }

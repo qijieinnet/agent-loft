@@ -25,11 +25,15 @@ import {
   type Conversation,
 } from "./store.js";
 import { attachmentInfo, clearUploads, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
+import { memoryOwnerOf, sessionMemory } from "./personal.js";
+import { readMemory } from "./memory.js";
+import { getUser } from "./users.js";
 import type {
   AgentDriver,
   AttachmentInfo,
   AgentSession,
   ContextUsage,
+  ConversationMode,
   ApprovalDecision,
   HistoryMessage,
   InteractionSpec,
@@ -130,6 +134,10 @@ export type ConversationInfo = {
   forkOf?: string;
   /** 当前 agent 能不能从某条回复处分叉成新对话 */
   canFork?: boolean;
+  /** 聊天模式还是工作模式 */
+  mode: ConversationMode;
+  /** 这条对话有主人、会用上主人的记忆（主人自己关了记忆的话实际不会注入，见 personal.ts） */
+  personal?: boolean;
 };
 
 /** 普通成员点了会落盘的「总是允许」 */
@@ -433,6 +441,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       ...(conv.hidden ? { hidden: true } : {}),
       ...(conv.forkOf ? { forkOf: conv.forkOf } : {}),
       ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
+      mode: conv.mode ?? "work",
+      ...(memoryOwnerOf(conv) ? { personal: true } : {}),
     };
   }
 
@@ -478,6 +488,19 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const holder: { session?: AgentSession } = {};
     const alive = () => this.live.get(key)?.session === holder.session;
 
+    // 记忆在拉起会话这一刻读一次：会话里 agent 自己记下的，上下文里本来就有；
+    // 用户在设置里改了，memoryChanged() 会让空闲的会话下次说话时带着新的重新拉起
+    const memory = sessionMemory(conv);
+    const mode = conv.mode ?? "work";
+    // 续着的会话上次被告知的模式和现在不一样（新会话没有历史，算原装的工作模式）
+    const announceMode = (resumeId ? (binding.announcedMode ?? "work") : "work") !== mode;
+    // 真开始一轮了才算告诉过它（/status 之类也会拉起会话，但什么都没发过去）
+    let announced = false;
+    const markAnnounced = () => {
+      if (announced) return;
+      announced = true;
+      updateAgentBinding(key, agent, { announcedMode: mode === "work" ? undefined : mode });
+    };
     const session = driver.createSession(
       {
         cwd: conv.cwd,
@@ -487,9 +510,16 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         ...(resumeId ? { resumeId } : {}),
         ...(fork ? { fork: true } : {}),
         ...(conv.autoEdit ? { autoEdit: true } : {}),
+        ...(conv.mode === "chat" ? { mode: "chat" as const } : {}),
+        ...(memory ? { memory } : {}),
+        ...(announceMode ? { announceMode: true } : {}),
       },
       {
-        onTurnStart: () => alive() && this.emitEvent(key, { type: "turn_start" }),
+        onTurnStart: () => {
+          if (!alive()) return;
+          markAnnounced();
+          this.emitEvent(key, { type: "turn_start" });
+        },
         onStep: (kind, text) => alive() && this.emitEvent(key, { type: "step", kind, text }),
         onTextDelta: (text) => alive() && this.emitEvent(key, { type: "delta", text }),
         onText: (text) => alive() && this.emitEvent(key, { type: "text", text }),
@@ -511,6 +541,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
           this.refreshRuntimeOnce(key, liveId);
           this.syncTitle(key, agent);
+          this.dropIfStale(key);
         },
         onError: (err) => {
           if (!alive()) return;
@@ -529,6 +560,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
             this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
           }
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+          this.dropIfStale(key);
         },
         onContext: (ctx) => {
           if (!alive()) return;
@@ -979,6 +1011,91 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     return this.serial(key, () => this.setAutoEditNow(key, on));
   }
 
+  // ---------- 聊天 / 工作模式 ----------
+
+  /**
+   * /chat、/work。同一条对话、同一个 agent 会话接着聊：丢掉活着的进程，下一条消息带着新模式的
+   * 系统提示和工具 resume 回来（Claude、Codex 都实测过能接上上下文）。正在回复时不切：
+   * 丢进程会把这一轮打断。
+   */
+  private async setModeNow(key: string, mode: ConversationMode): Promise<string> {
+    const conv = getConversation(key)!;
+    if ((conv.mode ?? "work") === mode) {
+      return mode === "chat" ? "已经是💬 聊天模式了。发 /work 切到工作模式。" : "已经是🛠 工作模式了。发 /chat 切到聊天模式。";
+    }
+    if (this.isBusy(key)) return "正在回复，等这一轮结束（或者先 /stop）再切换模式。";
+    // 聊过的聊天对话切到工作模式：之后再回聊天模式就省不了了（Web 上点按钮时会先问，命令直接切，提醒一句）
+    const hadChat = mode === "work" && !!agentBinding(conv).sessionId;
+    await this.drop(key, "已切换模式");
+    updateConversation(key, { mode: mode === "chat" ? "chat" : undefined });
+    this.emitEvent(key, { type: "meta" });
+    return mode === "chat"
+      ? "已切到💬 聊天模式：精简的系统提示，只能联网搜索，不执行命令、不读写文件，每轮的开销小很多。上下文接着之前的。要动手干活时发 /work。"
+      : `已切到🛠 工作模式：${this.label(conv.agent)} 原装的全部能力（执行命令、改文件、技能、MCP）。上下文接着之前的。发 /chat 切回聊天模式。${
+          hadChat ? "\n\n提示：工作模式会在这条会话里留下一大段背景，之后再切回聊天模式就省不了多少了。干完活想回到省 token 的聊天，发 /new 开个新会话再发 /chat。" : ""
+        }`;
+  }
+
+  setMode(key: string, mode: ConversationMode): Promise<string> {
+    return this.serial(key, () => this.setModeNow(key, mode));
+  }
+
+  // ---------- 记忆变了 / 主人变了 ----------
+
+  /** 记忆过期了的会话进程（Live.id）：空闲下来就丢掉，下次说话带着新记忆重新拉起 */
+  private staleLive = new Set<number>();
+
+  private dropIfStale(key: string): void {
+    const live = this.live.get(key);
+    if (!live || !this.staleLive.has(live.id) || this.isBusy(key)) return;
+    this.staleLive.delete(live.id);
+    void this.serial(key, async () => {
+      // 排队期间可能已经换了进程、或者又开始说话了：那就留到下一轮结束
+      const now = this.live.get(key);
+      if (now?.id !== live.id) return;
+      if (this.isBusy(key)) {
+        this.staleLive.add(live.id);
+        return;
+      }
+      await this.drop(key, "记忆已更新");
+    });
+  }
+
+  /**
+   * 用户在设置里改了记忆（关于我、增删条目、开关）：他名下活着的会话都要换上新的。
+   * agent 自己用 remember / forget 改的不走这里 —— 那些本来就在上下文里，没必要重启进程、白白丢掉提示缓存。
+   */
+  memoryChanged(userId: string): void {
+    for (const [key, live] of this.live) {
+      const conv = getConversation(key);
+      if (!conv || memoryOwnerOf(conv) !== userId) continue;
+      this.staleLive.add(live.id);
+      this.dropIfStale(key);
+    }
+  }
+
+  /**
+   * 对话换主人（飞书私聊绑定 / 解绑 / 换绑账号时）。返回有没有变。
+   * 旧主人的 agent 会话不能交给新主人接着用（上下文里是旧主人的话和记忆），绑定清掉、下条消息开新的；
+   * 唯一的例外是从「没主（归管理员）」变成某个管理员自己：那些会话本来就是他能看的。
+   * 同步改记录（紧接着的消息要按新主人处理），丢进程排进串行队列。
+   */
+  reassignOwner(key: string, owner: string | undefined): boolean {
+    const conv = getConversation(key);
+    if (!conv || conv.owner === owner) return false;
+    const keep = !conv.owner && !!owner && getUser(owner)?.role === "admin";
+    const perAgent = keep
+      ? conv.perAgent
+      : Object.fromEntries(Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]));
+    updateConversation(key, { owner, perAgent });
+    void this.switchOp(key, async (op) => {
+      await this.drop(key, "对话换了主人");
+      this.markSwitched(key, op.seq);
+      this.emitEvent(key, { type: "meta" });
+    });
+    return true;
+  }
+
   /** 切 agent：各 agent 的会话各自保留，切回来接着聊。 */
   private async setAgentNow(key: string, agent: string, allowed: string[], op: SwitchOp): Promise<string> {
     const conv = getConversation(key)!;
@@ -1026,7 +1143,17 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const driver = this.requireDriver(conv.agent);
     const runtime = await this.runtimeNow(key);
     const extra = await withTimeout(driver.statusLines(), "读取状态").catch(() => [] as string[]);
+    const memoryOwner = memoryOwnerOf(conv);
+    const memoryLine = !memoryOwner
+      ? conv.channel === "feishu"
+        ? "记忆：不用（群聊，或者没绑定账号的私聊）"
+        : "记忆：不用（这条对话没有主人）"
+      : readMemory(memoryOwner).enabled
+        ? `记忆：开（${getUser(memoryOwner)?.name ?? memoryOwner} 的）`
+        : "记忆：主人关掉了";
     return [
+      `模式：${conv.mode === "chat" ? "💬 聊天（/work 切到工作模式）" : "🛠 工作（/chat 切到聊天模式）"}`,
+      memoryLine,
       `Agent：${driver.label}`,
       `会话：${agentBinding(conv).sessionId ?? "(尚未建立)"}`,
       `目录：${conv.cwd}`,
@@ -1090,6 +1217,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       cwd: conv.cwd,
       ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
       ...(conv.autoEdit ? { autoEdit: true } : {}),
+      ...(conv.mode ? { mode: conv.mode } : {}),
       forkOf: key,
       perAgent: {
         [conv.agent]: {
@@ -1170,6 +1298,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         return text(getConversation(key)!.cwd);
       case "autoedit":
         return text(await this.setAutoEdit(key, cmd.on));
+      case "mode":
+        return text(await this.setMode(key, cmd.mode));
       case "status":
         return text(await this.status(key));
       case "cd":

@@ -4,13 +4,16 @@
 import { appServer } from "./app-server.js";
 import { describeRateLimits, readAccountKey, readRateLimits, toQuota } from "./account.js";
 import { diagnose } from "./errors.js";
-import { CodexSession, summarize } from "./session.js";
+import { CHAT_CONFIG, CodexSession, summarize, userMcpServers } from "./session.js";
+import os from "node:os";
 import { config, onConfigChange } from "../../core/config.js";
 import { splitAttachmentNote } from "../../core/uploads.js";
+import { stripContext } from "../../core/chat-mode.js";
 import type {
   AgentDriver,
   AgentEvents,
   AgentSession,
+  CompleteRequest,
   HistoryMessage,
   InteractionHost,
   ModelInfo,
@@ -24,7 +27,7 @@ import type { ModelListResponse, Thread, ThreadListResponse } from "./protocol.j
 function titleOf(thread: Thread): string {
   const name = thread.name?.trim();
   if (name) return name;
-  const preview = thread.preview?.replace(/\s+/g, " ").trim();
+  const preview = thread.preview && stripContext(thread.preview).replace(/\s+/g, " ").trim();
   if (!preview) return "(无标题)";
   return preview.length > 60 ? `${preview.slice(0, 60)}…` : preview;
 }
@@ -125,7 +128,7 @@ export class CodexDriver implements AgentDriver {
             .filter(Boolean)
             .join("\n");
           // 附件清单拆出来单独展示；没有清单的图片（别处发的）只能留个占位
-          const { text, attachments } = splitAttachmentNote(raw);
+          const { text, attachments } = splitAttachmentNote(stripContext(raw));
           const bareImages = attachments.length ? 0 : (item.content ?? []).filter((c) => c.type === "localImage").length;
           out.push({
             role: "user",
@@ -216,6 +219,55 @@ export class CodexDriver implements AgentDriver {
   async quota(): Promise<QuotaInfo | null> {
     const [limits, account] = await Promise.all([readRateLimits(), readAccountKey()]);
     return toQuota(limits, account);
+  }
+
+  /**
+   * 后台整理记忆：临时 thread（ephemeral，不落记录、不进会话列表），工具、技能、MCP、联网全关，
+   * 只读沙箱，思考程度 low，用 outputSchema 拿 JSON。
+   */
+  async complete(req: CompleteRequest): Promise<unknown> {
+    const off = Object.fromEntries((await userMcpServers()).map((n) => [`mcp_servers.${n}.enabled`, false]));
+    const res = await appServer.call<{ thread: Thread }>("thread/start", {
+      cwd: os.tmpdir(),
+      ephemeral: true,
+      ...(req.model ? { model: req.model } : {}),
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      baseInstructions: req.system,
+      config: { ...CHAT_CONFIG, ...off, web_search: "disabled" },
+    });
+    const threadId = res.thread.id;
+    let text = "";
+    let off2: (() => void) | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    const done = new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("后台调用超时")), req.timeoutMs ?? 120_000);
+      off2 = appServer.onNotification((method, params) => {
+        const p = params as { threadId?: string; item?: { type?: string; text?: string; phase?: string | null }; turn?: { status?: string; error?: { message?: string } } };
+        if (p?.threadId !== threadId) return;
+        if (method === "item/completed" && p.item?.type === "agentMessage" && p.item.phase !== "commentary") text = p.item.text ?? text;
+        if (method === "turn/completed") {
+          if (p.turn?.status === "failed") reject(new Error(p.turn.error?.message ?? "后台调用失败"));
+          else resolve();
+        }
+      });
+    });
+    // turn/start 自己就失败了的话没人等 done：别让它的超时变成未处理的拒绝
+    done.catch(() => {});
+    try {
+      await appServer.call("turn/start", {
+        threadId,
+        input: [{ type: "text", text: req.prompt, text_elements: [] }],
+        effort: "low",
+        outputSchema: req.schema,
+      });
+      await done;
+      return JSON.parse(text);
+    } finally {
+      clearTimeout(timer);
+      off2?.();
+      void appServer.call("thread/unsubscribe", { threadId }).catch(() => {});
+    }
   }
 
   diagnose(err: unknown) {

@@ -242,10 +242,14 @@ export function uploadKeyOf(file: string): string | undefined {
   }
 }
 
-/** 附件清单的文字说明，两个 agent 都用它告诉模型文件在哪。 */
+/**
+ * 附件清单的文字说明，两个 agent 都用它告诉模型文件在哪。
+ * chat：聊天模式，agent 没有读文件的工具 —— 没能放进消息里的附件要说清楚读不了。
+ */
 export function describeAttachments(
   saved: SavedAttachment[],
   inlined: (a: SavedAttachment) => boolean,
+  chat = false,
 ): string {
   const counters: Partial<Record<AttachmentKind, number>> = {};
   const lines = saved.map((a) => {
@@ -253,9 +257,58 @@ export function describeAttachments(
     const details = [
       formatSize(a.size),
       ...(a.durationMs ? [`时长 ${Math.round(a.durationMs / 1000)} 秒`] : []),
-      ...(inlined(a) ? ["内容已附在本消息中"] : []),
+      ...(inlined(a) ? ["内容已附在本消息中"] : chat ? ["聊天模式下读不了这个文件"] : []),
     ];
     return `- ${KIND_LABEL[a.kind]}${n}：${a.path}（${details.join("，")}）`;
   });
-  return ["[用户发来了以下附件，已保存到本地，需要时可以直接读取或处理这些文件]", ...lines].join("\n");
+  const head = chat
+    ? "[用户发来了以下附件。现在是聊天模式，没有读文件的工具：读不了的附件请告诉用户发 /work 切到工作模式再处理]"
+    : "[用户发来了以下附件，已保存到本地，需要时可以直接读取或处理这些文件]";
+  return [head, ...lines].join("\n");
+}
+
+// ---------- 聊天模式：文本附件直接放进消息 ----------
+//
+// 聊天模式不给 agent 读本地文件的工具（它能联网，能读文件就能被网页里的提示注入骗着把文件内容带出去），
+// 所以文本类的附件由我们读出来，跟着消息一起发过去。
+
+const TEXT_EXT =
+  /\.(txt|md|markdown|csv|tsv|json|jsonl|log|ya?ml|toml|ini|conf|cfg|xml|html?|css|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|ps1|sql|srt|vtt|tex)$/i;
+const INLINE_TEXT_MAX = 200 * 1024;
+
+/** 能直接放进消息的文本附件，读出内容；不是文本、太大、读不了（比如已被清理）的返回 undefined，不抛错 */
+export function readTextAttachment(a: SavedAttachment): string | undefined {
+  if (a.kind !== "file" || a.size > INLINE_TEXT_MAX) return undefined;
+  if (!a.mediaType?.startsWith("text/") && !TEXT_EXT.test(a.name)) return undefined;
+  let buf: Buffer;
+  try {
+    buf = fs.readFileSync(a.path);
+  } catch {
+    return undefined;
+  }
+  // 有 NUL 字节的多半是二进制，扩展名骗人
+  if (buf.includes(0)) return undefined;
+  return buf.toString("utf8");
+}
+
+/** 一条消息里所有能放进来的文本附件：路径 → 内容。每个文件只读一次 */
+export function readTextAttachments(saved: SavedAttachment[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const a of saved) {
+    const content = readTextAttachment(a);
+    if (content !== undefined) out.set(a.path, content);
+  }
+  return out;
+}
+
+/** 文本附件的内容，接在附件清单后面。没有就返回空串 */
+export function inlineTextBlocks(saved: SavedAttachment[], texts: Map<string, string>): string {
+  const parts: string[] = [];
+  for (const a of saved) {
+    const content = texts.get(a.path);
+    if (content === undefined) continue;
+    const fence = content.includes("```") ? "~~~~" : "```";
+    parts.push(`附件「${a.name}」的内容：\n${fence}\n${content}\n${fence}`);
+  }
+  return parts.join("\n\n");
 }

@@ -14,7 +14,8 @@ import { parseCommand } from "../../core/commands.js";
 import { Dedup } from "../../core/dedup.js";
 import { isPaired, requestPairing } from "../../core/pairing.js";
 import { getConversation, listConversations, sessionOwner, updateConversation } from "../../core/store.js";
-import { adminVisible, hasMembers } from "../../core/users.js";
+import { adminVisible, getUser, hasMembers, ownedBy, type User } from "../../core/users.js";
+import { linkedUser, redeemLinkCode } from "../../core/feishu-links.js";
 import { adoptFile, KIND_LABEL } from "../../core/uploads.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { FeishuClient } from "./client.js";
@@ -46,11 +47,16 @@ type CardResponse = {
 
 export type BotStatus = { state: string; since: number; error?: string };
 
-/** 只在飞书里认的命令：挂到 Web 会话上 / 退回来。整条消息只有命令才算 */
-function feishuCommandOf(text: string): "web" | "detach" | null {
-  const t = text.trim().replace(/^／/, "/").toLowerCase();
-  if (t === "/web") return "web";
-  if (t === "/detach") return "detach";
+type FeishuCommand = { kind: "web" } | { kind: "detach" } | { kind: "bind"; code: string };
+
+/** 只在飞书里认的命令：挂到 Web 会话上 / 退回来 / 绑定账号。整条消息只有命令才算 */
+function feishuCommandOf(text: string): FeishuCommand | null {
+  const t = text.trim().replace(/^／/, "/");
+  const lower = t.toLowerCase();
+  if (lower === "/web") return { kind: "web" };
+  if (lower === "/detach") return { kind: "detach" };
+  const bind = /^\/bind\s+([A-Za-z0-9]{4,16})$/i.exec(t);
+  if (bind) return { kind: "bind", code: bind[1]! };
   return null;
 }
 
@@ -134,6 +140,37 @@ export class FeishuBot {
     return this.mine(key) ? this.allowedAgents() : hub.enabledAgents().map((d) => d.id);
   }
 
+  // ---------- 这个聊天能碰哪些东西 ----------
+  //
+  // 飞书聊天自己的会话有主人（绑定了账号的私聊，见 core/feishu-links.ts）：按主人算，和他在 Web 上一样；
+  // 没主人（群聊、没绑定的私聊）：照旧是管理员的地盘。
+
+  /** 飞书会话键的主人（绑定了账号的私聊才有） */
+  private viewerOf(feishuKey: string): User | undefined {
+    const owner = getConversation(feishuKey)?.owner;
+    const user = getUser(owner);
+    return user && !user.disabled ? user : undefined;
+  }
+
+  /** feishuKey 这个聊天能不能碰主人是 owner 的东西（Web 会话、agent 会话） */
+  private canSee(feishuKey: string, owner: string | undefined): boolean {
+    const viewer = this.viewerOf(feishuKey);
+    return viewer ? ownedBy(viewer, owner) : adminVisible(owner);
+  }
+
+  /** 命令里要用的可见范围：/sessions 列哪些、/resume 能恢复哪些、/approve 能处理哪些 */
+  private commandScope(feishuKey: string) {
+    const viewer = this.viewerOf(feishuKey);
+    return {
+      ...(viewer
+        ? { sessionVisible: (id: string) => ownedBy(viewer, sessionOwner(id)) }
+        : hasMembers()
+          ? { sessionVisible: (id: string) => adminVisible(sessionOwner(id)) }
+          : {}),
+      convVisible: (k: string) => this.canSee(feishuKey, getConversation(k)?.owner),
+    };
+  }
+
   // ---------- 接着 Web 会话 ----------
 
   /** 飞书会话键挂着的 Web 会话（还在、没被删的）；没挂着返回 undefined */
@@ -141,13 +178,14 @@ export class FeishuBot {
     const target = attachedTarget(feishuKey);
     if (!target) return undefined;
     const conv = getConversation(target);
-    // 主人后来被降成了普通成员：这条会话不再是飞书能碰的，当它没了（下条消息时自动退回来）
-    return conv && !conv.hidden && adminVisible(conv.owner) ? target : undefined;
+    // 这个聊天不再能碰它了（主人被降成了普通成员、私聊换了主人）：当它没了（下条消息时自动退回来）
+    return conv && !conv.hidden && this.canSee(feishuKey, conv.owner) ? target : undefined;
   }
 
-  /** 挂在 Web 会话 key 上的本机器人聊天。会话已经不归管理员了就一个都不算 */
+  /** 挂在 Web 会话 key 上的本机器人聊天（只算还能碰它的） */
   private watchers(key: string): string[] {
-    return adminVisible(getConversation(key)?.owner) ? watchersOf(key, this.prefix) : [];
+    const owner = getConversation(key)?.owner;
+    return watchersOf(key, this.prefix).filter((k) => this.canSee(k, owner));
   }
 
   /** 这条会话的事件该画到哪些飞书聊天里：自己的那个聊天，加上挂着它的聊天 */
@@ -213,8 +251,8 @@ export class FeishuBot {
    */
   async attachTo(feishuKey: string, webKey: string, operatorOpenId?: string): Promise<string> {
     const conv = getConversation(webKey);
-    // 飞书是管理员的地盘：普通成员的 Web 会话不能被接到飞书上
-    if (!conv || conv.channel !== "web" || conv.hidden || !adminVisible(conv.owner)) throw new Error("这条 Web 会话已不存在");
+    // 只能接上这个聊天的主人自己的 Web 会话（没主人的聊天：管理员能看的）
+    if (!conv || conv.channel !== "web" || conv.hidden || !this.canSee(feishuKey, conv.owner)) throw new Error("这条 Web 会话已不存在");
     const chatId = this.chatIdOf(feishuKey);
     // 本聊天自己的会话也得有：之后 /detach 回来、侧栏里显示机器人都要它
     const allowed = this.allowedAgents();
@@ -261,7 +299,7 @@ export class FeishuBot {
   private async sendWebList(feishuKey: string, chatId: string): Promise<void> {
     const current = this.attachedWeb(feishuKey);
     const convs = hub
-      .list((c) => c.channel === "web" && !c.hidden && adminVisible(c.owner))
+      .list((c) => c.channel === "web" && !c.hidden && this.canSee(feishuKey, c.owner))
       .slice(0, 10)
       .map((c) => this.webEntry(c.key)!)
       .filter(Boolean);
@@ -606,9 +644,17 @@ export class FeishuBot {
     const operator = openId!.trim().toLowerCase();
     this.operators.set(pairKey(ownKey, chatId), operator);
 
+    // 私聊的主人跟着发消息的人的绑定走：绑定了就是他的个人会话（用他的记忆），解绑了就回到管理员的地盘。
+    // 群聊不动：群里不止一个人
+    const p2p = message.chat_type === "p2p";
+    if (p2p && hub.reassignOwner(ownKey, linkedUser(this.cfg.id, operator)?.id)) {
+      const owner = this.viewerOf(ownKey);
+      console.log(`${this.tag} 私聊 ${ownKey} 的主人变为 ${owner?.name ?? "（无，归管理员）"}`);
+    }
+
     const feishuCmd = attachments.length > 0 ? null : feishuCommandOf(text);
     if (feishuCmd) {
-      await this.runFeishuCommand(feishuCmd, ownKey, chatId);
+      await this.runFeishuCommand(feishuCmd, ownKey, chatId, { openId: operator, p2p });
       return;
     }
 
@@ -624,9 +670,8 @@ export class FeishuBot {
           allowedAgents: this.allowedFor(key),
           by: "飞书命令",
           channel: "feishu",
-          // 普通成员在 Web 上开的 agent 会话、挂着的请求，飞书里都碰不到
-          ...(hasMembers() ? { sessionVisible: (id: string) => adminVisible(sessionOwner(id)) } : {}),
-          convVisible: (k) => adminVisible(getConversation(k)?.owner),
+          // 别人的 agent 会话、挂着的请求，这个聊天里都碰不到
+          ...this.commandScope(ownKey),
         });
         await this.renderReply(key, chatId, reply);
       } catch (err) {
@@ -687,14 +732,37 @@ export class FeishuBot {
     return { saved, failed };
   }
 
-  /** /web、/detach：只认飞书会话自己的键，不管现在挂没挂着 */
-  private async runFeishuCommand(cmd: "web" | "detach", ownKey: string, chatId: string): Promise<void> {
+  /** /web、/detach、/bind：只认飞书会话自己的键，不管现在挂没挂着 */
+  private async runFeishuCommand(
+    cmd: FeishuCommand,
+    ownKey: string,
+    chatId: string,
+    sender?: { openId: string; p2p: boolean },
+  ): Promise<void> {
     try {
-      if (cmd === "web") await this.sendWebList(ownKey, chatId);
-      else await this.client.sendCard(chatId, replyCard(this.detachFrom(ownKey)));
+      if (cmd.kind === "web") await this.sendWebList(ownKey, chatId);
+      else if (cmd.kind === "detach") await this.client.sendCard(chatId, replyCard(this.detachFrom(ownKey)));
+      else await this.client.sendCard(chatId, replyCard(this.bind(cmd.code, ownKey, sender)));
     } catch (err) {
       await this.client.sendText(chatId, `出错了：${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /** /bind 绑定码：把发消息的人的飞书账号绑到生成这个码的 agent-loft 用户上 */
+  private bind(code: string, ownKey: string, sender: { openId: string; p2p: boolean } | undefined): string {
+    if (!sender) return "请直接在聊天里发 `/bind 绑定码`。";
+    // 群里发的码别人也看得见，而且群聊本来就不归个人：只在私聊里绑
+    if (!sender.p2p) return "请在和我的私聊里发 `/bind 绑定码`（群里别人也看得到绑定码）。绑定码已经露出来了的话，到 Web 上重新生成一个。";
+    const user = redeemLinkCode(code, this.cfg.id, sender.openId);
+    hub.reassignOwner(ownKey, user.id);
+    console.log(`${this.tag} ${sender.openId} 绑定到用户 ${user.name}`);
+    return [
+      `已绑定到 agent-loft 用户 **${user.name}**。`,
+      "",
+      "从现在起这个私聊是你的个人会话：用你的记忆，`/sessions` 只列你的会话，`/web` 只能接上你自己的 Web 会话。群聊不受影响。",
+      "",
+      "在 Web 的「设置 → 我的账号」里可以随时解除绑定。",
+    ].join("\n");
   }
 
   private async renderReply(key: string, chatId: string, reply: CommandReply): Promise<void> {
@@ -885,9 +953,9 @@ export class FeishuBot {
     }
     const chat = chatId!;
     // /web、/detach 作用在这个聊天自己的会话上：命令表可能是接着 Web 会话时发的，k 是 Web 会话
+    const ownKey = this.mine(key) ? key : this.keyOf(chat);
     const feishuCmd = feishuCommandOf(text);
     if (feishuCmd) {
-      const ownKey = this.mine(key) ? key : this.keyOf(chat);
       void this.runFeishuCommand(feishuCmd, ownKey, chat);
       return { toast: { type: "info", content: `正在执行 ${text}` } };
     }
@@ -900,7 +968,7 @@ export class FeishuBot {
       return { toast: { type: "success", content: `已发送 ${text}` } };
     }
     void hub
-      .command(key, command, { allowedAgents: this.allowedFor(key), by: "飞书命令", channel: "feishu" })
+      .command(key, command, { allowedAgents: this.allowedFor(key), by: "飞书命令", channel: "feishu", ...this.commandScope(ownKey) })
       .then((reply) => this.renderReply(key, chat, reply))
       .catch((err) => this.client.sendText(chat, `出错了：${err instanceof Error ? err.message : String(err)}`));
     return { toast: { type: "info", content: `正在执行 ${text}` } };

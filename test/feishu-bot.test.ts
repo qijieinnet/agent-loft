@@ -34,12 +34,14 @@ const { hub } = await import("../src/core/hub.js");
 const { interactions } = await import("../src/core/interactions.js");
 const { loadConfig } = await import("../src/core/config.js");
 const { FeishuBot } = await import("../src/channels/feishu/bot.js");
-import type { AgentDriver, AgentEvents, InteractionHost, InteractionOutcome } from "../src/core/types.js";
+import type { AgentDriver, AgentEvents, InteractionHost, InteractionOutcome, SessionOptions } from "../src/core/types.js";
 
 loadConfig();
 
 /** 假 agent：普通消息直接回一句；带「授权」两个字的先发起一次审批 */
 const outcomes: InteractionOutcome[] = [];
+/** 每次拉起会话时给的选项（看模式、记忆有没有带对） */
+const created: SessionOptions[] = [];
 function fakeDriver(id: string): AgentDriver {
   return {
     id,
@@ -47,7 +49,8 @@ function fakeDriver(id: string): AgentDriver {
     capabilities: { effort: true, fork: true, cost: false, streaming: true },
     start: async () => {},
     stop: async () => {},
-    createSession(_opts, events: AgentEvents, host: InteractionHost) {
+    createSession(opts, events: AgentEvents, host: InteractionHost) {
+      created.push(opts);
       return {
         sessionId: undefined,
         send(input) {
@@ -322,6 +325,90 @@ test("接着的 Web 会话被删了：自动退回来并提示", async () => {
   await tick();
   assert.ok(sent.some((s) => cardText(s.body).includes("已经被删除")));
   assert.equal((bot as any).attachedWeb("feishu:b1:oc_chat"), undefined);
+});
+
+function groupMessage(openId: string, text: string, chatId = "oc_group") {
+  return (bot as any).handleMessage({
+    sender: { sender_id: { open_id: openId } },
+    message: {
+      message_id: `om_${++msgSeq}`,
+      chat_id: chatId,
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text: `@_user_1 ${text}` }),
+      mentions: [{ key: "@_user_1" }],
+    },
+  });
+}
+
+test("/bind：私聊归绑定的人、用他的记忆、/web 只列他的；群里不让绑；解绑后交还管理员", async () => {
+  const users = await import("../src/core/users.js");
+  const memory = await import("../src/core/memory.js");
+  const links = await import("../src/core/feishu-links.js");
+  users.createUser({ name: "boss", password: "password-1", role: "admin" });
+  const alice = users.createUser({ name: "alice", password: "password-2" });
+  memory.setMemoryOptions(alice.id, { about: "alice 的自我介绍" });
+  const p2p = "feishu:b1:oc_alice";
+
+  // 先没绑定：私聊没主人，不用记忆
+  sent.length = 0;
+  await message("ou_owner", "你好", "oc_alice");
+  await tick(100);
+  assert.equal(hub.conversation(p2p)?.owner, undefined);
+  assert.equal(created.at(-1)?.memory, undefined);
+  const before = hub.conversation(p2p)?.perAgent.codex?.sessionId;
+  assert.ok(before);
+
+  // 群里发绑定码：不绑
+  const code = links.createLinkCode(alice.id).code;
+  sent.length = 0;
+  await groupMessage("ou_owner", `/bind ${code}`);
+  await tick();
+  assert.match(cardText(sent.at(-1)!.body), /私聊里发/);
+  assert.equal(links.linkedUser("b1", "ou_owner"), undefined);
+
+  // 私聊里绑：归 alice，旧的会话不带过去，下一条消息带上她的记忆
+  sent.length = 0;
+  await message("ou_owner", `/bind ${code}`, "oc_alice");
+  await tick();
+  assert.match(cardText(sent.at(-1)!.body), /已绑定到 agent-loft 用户/);
+  assert.equal(hub.conversation(p2p)?.owner, alice.id);
+  assert.equal(hub.conversation(p2p)?.perAgent.codex?.sessionId, undefined, "管理员地盘里的旧会话不交给成员");
+  await message("ou_owner", "现在呢", "oc_alice");
+  await tick(100);
+  assert.equal(created.at(-1)?.memory?.userId, alice.id);
+  assert.match(created.at(-1)?.memory?.prompt ?? "", /alice 的自我介绍/);
+
+  // 群聊不受影响：没主人、不用记忆
+  await groupMessage("ou_owner", "群里说话");
+  await tick(100);
+  assert.equal(hub.conversation("feishu:b1:oc_group")?.owner, undefined);
+  assert.equal(created.at(-1)?.memory, undefined);
+
+  // /chat：这条对话切到聊天模式，下次拉起的会话带着
+  await message("ou_owner", "/chat", "oc_alice");
+  await tick();
+  assert.equal(hub.conversation(p2p)?.mode, "chat");
+  await message("ou_owner", "聊天模式里说话", "oc_alice");
+  await tick(100);
+  assert.equal(created.at(-1)?.mode, "chat");
+
+  // /web：只列 alice 自己的 Web 会话
+  hub.ensure({ key: "web:alice1", channel: "web", channelId: "web", defaultAgent: "codex", owner: alice.id, title: "alice 的会话" });
+  hub.ensure({ key: "web:boss1", channel: "web", channelId: "web", defaultAgent: "codex", title: "管理员的会话" });
+  sent.length = 0;
+  await message("ou_owner", "/web", "oc_alice");
+  await tick();
+  const list = cardText(sent.at(-1)!.body);
+  assert.ok(list.includes("alice 的会话"));
+  assert.ok(!list.includes("管理员的会话"));
+
+  // 解绑：下一条消息时交还给管理员，alice 的会话不留给别人
+  links.unlink("b1", "ou_owner");
+  await message("ou_owner", "解绑之后", "oc_alice");
+  await tick(100);
+  assert.equal(hub.conversation(p2p)?.owner, undefined);
+  assert.equal(created.at(-1)?.memory, undefined);
 });
 
 test("收尾", () => {
