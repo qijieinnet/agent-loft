@@ -431,6 +431,32 @@ button.conv-group:hover {
   gap: 10px;
 }
 
+/* 拖动目录排序：被拖的行变淡，落点处画一条横线 */
+.proj-row.dragging {
+  opacity: 0.4;
+}
+
+.proj-row.drop-before::before,
+.proj-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent, #3b82f6);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.proj-row.drop-before::before {
+  top: -2px;
+}
+
+.proj-row.drop-after::after {
+  bottom: -2px;
+}
+
 .proj-icon {
   display: inline-grid;
   color: var(--fg-soft);
@@ -559,8 +585,8 @@ button.conv-group:hover {
   margin-left: auto;
 }
 
-/* 桌面端里：额度在菜单栏、设置在顶栏「更多」里，侧栏底部整条不要 */
-.desktop-settings .side-bottom {
+/* 桌面端里：设置在顶栏「更多」里，侧栏底部只留额度（额度由桌面端统一查好推过来） */
+.desktop-settings .side-gear {
   display: none;
 }
 

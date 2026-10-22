@@ -273,7 +273,7 @@ const desktopQuota = typeof desktop?.onQuota === "function";
 // 桌面端里：顶栏、侧栏顶部可以按住拖动窗口（样式见 style.css 的 .in-desktop）
 if (desktop) document.documentElement.classList.add("in-desktop");
 /**
- * 新版桌面端顶栏的「更多」里能打开每台服务器的设置，额度也在它的菜单栏里：侧栏底部的额度和设置就不显示了。
+ * 新版桌面端顶栏的「更多」里能打开每台服务器的设置：侧栏底部的设置按钮就不显示了（额度照常显示，数据由桌面端推）。
  * 老版本桌面端没有这个入口，照旧显示，免得设置打不开。
  */
 const desktopSettings = typeof desktop?.onOpenSettings === "function";
@@ -631,6 +631,21 @@ function renderLayout() {
     if (bot) {
       e.preventDefault();
       showMenu({ x: e.clientX, y: e.clientY }, [{ label: "历史会话…", onclick: () => openBotConversations(bot) }]);
+      return;
+    }
+    // 项目目录那一行：调整顺序（触屏上拖不动，靠这个菜单）
+    const dir = e.target.closest?.("[data-dir]")?.dataset.dir;
+    if (dir) {
+      const i = projDirs.indexOf(dir);
+      const moves = [
+        ...(i > 0 ? [{ label: "置顶", onclick: () => moveProjectDir(dir, null) }, { label: "上移", onclick: () => moveProjectDir(dir, projDirs[i - 1]) }] : []),
+        ...(i >= 0 && i < projDirs.length - 1 ? [{ label: "下移", onclick: () => moveProjectDir(dir, projDirs[i + 1], true) }] : []),
+      ];
+      const reset = sideState.order.length ? [{ label: "恢复按最近活跃排序", onclick: resetProjectOrder }] : [];
+      const items = moves.length && reset.length ? [...moves, "sep", ...reset] : [...moves, ...reset];
+      if (!items.length) return;
+      e.preventDefault();
+      showMenu({ x: e.clientX, y: e.clientY }, items);
       return;
     }
     const key = e.target.closest?.("[data-key]")?.dataset.key;
@@ -997,7 +1012,43 @@ function agentShort(id) {
 }
 
 /** 侧栏里展开 / 收起的状态：哪些项目目录展开了、「最近」和各目录是否显示全部 */
-const sideState = { open: [], more: [], folded: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
+const sideState = { open: [], more: [], folded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
+
+/**
+ * 「项目」目录的顺序：没手动排过时按最近活跃；拖过之后按 sideState.order，
+ * 之后新出现的目录排在已排好的后面（同样按活跃），不会挤掉用户置顶的目录
+ */
+function orderProjectDirs(dirs) {
+  const rank = new Map(sideState.order.map((d, i) => [d, i]));
+  const ranked = dirs.filter((d) => rank.has(d)).sort((a, b) => rank.get(a) - rank.get(b));
+  return [...ranked, ...dirs.filter((d) => !rank.has(d))];
+}
+
+/** 当前侧栏里显示的目录顺序（renderSidebar 时记下，拖拽 / 右键菜单用） */
+let projDirs = [];
+
+/** 把目录 dir 挪到 target 前面（after 为 true 时挪到后面）；target 为 null 表示挪到最前 */
+function moveProjectDir(dir, target, after = false) {
+  if (dir === target) return;
+  const list = projDirs.filter((d) => d !== dir);
+  const idx = target === null ? 0 : list.indexOf(target);
+  if (idx < 0) return;
+  list.splice(idx + (after ? 1 : 0), 0, dir);
+  // 暂时没显示出来的目录（会话都被隐藏了之类）保留原来的名次，排在后面
+  sideState.order = [...list, ...sideState.order.filter((d) => !list.includes(d))];
+  localStorage.setItem("aim.side", JSON.stringify(sideState));
+  renderSidebar();
+}
+
+function resetProjectOrder() {
+  sideState.order = [];
+  localStorage.setItem("aim.side", JSON.stringify(sideState));
+  renderSidebar();
+}
+
+/** 正在拖的目录。拖的过程中侧栏不重绘（重绘会换掉被拖的元素，拖拽就断了），松手后补一次 */
+let dirDrag = null;
+let sidebarStale = false;
 
 /** 「最近」「项目」分组标题：点击折叠 / 展开，hover 时显示箭头 */
 function groupHead(label, id, folded) {
@@ -1032,6 +1083,11 @@ function reportDesktop() {
 
 function renderSidebar() {
   if (!ui.convList) return;
+  if (dirDrag) {
+    sidebarStale = true;
+    return;
+  }
+  sidebarStale = false;
   const askKeys = new Set([...S.pending.values()].filter((i) => !i.settled).map((i) => i.convKey));
   const visible = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt);
   const cur = S.current ? S.convs.get(S.current) : null;
@@ -1115,17 +1171,68 @@ function renderSidebar() {
   }
   const projFolded = sideState.folded.includes("@projects");
   if (byDir.size) nodes.push(groupHead("项目", "@projects", projFolded));
+  projDirs = orderProjectDirs([...byDir.keys()]);
   if (byDir.size && !projFolded) {
-    for (const [dir, convs] of byDir) {
+    const clearDrop = () => ui.convList.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+    const endDrag = () => {
+      dirDrag = null;
+      clearDrop();
+      if (sidebarStale) renderSidebar();
+    };
+    for (const dir of projDirs) {
+      const convs = byDir.get(dir);
       const expanded = sideState.open.includes(dir);
       const showAll = sideState.more.includes(dir);
+      // 鼠标在目标行的上半截就插到它前面，下半截插到后面
+      const isAfter = (e, row) => {
+        const r = row.getBoundingClientRect();
+        return e.clientY > r.top + r.height / 2;
+      };
       nodes.push(
         h(
           "div",
-          { class: "proj-row" },
+          {
+            class: "proj-row",
+            "data-dir": dir,
+            draggable: "true",
+            ondragstart: (e) => {
+              dirDrag = dir;
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", dir);
+              e.currentTarget.classList.add("dragging");
+              stopMarquee();
+            },
+            ondragend: (e) => {
+              e.currentTarget.classList.remove("dragging");
+              endDrag();
+            },
+            ondragover: (e) => {
+              if (!dirDrag) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              const after = isAfter(e, e.currentTarget);
+              if (!e.currentTarget.classList.contains(after ? "drop-after" : "drop-before")) {
+                clearDrop();
+                if (dirDrag !== dir) e.currentTarget.classList.add(after ? "drop-after" : "drop-before");
+              }
+            },
+            ondragleave: (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop-before", "drop-after");
+            },
+            ondrop: (e) => {
+              if (!dirDrag) return;
+              e.preventDefault();
+              const from = dirDrag;
+              const after = isAfter(e, e.currentTarget);
+              dirDrag = null;
+              clearDrop();
+              if (from !== dir) moveProjectDir(from, dir, after);
+              else if (sidebarStale) renderSidebar();
+            },
+          },
           h(
             "button",
-            { class: "conv-item proj", title: dir, onclick: () => toggleSide("open", dir) },
+            { class: "conv-item proj", title: `${dir}\n拖动可调整顺序，右键可置顶`, onclick: () => toggleSide("open", dir) },
             h("span", { class: "proj-icon", html: expanded ? ICON.folderOpen : ICON.folder }),
             h("span", { class: "title" }, baseName(dir)),
             expanded ? null : status(convs.map((c) => c.key)),
