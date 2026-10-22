@@ -47,14 +47,16 @@ function renderAgentEnv() {
     );
     return;
   }
-  const isLocal = agentEnv.id === state.localId;
+  // Windows 上本机的服务端跑在 WSL 之类的地方，桌面端没法替它开终端登录：和远程服务器一样给出命令
+  const isLocal = agentEnv.id === state.localId && !state.system.localUnsupported;
+  const where = agentEnv.id === state.localId ? "登录要在运行 agent-loft 的地方（比如 WSL）执行上面的命令" : "登录要在那台服务器上进行（SSH 上去执行上面的命令）";
   fill(el, 
     ...agentEnv.data.map((a) => agentRow(a, isLocal)),
     agentEnv.error ? h("div", { class: "row error-text" }, agentEnv.error) : null,
     h(
       "div",
       { class: "row" },
-      h("div", { class: "grow hint" }, isLocal ? "登录在「终端」里进行，命令和输出你都看得到；做完回来点「重新检查」。" : "登录要在那台服务器上进行（SSH 上去执行上面的命令），做完回来点「重新检查」。"),
+      h("div", { class: "grow hint" }, isLocal ? "登录在「终端」里进行，命令和输出你都看得到；做完回来点「重新检查」。" : `${where}，做完回来点「重新检查」。`),
       recheck,
     ),
   );
@@ -127,6 +129,12 @@ function agentRow(a, isLocal) {
 
 // ---------- 首次启动向导 ----------
 
+/** 「一键安装本机服务端」怎么做的，向导和设置页共用 */
+function localInstallText() {
+  if (IS_MAC) return "一键安装 agent-loft（在终端里执行 npm install -g agent-loft，没有 Node.js 会先用 Homebrew 装上），开机自动运行。";
+  return "一键安装 agent-loft（在终端里执行 npm install -g agent-loft，需要 Node.js 22 以上），注册成 systemd 用户服务开机自动运行。";
+}
+
 const wiz = { step: "choose", error: null, id: null, built: null };
 
 /** 从设置页开启本机服务端、需要设密码时，临时借用向导的界面 */
@@ -146,22 +154,23 @@ function wizardChoose() {
   return [
     h("img", { class: "wizard-logo", src: "../../assets/icon.png", alt: "" }),
     h("h1", {}, "欢迎使用 Agent Loft"),
-    h("p", { class: "muted" }, "Claude Code、Codex 跑在哪台机器上，那台机器就是「服务端」。先决定这台 Mac 的角色。"),
+    h("p", { class: "muted" }, `Claude Code、Codex 跑在哪台机器上，那台机器就是「服务端」。先决定${THIS_PC}的角色。`),
     h(
       "div",
       { class: "choices" },
       h(
         "button",
-        { class: "choice", disabled: !L, onclick: () => startLocal(running) },
-        h("div", { class: "choice-title" }, running ? "连接这台 Mac 上的 agent-loft" : "这台 Mac 也作为服务端"),
+        // Windows 上不能一键安装：没检测到在跑的就点不了，说明写在下面
+        { class: "choice", disabled: !L || (!running && !!state.system.localUnsupported), onclick: () => startLocal(running) },
+        h("div", { class: "choice-title" }, running ? `连接${THIS_PC}上的 agent-loft` : `${THIS_PC}也作为服务端`),
         h(
           "div",
           { class: "choice-desc" },
           !L
-            ? "正在检测这台 Mac…"
+            ? `正在检测${THIS_PC}…`
             : running
-              ? "检测到这台 Mac 上已经在运行 agent-loft，直接连上它。"
-              : "一键安装 agent-loft（在终端里执行 npm install -g agent-loft，没有 Node.js 会先用 Homebrew 装上），开机自动运行。退出桌面端也不影响，手机、飞书、其他电脑都能连过来。",
+              ? `检测到${THIS_PC}上已经在运行 agent-loft，直接连上它。`
+              : (state.system.localUnsupported ?? `${localInstallText()}退出桌面端也不影响，手机、飞书、其他电脑都能连过来。`),
         ),
       ),
       h(
@@ -174,7 +183,7 @@ function wizardChoose() {
           },
         },
         h("div", { class: "choice-title" }, "只连接其他服务器"),
-        h("div", { class: "choice-desc" }, "agent-loft 跑在别的电脑、NAS 或云服务器上，这台 Mac 只用来操作。以后随时可以在设置里安装本机服务端。"),
+        h("div", { class: "choice-desc" }, `agent-loft 跑在别的电脑、NAS 或云服务器上，${THIS_PC}只用来操作。${state.system.localUnsupported ? "" : "以后随时可以在设置里安装本机服务端。"}`),
       ),
     ),
     wiz.error ? h("p", { class: "error-text" }, wiz.error) : null,
@@ -296,16 +305,19 @@ function renderLocalCard(el) {
   } else if (busy === "install") {
     [title, sub, dot] = ["正在安装…", "安装在「终端」窗口里进行，装好后会自动加到顶栏。", "unknown"];
   } else if (L.running) {
-    title = busy === "restart" ? "正在重启…" : busy === "uninstall" ? "正在停止…" : L.service ? "运行中 · 开机自动运行" : "运行中（手动启动的，没有开机自启）";
+    // Windows 上看不到服务端是怎么跑的（多半在 WSL 里），不下结论
+    title = busy === "restart" ? "正在重启…" : busy === "uninstall" ? "正在停止…" : state.system.localUnsupported ? "运行中" : L.service ? "运行中 · 开机自动运行" : "运行中（手动启动的，没有开机自启）";
     sub = L.url;
     dot = "online";
     if (L.service) actions = [btn("重启", "localRestart"), btn("日志", "localLogs"), btn("停止", "localUninstall", "danger")];
   } else if (L.service) {
     [title, sub, dot] = ["已安装，但没有在运行", `${L.url} · 看一下日志里的报错`, "offline"];
     actions = [btn("启动", "localRestart", "primary"), btn("日志", "localLogs")];
+  } else if (state.system.localUnsupported) {
+    [title, sub, dot] = ["没有检测到", state.system.localUnsupported, "unknown"];
   } else {
     title = "未安装";
-    sub = "一键安装 agent-loft（npm install -g agent-loft，没有 Node.js 会先用 Homebrew 装上），开机自动运行。手机、飞书、其他电脑都能连过来。";
+    sub = `${localInstallText()}手机、飞书、其他电脑都能连过来。`;
     dot = "unknown";
     actions = [h("button", { class: "btn primary", disabled: !!busy, onclick: () => installFromSettings() }, "一键安装")];
   }
@@ -361,6 +373,13 @@ function serverUpgradeButton(s) {
 
 // ---------- 设置页：桌面端更新 ----------
 
+/** 不能自动更新时，手动装新版的说法 */
+const MANUAL_UPDATE_HINT = IS_MAC
+  ? "下载后打开 DMG，把新版拖进「应用程序」替换旧版，设置和登录状态都会保留。"
+  : PLATFORM === "win32"
+    ? "下载后运行安装程序，会直接覆盖旧版，设置和登录状态都会保留。"
+    : "下载新的 AppImage 替换旧的，或者用新的 deb 包安装（sudo apt install ./文件名.deb），设置和登录状态都会保留。";
+
 function renderUpdateCard(el) {
   const u = state.system.update;
   const p = state.prefs;
@@ -373,7 +392,7 @@ function renderUpdateCard(el) {
   else if (u.checkedAt) status = `已是最新版本（${agoText(u.checkedAt)}检查）`;
   else status = state.system.packaged ? "还没检查过" : "开发版本，不自动检查";
 
-  const canInstall = u.available && !state.system.selfUpdateProblem && u.available.zip;
+  const canInstall = u.available && !state.system.selfUpdateProblem && u.available.pkg;
   const hours = h("input", {
     class: "num",
     type: "number",
@@ -400,7 +419,7 @@ function renderUpdateCard(el) {
     ),
     installing ? h("div", { class: "row" }, h("div", { class: "bar grow" }, h("i", { style: { width: `${Math.round(u.installing * 100)}%` } }))) : null,
     u.available && !canInstall
-      ? h("div", { class: "row hint wrap" }, `${state.system.selfUpdateProblem ?? "这个版本没有自动更新包"}。下载后打开 DMG，把新版拖进「应用程序」替换旧版，设置和登录状态都会保留。`)
+      ? h("div", { class: "row hint wrap" }, `${state.system.selfUpdateProblem ?? "这个版本没有自动更新包"}。${MANUAL_UPDATE_HINT}`)
       : null,
     h(
       "div",

@@ -52,7 +52,7 @@ async function openServerDialog(s) {
   });
 
   const url = h("input", { id: "d-url", value: s?.url ?? "", placeholder: "http://192.168.1.5:8800 或 https://loft.example.com", spellcheck: "false" });
-  const name = h("input", { id: "d-name", value: s?.name ?? "", placeholder: "例如：家里 Mac mini", maxlength: 40 });
+  const name = h("input", { id: "d-name", value: s?.name ?? "", placeholder: IS_MAC ? "例如：家里 Mac mini" : "例如：家里的 NAS", maxlength: 40 });
   // 登录网关：服务器前面挡着 Cloudflare Access 之类的验证时才需要
   const domains = h("input", { id: "d-domains", value: (s?.authDomains ?? []).join(", "), placeholder: "例如：sso.example.com", spellcheck: "false" });
   const tokenId = h("input", { id: "d-token-id", value: s?.serviceTokenId ?? "", placeholder: "xxxxxxxx.access", spellcheck: "false", autocomplete: "off" });
@@ -77,7 +77,7 @@ async function openServerDialog(s) {
     ),
     h("div", { class: "field" }, h("label", { for: "d-token-id" }, "Service Token · Client ID（可选）"), tokenId),
     h("div", { class: "field" }, h("label", { for: "d-token-secret" }, "Service Token · Client Secret"), tokenSecret),
-    h("div", { class: "hint" }, "配了 Service Token 就不用邮箱验证，也不会过期（Access 策略里要加一条 Service Auth 规则）。Secret 用 macOS 钥匙串加密保存；清空 Client ID 再保存即删除。"),
+    h("div", { class: "hint" }, `配了 Service Token 就不用邮箱验证，也不会过期（Access 策略里要加一条 Service Auth 规则）。Secret 用${KEYCHAIN}加密保存；清空 Client ID 再保存即删除。`),
   );
   const error = h("div", { class: "error-text" });
   const submit = h("button", { class: "btn primary", type: "submit" }, s ? "保存" : "添加");

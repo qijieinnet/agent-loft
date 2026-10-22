@@ -107,6 +107,10 @@ export function normalizeDomains(input) {
 
 function encryptSecret(secret) {
   if (!safeStorage.isEncryptionAvailable()) throw new Error("系统钥匙串不可用，没法安全保存 Secret");
+  // Linux 上没有密钥环（GNOME Keyring / KWallet）时 Electron 退回到 basic_text：用写死的密码混淆，不算加密
+  if (process.platform === "linux" && safeStorage.getSelectedStorageBackend() === "basic_text") {
+    throw new Error("没有可用的系统密钥环（GNOME Keyring / KWallet），没法安全保存 Secret");
+  }
   return safeStorage.encryptString(secret).toString("base64");
 }
 

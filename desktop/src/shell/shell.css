@@ -46,6 +46,12 @@ body {
 body.fullscreen .topbar {
   padding-left: 12px;
 }
+/* Windows / Linux：系统自己的标题栏，没有红绿灯也没有毛玻璃，顶栏自己铺底色 */
+html:not(.os-darwin) .topbar {
+  padding-left: 8px;
+  background: var(--bg-2);
+  -webkit-app-region: no-drag;
+}
 .topbar button {
   -webkit-app-region: no-drag;
 }

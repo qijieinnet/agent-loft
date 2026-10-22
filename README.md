@@ -2,7 +2,7 @@
 
 # agent-loft
 
-**多个 agent 的工作台。** 把本机的 **Claude Code**、**Codex**（以后还有更多）放到同一张台面上统一管理，在网页、飞书和 Mac 桌面端随时驱动它们，进展推送到飞书、iPhone 和 Mac。
+**多个 agent 的工作台。** 把本机的 **Claude Code**、**Codex**（以后还有更多）放到同一张台面上统一管理，在网页、飞书和桌面端（macOS / Windows / Linux）随时驱动它们，进展推送到飞书、iPhone 和 Mac。
 
 ![Web 工作台](docs/images/web-chat.png)
 
@@ -30,7 +30,7 @@ Logo 就是这个意思：一大两小几颗星（多个 agent）站在同一张
 | 🔗 | **飞书续接 Web 任务** | 飞书里发 `/web` 接上一条 Web 会话，或者在网页侧栏右键会话选「在飞书继续…」。之后回复、授权、提问都发到飞书，发 `/detach` 回来 |
 | 🖥️ | **完整的 Web 工作台** | 流式回复、附件、语音输入、模型和思考程度切换、上下文占用、从任意回复分叉、按项目分组的侧栏、全部设置，电脑和手机（PWA）都能用 |
 | 🔔 | **飞书 + 苹果系统推送** | 除了飞书消息，Web 会话还能推送到 iPhone、iPad 锁屏和 Mac 通知中心（标准 Web Push，不需要开发者账号），图标上显示未读数 |
-| 🗂️ | **桌面端同时接入多台设备** | macOS 桌面端同时连多台服务器，菜单栏一眼看完各台的额度、待处理和运行中的会话 |
+| 🗂️ | **桌面端同时接入多台设备** | 桌面端（macOS / Windows / Linux）同时连多台服务器，菜单栏 / 托盘一眼看完各台的额度、待处理和运行中的会话 |
 
 ## 能做什么
 
@@ -70,14 +70,20 @@ agent-loft service install        # 注册为开机自启服务（systemd / laun
 
 在外面只用飞书的话不需要任何网络配置（机器人由服务端主动连向飞书）。在外面用网页、系统推送和语音输入需要 HTTPS，见下面的「安全」和[产品介绍里的「从外网访问」](docs/产品介绍.md#从外网访问)。
 
-### macOS 桌面端
+### 桌面端（macOS / Windows / Linux）
 
-到 [Releases](https://github.com/qijieinnet/agent-loft/releases) 下载 `desktop-v*` 里对应芯片的 DMG（Apple 芯片选 arm64，Intel 选 x64），拖进「应用程序」。还没有 Apple 开发者签名，第一次打开如果提示无法验证，到 系统设置 → 隐私与安全性 里点「仍要打开」。
+到 [Releases](https://github.com/qijieinnet/agent-loft/releases) 下载 `desktop-v*` 里对应的安装包：
+
+- **macOS**：对应芯片的 DMG（Apple 芯片选 arm64，Intel 选 x64），拖进「应用程序」。还没有 Apple 开发者签名，第一次打开如果提示无法验证，到 系统设置 → 隐私与安全性 里点「仍要打开」。
+- **Windows**：`Agent-Loft-Setup-*-x64.exe`，装在用户目录里，不用管理员权限。没有代码签名，SmartScreen 拦的话点「更多信息 → 仍要运行」。
+- **Linux**：Debian / Ubuntu 用 deb（`sudo apt install ./agent-loft-desktop_*_amd64.deb`），其他发行版用 AppImage（需要 libfuse2）；ARM 选 arm64。App 内一键更新只支持 AppImage。GNOME 要装 AppIndicator 扩展才看得到托盘图标。
+
+下面以 macOS 为例，Windows / Linux 上「菜单栏」是托盘、`⌘` 是 `Ctrl`：
 
 - 同时连多台服务器，顶部标签栏切换、拖动排序；每台各自登录，切走了也在后台连着，回复完成、需要授权时弹系统通知，程序坞图标显示未读数。
-- 菜单栏图标：悬停看各服务器的 Claude / Codex 额度、待处理和运行中的会话；双击打开主窗口。同一个账号的额度只查一次。
+- 菜单栏图标：悬停看各服务器的 Claude / Codex 额度、待处理和运行中的会话；双击打开主窗口。同一个账号的额度只查一次。（Windows 上点托盘图标弹出；Linux 上在托盘菜单里点「额度和待处理」。）
 - 支持前面挡着 Cloudflare Access 的服务器：验证页直接在窗口里完成，过期会提醒；也可以配 Service Token 免验证。
-- 首次打开可以选「这台 Mac 也作为服务端」：一键在终端里安装 agent-loft（没有 Node.js 会先用 Homebrew 装）并开机自启，装好自动连上。可选开启「本机有会话在跑时不休眠」。
+- 首次打开可以选「这台 Mac 也作为服务端」：一键在终端里安装 agent-loft（没有 Node.js 会先用 Homebrew 装）并开机自启，装好自动连上。Linux 上一样（需要先装好 Node.js 22+，开机自启用 systemd 用户服务）；Windows 上服务端还没有开机自启，可以在 WSL 里装，桌面端会自动检测到 `127.0.0.1` 上的它。可选开启「本机有会话在跑时不休眠」。
 - 设置（`⌘,`）的服务器列表里展开某台服务器，能看它的 Agent 环境和版本，有新版本时点「升级服务端」；桌面端自己的更新在同一页的「更新」里点「更新并重启」。
 
 桌面端只是个壳（代码在 `desktop/`），服务端照常用 npm 安装和升级。
@@ -137,7 +143,7 @@ src/
     feishu/        飞书：一个 FeishuBot 对应一个机器人，支持多个
     web/           HTTP + WebSocket + 鉴权
 web/               前端（原生 JS，不需要构建）
-desktop/           macOS 桌面端（Electron 外壳）
+desktop/           桌面端（Electron 外壳，macOS / Windows / Linux）
 docs/              产品介绍和截图
 ```
 

@@ -1,9 +1,10 @@
 {
   "name": "agent-loft-desktop",
   "productName": "Agent Loft",
-  "version": "0.1.6",
+  "desktopName": "agent-loft-desktop.desktop",
+  "version": "0.1.7",
   "private": true,
-  "description": "agent-loft 的 macOS 桌面端：同时连多台 agent-loft 服务器，菜单栏显示额度和待处理，检测并升级服务端",
+  "description": "agent-loft 的桌面端（macOS / Windows / Linux）：同时连多台 agent-loft 服务器，菜单栏 / 托盘显示额度和待处理，检测并升级服务端",
   "author": "qijieinnet",
   "license": "MIT",
   "type": "module",
@@ -12,7 +13,10 @@
     "start": "electron .",
     "smoke": "AGENT_LOFT_DESKTOP_SMOKE=1 electron .",
     "icons": "electron scripts/icons.js",
-    "dist": "electron-builder --mac --arm64 --x64 --publish never"
+    "dist": "electron-builder --mac --arm64 --x64 --publish never",
+    "dist:mac": "electron-builder --mac --arm64 --x64 --publish never",
+    "dist:win": "electron-builder --win --x64 --publish never",
+    "dist:linux": "electron-builder --linux --x64 --arm64 --publish never"
   },
   "devDependencies": {
     "electron": "^44.9.1",
@@ -45,6 +49,39 @@
     },
     "dmg": {
       "title": "Agent Loft ${version}"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Agent-Loft-Setup-${version}-${arch}.${ext}",
+      "shortcutName": "Agent Loft",
+      "uninstallDisplayName": "Agent Loft"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "executableName": "agent-loft-desktop",
+      "category": "Development",
+      "synopsis": "同时连多台 agent-loft 服务器的桌面端",
+      "maintainer": "qijieinnet <qijieinnet@users.noreply.github.com>",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "syncDesktopName": true,
+      "description": "同时连多台 agent-loft 服务器，托盘里看额度和待处理"
+    },
+    "appImage": {
+      "artifactName": "Agent-Loft-${version}-${arch}.${ext}"
+    },
+    "deb": {
+      "artifactName": "agent-loft-desktop_${version}_${arch}.${ext}"
     }
-  }
+  },
+  "homepage": "https://github.com/qijieinnet/agent-loft"
 }

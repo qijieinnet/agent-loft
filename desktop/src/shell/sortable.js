@@ -31,6 +31,8 @@ function sortable(container, { axis, item, ignore, onDrop, onEnd }) {
     const y0 = e.clientY;
     /** @type {null | { items: HTMLElement[], index: number, rects: DOMRect[], step: number, target: number }} */
     let drag = null;
+    // 按下到开始拖之间也不能重画：不然按住的那项被换掉，拖起来找不到它
+    sortDragging = true;
 
     const begin = () => {
       const items = [...container.children].filter((c) => c.matches(item));
@@ -52,6 +54,8 @@ function sortable(container, { axis, item, ignore, onDrop, onEnd }) {
     };
 
     const move = (ev) => {
+      // 在窗口外松的手（收不到 pointerup）：回来时按键已经松开了，当作结束
+      if (!(ev.buttons & 1)) return finish();
       const d0 = axis === "x" ? ev.clientX - x0 : ev.clientY - y0;
       if (!drag) {
         if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < THRESHOLD) return;
@@ -79,7 +83,12 @@ function sortable(container, { axis, item, ignore, onDrop, onEnd }) {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", finish);
-      if (!drag) return;
+      if (!drag) {
+        // 只是点了一下：等这次 click 派发完再补画，别把要点的元素先换掉
+        sortDragging = false;
+        setTimeout(() => onEnd?.(), 0);
+        return;
+      }
       const { items, index, target } = drag;
       // 先在页面上挪好，再清掉位移：不带过渡，免得各项先弹回原位再跳过去
       for (const c of items) c.style.transition = "none";

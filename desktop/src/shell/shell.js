@@ -235,9 +235,9 @@ function renderManage() {
 
 /** 防休眠只管本机服务端：说清楚现在是什么情况 */
 function keepAwakeHint() {
-  if (!state.localId) return "只对这台 Mac 上的服务端生效。服务器列表里还没有本机，加上之后才会起作用。";
+  if (!state.localId) return `只对${THIS_PC}上的服务端生效。服务器列表里还没有本机，加上之后才会起作用。`;
   if (state.keepingAwake) return "本机正有会话在跑，正在阻止系统休眠（屏幕仍可以关）。合上笔记本盖子依然会睡。";
-  return "只对这台 Mac 上的服务端生效，远程服务器不受影响。会话跑完后恢复正常休眠，屏幕照常可以关。";
+  return `只对${THIS_PC}上的服务端生效，远程服务器不受影响。会话跑完后恢复正常休眠，屏幕照常可以关。`;
 }
 
 function renderPrefs() {
@@ -263,9 +263,9 @@ function renderPrefs() {
   // 正在改数字时别重画，不然光标会跳
   if (manage.prefs.contains(document.activeElement) && document.activeElement.type === "number") return;
   manage.prefs.replaceChildren(
-    toggle("openAtLogin", "登录时自动启动", "启动后只在菜单栏，不弹窗口。"),
+    toggle("openAtLogin", "登录时自动启动", `启动后只在${TRAY_PLACE}，不弹窗口。`),
     toggle("keepAwake", "本机有会话在跑时不休眠", keepAwakeHint()),
-    h("div", { class: "row" }, h("div", { class: "grow" }, "额度刷新间隔（分钟）", h("div", { class: "sub" }, "跑完一轮、打开菜单栏面板时也会刷新。")), interval),
+    h("div", { class: "row" }, h("div", { class: "grow" }, "额度刷新间隔（分钟）", h("div", { class: "sub" }, PLATFORM === "linux" ? "跑完一轮时也会刷新。" : `跑完一轮、打开${TRAY_PLACE}面板时也会刷新。`)), interval),
   );
 }
 

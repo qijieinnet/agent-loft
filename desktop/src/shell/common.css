@@ -15,7 +15,7 @@
   --bad: #e5484d;
   --idle: #a1a1a6;
   --track: rgba(0, 0, 0, 0.08);
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "WenQuanYi Micro Hei", Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {

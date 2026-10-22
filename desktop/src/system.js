@@ -4,7 +4,7 @@ import { app, Notification, shell } from "electron";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { installLocalInTerminal, localStatus, restartLocal, runInTerminal, uninstallLocal, waitUntilUp } from "./local-server.js";
+import { installLocalInTerminal, localStatus, localUnsupported, openLogs, restartLocal, runInTerminal, uninstallLocal, waitUntilUp } from "./local-server.js";
 import { store } from "./store.js";
 import { canSelfUpdate, checkForUpdate, installUpdate } from "./updater.js";
 
@@ -41,6 +41,8 @@ export function systemState() {
     local: state.local,
     localBusy: state.localBusy,
     localError: state.localError,
+    /** 这个平台不能一键安装 / 重启 / 停止本机服务端的原因（Windows），能的话是 null */
+    localUnsupported: localUnsupported(),
     update: state.update,
     selfUpdateProblem: canSelfUpdate(),
     packaged: app.isPackaged,
@@ -84,10 +86,14 @@ export const local = {
       if (!(await waitUntilUp(60_000))) throw new Error("服务端重启后没有响应，看一下日志");
     }),
   uninstall: () => busy("uninstall", async () => uninstallLocal()),
-  logs: () => shell.openPath(state.local?.logs ?? ""),
+  logs: () => {
+    const dir = state.local?.logs;
+    if (!dir) return;
+    if (!openLogs(dir)) return shell.openPath(dir);
+  },
 };
 
-// ---------- Agent 登录（只在本机，打开终端） ----------
+// ---------- Agent 登录（只在本机，打开终端；Windows 上不支持） ----------
 
 /**
  * 在「终端」里登录。命令写死在这里，不执行服务器传来的命令；唯一用到的服务器数据是 SDK 自带的
@@ -152,8 +158,8 @@ export async function checkUpdates({ manual = false } = {}) {
 export async function applyUpdate(quit) {
   const u = state.update.available;
   if (!u || state.update.installing !== null) return;
-  if (canSelfUpdate() || !u.zip) {
-    void shell.openExternal(u.dmg ?? u.url);
+  if (canSelfUpdate() || !u.pkg) {
+    void shell.openExternal(u.download ?? u.url);
     return;
   }
   state.update.installing = 0;

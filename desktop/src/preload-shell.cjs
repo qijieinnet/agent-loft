@@ -2,6 +2,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("loft", {
+  /** darwin / win32 / linux：界面按平台换说法和样式 */
+  platform: process.platform,
   state: () => ipcRenderer.invoke("shell:state"),
   onState: (handler) => ipcRenderer.on("shell:state", (_e, state) => handler(state)),
   /** 让主窗口切到某个面板（菜单里的「添加服务器」「设置」） */

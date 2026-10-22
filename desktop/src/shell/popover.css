@@ -15,6 +15,11 @@
 body {
   overflow: hidden;
 }
+/* Windows：没有毛玻璃，窗口不透明，自己铺底色、画一圈细边 */
+html:not(.os-darwin) body {
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
 #root {
   padding: 10px;
 }

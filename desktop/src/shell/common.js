@@ -1,5 +1,18 @@
 // 主窗口和菜单栏面板共用的小工具（普通脚本，挂在全局上）。
 
+// ---------- 平台 ----------
+// macOS 上窗口是毛玻璃、菜单栏有图标；Windows / Linux 是普通窗口、图标在托盘里。
+// <html> 上挂 os-darwin / os-win32 / os-linux，样式按它区分；说法用下面这几个常量。
+const PLATFORM = window.loft?.platform ?? "darwin";
+const IS_MAC = PLATFORM === "darwin";
+document.documentElement.classList.add(`os-${PLATFORM}`);
+/** 「这台 Mac」/「这台电脑」 */
+const THIS_PC = IS_MAC ? "这台 Mac" : "这台电脑";
+/** 图标所在的地方：macOS 的菜单栏，Windows / Linux 的托盘 */
+const TRAY_PLACE = IS_MAC ? "菜单栏" : "托盘";
+/** 服务 Token 的 Secret 存在哪（Electron safeStorage 背后用的东西） */
+const KEYCHAIN = IS_MAC ? " macOS 钥匙串" : PLATFORM === "win32" ? " Windows 数据保护（DPAPI）" : "系统密钥环（GNOME Keyring / KWallet）";
+
 /** 建 DOM：h("div", { class: "x", onclick }, "文字", child) */
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);

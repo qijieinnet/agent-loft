@@ -1,12 +1,14 @@
-// Agent Loft 桌面端（macOS）。
+// Agent Loft 桌面端（macOS 为主，也打 Windows、Linux 包）。
 //
-// 一个窗口：顶上一条服务器标签栏（本地页面 shell/index.html，红绿灯也在这条里），下面整块是
+// 一个窗口：顶上一条服务器标签栏（本地页面 shell/index.html，macOS 上红绿灯也在这条里），下面整块是
 // 当前服务器自己的 Web 界面。每台服务器的页面常驻后台，WebSocket 一直连着；服务器推来的提醒由页面经
-// preload 转给这里，弹 macOS 系统通知（桌面端收不到 Web Push）。菜单栏另有图标，
-// 鼠标移上去弹出各服务器的额度和待处理（见 tray.js）。
-import { app, BaseWindow, dialog, ipcMain, Menu, Notification, powerSaveBlocker, WebContentsView } from "electron";
+// preload 转给这里，弹系统通知（桌面端收不到 Web Push）。菜单栏（Windows / Linux 是托盘）另有图标，
+// 鼠标移上去 / 点一下弹出各服务器的额度和待处理（见 tray.js）。
+// Windows / Linux 用系统自己的标题栏，菜单栏默认收起（按 Alt 出来）。
+import { app, BaseWindow, dialog, ipcMain, Menu, nativeTheme, Notification, powerSaveBlocker, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openedAtLogin, setOpenAtLogin, syncOpenAtLogin } from "./autostart.js";
 import { localPort, localUrl, readSetupToken } from "./local-server.js";
 import {
   addUnread,
@@ -33,9 +35,12 @@ import {
 import { loadStore, store } from "./store.js";
 import { applyUpdate, checkUpdates, local, loginAgent, refreshLocal, scheduleUpdates, system, systemState } from "./system.js";
 import { runSmoke, prepareSmoke, smoke } from "./smoke.js";
-import { createTray, hidePopover, openPopoverForTest, popoverResize, popoverWebContents } from "./tray.js";
+import { createTray, hidePopover, openPopoverForTest, popoverResize, popoverWebContents, setTrayUnread } from "./tray.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const isMac = process.platform === "darwin";
+/** 「这台 Mac」/「这台电脑」 */
+const THIS_PC = isMac ? "这台 Mac" : "这台电脑";
 /** 顶栏的高度，和 shell/shell.css 里的 --bar 一致 */
 const BAR = 40;
 
@@ -54,6 +59,8 @@ if (process.env.AGENT_LOFT_DESKTOP_HOME) app.setPath("userData", path.resolve(pr
 if (smoke) prepareSmoke();
 
 if (!app.requestSingleInstanceLock()) app.quit();
+// Windows 的通知要认 AppUserModelID，和安装程序建的快捷方式一致（package.json 的 build.appId）
+if (process.platform === "win32") app.setAppUserModelId("com.qijieinnet.agentloft");
 
 // ---------- 状态 ----------
 
@@ -153,7 +160,10 @@ function broadcast() {
     if (wc && !wc.isDestroyed()) wc.send("shell:state", state);
   }
   const unread = state.servers.reduce((n, s) => n + s.unread, 0);
-  app.dock?.setBadge(unread ? String(unread) : "");
+  if (isMac) app.dock?.setBadge(unread ? String(unread) : "");
+  // Linux 上部分桌面（Unity、KDE）的启动器认这个；其他平台没有角标，托盘提示里带上数字
+  else if (process.platform === "linux") app.setBadgeCount(unread);
+  setTrayUnread(unread);
   layout();
   rebuildMenu();
 }
@@ -193,11 +203,21 @@ function createWindow() {
     minHeight: 500,
     show: false,
     title: "Agent Loft",
-    titleBarStyle: "hiddenInset",
-    // 红绿灯竖直居中在顶栏里（按钮约 14px 高）
-    trafficLightPosition: { x: 14, y: (BAR - 14) / 2 },
-    vibrancy: "sidebar",
-    backgroundColor: "#00000000",
+    ...(isMac
+      ? {
+          titleBarStyle: "hiddenInset",
+          // 红绿灯竖直居中在顶栏里（按钮约 14px 高）
+          trafficLightPosition: { x: 14, y: (BAR - 14) / 2 },
+          vibrancy: "sidebar",
+          backgroundColor: "#00000000",
+        }
+      : {
+          // 系统标题栏；菜单栏收起，按 Alt 出来。底色和顶栏（shell.css 里的 --bg-2）一致，免得打开时闪白
+          autoHideMenuBar: true,
+          backgroundColor: nativeTheme.shouldUseDarkColors ? "#2c2c2e" : "#f5f5f7",
+          // Windows 用 exe 自带的图标；Linux 窗口图标要自己给
+          ...(process.platform === "linux" ? { icon: path.join(here, "../assets/icon.png") } : {}),
+        }),
   });
 
   shellView = new WebContentsView({
@@ -213,7 +233,7 @@ function createWindow() {
   win.contentView.addChildView(shellView);
   void shellView.webContents.loadFile(path.join(here, "shell/index.html"));
   shellView.webContents.once("did-finish-load", () => {
-    if (!app.getLoginItemSettings().wasOpenedAtLogin) win?.show();
+    if (!openedAtLogin()) win?.show();
   });
 
   win.on("resize", layout);
@@ -339,19 +359,89 @@ function rebuildMenu() {
   if (signature === menuSignature) return;
   menuSignature = signature;
   const activeWc = () => (activeId && !managing ? viewFor(activeId).webContents : shellView?.webContents);
+  const checkUpdateItem = {
+    label: "检查更新…",
+    click: () => {
+      showManage("update");
+      void checkUpdates({ manual: true });
+    },
+  };
+  const viewMenu = {
+    label: "显示",
+    submenu: [
+      { label: "重新加载", accelerator: "CmdOrCtrl+R", click: () => (activeId && !managing ? reload(activeId) : activeWc()?.reload()) },
+      { label: "开发者工具", accelerator: isMac ? "Alt+Command+I" : "Ctrl+Shift+I", click: () => activeWc()?.toggleDevTools() },
+      { type: "separator" },
+      { role: "resetZoom", label: "实际大小" },
+      { role: "zoomIn", label: "放大" },
+      { role: "zoomOut", label: "缩小" },
+      { type: "separator" },
+      { role: "togglefullscreen", label: "全屏" },
+    ],
+  };
+  const serverMenu = {
+    label: "服务器",
+    submenu: [
+      ...list.map((s, i) => ({
+        label: s.name,
+        type: "radio",
+        checked: s.id === activeId && !managing,
+        accelerator: i < 9 ? `CmdOrCtrl+${i + 1}` : undefined,
+        click: () => select(s.id),
+      })),
+      ...(list.length ? [{ type: "separator" }] : []),
+      { label: "添加服务器…", click: () => showManage("add") },
+      { label: "刷新额度", click: () => refreshAll({ quota: true }) },
+    ],
+  };
+  if (!isMac) {
+    // Windows / Linux：没有 App 菜单，设置、更新、退出放进「文件」；编辑菜单的默认文字是英文，自己写
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([
+        {
+          label: "文件",
+          submenu: [
+            { label: "设置…", accelerator: "Ctrl+,", click: () => showManage() },
+            checkUpdateItem,
+            { type: "separator" },
+            { label: "退出 Agent Loft", accelerator: "Ctrl+Q", click: quit },
+          ],
+        },
+        {
+          label: "编辑",
+          submenu: [
+            { role: "undo", label: "撤销" },
+            { role: "redo", label: "重做" },
+            { type: "separator" },
+            { role: "cut", label: "剪切" },
+            { role: "copy", label: "复制" },
+            { role: "paste", label: "粘贴" },
+            { role: "selectAll", label: "全选" },
+          ],
+        },
+        viewMenu,
+        serverMenu,
+        {
+          label: "帮助",
+          submenu: [
+            {
+              label: "关于 Agent Loft",
+              click: () =>
+                void dialog.showMessageBox(win, { type: "info", message: "Agent Loft", detail: `桌面端 ${app.getVersion()}\nhttps://github.com/qijieinnet/agent-loft`, buttons: ["好"] }),
+            },
+          ],
+        },
+      ]),
+    );
+    return;
+  }
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
         role: "appMenu",
         submenu: [
           { role: "about", label: "关于 Agent Loft" },
-          {
-            label: "检查更新…",
-            click: () => {
-              showManage("update");
-              void checkUpdates({ manual: true });
-            },
-          },
+          checkUpdateItem,
           { type: "separator" },
           { label: "设置…", accelerator: "Command+,", click: () => showManage() },
           { type: "separator" },
@@ -363,34 +453,8 @@ function rebuildMenu() {
         ],
       },
       { role: "editMenu", label: "编辑" },
-      {
-        label: "显示",
-        submenu: [
-          { label: "重新加载", accelerator: "Command+R", click: () => (activeId && !managing ? reload(activeId) : activeWc()?.reload()) },
-          { label: "开发者工具", accelerator: "Alt+Command+I", click: () => activeWc()?.toggleDevTools() },
-          { type: "separator" },
-          { role: "resetZoom", label: "实际大小" },
-          { role: "zoomIn", label: "放大" },
-          { role: "zoomOut", label: "缩小" },
-          { type: "separator" },
-          { role: "togglefullscreen", label: "全屏" },
-        ],
-      },
-      {
-        label: "服务器",
-        submenu: [
-          ...list.map((s, i) => ({
-            label: s.name,
-            type: "radio",
-            checked: s.id === activeId && !managing,
-            accelerator: i < 9 ? `Command+${i + 1}` : undefined,
-            click: () => select(s.id),
-          })),
-          ...(list.length ? [{ type: "separator" }] : []),
-          { label: "添加服务器…", click: () => showManage("add") },
-          { label: "刷新额度", click: () => refreshAll({ quota: true }) },
-        ],
-      },
+      viewMenu,
+      serverMenu,
       { role: "windowMenu", label: "窗口" },
     ]),
   );
@@ -412,9 +476,12 @@ ipcMain.on("page:notify", (e, notice) => {
   if (!lookingHere) addUnread(id);
   if (!Notification.isSupported()) return;
   liveNotices.get(tag)?.close();
+  const title = str(notice?.title, 120) || "Agent Loft";
+  const multi = store.servers().length > 1;
   const note = new Notification({
-    title: str(notice?.title, 120) || "Agent Loft",
-    subtitle: store.servers().length > 1 ? server.name : undefined,
+    // 副标题只有 macOS 有；其他平台把服务器名接在标题后面
+    title: multi && !isMac ? `${title} · ${server.name}` : title,
+    subtitle: multi && isMac ? server.name : undefined,
     body: str(notice?.body, 300),
   });
   note.on("click", () => openTarget(id, key));
@@ -470,6 +537,12 @@ ipcMain.on("page:quota-refresh", (e) => {
   const id = pageOwner(e);
   if (id) void refreshQuota([id], { full: true });
 });
+
+/**
+ * 要不要在向导里直接设密码：服务端还没设过，而且这边读得到设置码。
+ * 读不到的（比如 Windows 上服务端跑在 WSL 里，配置目录不在这边）交给服务端自己的页面去设
+ */
+const canSetupHere = (status) => status.needsSetup && !!readSetupToken();
 
 // ---------- 主窗口和菜单栏面板发来的（经 preload-shell.cjs） ----------
 
@@ -547,7 +620,7 @@ const calls = {
 
   setPref: (key, value) => {
     store.setPref(key, value);
-    if (key === "openAtLogin") app.setLoginItemSettings({ openAtLogin: value });
+    if (key === "openAtLogin") setOpenAtLogin(!!value);
     if (key === "quotaRefreshMin") scheduleQuota();
     if (key === "autoUpdate" || key === "updateCheckHours") scheduleUpdates();
     broadcast();
@@ -560,17 +633,17 @@ const calls = {
     else broadcast();
   },
   localRefresh: () => refreshLocal(),
-  /** 一键安装本机服务端：在终端里装（npm + launchd），装好后自动加进列表 */
+  /** 一键安装本机服务端：在终端里装（npm + launchd / systemd），装好后自动加进列表 */
   localInstall: async () => {
     await local.install();
     const status = await refreshLocal();
-    return { id: ensureLocalServer(), needsSetup: status.needsSetup };
+    return { id: ensureLocalServer(), needsSetup: canSetupHere(status) };
   },
   /** 本机已经有服务端在跑：直接加进列表 */
   localConnect: async () => {
     const status = await refreshLocal();
     if (!status.running) throw new Error("本机的服务端没有在运行");
-    return { id: ensureLocalServer(), needsSetup: status.needsSetup };
+    return { id: ensureLocalServer(), needsSetup: canSetupHere(status) };
   },
   /** 首次设置登录密码：设置码直接从 ~/.agent-loft 里读，用户不用去翻日志 */
   localSetup: async (password) => {
@@ -587,7 +660,7 @@ const calls = {
     const { response } = await dialog.showMessageBox(win, {
       type: "warning",
       message: "停止本机服务端并取消开机自启？",
-      detail: "和 agent-loft service uninstall 一样：停掉这台 Mac 上的 agent-loft。~/.agent-loft 里的配置和会话都保留，npm 装的程序也还在，以后点「启动」或执行 agent-loft service install 就能恢复。",
+      detail: `和 agent-loft service uninstall 一样：停掉${THIS_PC}上的 agent-loft。~/.agent-loft 里的配置和会话都保留，npm 装的程序也还在，以后点「启动」或执行 agent-loft service install 就能恢复。`,
       buttons: ["停止", "取消"],
       defaultId: 1,
       cancelId: 1,
@@ -653,12 +726,13 @@ app.on("before-quit", () => {
 });
 app.on("second-instance", showMain);
 app.on("activate", showMain);
-// 窗口全关了也不退出：菜单栏图标还在
+// 窗口全关了也不退出：菜单栏 / 托盘图标还在
 app.on("window-all-closed", () => {});
 
 app.whenReady().then(() => {
   app.setName("Agent Loft");
   loadStore();
+  syncOpenAtLogin(store.prefs().openAtLogin);
   void refreshLocal();
 
   createTray({
