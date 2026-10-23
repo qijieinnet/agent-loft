@@ -624,7 +624,8 @@ async function fetchQuota(id, agents) {
     const fresh = Array.isArray(result.body?.quotas) ? result.body.quotas.slice(0, 20) : [];
     const now = Date.now();
     // 老版本服务端不认 ?agent，会把全部都返回来：当成全量
-    const full = !agents || fresh.some((q) => !agents.includes(q.agent));
+    // 服务端设置里关了查额度（disabled）：也当成全量，旧的额度清掉
+    const full = !agents || !!result.body?.disabled || fresh.some((q) => !agents.includes(q.agent));
     const quotas = full ? fresh : mergeAgents(rt(id).quotas ?? [], fresh, agents);
     patchQuota(id, { quotas, quotaAt: now, quotaError: undefined, ...(full ? { quotaFullAt: now } : {}) });
     shareQuota(id, fresh, now);

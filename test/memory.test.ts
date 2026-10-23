@@ -226,7 +226,7 @@ test("聊完了的对话才算待整理；整理过的不再算", () => {
 test("整理设置：默认每天一次；不合规的值收拢；自动选 agent 时不能指定模型；老版本关掉的「自动整理」= 不整理", () => {
   assert.equal(memory.readMemory(alice.id).curate.when, "daily");
   const c = memory.setMemoryOptions(alice.id, { curate: { when: "bogus" as never, idleMinutes: 1, dailyHour: 30, agent: "auto", model: "opus" } }).curate;
-  assert.deepEqual(c, { when: "daily", idleMinutes: 5, dailyHour: 23, agent: "auto", model: "" });
+  assert.deepEqual(c, { when: "daily", scope: "all", idleMinutes: 5, dailyHour: 23, agent: "auto", model: "" });
   assert.equal(memory.setMemoryOptions(alice.id, { curate: { agent: "codex", model: "gpt-x" } }).curate.model, "gpt-x");
   memory.setMemoryOptions(alice.id, { curate: { agent: "auto" } });
   fs.writeFileSync(path.join(home, "data", "memory", "u_legacy.json"), JSON.stringify({ enabled: true, autoExtract: false, items: [] }));
@@ -407,6 +407,35 @@ test("不整理：聊过的不攒着，之后再打开也不补整理", async ()
   memory.setMemoryOptions(bob.id, { curate: { when: "idle", idleMinutes: 10 } });
   await curator.sweepOnce({ now: Date.now() + 7200_000 });
   assert.equal(completions.length, 0);
+});
+
+test("整理范围：只整理聊天模式 / 工作模式的对话，范围外的直接跳过、改回来也不补", async () => {
+  hub.ensure({ key: "web:bob3", channel: "web", channelId: "web", defaultAgent: "claude", owner: bob.id });
+  hub.conversation("web:bob3")!.mode = "chat";
+  const sayIn = (key: string, text: string) =>
+    hub.emitEvent(key, { type: "user", text, attachments: [], origin: { channel: "web", channelId: "web" } });
+  memory.setMemoryOptions(bob.id, { curate: { when: "manual", scope: "chat" } });
+  assert.equal(memory.readMemory(bob.id).curate.scope, "chat");
+  sayIn("web:bob1", "工作模式里说的一段比较长的话，关于部署脚本");
+  sayIn("web:bob3", "聊天模式里说的一段比较长的话，关于周末看电影");
+  assert.equal(curator.pendingCount(bob.id), 1, "只数聊天模式的");
+  completions.length = 0;
+  let log = await curator.curateNow(bob.id);
+  assert.equal(log.conversations, 1);
+  assert.ok(completions[0]!.includes("看电影") && !completions[0]!.includes("部署脚本"));
+  memory.setMemoryOptions(bob.id, { curate: { scope: "all" } });
+  assert.equal(curator.pendingCount(bob.id), 0, "工作模式那段已经跳过了，不补");
+
+  memory.setMemoryOptions(bob.id, { curate: { scope: "work" } });
+  sayIn("web:bob1", "工作模式里又说了一段比较长的话，关于 CI 配置");
+  sayIn("web:bob3", "聊天模式里又说了一段比较长的话，关于做饭");
+  completions.length = 0;
+  log = await curator.curateNow(bob.id);
+  assert.equal(log.conversations, 1);
+  assert.ok(completions[0]!.includes("CI 配置") && !completions[0]!.includes("做饭"));
+  memory.setMemoryOptions(bob.id, { curate: { scope: "bogus" as never } });
+  assert.equal(memory.readMemory(bob.id).curate.scope, "work", "不认识的值不改");
+  memory.setMemoryOptions(bob.id, { curate: { scope: "all" } });
 });
 
 test("记忆 MCP 服务：开了「参考以前的聊天」才有搜索工具；搜的是指定用户的、跳过当前对话", async () => {

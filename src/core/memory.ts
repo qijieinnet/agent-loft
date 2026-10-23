@@ -44,8 +44,12 @@ export type UserMemory = {
  */
 export type CurateWhen = "idle" | "daily" | "manual" | "off";
 
+/** 整理哪些对话：全部 / 只整理聊天模式的 / 只整理工作模式的（按整理那一刻对话的模式算） */
+export type CurateScope = "all" | "chat" | "work";
+
 export type CurateSettings = {
   when: CurateWhen;
+  scope: CurateScope;
   idleMinutes: number;
   dailyHour: number;
   /** auto：Claude 能用就用 Claude，否则 Codex */
@@ -54,17 +58,19 @@ export type CurateSettings = {
   model: string;
 };
 
-export const DEFAULT_CURATE: CurateSettings = { when: "daily", idleMinutes: 30, dailyHour: 4, agent: "auto", model: "" };
+export const DEFAULT_CURATE: CurateSettings = { when: "daily", scope: "all", idleMinutes: 30, dailyHour: 4, agent: "auto", model: "" };
 
 function cleanCurate(raw: Partial<CurateSettings> | undefined, base: CurateSettings): CurateSettings {
   const r = raw ?? {};
   const when = (["idle", "daily", "manual", "off"] as const).find((w) => w === r.when) ?? base.when;
+  const scope = (["all", "chat", "work"] as const).find((s) => s === r.scope) ?? base.scope;
   const idle = Math.round(Number(r.idleMinutes ?? base.idleMinutes));
   const hour = Math.round(Number(r.dailyHour ?? base.dailyHour));
   const agent = (["auto", "claude", "codex"] as const).find((a) => a === r.agent) ?? base.agent;
   const model = typeof r.model === "string" ? r.model.trim().slice(0, 100) : base.model;
   return {
     when,
+    scope,
     idleMinutes: Number.isFinite(idle) ? Math.max(5, Math.min(24 * 60, idle)) : base.idleMinutes,
     dailyHour: Number.isFinite(hour) ? Math.max(0, Math.min(23, hour)) : base.dailyHour,
     agent,

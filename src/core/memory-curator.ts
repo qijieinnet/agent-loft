@@ -8,6 +8,7 @@
 //   3. 整理：把上次整理之后新说的话交给模型（用户在记忆设置里选 agent 和模型，默认最省的），
 //      让它对照现有记忆给出新增 / 更新 / 删除。用户自己加的条目它动不了。什么时候整理也由用户定
 //      （CurateSettings.when）：每段聊完后 / 每天一次把当天的合起来 / 只在点「现在整理」时 / 不整理。
+//      整理哪些也由用户定（CurateSettings.scope）：全部 / 只整理聊天模式的 / 只整理工作模式的。
 import { hub } from "./hub.js";
 import {
   appendRecords,
@@ -27,6 +28,7 @@ import {
   readMemory,
   removeMemoryItem,
   updateMemoryItem,
+  type CurateScope,
   type CurateSettings,
   type UserMemory,
 } from "./memory.js";
@@ -361,12 +363,18 @@ export async function curateBatch(
   return log;
 }
 
-/** 某个用户等着整理的对话。删掉的对话直接记成整理过；正在回复的这次先不碰 */
+/** 这段对话在不在用户选的整理范围里（按现在的模式算，中途切过模式的整段归现在的） */
+function inScope(conv: { mode?: "chat" }, scope: CurateScope): boolean {
+  return scope === "all" || (scope === "chat") === (conv.mode === "chat");
+}
+
+/** 某个用户等着整理的对话。删掉的、不在整理范围里的直接记成整理过（之后改范围也不补整理）；正在回复的这次先不碰 */
 function collect(userId: string, settleMs: number, now?: number): Pending[] {
+  const scope = readMemory(userId).curate.scope;
   const out: Pending[] = [];
   for (const p of pendingConversations(userId, settleMs, now)) {
     const conv = hub.conversation(p.key);
-    if (!conv || conv.hidden) {
+    if (!conv || conv.hidden || !inScope(conv, scope)) {
       markExtracted(userId, p.key, p.last);
       continue;
     }
@@ -426,7 +434,11 @@ export function curateNow(userId: string, opts: { now?: number } = {}): Promise<
 
 /** 还没整理的对话有几段（设置页显示「有 N 段对话等着整理」） */
 export function pendingCount(userId: string): number {
-  return pendingConversations(userId, 0).filter((p) => !hub.conversation(p.key)?.hidden).length;
+  const scope = readMemory(userId).curate.scope;
+  return pendingConversations(userId, 0).filter((p) => {
+    const conv = hub.conversation(p.key);
+    return conv && !conv.hidden && inScope(conv, scope);
+  }).length;
 }
 
 export function startMemoryCurator(): void {

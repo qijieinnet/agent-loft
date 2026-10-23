@@ -212,7 +212,7 @@ export class CodexDriver implements AgentDriver {
   }
 
   async statusLines(): Promise<string[]> {
-    const quota = describeRateLimits(await readRateLimits());
+    const quota = config().web.quotaEnabled ? describeRateLimits(await readRateLimits()) : [];
     return [`沙箱：${config().agents.codex.sandbox}`, ...(quota.length > 0 ? ["", ...quota] : [])];
   }
 

@@ -218,6 +218,7 @@ function applyConfig(input: Partial<AppConfig>): void {
     if (Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535) next.web.port = Number(port);
     const q = Number(next.web.quotaRefreshMin);
     next.web.quotaRefreshMin = Number.isFinite(q) ? Math.max(0, Math.min(1440, Math.round(q))) : 10;
+    next.web.quotaEnabled = next.web.quotaEnabled !== false;
   }
   if (input.commands) {
     // 只收字符串数组，别的一律当没传
@@ -484,6 +485,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       bots: admin ? config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })) : [],
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
+      quotaEnabled: config().web.quotaEnabled,
       conversations: hub.list(visible),
       pending: interactions.listPending().filter((i) => visible(getConversation(i.convKey))),
       user: publicMe(user),
@@ -783,6 +785,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/quota" && method === "GET") {
     // ?agent=claude,codex：只问这几个。桌面端连着多台同账号的服务器时，同一个账号只在一台上问
+    // 设置里关了查额度：不去问任何 agent
+    if (!config().web.quotaEnabled) {
+      sendJson(res, 200, { quotas: [], at: Date.now(), disabled: true });
+      return;
+    }
     const only = url.searchParams.get("agent")?.split(",").filter(Boolean);
     const results = await Promise.all(
       hub.enabledAgents().filter((d) => !only || only.includes(d.id)).map(async (d) => {

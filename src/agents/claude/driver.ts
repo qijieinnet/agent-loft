@@ -224,7 +224,7 @@ export class ClaudeDriver implements AgentDriver {
   }
 
   async statusLines(): Promise<string[]> {
-    return describeUsage(await readUsage());
+    return config().web.quotaEnabled ? describeUsage(await readUsage()) : [];
   }
 
   async quota(): Promise<QuotaInfo | null> {

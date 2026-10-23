@@ -1682,6 +1682,35 @@ a.att-file:hover {
   }
 }
 
+/* 用户消息下面的复制：hover 时才出来，和回复的操作栏一样用 opacity 占着位置 */
+.user-actions {
+  display: flex;
+  margin-top: -4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.msg-user-group:hover .user-actions,
+.user-actions:focus-within {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .user-actions {
+    opacity: 1;
+  }
+}
+
+.user-actions .icon-btn {
+  width: 26px;
+  height: 26px;
+}
+
+.user-actions .icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
 .ai-actions .footer-note {
   margin-left: 4px;
 }

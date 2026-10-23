@@ -575,6 +575,7 @@ async function boot() {
   S.bots = data.bots;
   S.workspaceRoot = data.workspaceRoot;
   S.quotaRefreshMin = data.quotaRefreshMin ?? 10;
+  S.quotaEnabled = data.quotaEnabled !== false;
   S.convs = new Map(data.conversations.map((c) => [c.key, c]));
   S.pending = new Map(data.pending.map((i) => [i.id, i]));
   const enabled = usableAgents().map((a) => a.id);
@@ -749,14 +750,20 @@ function stopMarquee() {
 //   - 有会话跑完一轮：10 秒后拉；若那时服务端缓存还没过期，就推迟到过期之后，保证拿到新数据；
 //   - 切回前台：距上次超过一个刷新间隔就拉；
 //   - 点一下额度区域：立刻拉（可能拿到 60 秒内的缓存）。
+// 设置 → 通用里关了「查询额度」（S.quotaEnabled）：以上全都不做，侧栏也不显示额度。
 // 在桌面端里（desktopQuota）以上全都不做：桌面端统一去查（同一个账号的多台服务器只问一台），
 // 查好推过来；点一下额度区域是请桌面端去刷新。
 
 const quotaState = { data: null, at: 0, loading: false, timer: 0, idle: 0 };
 const QUOTA_SERVER_CACHE = 60_000;
-const quotaInterval = () => (S.quotaRefreshMin ?? 10) * 60_000;
+const quotaInterval = () => (S.quotaEnabled ? (S.quotaRefreshMin ?? 10) * 60_000 : 0);
 
 async function loadQuota() {
+  if (!S.quotaEnabled) {
+    quotaState.data = null;
+    renderQuota();
+    return;
+  }
   if (desktopQuota) {
     ui.quota?.classList.add("loading");
     desktop.refreshQuota();
@@ -803,7 +810,7 @@ function scheduleIdleQuota() {
 /** 一轮跑完：10 秒后拉；服务端缓存那时还没过期就推迟到过期之后 */
 function scheduleQuota() {
   // 桌面端里：它从页面报的运行数看出跑完了一轮，自己会去查
-  if (desktopQuota) return;
+  if (desktopQuota || !S.quotaEnabled) return;
   const wait = Math.max(10_000, quotaState.at + QUOTA_SERVER_CACHE + 1000 - Date.now());
   clearTimeout(quotaState.timer);
   quotaState.timer = setTimeout(() => void loadQuota(), wait);
@@ -831,7 +838,7 @@ function quotaLevel(p) {
 
 function renderQuota() {
   if (!ui.quota) return;
-  const list = quotaState.data ?? [];
+  const list = S.quotaEnabled ? (quotaState.data ?? []) : [];
   if (list.length === 0) return fill(ui.quota);
   const rows = list.map((q) =>
     h(
@@ -2039,6 +2046,9 @@ function renderItem(item) {
         !item.text && origin ? h("span", { class: "origin" }, origin) : null,
         renderUserFiles(item.files),
         item.text ? h("div", { class: "msg-user" }, origin ? h("span", { class: "origin" }, origin) : null, item.text) : null,
+        item.text
+          ? h("div", { class: "user-actions" }, h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(item.text) }, icon("copy")))
+          : null,
       );
     }
     case "ai":
@@ -2294,10 +2304,10 @@ function renderInteraction(item) {
         : h(
             "div",
             { class: "ix-buttons" },
-            h("button", { class: "btn accent", onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, "允许一次"),
             spec.allowSession
-              ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
+              ? h("button", { class: "btn accent", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
               : null,
+            h("button", { class: `btn${spec.allowSession ? "" : " accent"}`, onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, "允许一次"),
             // 会落盘、对所有人生效的「总是允许」只给管理员
             spec.alwaysLabel && (!spec.alwaysGlobal || isAdmin())
               ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-always" }) }, spec.alwaysLabel)
@@ -3832,9 +3842,14 @@ async function saveConfig(cfg, patch) {
     S.agents = boot2.agents;
     S.bots = boot2.bots;
     S.workspaceRoot = boot2.workspaceRoot;
-    if (boot2.quotaRefreshMin !== S.quotaRefreshMin) {
+    const quotaOn = boot2.quotaEnabled !== false;
+    if (boot2.quotaRefreshMin !== S.quotaRefreshMin || quotaOn !== S.quotaEnabled) {
+      const turnedOn = quotaOn && !S.quotaEnabled;
       S.quotaRefreshMin = boot2.quotaRefreshMin ?? 10;
-      scheduleIdleQuota();
+      S.quotaEnabled = quotaOn;
+      // 刚打开就马上查一次；关掉就清掉侧栏的额度
+      if (turnedOn || !quotaOn) void loadQuota();
+      else scheduleIdleQuota();
     }
     renderTopbar();
     renderSidebar();
@@ -3908,6 +3923,7 @@ function generalTab(cfg, panel) {
   const approval = h("input", { type: "number", min: 1, value: Math.round(cfg.approvalTimeoutMs / 60000) });
   const ttl = h("input", { type: "number", min: 0, value: Math.round(cfg.sessionTtlMs / 3600000) });
   const quotaMin = h("input", { type: "number", min: 0, max: 1440, value: cfg.web?.quotaRefreshMin ?? 10 });
+  const quotaOn = h("input", { type: "checkbox", checked: cfg.web?.quotaEnabled !== false });
   panel.append(
     h(
       "div",
@@ -3916,6 +3932,8 @@ function generalTab(cfg, panel) {
       field("工作目录（workspace）", root, "所有会话的默认目录，/cd 只能在它之内"),
       field("授权等待超时（分钟）", approval, "超时按拒绝处理"),
       field("会话闲置多久自动开新会话（小时）", ttl, "0 表示永不过期"),
+      h("label", { class: "check" }, quotaOn, "查询账号额度"),
+      h("div", { class: "muted" }, "关掉后侧栏、/status、桌面端都不再去问 agent 的额度（Claude 每次要临时起一个 CLI 进程才查得到）"),
       field(
         "额度自动刷新间隔（分钟）",
         quotaMin,
@@ -3935,7 +3953,7 @@ function generalTab(cfg, panel) {
                 workspaceRoot: root.value,
                 approvalTimeoutMs: Number(approval.value) * 60000,
                 sessionTtlMs: Number(ttl.value) * 3600000,
-                web: { quotaRefreshMin: Number(quotaMin.value) },
+                web: { quotaRefreshMin: Number(quotaMin.value), quotaEnabled: quotaOn.checked },
               }),
           },
           "保存",
@@ -5179,6 +5197,16 @@ function curateSection(mem, reload) {
       ],
       (v) => save({ when: v }),
     );
+    // 换了范围，等着整理的段数也跟着变：重新读一遍
+    const scope = select(
+      c.scope,
+      [
+        ["all", "全部对话"],
+        ["chat", "只整理聊天模式的对话"],
+        ["work", "只整理工作模式的对话"],
+      ],
+      (v) => save({ scope: v }).then(reload),
+    );
     const timing =
       c.when === "idle"
         ? field("停下来多久算聊完", select(c.idleMinutes, [10, 30, 60, 120, 240].map((m) => [m, m < 60 ? `${m} 分钟` : `${m / 60} 小时`]), (v) => save({ idleMinutes: Number(v) })))
@@ -5256,6 +5284,7 @@ function curateSection(mem, reload) {
         }[c.when],
       ),
       timing,
+      c.when === "off" ? null : field("整理哪些对话", scope, "按整理时对话所在的模式算；不在范围里的对话直接跳过，之后改回来也不会补整理"),
       c.when === "off" ? null : field("用哪个 agent", agent),
       c.when === "off" ? null : model,
       h("div", { class: "row", style: { alignItems: "center", gap: "10px" } }, nowBtn, h("span", { class: "muted" }, `${mem.pending ? `有 ${mem.pending} 段对话等着整理。` : ""}${lastText}`)),

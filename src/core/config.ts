@@ -67,6 +67,8 @@ export type AppConfig = {
     trustedProxies: string[];
     /** 侧栏额度空闲时多久自动刷新一次（分钟），0 = 不自动刷新 */
     quotaRefreshMin: number;
+    /** 查不查 agent 的账号额度。关了侧栏、/status、桌面端都不再去问 agent */
+    quotaEnabled: boolean;
   };
   /** 输入「/」时命令列表的顺序和隐藏项，按 agent 分开（设置 → 命令） */
   commands: { claude: CommandPrefs; codex: CommandPrefs };
@@ -96,7 +98,7 @@ export function defaultConfig(): AppConfig {
         models: [],
       },
     },
-    web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10 },
+    web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10, quotaEnabled: true },
     commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] } },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },
   };
