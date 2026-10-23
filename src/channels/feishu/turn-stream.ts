@@ -69,8 +69,9 @@ export class TurnStream {
   /**
    * 收尾：过程卡定格为完成态，然后把最终回复作为普通消息发出去。
    * 整轮没有过程时不会留下任何卡片 —— 简单问答就该只有一条回复。
+   * quiet：不发回复（定时任务判断这次不用提醒），只把过程卡定格。
    */
-  finish(finalText: string, footer?: string): void {
+  finish(finalText: string, footer?: string, quiet = false): void {
     this.enqueue(async () => {
       if (this.messageId) {
         await this.deps.updateCard(
@@ -79,7 +80,7 @@ export class TurnStream {
         );
       }
       const reply = finalText.trim() || this.text.trim();
-      if (reply) await this.deps.sendReply(reply);
+      if (reply && !quiet) await this.deps.sendReply(reply);
       this.reset();
     });
   }

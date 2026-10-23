@@ -188,6 +188,8 @@ export type SessionOptions = {
   };
   /** 模式换过、这个 agent 会话还不知道：换不了系统提示的 agent（Codex）要在第一条消息里说一声 */
   announceMode?: boolean;
+  /** 给 agent 定时任务工具（core/tasks-mcp.ts）：替谁、在哪条对话里管理。只有有主人的对话才给 */
+  tasks?: { userId: string; convKey: string };
 };
 
 export type ConversationMode = "chat" | "work";

@@ -1,0 +1,455 @@
+/* ---------- 定时任务 ---------- */
+
+/* 侧栏「最近」上面的入口：和「新聊天」同一个样子 */
+.side-nav {
+  display: flex;
+  justify-content: flex-start;
+  width: calc(100% - 20px);
+  margin: 2px 10px 6px;
+  padding: 7px 10px;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.side-nav svg {
+  width: 16px;
+  height: 16px;
+}
+
+.side-nav:hover,
+.side-nav.active {
+  background: var(--bg-hover);
+}
+
+.conv-item .task-mark {
+  color: var(--fg-soft);
+}
+
+/* 任务页不要输入框，也不要「回到底部」 */
+.main.tasks-view .composer-wrap,
+.main.tasks-view .to-bottom {
+  display: none;
+}
+
+.tasks-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 8px;
+}
+
+.tasks-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.tasks-head .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.tasks-head h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.tasks-head p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg-soft);
+}
+
+.tasks-head .btn {
+  flex-shrink: 0;
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.task-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px 12px 16px;
+  background: var(--bg);
+}
+
+.task-card.off .task-title,
+.task-card.off .task-meta,
+.task-card.off .task-prompt {
+  opacity: 0.6;
+}
+
+.task-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  font-size: 16px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+
+/* 分隔点挂在前一项的末尾：换行时点留在行尾，不会出现在下一行开头 */
+.task-meta span:not(:last-child)::after {
+  content: "·";
+  margin: 0 8px;
+  color: var(--fg-faint);
+}
+
+.task-prompt {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg-soft);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.task-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg-soft);
+  font-size: 13px;
+  text-align: left;
+}
+
+button.task-run:hover {
+  background: var(--bg-hover);
+}
+
+.task-run.compact {
+  margin-top: 2px;
+  padding: 6px 10px;
+  background: transparent;
+}
+
+.task-run.muted {
+  color: var(--fg-faint);
+}
+
+.task-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid currentColor;
+}
+
+.task-status .conv-spin {
+  width: 10px;
+  height: 10px;
+}
+
+.task-status.ok {
+  color: var(--ok);
+}
+
+.task-status.quiet {
+  color: var(--fg-faint);
+}
+
+.task-status.bad {
+  color: var(--danger);
+}
+
+.task-status.run {
+  color: var(--accent);
+}
+
+.task-run-at {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+}
+
+.task-run-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-soft);
+}
+
+.task-history summary {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+
+.task-history summary:hover {
+  color: var(--fg-soft);
+}
+
+/* 开关 */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch .slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background 0.15s;
+}
+
+.switch .slider::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s;
+}
+
+.switch input:checked + .slider {
+  background: var(--accent);
+}
+
+.switch input:checked + .slider::before {
+  transform: translateX(16px);
+}
+
+.switch input:focus-visible + .slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 空状态 + 例子 */
+.tasks-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 32px 0 8px;
+  text-align: center;
+}
+
+.tasks-empty-icon svg {
+  width: 40px;
+  height: 40px;
+  color: var(--fg-faint);
+}
+
+.tasks-empty .t {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.tasks-empty > .s {
+  font-size: 13px;
+  color: var(--fg-soft);
+  margin-bottom: 10px;
+}
+
+.task-examples {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.task-example {
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.task-example:hover {
+  background: var(--bg-hover);
+}
+
+.task-example .t {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.task-example .s {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tasks-tip {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--fg-faint);
+  text-align: center;
+}
+
+/* 表单 */
+.task-form [hidden] {
+  display: none !important;
+}
+
+.task-form textarea {
+  resize: vertical;
+  font: inherit;
+  line-height: 1.6;
+}
+
+.task-dedicated {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 频率：上面选种类，下面填具体时间 */
+.task-freq-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-freq {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-freq:empty {
+  display: none;
+}
+
+.field .task-freq input,
+.field .task-freq select {
+  width: auto;
+  color-scheme: light dark;
+}
+
+.field .task-freq input:not(.narrow):not([type="time"]) {
+  flex: 1;
+  min-width: 180px;
+}
+
+.field .task-freq .narrow {
+  width: 84px;
+}
+
+.freq-word {
+  font-size: 14px;
+  color: var(--fg-soft);
+}
+
+.day-chips {
+  display: flex;
+  gap: 4px;
+}
+
+.day-chip {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.day-chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.task-static {
+  font-size: 14px;
+  color: var(--fg-soft);
+  padding: 2px 0;
+}
+
+.task-cwd {
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 对话里：定时任务这次判断不用提醒，折叠成一行 */
+.silent-run {
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+.silent-run summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.silent-run summary::-webkit-details-marker {
+  display: none;
+}
+
+.silent-run summary:hover {
+  color: var(--fg-soft);
+}
+
+.silent-run[open] summary {
+  margin-bottom: 8px;
+}
+
+@media (max-width: 640px) {
+  .tasks-head h2 {
+    font-size: 21px;
+  }
+}

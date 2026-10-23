@@ -13,6 +13,7 @@ import { parseCommand } from "../../core/commands.js";
 import { GLOBAL_ALWAYS_DENIED, hub, type EventEnvelope } from "../../core/hub.js";
 import { interactions, type Interaction } from "../../core/interactions.js";
 import { getConversation } from "../../core/store.js";
+import { taskEvents } from "../../core/tasks.js";
 import { RUNNING_VERSION } from "../../core/upgrade.js";
 import type { Settlement } from "../../core/types.js";
 import { getUser, isAdmin, legacyOwnerId, type User } from "../../core/users.js";
@@ -180,6 +181,11 @@ function broadcastInteraction(i: Interaction): void {
   for (const client of clients) if (canSeeKey(client.user, i.convKey)) send(client, { t: "ix", interaction: i });
 }
 
+/** 某人的定时任务变了（增删改、跑完一次）：只告诉他自己开着的页面，页面自己去重新拉 */
+function broadcastTasks(owner: string): void {
+  for (const client of clients) if (client.user.id === owner) send(client, { t: "tasks" });
+}
+
 // ---------- 系统通知（Web Push） ----------
 
 /** 有页面正在前台看着这条会话：人就在眼前，不用推 */
@@ -235,10 +241,14 @@ function pushEvent(env: EventEnvelope): void {
   const ev = env.ev;
   if (ev.type !== "result" && ev.type !== "error") return;
   if (!isWebConv(env.key)) return;
+  // 定时任务这次判断不用提醒
+  if (ev.type === "result" && ev.silent) return;
   const name = convName(env.key);
   const payload =
     ev.type === "result"
-      ? { title: `${name} · 回复完成`, body: plainPreview(ev.text) || "（没有文字回复）" }
+      ? ev.task
+        ? { title: `⏰ ${ev.task.title}`, body: plainPreview(ev.text) || "（没有文字回复）" }
+        : { title: `${name} · 回复完成`, body: plainPreview(ev.text) || "（没有文字回复）" }
       : { title: `${name} · 出错了`, body: plainPreview(ev.message) };
   notify(env.key, { ...payload, tag: `reply:${env.key}` });
 }
@@ -474,6 +484,7 @@ export async function startWeb(): Promise<void> {
   interactions.on("created", pushInteraction);
   interactions.on("updated", broadcastInteraction);
   interactions.on("settled", broadcastInteraction);
+  taskEvents.on("changed", broadcastTasks);
 
   await listen(server, host, port);
   console.log(`[web] 已监听 http://${host}:${port}`);
@@ -503,6 +514,7 @@ export async function stopWeb(): Promise<void> {
   interactions.off("created", pushInteraction);
   interactions.off("updated", broadcastInteraction);
   interactions.off("settled", broadcastInteraction);
+  taskEvents.off("changed", broadcastTasks);
   if (heartbeat) clearInterval(heartbeat);
   for (const client of clients) client.ws.close(1001, "服务重启");
   clients.clear();

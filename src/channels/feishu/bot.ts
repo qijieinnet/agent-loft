@@ -492,22 +492,26 @@ export class FeishuBot {
         // 别处（Web、别的飞书聊天）说的话，同步一句过来，不然这边看着没头没尾
         const o = ev.origin;
         const here = o.channel === "feishu" && o.channelId === this.cfg.id && (!o.chatId || o.chatId === chatId);
-        if (!here) {
+        // 定时任务的提示词不同步过来：每次运行都发一条，飞书里就全是它了。结果出来时再带上任务名
+        if (!here && o.channel !== "task") {
           const files = ev.attachments.length ? `\n\n📎 ${ev.attachments.join("、")}` : "";
           const icon = o.channel === "web" ? "💻" : "💬";
           void this.client.sendCard(chatId, replyCard(`${icon} **${o.name ?? "Web"}**：${ev.text}${files}`));
         }
         return;
       }
+      // 定时任务这一轮不画过程卡：跑完之前不知道要不要提醒，卡片一发出去飞书就响了
       case "step":
-        this.stream(key, chatId).addStep(ev.text);
+        if (!hub.currentTaskTurn(key)) this.stream(key, chatId).addStep(ev.text);
         return;
       case "text":
-        this.stream(key, chatId).addText(ev.text);
+        if (!hub.currentTaskTurn(key)) this.stream(key, chatId).addText(ev.text);
         return;
       case "result": {
         const stream = this.stream(key, chatId);
-        stream.finish(ev.text, ev.footer);
+        if (ev.silent) stream.finish("", ev.footer, true);
+        else if (ev.task) stream.finish(`⏰ **${ev.task.title}**\n\n${ev.text}`, ev.footer);
+        else stream.finish(ev.text, ev.footer);
         void stream.drain().then(() => this.clearTyping(key));
         return;
       }

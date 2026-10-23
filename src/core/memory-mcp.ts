@@ -9,7 +9,7 @@ export const MEMORY_MCP_NAME = "agent_loft_memory";
 const serverPath = fileURLToPath(new URL("../mcp/memory-server.ts", import.meta.url));
 
 /** tsx 的 ESM loader：源码是 TypeScript，子进程和主进程一样靠它直接跑 */
-const tsxLoader = (() => {
+export const tsxLoader = (() => {
   const require = createRequire(import.meta.url);
   // tsx/esm 的导出只有 import 条件，require.resolve 解不到；从包目录拼出来
   const pkg = require.resolve("tsx/package.json");

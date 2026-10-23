@@ -42,21 +42,21 @@ export function contextBlock(mode: "chat" | "work", memory: string | undefined, 
     mode === "chat"
       ? ["当前是「聊天模式」，你作为用户的私人 AI 助手和他聊天：", ...chatRules(search)]
       : ["当前是「工作模式」：可以执行命令、读写文件，按平常的方式干活。之前如果说过「聊天模式下不能做」，那个限制已经解除。"];
-  return [
-    OPEN,
-    "（这段是 agent-loft 自动附上的背景，不是用户写的。照着做，但不要在回复里提到它。）",
-    "",
-    ...head,
-    ...(memory ? ["", memory] : []),
-    CLOSE,
-  ].join("\n");
+  return wrapContext([...head, ...(memory ? ["", memory] : [])]);
 }
 
-/** 剥掉 contextBlock（读历史、列会话标题时用） */
+/** 包成 agent-loft 附上的背景：用户看不到（读历史、实时显示时都剥掉），agent 照着做 */
+export function wrapContext(lines: string[]): string {
+  return [OPEN, "（这段是 agent-loft 自动附上的背景，不是用户写的。照着做，但不要在回复里提到它。）", "", ...lines, CLOSE].join("\n");
+}
+
+/** 剥掉 contextBlock（读历史、列会话标题时用）。一条消息里可能有好几段（定时任务的说明 + Codex 的模式说明） */
 export function stripContext(text: string): string {
-  const start = text.indexOf(OPEN);
-  if (start < 0) return text;
-  const end = text.indexOf(CLOSE, start);
-  const rest = end < 0 ? "" : text.slice(end + CLOSE.length);
-  return `${text.slice(0, start)}${rest}`.trim();
+  let out = text;
+  for (let start = out.indexOf(OPEN); start >= 0; start = out.indexOf(OPEN)) {
+    const end = out.indexOf(CLOSE, start);
+    const rest = end < 0 ? "" : out.slice(end + CLOSE.length);
+    out = `${out.slice(0, start)}${rest}`;
+  }
+  return out === text ? text : out.trim();
 }

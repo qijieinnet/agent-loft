@@ -11,6 +11,8 @@ import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
 import { startMemoryCurator } from "./core/memory-curator.js";
 import { startScheduler, stopScheduler } from "./core/scheduled.js";
+import { startTaskRunner, stopTaskRunner } from "./core/task-runner.js";
+import { startTasksBridge, stopTasksBridge } from "./core/tasks-bridge.js";
 
 async function startDriver(id: "claude" | "codex"): Promise<void> {
   const driver = hub.driver(id);
@@ -52,6 +54,9 @@ async function main(): Promise<void> {
     hub.send(m.key, { text: m.text, attachments: [] }, { channel: "schedule", channelId: "schedule", name: "定时发送" });
     hub.emitEvent(m.key, { type: "meta" });
   });
+  // 定时任务：agent 用的工具通道先开，再开始按点运行（停机期间错过的补跑）
+  startTasksBridge();
+  startTaskRunner();
   // 先查一遍 agent 装没装、登没登录，网页打开时新对话里就只列出能用的
   void agentHealth().catch(() => {});
 
@@ -71,6 +76,9 @@ async function main(): Promise<void> {
     stopFeishu();
     await stopWeb();
     await hub.shutdown().catch(() => {});
+    // hub 收尾时会把正在跑的定时任务记成中断，所以放在它后面
+    stopTaskRunner();
+    stopTasksBridge();
     flushStore();
     process.exit(0);
   };

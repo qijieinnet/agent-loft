@@ -267,6 +267,7 @@ export function renderSidebar() {
     return;
   }
   sidebarStale = false;
+  ui.tasksNav?.classList.toggle("active", S.view === "tasks");
   const askKeys = new Set([...S.pending.values()].filter((i) => !i.settled).map((i) => i.convKey));
   const visible = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt);
   const cur = S.current ? S.convs.get(S.current) : null;
@@ -294,6 +295,8 @@ export function renderSidebar() {
         onclick: () => open(c.key),
       },
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
+      // 定时任务的专用对话
+      c.taskId ? h("span", { class: "brand-icon lead task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
       h("span", { class: "title" }, convTitle(c)),
       status([c.key]),
     );

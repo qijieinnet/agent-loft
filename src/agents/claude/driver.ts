@@ -13,6 +13,7 @@ import { agentEnvironment } from "../../core/agent-env.js";
 import os from "node:os";
 import type { AgentCommand } from "../../core/command-catalog.js";
 import { splitAttachmentNote } from "../../core/uploads.js";
+import { stripContext } from "../../core/chat-mode.js";
 import { config } from "../../core/config.js";
 import type {
   AgentDriver,
@@ -69,7 +70,7 @@ function readCommands(cwd: string): Promise<AgentCommand[]> {
 const SESSION_ID = /^[A-Za-z0-9_-]{8,64}$/;
 
 function titleOf(info: { customTitle?: string; summary?: string; firstPrompt?: string }): string {
-  const raw = (info.customTitle || info.summary || info.firstPrompt || "").replace(/\s+/g, " ").trim();
+  const raw = stripContext(info.customTitle || info.summary || info.firstPrompt || "").replace(/\s+/g, " ").trim();
   if (!raw) return "(无标题)";
   return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
 }
@@ -157,7 +158,7 @@ export class ClaudeDriver implements AgentDriver {
         const texts = blocks.filter((b) => b.type === "text" && b.text).map((b) => b.text!);
         if (texts.length === 0) continue; // 纯 tool_result
         // 我们自己拼进去的附件清单：从正文里拆出来，单独作为附件给前端展示
-        const { text, attachments } = splitAttachmentNote(texts.join("\n"));
+        const { text, attachments } = splitAttachmentNote(stripContext(texts.join("\n")));
         if (!text && attachments.length === 0) continue;
         if (text.startsWith("<command-") || text.startsWith("<local-command")) continue;
         if (text.startsWith("<task-notification>")) {

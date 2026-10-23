@@ -16,6 +16,7 @@ import {
 import { agentEnvironment } from "../../core/agent-env.js";
 import { chatSystemPrompt } from "../../core/chat-mode.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
+import { TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
   AgentEvents,
@@ -127,6 +128,8 @@ function buildContent(input: UserInput, chat: boolean): string | ContentBlock[] 
 
 /** 记忆工具在 Claude 里的全名 */
 const MEMORY_TOOLS = new Set(["remember", "forget", "search_past_chats"].map((t) => `mcp__${MEMORY_MCP_NAME}__${t}`));
+/** 定时任务工具：要用户确认的那几个由 agent-loft 自己弹卡（tasks-bridge.ts），这里不再问一遍 */
+const TASK_TOOLS = new Set(["list_tasks", "create_task", "update_task", "delete_task"].map((t) => `mcp__${TASKS_MCP_NAME}__${t}`));
 /** 聊天模式的全部工具：只能联网，碰不到本机 */
 const CHAT_TOOLS = ["WebSearch", "WebFetch"];
 
@@ -145,9 +148,12 @@ const CHAT_TOOLS = ["WebSearch", "WebFetch"];
  */
 export function modeOptions(opts: SessionOptions): Partial<Options> {
   const memory = opts.memory;
-  const mcpServers: Record<string, McpServerConfig> = memory
-    ? { [MEMORY_MCP_NAME]: { type: "stdio", ...memoryMcpSpawn(memory.userId, "claude", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } }
-    : {};
+  const mcpServers: Record<string, McpServerConfig> = {
+    ...(memory
+      ? { [MEMORY_MCP_NAME]: { type: "stdio", ...memoryMcpSpawn(memory.userId, "claude", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } }
+      : {}),
+    ...(opts.tasks ? { [TASKS_MCP_NAME]: { type: "stdio", ...tasksMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "claude") } } : {}),
+  };
   if (opts.mode === "chat") {
     return {
       systemPrompt: { type: "custom", prompt: chatSystemPrompt("WebSearch（搜索）和 WebFetch（读网页）", memory?.prompt), snapshot: false },
@@ -165,7 +171,7 @@ export function modeOptions(opts: SessionOptions): Partial<Options> {
   const append = [memory?.prompt, switched].filter(Boolean).join("\n\n");
   return {
     systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false },
-    ...(memory ? { mcpServers } : {}),
+    ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
   };
 }
 
@@ -351,6 +357,7 @@ export class ClaudeSession implements AgentSession {
     // 自家的记忆工具，以及聊天模式下的联网工具：不问。
     // 不用 allowedTools 放行 —— SDK 会对每个会话打一条「canUseTool 被绕过」的警告
     if (MEMORY_TOOLS.has(toolName) && this.opts.memory) return { behavior: "allow", updatedInput: input };
+    if (TASK_TOOLS.has(toolName) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
     if (this.opts.mode === "chat" && CHAT_TOOLS.includes(toolName)) return { behavior: "allow", updatedInput: input };
 
     // 提问不是授权：它问的是「你选哪个」

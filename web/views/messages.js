@@ -13,7 +13,15 @@ import { changeCwd, forkConversation } from "./conv-actions.js";
 
 // ---------- 打开会话 ----------
 
+/** 从定时任务页回到对话：把输入框放回来 */
+function leaveTasksView() {
+  if (S.view !== "tasks") return;
+  S.view = null;
+  ui.main.classList.remove("tasks-view");
+}
+
 export function newDraft() {
+  leaveTasksView();
   if (S.current) WS.raw({ t: "unsub", key: S.current });
   S.current = null;
   S.items = [];
@@ -57,6 +65,7 @@ export function renderEmpty() {
 }
 
 export async function openConversation(key) {
+  leaveTasksView();
   const token = ++S.loadToken;
   if (S.current && S.current !== key) WS.raw({ t: "unsub", key: S.current });
   S.current = key;
@@ -349,8 +358,13 @@ function renderItem(item) {
   return h("div");
 }
 
+/** 定时任务的 agent 判断这次不用提醒时，回复第一行写的暗号（见 core/task-prompt.ts） */
+const SILENT_MARK = "[[静默]]";
+
 function renderAi(item) {
-  const body = item.committed + (item.partial ? (item.committed ? "\n\n" : "") + item.partial : "");
+  const raw = item.committed + (item.partial ? (item.committed ? "\n\n" : "") + item.partial : "");
+  const silent = raw.trimStart().startsWith(SILENT_MARK);
+  const body = silent ? raw.trimStart().slice(SILENT_MARK.length).trim() : raw;
   const working = !item.done;
   const steps =
     item.steps.length > 0
@@ -380,7 +394,14 @@ function renderAi(item) {
     "div",
     { class: "msg-ai" },
     steps,
-    body ? renderMarkdown(body) : null,
+    // 定时任务这次没什么要说的：折叠成一行，展开能看到它顺手记的检查结果
+    silent && body
+      ? h("details", { class: "silent-run" }, h("summary", {}, "🔕 定时任务：这次无需提醒"), renderMarkdown(body))
+      : silent
+        ? h("div", { class: "silent-run" }, "🔕 定时任务：这次无需提醒")
+        : body
+          ? renderMarkdown(body)
+          : null,
     // 还在回复：末尾挂上星星动画和实时用时；什么都还没出来时旁边带一句「思考中…」
     working
       ? h(

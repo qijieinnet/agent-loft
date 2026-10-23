@@ -2,6 +2,7 @@
 import { deleteMemory, memoryPrompt, readMemory } from "./memory.js";
 import { purgeHistory } from "./chat-history.js";
 import { unlinkUser } from "./feishu-links.js";
+import { deleteUserTasks } from "./tasks.js";
 import type { Conversation } from "./store.js";
 import { getUser, legacyOwnerId } from "./users.js";
 
@@ -36,9 +37,10 @@ export function sessionMemory(
   };
 }
 
-/** 删用户时一起删掉的个人数据：记忆、聊天记录索引和飞书绑定 */
+/** 删用户时一起删掉的个人数据：记忆、聊天记录索引、飞书绑定和定时任务 */
 export function purgeUserData(userId: string): void {
   deleteMemory(userId);
   purgeHistory(userId);
   unlinkUser(userId);
+  deleteUserTasks(userId);
 }

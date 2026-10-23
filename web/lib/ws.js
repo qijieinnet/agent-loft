@@ -197,6 +197,10 @@ function onWsMessage(msg) {
     case "ix":
       upsertInteraction(msg.interaction);
       return;
+    case "tasks":
+      // 自己的定时任务变了：定时任务页开着的话会去重新拉（views/tasks.js）
+      document.dispatchEvent(new Event("aim:tasks"));
+      return;
     case "notice":
       // 正看着这条会话就不打扰；普通网页靠 Web Push，这里只给桌面端
       if (!desktop) return;

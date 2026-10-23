@@ -47,6 +47,14 @@ function openSettings() {
   );
 }
 
+/** 定时任务页：第一次打开时才加载 */
+export function openTasksView() {
+  import("./tasks.js").then(
+    (m) => m.openTasks(),
+    (err) => toast(`定时任务页加载失败，刷新页面再试：${err.message}`),
+  );
+}
+
 export async function boot() {
   const me = await api("/api/me");
   if (!me.authed) return showAuth();
@@ -72,7 +80,8 @@ export async function boot() {
   const fromHash = decodeURIComponent(location.hash.slice(1));
   // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
   const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
-  if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
+  if (fromHash === "tasks") openTasksView();
+  else if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
   else if (latest) await openConversation(latest.key);
   else newDraft();
   // 点了桌面端的系统通知 / 菜单栏里的待处理项：跳到对应会话
@@ -159,6 +168,8 @@ function renderLayout() {
       { class: "side-top" },
       h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("compose"), "新聊天"),
     ),
+    // 「最近」上面的入口，像 ChatGPT 的 Tasks。当前在任务页时高亮（renderSidebar 里切换）
+    (ui.tasksNav = h("button", { class: "btn new-chat side-nav", onclick: () => openTasksView() }, icon("clock"), "定时任务")),
     ui.convList,
     h(
       "div",

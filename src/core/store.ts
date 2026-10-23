@@ -59,6 +59,8 @@ export type Conversation = {
   owner?: string;
   /** chat：聊天模式（/chat）。没有就是工作模式。属于对话，跨 /new 和切 agent 保留 */
   mode?: "chat";
+  /** 定时任务的专用对话：是哪个任务的（见 core/tasks.ts）。任务删了就清掉 */
+  taskId?: string;
 };
 
 type StoreShape = Record<string, Conversation>;

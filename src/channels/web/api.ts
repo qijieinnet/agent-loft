@@ -62,6 +62,7 @@ import {
 } from "./auth.js";
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
+import { handleTasksApi } from "./tasks-api.js";
 import { addSubscription, listSubscriptions, pushToAll, removeSubscription, removeSubscriptionsOf, vapidPublicKey } from "./push.js";
 
 export const COOKIE = "aim_session";
@@ -523,6 +524,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 200, { sent });
     return;
   }
+
+  // ----- 定时任务 -----
+  if (p.startsWith("/api/tasks") && (await handleTasksApi(req, res, p, user))) return;
 
   // ----- 目录选择器：列工作区内的子目录 -----
   if (p === "/api/dirs" && method === "GET") {

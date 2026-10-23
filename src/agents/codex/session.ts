@@ -7,6 +7,7 @@ import { refusalFor, UnsupportedRequest } from "./refusals.js";
 import { config } from "../../core/config.js";
 import { contextBlock } from "../../core/chat-mode.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
+import { TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
   AgentEvents,
@@ -130,7 +131,7 @@ export async function userMcpServers(): Promise<string[]> {
   if (userMcpCache && Date.now() - userMcpCache.at < 60_000) return userMcpCache.names;
   try {
     const res = await appServer.call<{ config?: { mcp_servers?: Record<string, unknown> | null } }>("config/read", {});
-    const names = Object.keys(res.config?.mcp_servers ?? {}).filter((n) => n !== MEMORY_MCP_NAME);
+    const names = Object.keys(res.config?.mcp_servers ?? {}).filter((n) => n !== MEMORY_MCP_NAME && n !== TASKS_MCP_NAME);
     userMcpCache = { names, at: Date.now() };
     return names;
   } catch (err) {
@@ -363,12 +364,17 @@ export class CodexSession implements AgentSession {
    */
   private async modeParams(minimal = false): Promise<Record<string, unknown>> {
     const memory = this.opts.memory;
-    const mcp = memory ? { [`mcp_servers.${MEMORY_MCP_NAME}`]: memoryMcpSpawn(memory.userId, "codex", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } : {};
+    const tasks = this.opts.tasks;
+    const mcp = {
+      ...(memory ? { [`mcp_servers.${MEMORY_MCP_NAME}`]: memoryMcpSpawn(memory.userId, "codex", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } : {}),
+      // 新建 / 修改任务要等用户点授权卡，Codex 默认 60 秒就算工具超时
+      ...(tasks ? { [`mcp_servers.${TASKS_MCP_NAME}`]: { ...tasksMcpSpawn(tasks.userId, tasks.convKey, "codex"), tool_timeout_sec: TASK_TOOL_TIMEOUT_SEC } } : {}),
+    };
     if (this.chat && !minimal) {
       const off = Object.fromEntries((await userMcpServers()).map((n) => [`mcp_servers.${n}.enabled`, false]));
       return { config: { ...CHAT_CONFIG, ...off, ...mcp } };
     }
-    return memory ? { config: mcp } : {};
+    return Object.keys(mcp).length ? { config: mcp } : {};
   }
 
   /**

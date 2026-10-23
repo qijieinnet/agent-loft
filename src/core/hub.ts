@@ -46,6 +46,8 @@ import type {
 import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
 import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
+import { stripContext } from "./chat-mode.js";
+import { isSilentReply } from "./task-prompt.js";
 
 // ---------- 事件 ----------
 
@@ -66,11 +68,21 @@ export type ConvEvent =
   | { type: "step"; kind: StepKind; text: string }
   | { type: "delta"; text: string }
   | { type: "text"; text: string }
-  | { type: "result"; text: string; footer: string; at: number; anchor?: string }
+  /**
+   * task：这一轮是定时任务发起的；silent：任务让 agent 自己判断要不要提醒，它判断这次不用 ——
+   * 推送、飞书都不发，网页上折叠显示
+   */
+  | { type: "result"; text: string; footer: string; at: number; anchor?: string; task?: { id: string; title: string }; silent?: true }
   | { type: "error"; message: string }
   | { type: "notice"; text: string }
   | { type: "state"; busy: boolean }
   | { type: "meta" };
+
+/** 定时任务发起的一轮（见 core/task-runner.ts） */
+export type TaskTurn = { taskId: string; runId: string; title: string; smart: boolean };
+
+/** 定时任务的一轮结束了 */
+export type TaskTurnEnd = TaskTurn & { key: string; status: "notified" | "silent" | "error" | "interrupted"; text: string };
 
 /** 一条输入是在哪个时刻收到的：停止代次 + 生命周期代次 */
 /**
@@ -141,6 +153,8 @@ export type ConversationInfo = {
   personal?: boolean;
   /** 排着的定时消息（见 core/scheduled.ts），按发送时间先后 */
   scheduled?: { id: string; text: string; at: number }[];
+  /** 定时任务的专用对话 */
+  taskId?: string;
 };
 
 /** 普通成员点了会落盘的「总是允许」 */
@@ -162,9 +176,14 @@ function withTimeout<T>(p: Promise<T>, what: string, ms = QUERY_TIMEOUT_MS): Pro
 
 type Live = { id: number; agent: string; cwd: string; session: AgentSession };
 
-class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
+class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> {
   private drivers = new Map<string, AgentDriver>();
   private live = new Map<string, Live>();
+  /**
+   * 每条会话已经送进 agent、还没出结果的轮次，按先后排：定时任务发起的带着 TaskTurn，普通消息是 null。
+   * 和 inflight 一样一轮一项，出结果 / 出错 / 被丢弃时从头上取走。
+   */
+  private turnTags = new Map<string, (TaskTurn | null)[]>();
   private buffers = new Map<string, EventEnvelope[]>();
   private seq = 0;
   /** 每条会话还没收到结果的轮数，> 0 即忙 */
@@ -446,6 +465,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
       mode: conv.mode ?? "work",
       ...(memoryOwnerOf(conv) ? { personal: true } : {}),
+      ...(conv.taskId ? { taskId: conv.taskId } : {}),
       ...(() => {
         const list = listScheduled(key);
         return list.length ? { scheduled: list.map(({ id, text, at }) => ({ id, text, at })) } : {};
@@ -498,6 +518,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     // 记忆在拉起会话这一刻读一次：会话里 agent 自己记下的，上下文里本来就有；
     // 用户在设置里改了，memoryChanged() 会让空闲的会话下次说话时带着新的重新拉起
     const memory = sessionMemory(conv);
+    // 定时任务工具：和记忆一样只给有主人的对话（飞书群聊里谁都能让机器人建任务，算不清是谁的）
+    const taskOwner = memoryOwnerOf(conv);
     const mode = conv.mode ?? "work";
     // 续着的会话上次被告知的模式和现在不一样（新会话没有历史，算原装的工作模式）
     const announceMode = (resumeId ? (binding.announcedMode ?? "work") : "work") !== mode;
@@ -520,6 +542,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         ...(conv.mode === "chat" ? { mode: "chat" as const } : {}),
         ...(memory ? { memory } : {}),
         ...(announceMode ? { announceMode: true } : {}),
+        ...(taskOwner ? { tasks: { userId: taskOwner, convKey: key } } : {}),
       },
       {
         onTurnStart: () => {
@@ -536,13 +559,18 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           if (result.costUsd !== undefined) parts.push(`约 $${result.costUsd.toFixed(4)}`);
           if (result.tokens !== undefined) parts.push(`${result.tokens} tokens`);
           const footer = parts.join("　");
+          const tag = this.takeTurnTag(key);
+          const silent = !!tag?.smart && isSilentReply(result.text);
           this.emitEvent(key, {
             type: "result",
             text: result.text,
             footer,
             at: Date.now(),
             ...(result.anchor ? { anchor: result.anchor } : {}),
+            ...(tag ? { task: { id: tag.taskId, title: tag.title } } : {}),
+            ...(silent ? { silent: true as const } : {}),
           });
+          if (tag) this.emit("task", { ...tag, key, status: silent ? "silent" : "notified", text: result.text });
           const conv = getConversation(key);
           recordFooter(holder.session?.sessionId ?? (conv ? agentBinding(conv, agent).sessionId : undefined), result.text, footer);
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
@@ -560,7 +588,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
           console.error(`[${agent}] ${key} 出错:`, err instanceof Error ? err.message : err);
           // 这一轮已经结束了，挂着的审批没人会再等它
           interactions.cancelAll(key, "本轮出错结束");
-          if (Date.now() - (this.stoppedAt.get(key) ?? 0) < 15_000) {
+          const stopped = Date.now() - (this.stoppedAt.get(key) ?? 0) < 15_000;
+          const tag = this.takeTurnTag(key);
+          if (tag) {
+            this.emit("task", { ...tag, key, status: stopped ? "interrupted" : "error", text: stopped ? "被停止了" : diagnosis.chatMessage });
+          }
+          if (stopped) {
             // 用户自己点的停止：中断导致的「没能正常收尾」不是故障
             this.emitEvent(key, { type: "notice", text: "已中断。" });
           } else {
@@ -584,6 +617,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
         },
         onDropped: (n) => {
           if (!alive() || n <= 0) return;
+          // 丢的是排在最后、还没开始的那 n 条（Codex 先报正在跑的那轮出错、再报丢弃，那时队头已经取走了）
+          const tags = this.turnTags.get(key) ?? [];
+          for (const tag of tags.splice(Math.max(0, tags.length - n), n)) {
+            if (tag) this.emit("task", { ...tag, key, status: "interrupted", text: "排队时被停止了" });
+          }
           this.setInflight(key, (this.inflight.get(key) ?? n) - n);
         },
         onSessionId: (sessionId) => {
@@ -656,6 +694,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     const existing = this.live.get(key);
     if (existing) this.rememberRuntime(key, existing);
     this.live.delete(key);
+    for (const tag of this.turnTags.get(key) ?? []) if (tag) this.emit("task", { ...tag, key, status: "interrupted", text: note });
+    this.turnTags.delete(key);
     this.setInflight(key, 0);
     if (!existing) return;
     // dispose 卡住（CLI 不响应）不能把这条会话的操作队列永远堵死
@@ -747,9 +787,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
    * gen：这条消息是在哪个停止代次下收到的。渠道自己还要先做点异步的事（飞书下载附件）
    * 才调到这里时必须传：下载期间点了停止，这条消息就不该再发出去。
    */
-  send(key: string, input: UserInput, origin: Origin, gen?: InputGen): void {
+  send(key: string, input: UserInput, origin: Origin, gen?: InputGen, opts: { task?: TaskTurn } = {}): void {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
+    const task = opts.task;
     // 用户自定义命令（设置 → 命令）：展开成预设的提示词再发，界面上和 agent 收到的都是展开后的内容
     const custom = (config().commands as Record<string, CommandPrefs | undefined>)[conv.agent]?.custom;
     const expanded = expandCustomCommand(input.text, custom);
@@ -772,10 +813,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
       return false;
     };
     // 最先检查：停止之前收到的旧消息，不能去回答停止之后新冒出来的提问
-    if (cancelled()) return;
+    if (cancelled()) {
+      if (task) this.emit("task", { ...task, key, status: "interrupted", text: "没有发出（停止了或者会话被切换了）" });
+      return;
+    }
     const shown = {
       type: "user" as const,
-      text: input.text,
+      // 附给 agent 的背景（定时任务的说明）不显示
+      text: stripContext(input.text),
       attachments: input.attachments.map((a) => `${KIND_LABEL[a.kind]} ${a.name}`),
       files: input.attachments.map(attachmentInfo),
       origin,
@@ -787,7 +832,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
      * 没有切换生效过；expectId 给了的话，还必须正是收到时挂着的那一个（不能去回答后来才冒出的新提问）。
      */
     const tryAnswer = (expectId?: string): boolean => {
-      if (input.attachments.length > 0) return false;
+      // 定时任务的提示词不是给挂着的提问的回答
+      if (task || input.attachments.length > 0) return false;
       const asking = interactions.findQuestion(key);
       if (!asking || asking.owner === undefined || asking.owner !== this.liveSessionId(key)) return false;
       if (expectId !== undefined && asking.id !== expectId) return false;
@@ -807,26 +853,47 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     // 闲置过期要按这次说话之前的活跃时间判断，所以先记下、后 touch
     const lastActive = conv.activeAt;
     touchConversation(key);
-    if (!conv.title && conv.channel === "web" && input.text.trim()) {
+    if (!conv.title && conv.channel === "web" && shown.text.trim()) {
       // 先用首条消息占位，第一轮结束后换成 agent 自己生成的短标题（syncTitle）
-      updateConversation(key, { title: input.text.trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
+      updateConversation(key, { title: shown.text.trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
       this.emitEvent(key, { type: "meta" });
     }
     this.emitEvent(key, shown);
+    const gone = (text: string) => {
+      if (task) this.emit("task", { ...task, key, status: "interrupted", text });
+    };
     void this.serial(key, async () => {
-      if (cancelled()) return;
+      if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
       if (questionAtEntry && tryAnswer(questionAtEntry)) return;
-      // 收到之后发生过显式切换（恢复 / 分叉 / 新会话…）：用户已经明确指定了会话，不再按旧的闲置时间作废它
+      // 收到之后发生过显式切换（恢复 / 分叉 / 新会话…）：用户已经明确指定了会话，不再按旧的闲置时间作废它。
+      // 定时任务也不按闲置过期：每天跑一次的任务要接着上次的上下文
       const ttl = config().sessionTtlMs;
       const switchedAfterEntry = (this.lastSwitch.get(key)?.at ?? 0) >= g.at;
-      const expired = !switchedAfterEntry && ttl > 0 && Date.now() - lastActive > ttl;
+      const expired = !task && !switchedAfterEntry && ttl > 0 && Date.now() - lastActive > ttl;
       if (expired) {
         await this.expireNow(key);
         // 清理要等旧会话 dispose，期间可能又点了停止
         if (cancelled()) return;
       }
-      this.sendNow(key, input);
+      this.sendNow(key, input, task ?? null);
     });
+  }
+
+  /** 刚点过停止（被打断的那一轮还可能晚到一个出错，见 onError 里的 stopped） */
+  recentlyStopped(key: string): boolean {
+    return Date.now() - (this.stoppedAt.get(key) ?? 0) < 15_000;
+  }
+
+  /** 这条会话里正在跑的那一轮是不是定时任务发起的 */
+  currentTaskTurn(key: string): TaskTurn | undefined {
+    return this.turnTags.get(key)?.[0] ?? undefined;
+  }
+
+  private takeTurnTag(key: string): TaskTurn | null {
+    const tags = this.turnTags.get(key);
+    const tag = tags?.shift() ?? null;
+    if (tags && tags.length === 0) this.turnTags.delete(key);
+    return tag;
   }
 
   /** 闲置太久：不再续用上次的会话（活着的也丢掉），开新的 */
@@ -842,20 +909,29 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     this.emitEvent(key, { type: "meta" });
   }
 
-  private sendNow(key: string, input: UserInput): void {
+  private sendNow(key: string, input: UserInput, tag: TaskTurn | null): void {
+    const fail = (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emitEvent(key, { type: "error", message });
+      if (tag) this.emit("task", { ...tag, key, status: "error", text: message });
+    };
     let session: AgentSession;
     try {
       session = this.session(key);
     } catch (err) {
-      this.emitEvent(key, { type: "error", message: err instanceof Error ? err.message : String(err) });
+      fail(err);
       return;
     }
     this.setInflight(key, (this.inflight.get(key) ?? 0) + 1);
+    const tags = this.turnTags.get(key) ?? [];
+    tags.push(tag);
+    this.turnTags.set(key, tags);
     try {
       session.send(input);
     } catch (err) {
+      tags.pop();
       this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
-      this.emitEvent(key, { type: "error", message: err instanceof Error ? err.message : String(err) });
+      fail(err);
     }
   }
 
@@ -1125,6 +1201,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope] }> {
     this.stoppedAt.set(key, Date.now());
     interactions.cancelAll(key, "本轮已中断");
     await this.live.get(key)?.session.interrupt();
+    // 和 inflight 一起清零：被打断的那一轮不一定还会报结果，留着的话下一轮的结果会被当成定时任务的
+    for (const tag of this.turnTags.get(key) ?? []) if (tag) this.emit("task", { ...tag, key, status: "interrupted", text: "被停止了" });
+    this.turnTags.delete(key);
     this.setInflight(key, 0);
     return "已请求中断。";
   }

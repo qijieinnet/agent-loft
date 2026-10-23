@@ -198,12 +198,16 @@ export async function openSessions(all) {
 }
 
 /** 目录选择器：一层层点进去选，也能手动输入。只能在 workspaceRoot 之内 */
-export async function changeCwd() {
+/**
+ * 选工作目录。pick 给了就是别处借用（定时任务的表单）：从 pick.current 开始，选好交给 pick.onPick，
+ * 不动当前对话。
+ */
+export async function changeCwd(pick) {
   // 还没发消息的新对话：只记下选择，创建会话时带过去
-  const draft = !S.current;
-  const conv = draft ? null : S.convs.get(S.current);
-  const current = draft ? (S.draftCwd ?? S.workspaceRoot ?? "") : (conv?.cwd ?? "");
-  const goLabel = draft ? "使用此目录" : "切换到此目录";
+  const draft = !pick && !S.current;
+  const conv = draft || pick ? null : S.convs.get(S.current);
+  const current = pick ? pick.current : draft ? (S.draftCwd ?? S.workspaceRoot ?? "") : (conv?.cwd ?? "");
+  const goLabel = pick || draft ? "使用此目录" : "切换到此目录";
   let showHidden = localStorage.getItem("aim.cwdHidden") === "1";
   let listing = null;
   let seq = 0;
@@ -231,9 +235,9 @@ export async function changeCwd() {
     list,
   );
   const go = h("button", { class: "btn primary", disabled: true }, goLabel);
-  const note = h("span", { class: "muted grow" }, draft ? "发送第一条消息时在这个目录开会话" : "切换后开新会话");
+  const note = h("span", { class: "muted grow" }, pick ? "" : draft ? "发送第一条消息时在这个目录开会话" : "切换后开新会话");
   const close = modal({
-    title: draft ? "选择工作目录" : "切换工作目录",
+    title: pick || draft ? "选择工作目录" : "切换工作目录",
     body,
     foot: h("div", { class: "modal-foot", style: { alignItems: "center" } }, note, go),
   });
@@ -241,6 +245,10 @@ export async function changeCwd() {
   go.onclick = async () => {
     if (!listing) return;
     close();
+    if (pick) {
+      pick.onPick(listing.path);
+      return;
+    }
     if (draft) {
       S.draftCwd = listing.path === listing.root ? null : listing.path;
       if (!S.current) renderEmpty();
