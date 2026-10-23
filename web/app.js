@@ -1888,6 +1888,8 @@ function pinToTop(el) {
   fitSpacer();
   ui.smoothUntil = performance.now() + 450;
   ui.messages.scrollTo({ top: ui.messages.scrollHeight, behavior: "smooth" });
+  // 平滑滚动期间留白可能又变了（比如输入框清空变矮），滚完再对齐一次
+  setTimeout(afterLayout, 460);
   updateToBottomBtn();
 }
 
@@ -1911,7 +1913,10 @@ function bindScrollWatch() {
     if (["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "].includes(e.key)) userScrolled();
   });
   m.addEventListener("scroll", updateToBottomBtn, { passive: true });
-  addEventListener("resize", () => afterLayout());
+  // 消息区变高（发送后输入框清空变矮）、内容变高都要重算留白；窗口 resize 管不到元素自己变尺寸
+  const ro = new ResizeObserver(() => afterLayout());
+  ro.observe(m);
+  ro.observe(ui.msgInner);
 }
 
 /** 只有最后一条回复默认显示底部的操作栏（复制 / 分叉 / 用时…），前面的 hover 才出来 */
