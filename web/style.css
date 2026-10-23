@@ -2038,6 +2038,16 @@ button.ctx-item:hover {
   color: var(--accent);
 }
 
+.topbar .mode-slot {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.topbar .top-more svg {
+  width: 20px;
+  height: 20px;
+}
+
 .composer.drag {
   border-color: var(--accent);
 }
@@ -3432,14 +3442,9 @@ button.list-item:hover {
   font: inherit;
 }
 
-.sched-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.sched-presets .btn {
-  font-size: 13px;
+.sched-hint {
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .sched-row {
@@ -3457,4 +3462,10 @@ button.list-item:hover {
   color: var(--fg);
   font: inherit;
   color-scheme: light dark;
+}
+
+/* iOS 上双击会放大页面：关掉双击缩放（双指缩放照常） */
+html,
+body {
+  touch-action: manipulation;
 }

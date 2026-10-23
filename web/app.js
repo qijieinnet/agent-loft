@@ -38,6 +38,7 @@ const ICON = {
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>',
   clip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.6-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
   mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>',
@@ -683,6 +684,8 @@ function renderLayout() {
     h("div", { class: "side-resizer", title: "拖动调整宽度，双击恢复默认", onpointerdown: startSideResize, ondblclick: () => setSideWidth(null) }),
   );
   ui.topbar = h("div", { class: "topbar" });
+  // 聊天 / 工作切换在顶栏右上角；先建好，renderTopbar 每次把它放回去
+  ui.modeSlot = h("span", { class: "mode-slot" });
   ui.msgInner = h("div", { class: "messages-inner" });
   ui.spacer = h("div", { class: "messages-spacer", "aria-hidden": "true" });
   ui.messages = h("div", { class: "messages", tabindex: "-1" }, ui.msgInner, ui.spacer);
@@ -1290,8 +1293,20 @@ function renderTopbar() {
   fill(ui.topbar,
     h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
     h("div", { class: "top-title" }, c ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)) : null),
+    ui.modeSlot,
+    h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")),
   );
   renderContext();
+}
+
+/** 顶栏右上角「更多」 */
+function openTopMore(anchor) {
+  if (ui.menu?.anchor === anchor) return closeMenu();
+  showMenu(anchor, [{ label: "定时发送…", onclick: () => openSchedule() }]);
+  ui.menu.anchor = anchor;
+  // 贴着按钮右边对齐，别超出屏幕
+  const r = anchor.getBoundingClientRect();
+  ui.menu.style.left = `${Math.max(8, r.right - ui.menu.offsetWidth)}px`;
 }
 
 function baseName(p) {
@@ -2380,7 +2395,6 @@ function renderComposer() {
     : null;
   ui.ctxBar = h("div", { class: "ctx-bar" });
   ui.modelSlot = h("span", { class: "model-slot" });
-  ui.modeSlot = h("span", { class: "mode-slot" });
   ui.ctxRing = h("span", { class: "ctx-ring-slot" });
   ui.chips = h("div", { class: "chips" });
   ui.schedBar = h("div", { class: "sched-bar", hidden: true });
@@ -2407,11 +2421,9 @@ function renderComposer() {
       "div",
       { class: "composer-row" },
       h("button", { class: "icon-btn add-btn", title: "添加附件", onclick: () => ui.fileInput.click() }, icon("plus")),
-      h("button", { class: "icon-btn add-btn", title: "定时发送", onclick: () => openSchedule() }, icon("clock")),
       ui.fileInput,
       h("span", { class: "spacer" }),
       ui.ctxRing,
-      ui.modeSlot,
       ui.modelSlot,
       ui.micBtn,
       ui.sendBtn,
@@ -2489,33 +2501,25 @@ function openSchedule(edit) {
   const text = h("textarea", { class: "sched-input", rows: 4, placeholder: "到点要发的内容" });
   text.value = edit ? edit.text : ui.input.value;
   const when = h("input", { type: "datetime-local", class: "sched-time" });
-  const setAt = (ms) => (when.value = toLocalInput(ms));
-  setAt(edit ? edit.at : Date.now() + 5 * 3600_000);
-  // 快捷时间：当前 agent 的额度窗口重置后一分钟，再加几个常用的
+  // 当前 agent 的额度窗口（5 小时 / 7 天）什么时候重置：小字提示，默认排在 5 小时窗口重置后 5 分钟
   const agent = currentAgentId();
-  const presets = [];
-  for (const q of quotaState.data ?? []) {
-    if (q.agent !== agent) continue;
-    for (const w of q.windows) {
-      if (w.resetsAt && w.resetsAt > Date.now()) presets.push({ label: `${w.label}重置后（${fmtWhen(w.resetsAt + 60_000)}）`, at: w.resetsAt + 60_000 });
-    }
-  }
-  const tomorrow9 = new Date();
-  tomorrow9.setDate(tomorrow9.getDate() + 1);
-  tomorrow9.setHours(9, 0, 0, 0);
-  presets.push(
-    { label: "1 小时后", at: Date.now() + 3600_000 },
-    { label: "3 小时后", at: Date.now() + 3 * 3600_000 },
-    { label: "5 小时后", at: Date.now() + 5 * 3600_000 },
-    { label: "明早 9:00", at: tomorrow9.getTime() },
-  );
+  const windows = (quotaState.data ?? []).find((q) => q.agent === agent)?.windows ?? [];
+  const resets = windows.filter((w) => /^(5h|7d)$/.test(w.short) && w.resetsAt > Date.now());
+  const session = resets.find((w) => w.short === "5h");
+  when.value = toLocalInput(edit ? edit.at : session ? session.resetsAt + 5 * 60_000 : Date.now() + 5 * 3600_000);
   const body = h(
     "div",
     { class: "modal-body sched-body" },
     text,
-    h("div", { class: "sched-presets" }, presets.map((p) => h("button", { class: "btn", onclick: () => setAt(p.at) }, p.label))),
     h("label", { class: "sched-row" }, h("span", {}, "发送时间"), when),
-    h("div", { class: "muted" }, "到点由服务端发出，关掉页面也会发。到点时 agent 还在忙的话，会排在当前这轮之后。"),
+    h(
+      "div",
+      { class: "muted sched-hint" },
+      resets.length
+        ? `额度重置：${resets.map((w) => `${w.short === "5h" ? "5 小时" : "7 天"}额度 ${fmtWhen(w.resetsAt)}`).join("，")}。`
+        : "",
+      "到点由服务端发出，关掉页面也会发。",
+    ),
   );
   const go = h("button", { class: "btn primary" }, edit ? "保存" : "定时发送");
   const close = modal({ title: edit ? "编辑定时消息" : "定时发送", body, foot: h("div", { class: "modal-foot" }, go) });
