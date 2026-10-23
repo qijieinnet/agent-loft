@@ -65,7 +65,7 @@ const MIME: Record<string, string> = {
 
 /**
  * 静态文件一律 no-cache + Last-Modified：每次都向服务端确认一下，没变就回 304。
- * 升级后 app.js、style.css、vendor 都会变，但地址不变，带 max-age 的话刷新页面还会拿到旧的。
+ * 升级后前端的 js、css 和 vendor 都会变，但地址不变，带 max-age 的话刷新页面还会拿到旧的。
  */
 function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: string): void {
   fs.stat(file, (err, stat) => {

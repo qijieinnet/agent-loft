@@ -1,0 +1,437 @@
+/* ---------- 弹层 ---------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+/* ---- 小弹窗（重命名） ---- */
+.dialog-overlay {
+  background: rgba(0, 0, 0, 0.32);
+  animation: fade-in 0.12s ease-out;
+}
+
+.dialog-overlay.leaving {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.dialog {
+  width: min(420px, 100%);
+  background: var(--bg);
+  border-radius: 18px;
+  padding: 20px 20px 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  animation: dialog-in 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.dialog h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.dialog-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 16px;
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+.dialog-sub .agent-icon {
+  display: inline-grid;
+}
+
+.dialog-sub .agent-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.rename-input {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-input);
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.dialog-foot .btn {
+  min-width: 72px;
+  border-radius: 999px;
+  padding: 8px 18px;
+}
+
+.dialog-foot .btn.ghost {
+  border-color: transparent;
+  background: var(--bg-soft);
+}
+
+.dialog-foot .btn.ghost:hover {
+  background: var(--bg-hover);
+}
+
+.confirm-dialog .dialog-sub {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.confirm-dialog .dialog-sub > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-msg {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--fg-soft);
+  white-space: pre-line;
+}
+
+.dialog-foot .btn.danger-fill {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.dialog-foot .btn.danger-fill:hover {
+  background: color-mix(in srgb, var(--danger) 88%, #000);
+}
+
+.dialog-foot .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+}
+
+.modal {
+  background: var(--bg);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.modal.wide {
+  max-width: 860px;
+}
+
+/* 设置弹窗：固定高度 */
+.modal.tall {
+  height: 86vh;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+.modal-head h3 {
+  margin: 0;
+  font-size: 17px;
+  flex: 1;
+}
+
+.modal-body {
+  padding: 14px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-foot {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+  width: 100%;
+}
+
+button.list-item:hover {
+  background: var(--bg-hover);
+}
+
+.list-item .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-item .t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-item .s {
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-item.on {
+  border-color: var(--accent);
+}
+
+/* ----- 目录选择器 ----- */
+.dir-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.dir-crumbs .crumb {
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--accent);
+}
+
+.dir-crumbs .crumb:last-child {
+  color: inherit;
+  font-weight: 600;
+}
+
+.dir-crumbs .crumb:hover {
+  background: var(--bg-hover);
+}
+
+.dir-crumbs .crumb-sep {
+  color: var(--fg-faint);
+}
+
+.dir-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 120px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.dir-item {
+  padding: 8px 12px;
+}
+
+.dir-item .dir-icon {
+  width: 20px;
+  text-align: center;
+}
+
+.dir-item .dir-chev {
+  color: var(--fg-faint);
+  font-size: 18px;
+}
+
+.dir-manual {
+  flex: 1;
+  min-width: 160px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+  outline: none;
+}
+
+.dir-manual:focus {
+  border-color: var(--accent);
+}
+
+.modal-foot .grow {
+  flex: 1;
+}
+
+.menu {
+  position: fixed;
+  z-index: 50;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+.menu button {
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.menu button:hover {
+  background: var(--bg-hover);
+}
+
+.menu button.danger {
+  color: var(--danger);
+}
+
+/* 贴着按钮弹出的选择面板（模型 / agent） */
+.popover {
+  min-width: 220px;
+  max-width: min(340px, calc(100vw - 16px));
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  border-radius: 14px;
+  padding: 6px;
+}
+
+.popover .pop-head {
+  font-size: 12px;
+  color: var(--fg-faint);
+  padding: 6px 12px 4px;
+}
+
+.popover .pop-item {
+  width: 100%;
+  gap: 10px;
+}
+
+.popover .pop-item .grow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.popover .pop-item .s {
+  font-size: 12px;
+  color: var(--fg-faint);
+  white-space: normal;
+}
+
+.popover .pop-item .check {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.popover .agent-icon {
+  display: inline-grid;
+  color: var(--fg-soft);
+}
+
+.popover .agent-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.popover .effort-seg {
+  display: flex;
+  gap: 2px;
+  margin: 2px 6px 6px;
+  padding: 3px;
+  background: var(--bg-soft);
+  border-radius: 999px;
+}
+
+.popover .effort-seg button {
+  flex: 1;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+
+.popover .effort-seg button.on {
+  background: var(--bg);
+  color: var(--fg);
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.popover .pop-loading,
+.popover .pop-error {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+
+.menu .sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(110px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: var(--fg);
+  color: var(--bg);
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  z-index: 60;
+  max-width: 90vw;
+  white-space: pre-wrap;
+}

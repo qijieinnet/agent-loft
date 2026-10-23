@@ -1,0 +1,196 @@
+/* ---------- logo 加载动画：三颗星依次跳起，台面跟着呼吸 ---------- */
+.loft-loader {
+  --size: 26px;
+  display: inline-block;
+  flex-shrink: 0;
+  width: var(--size);
+  height: var(--size);
+  line-height: 0;
+}
+
+.loft-loader.xl {
+  --size: 72px;
+}
+
+.loft-loader svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.loft-loader path {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation-duration: 1.6s;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1);
+  animation-fill-mode: both;
+  animation-delay: calc(var(--t, 0ms) + var(--d, 0ms));
+}
+
+.loft-loader .ll-star {
+  animation-name: loft-star;
+}
+
+.loft-loader .ll-l {
+  --d: 0ms;
+}
+
+.loft-loader .ll-c {
+  --d: 180ms;
+}
+
+.loft-loader .ll-r {
+  --d: 360ms;
+}
+
+.loft-loader .ll-plate {
+  animation-name: loft-plate;
+  --d: 260ms;
+}
+
+.loft-loader .ll-shadow {
+  animation-name: loft-shadow;
+  --d: 320ms;
+}
+
+@keyframes loft-star {
+  0%,
+  70%,
+  100% {
+    transform: translateY(0) scale(0.72);
+    opacity: 0.4;
+  }
+  28% {
+    transform: translateY(-22px) scale(1.06);
+    opacity: 1;
+  }
+  48% {
+    transform: translateY(0) scale(0.92);
+    opacity: 0.85;
+  }
+}
+
+@keyframes loft-plate {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  45% {
+    opacity: 1;
+  }
+}
+
+@keyframes loft-shadow {
+  0%,
+  100% {
+    transform: translateY(-6px);
+    opacity: 0.32;
+  }
+  50% {
+    transform: translateY(6px);
+    opacity: 0.12;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loft-loader .ll-star {
+    animation-name: loft-star-calm;
+    animation-duration: 2.4s;
+  }
+  .loft-loader .ll-shadow {
+    animation: none;
+    opacity: 0.3;
+  }
+}
+
+/* 回复末尾的精简版：只有一颗星，旋转 + 放大缩小 */
+.loft-stars {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  line-height: 0;
+}
+
+/* 打开会话、读历史时用的大一号 */
+.loft-stars.lg {
+  width: 32px;
+  height: 32px;
+}
+
+.loft-stars svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.loft-stars path {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: loft-twirl 1.8s cubic-bezier(0.45, 0, 0.25, 1) infinite both;
+  animation-delay: var(--t, 0ms);
+}
+
+/* 四角星转 90° 正好回到原样，所以每轮转 180° 能无缝接上 */
+@keyframes loft-twirl {
+  0% {
+    transform: rotate(0deg) scale(0.6);
+    opacity: 0.55;
+  }
+  45% {
+    transform: rotate(110deg) scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(180deg) scale(0.6);
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loft-stars path {
+    animation-name: loft-star-calm;
+    animation-duration: 2.4s;
+  }
+}
+
+@keyframes loft-star-calm {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.footer-note {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.notice {
+  align-self: center;
+  font-size: 13px;
+  color: var(--fg-soft);
+  background: var(--bg-soft);
+  padding: 6px 14px;
+  border-radius: 12px;
+  max-width: 90%;
+}
+
+.notice .md p {
+  margin: 0;
+}
+
+.error-box {
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 14px;
+  white-space: pre-wrap;
+}

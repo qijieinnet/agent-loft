@@ -1,0 +1,205 @@
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  min-height: 52px;
+  /*
+   * iOS 26+ 的主屏 PWA 会在页面顶端叠一层系统的模糊渐变（Liquid Glass 边缘效果），CSS 关不掉。
+   * WebKit 只在顶端有「fixed / sticky、铺满宽度、高于 10px、纯色不透明」的元素时跳过它，
+   * 并改用这个颜色延伸到状态栏。所以顶栏要 sticky + 不透明底色，不能是普通的流式元素。
+   */
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+/* 保险：主屏 PWA 里再在最顶端放一条 fixed 的纯色细条（同样是为了让 WebKit 跳过边缘模糊）。
+   层级低于顶栏和侧栏，和顶栏同色，看不出来 */
+.edge-strip {
+  display: none;
+}
+
+@media (display-mode: standalone) and (max-width: 768px) {
+  .edge-strip {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: max(12px, env(safe-area-inset-top));
+    background: var(--bg);
+    pointer-events: none;
+    z-index: 4;
+  }
+}
+
+/* 顶栏下沿：渐变 + 模糊，聊天内容滚上去时柔和地消失在顶栏后面 */
+/*
+ * 顶栏浮在聊天内容上面：内容一直滚到窗口顶端，经过顶栏时先变模糊、再淡出到底色，
+ * 没有分界线（参考 Claude 桌面端）。顶栏自身比按钮行高出一截，多出来的部分就是过渡带。
+ * iOS 主屏 PWA 例外，见下面的媒体查询。
+ */
+.topbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding-bottom: 20px;
+  background: linear-gradient(
+    to bottom,
+    var(--bg) 0%,
+    var(--bg) calc(100% - 22px),
+    color-mix(in srgb, var(--bg) 75%, transparent) calc(100% - 13px),
+    color-mix(in srgb, var(--bg) 30%, transparent) calc(100% - 5px),
+    color-mix(in srgb, var(--bg) 0%, transparent) 100%
+  );
+  pointer-events: none;
+}
+
+.topbar > * {
+  pointer-events: auto;
+}
+
+/* 模糊层：上实下虚，越往下越清楚，和渐变叠在一起 */
+.topbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  pointer-events: none;
+}
+
+/* 内容让出顶栏按钮行的高度（.main 前缀是为了压过手机端的 padding 简写） */
+.main .messages-inner {
+  padding-top: calc(72px + env(safe-area-inset-top));
+}
+
+.messages {
+  scroll-padding-top: calc(72px + env(safe-area-inset-top));
+}
+
+/* iOS 主屏 PWA：顶端必须是不透明的 sticky 元素才能避开系统的边缘模糊，回到普通顶栏 + 下方淡出 */
+@media (display-mode: standalone) and (max-width: 768px) {
+  .topbar {
+    position: sticky;
+    padding-bottom: 8px;
+    background: var(--bg);
+  }
+
+  .topbar::before {
+    display: none;
+  }
+
+  .topbar::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    height: 24px;
+    pointer-events: none;
+    background: linear-gradient(
+      to bottom,
+      var(--bg),
+      color-mix(in srgb, var(--bg) 60%, transparent) 40%,
+      color-mix(in srgb, var(--bg) 0%, transparent)
+    );
+  }
+
+  .main .messages-inner {
+    padding-top: 16px;
+  }
+}
+
+.topbar .menu-btn {
+  display: none;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  flex-shrink: 0;
+  color: var(--fg-soft);
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+}
+
+.icon-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.top-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.top-title .conv-name {
+  font-size: 15px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 500;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.pill:hover {
+  background: var(--bg-hover);
+}
+
+
+.pill .sub {
+  color: var(--fg-faint);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* 桌面端（Agent Loft for macOS）里：顶栏和侧栏顶部按住能拖动窗口，里面的按钮照常能点 */
+.in-desktop .topbar,
+.in-desktop .side-top {
+  -webkit-app-region: drag;
+}
+.in-desktop .topbar :is(button, a, input, select, textarea, label, .conv-name),
+.in-desktop .side-top :is(button, a, input, select, textarea, label) {
+  -webkit-app-region: no-drag;
+}

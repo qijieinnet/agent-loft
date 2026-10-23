@@ -1,0 +1,335 @@
+/* ---------- 设置 ---------- */
+
+.settings {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.settings-nav {
+  width: 160px;
+  border-right: 1px solid var(--border);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.settings-nav button {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.settings-nav button.on {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+.settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.section {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section h4 {
+  margin: 0;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section h4 .grow {
+  flex: 1;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.status-tag {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  font-weight: 400;
+}
+
+.status-tag.ok {
+  color: var(--ok);
+}
+
+.status-tag.bad {
+  color: var(--danger);
+}
+
+.qr {
+  align-self: center;
+  background: #fff;
+  padding: 8px;
+  border-radius: 10px;
+}
+
+.muted {
+  color: var(--fg-faint);
+  font-size: 13px;
+}
+
+/* ---------- 设置 → 命令 ---------- */
+
+.cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+}
+
+.cmd-row.off {
+  opacity: 0.5;
+}
+
+.cmd-row.dragging {
+  border-color: var(--accent);
+}
+
+.cmd-row .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.cmd-row .t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-row .s {
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-grip {
+  cursor: grab;
+  color: var(--fg-faint);
+  user-select: none;
+  letter-spacing: -2px;
+}
+
+.cmd-row input[type="checkbox"] {
+  width: auto;
+}
+
+.cmd-row .icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.cmd-row .icon-btn.danger:hover {
+  color: var(--danger);
+}
+
+.cmd-row .badge.custom {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+/* 筛选框 + 「添加命令」按钮一行 */
+.cmd-tools {
+  flex-wrap: nowrap;
+}
+
+.cmd-tools .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cmd-tools .btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cmd-tools .btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 添加 / 编辑命令：命令名前面固定一个「/」 */
+.cmd-name-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmd-name-input > span {
+  color: var(--fg-faint);
+  font-family: var(--mono);
+}
+
+.field .cmd-name-input input {
+  flex: 1;
+  font-family: var(--mono);
+}
+
+.brand-icon {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.brand-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* 设置 → Agent：输入框可选模型 */
+.model-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+}
+
+.model-checks > small {
+  padding: 4px 6px;
+}
+
+.model-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.model-check:hover {
+  background: var(--bg-hover);
+}
+
+.field .model-check input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.model-check .t {
+  white-space: nowrap;
+}
+
+.model-check .s {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 设置 → Agent → 运行环境 */
+.health-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.health-row + .health-row {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.health-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex: none;
+}
+.health-dot.ok {
+  background: var(--ok);
+}
+.health-state {
+  color: var(--fg-soft);
+}
+.health-off,
+.health-meta {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+.health-fix {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  font-size: 13px;
+}
+.health-fix small {
+  color: var(--fg-soft);
+}
+.health-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.health-cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--code-bg);
+  font-size: 12px;
+}

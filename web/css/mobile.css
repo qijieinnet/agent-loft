@@ -1,0 +1,100 @@
+/* ---------- 手机 ---------- */
+
+@media (max-width: 768px) {
+  /* 侧栏和遮罩用 absolute 而不是 fixed：iOS PWA 会拿贴着顶部的 fixed 元素给状态栏上色，
+     遮罩一出来状态栏就变暗，关掉后还不恢复 */
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    width: min(84vw, 320px);
+    box-shadow: var(--shadow);
+  }
+
+  .layout.side-open .sidebar {
+    transform: none;
+  }
+
+  .layout.side-open .scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 25;
+  }
+
+  .topbar .menu-btn {
+    display: inline-grid;
+  }
+
+  .messages-inner {
+    padding: 12px 14px 36px;
+  }
+
+  .msg-user {
+    max-width: 90%;
+  }
+
+  .md th,
+  .md td {
+    white-space: nowrap;
+  }
+
+  .composer-wrap {
+    padding: 0 10px calc(8px + env(safe-area-inset-bottom));
+  }
+
+  .composer-hint {
+    display: none;
+  }
+
+  .ctx-bar {
+    margin: 0 10px -22px;
+    font-size: 13px;
+  }
+
+  .hero-logo svg {
+    width: 52px;
+    height: 52px;
+  }
+
+  .overlay {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  /* 重命名这类小弹窗在手机上也居中，不贴底 */
+  .overlay.dialog-overlay {
+    padding: 16px;
+    align-items: center;
+  }
+
+  .modal.tall {
+    height: 92vh;
+  }
+
+  .modal,
+  .modal.wide {
+    max-width: none;
+    max-height: 92vh;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .settings {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-nav button {
+    white-space: nowrap;
+  }
+}

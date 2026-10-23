@@ -1,0 +1,593 @@
+/* ---------- 布局 ---------- */
+
+.layout {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.sidebar {
+  width: var(--side-w);
+  flex-shrink: 0;
+  position: relative;
+  background: var(--bg-side);
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  padding-top: env(safe-area-inset-top);
+}
+
+/* 侧栏右边缘的拖动条：hover 时显示一条细线 */
+.side-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 10;
+  touch-action: none;
+}
+
+.side-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.side-resizer:hover::after,
+.side-resizing .side-resizer::after {
+  opacity: 0.6;
+  transition-delay: 0.1s;
+}
+
+body.side-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+@media (max-width: 768px) {
+  .side-resizer {
+    display: none;
+  }
+}
+
+.side-top {
+  padding: 10px 10px 0;
+  display: flex;
+  gap: 8px;
+}
+
+.side-top .new-chat {
+  flex: 1;
+  justify-content: flex-start;
+  background: transparent;
+  border: none;
+  /* 和下面的会话行同字号、同字重 */
+  padding: 7px 10px;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.side-top .new-chat svg {
+  width: 16px;
+  height: 16px;
+}
+
+.side-top .new-chat:hover {
+  background: var(--bg-hover);
+}
+
+.conv-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.conv-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  font-size: 13px;
+  color: var(--fg-faint);
+  padding: 14px 10px 6px;
+  text-align: left;
+}
+
+.conv-list > .conv-group:first-child {
+  padding-top: 8px;
+}
+
+/* 分组标题 hover 时显示折叠箭头 */
+.conv-group .chev {
+  display: inline-grid;
+  visibility: hidden;
+  transition: transform 0.15s;
+}
+
+.conv-group .chev svg {
+  width: 12px;
+  height: 12px;
+}
+
+.conv-group:hover .chev {
+  visibility: visible;
+}
+
+.conv-group.collapsed .chev {
+  transform: rotate(-90deg);
+}
+
+button.conv-group:hover {
+  color: var(--fg-soft);
+}
+
+.conv-empty {
+  font-size: 13px;
+  color: var(--fg-faint);
+  padding: 4px 10px;
+}
+
+.conv-more {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+.conv-more:hover {
+  color: var(--fg);
+}
+
+.sub-more .conv-more {
+  padding-left: 36px;
+}
+
+.conv-item .lead {
+  width: 14px;
+  height: 14px;
+  opacity: 0.85;
+}
+
+.conv-item.sub {
+  padding-left: 36px;
+}
+
+.proj-row {
+  position: relative;
+  margin-top: 2px;
+}
+
+.conv-item.proj {
+  gap: 10px;
+}
+
+/* 拖动目录排序：被拖的行变淡，落点处画一条横线 */
+.proj-row.dragging {
+  opacity: 0.4;
+}
+
+.proj-row.drop-before::before,
+.proj-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent, #3b82f6);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.proj-row.drop-before::before {
+  top: -2px;
+}
+
+.proj-row.drop-after::after {
+  bottom: -2px;
+}
+
+.proj-icon {
+  display: inline-grid;
+  color: var(--fg-soft);
+  flex-shrink: 0;
+}
+
+.proj-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 目录行 hover 时右侧出现「在此目录开新对话」 */
+.proj-new {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  display: none;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--fg-soft);
+}
+
+.proj-new svg {
+  width: 15px;
+  height: 15px;
+}
+
+.proj-new:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+
+.proj-row:hover .proj-new {
+  display: grid;
+}
+
+.proj-row:hover .conv-item.proj {
+  padding-right: 36px;
+}
+
+@media (pointer: coarse) {
+  .proj-new {
+    display: grid;
+  }
+}
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  position: relative;
+}
+
+.conv-item:hover {
+  background: var(--bg-hover);
+}
+
+.conv-item.active {
+  background: var(--bg-hover);
+}
+
+.conv-item .title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 跑马灯滚动时去掉省略号 */
+.conv-item .title.marquee {
+  text-overflow: clip;
+}
+
+.conv-item .badge {
+  font-size: 11px;
+  color: var(--fg-faint);
+  flex-shrink: 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 进行中：Codex 那种细圈转圈，一段弧在淡色圆环上转 */
+.conv-spin {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--fg-faint) 28%, transparent);
+  border-top-color: var(--fg-soft);
+  animation: spin 0.75s linear infinite;
+}
+
+.dot.ask {
+  background: #f59f00;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.side-bottom {
+  border-top: 1px solid var(--border);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+}
+
+.side-gear {
+  margin-left: auto;
+}
+
+/* 桌面端里：设置在顶栏「更多」里，侧栏底部只留额度（额度由桌面端统一查好推过来） */
+.desktop-settings .side-gear {
+  display: none;
+}
+
+/* ---- 侧栏底部的额度 ---- */
+.quota {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.quota-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.quota-btn:hover {
+  background: var(--bg-hover);
+}
+
+.quota.loading .quota-btn {
+  opacity: 0.6;
+}
+
+.quota-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--fg-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.quota-icon {
+  display: inline-grid;
+  color: var(--fg-soft);
+  flex-shrink: 0;
+}
+
+.quota-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.q-label {
+  color: var(--fg-faint);
+  flex-shrink: 0;
+}
+
+.q-bar {
+  flex: 1;
+  min-width: 14px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg-faint) 22%, transparent);
+  overflow: hidden;
+}
+
+.q-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--fg-soft);
+}
+
+.q-pct {
+  flex-shrink: 0;
+  min-width: 26px;
+  text-align: right;
+}
+
+.quota-cell.warn .q-bar i {
+  background: #f59f00;
+}
+
+.quota-cell.danger .q-bar i {
+  background: var(--danger);
+}
+
+.quota-cell.danger .q-pct {
+  color: var(--danger);
+}
+
+/* hover 详情：从底部向上弹出 */
+.quota-tip {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: 310px;
+  max-width: calc(100vw - 24px);
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--fg-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.quota:hover .quota-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-delay: 0.25s;
+}
+
+.qt-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+
+.qt-head .agent-icon {
+  display: inline-grid;
+}
+
+.qt-head .agent-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.qt-plan {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-faint);
+  text-transform: capitalize;
+}
+
+.qt-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 8px;
+  padding: 2px 0 2px 20px;
+}
+
+.qt-name {
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.qt-pct.warn {
+  color: #d98200;
+}
+
+.qt-pct.danger {
+  color: var(--danger);
+}
+
+.qt-reset {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--fg-faint);
+}
+
+.qt-extra {
+  padding-left: 20px;
+  color: var(--fg-faint);
+}
+
+.qt-extra.danger {
+  color: var(--danger);
+}
+
+.qt-foot {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.conv-item .fork-mark {
+  color: var(--fg-soft);
+}
+
+/*
+ * 分叉树：分叉对话缩进挂在主对话下面，虚线连起来。
+ * 竖线从主对话标题下方往下走，每个分叉一个拐角；最后一个分叉的竖线只画到它的拐角为止。
+ * 行高约 34px（.conv-item 上下 7px + 一行字），拐角在 17px 处。
+ */
+.fork-children {
+  margin-left: 16px;
+}
+
+/* 「项目」里的会话行本身缩进 36px，竖线跟着右移 */
+.fork-children.in-proj {
+  margin-left: 42px;
+}
+
+/* 分叉的分叉：竖线对齐上一层分叉的标题 */
+.fork-node .fork-children {
+  margin-left: 14px;
+}
+
+.fork-children .conv-item,
+.fork-children .conv-item.sub {
+  padding-left: 8px;
+}
+
+.fork-node {
+  position: relative;
+  padding-left: 14px;
+}
+
+.fork-node::before,
+.fork-node::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  border: 0 dashed var(--fg-faint);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.fork-node::before {
+  top: 0;
+  bottom: 0;
+  border-left-width: 1px;
+}
+
+/* 第一个分叉的竖线往上接到主对话那一行 */
+.fork-node:first-child::before {
+  top: -6px;
+}
+
+.fork-node:last-child::before {
+  bottom: auto;
+  height: 17px;
+}
+
+.fork-node:first-child:last-child::before {
+  height: 23px;
+}
+
+.fork-node::after {
+  top: 17px;
+  width: 10px;
+  border-top-width: 1px;
+}

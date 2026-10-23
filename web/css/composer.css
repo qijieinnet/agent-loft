@@ -1,0 +1,506 @@
+/* ---------- 输入框 ---------- */
+
+.composer-wrap {
+  padding: 0 16px calc(12px + env(safe-area-inset-bottom));
+  position: relative;
+  z-index: 2;
+}
+
+/* 输入框上沿的渐变：聊天内容滚到底部时柔和地淡出，不是被一刀切开（和顶栏下沿对称）。
+   右边让出滚动条的宽度，免得把滚动条也盖淡 */
+.composer-wrap::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 10px;
+  bottom: 100%;
+  height: 32px;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    var(--bg),
+    color-mix(in srgb, var(--bg) 70%, transparent) 40%,
+    color-mix(in srgb, var(--bg) 0%, transparent)
+  );
+}
+
+.composer-box {
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+/* 输入框上方的灰色上下文条，下沿藏在输入框后面 */
+.ctx-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 14px -22px;
+  padding: 5px 10px 27px;
+  background: var(--bg-soft);
+  border-radius: 16px 16px 0 0;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+.ctx-bar .spacer {
+  flex: 1;
+}
+
+.ctx-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: inherit;
+  font: inherit;
+}
+
+.ctx-item .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.ctx-item:hover {
+  background: var(--bg-hover);
+}
+
+.ctx-item.static {
+  flex-shrink: 0;
+}
+
+.ctx-item svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+
+.ctx-bar[hidden] {
+  display: none;
+}
+
+.ctx-item .agent-icon {
+  display: inline-grid;
+  color: var(--fg-soft);
+}
+
+.ctx-item .chev {
+  display: inline-grid;
+  margin-left: -2px;
+}
+
+.ctx-item .chev svg {
+  width: 13px;
+  height: 13px;
+  color: var(--fg-faint);
+}
+
+.composer {
+  background: var(--bg-input);
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 22px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 4px 16px rgba(0, 0, 0, 0.05);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.composer .icon-btn {
+  width: 32px;
+  height: 32px;
+}
+
+.composer .icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.composer .add-btn {
+  color: var(--fg);
+}
+
+.composer .add-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 输入框里的按钮 hover 都用圆形 / 胶囊底，和圆形发送按钮一致 */
+.composer .icon-btn {
+  border-radius: 50%;
+}
+
+.model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(260px, 45vw);
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 14px;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.model-pill:hover {
+  background: var(--bg-hover);
+}
+
+.model-pill .model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-pill .sub {
+  color: var(--fg-faint);
+  flex-shrink: 0;
+}
+
+.model-pill svg {
+  width: 13px;
+  height: 13px;
+  color: var(--fg-faint);
+  flex-shrink: 0;
+}
+
+.mode-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.mode-pill:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.mode-pill.chat {
+  color: var(--accent);
+}
+
+.topbar .mode-slot {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.topbar .top-more svg {
+  width: 20px;
+  height: 20px;
+}
+
+.composer.drag {
+  border-color: var(--accent);
+}
+
+.composer textarea {
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: none;
+  padding: 14px 16px 4px;
+  max-height: 40vh;
+  min-height: 50px;
+  line-height: 1.5;
+  font-size: 16px; /* iOS 小于 16px 会自动放大页面 */
+}
+
+.composer textarea::placeholder {
+  color: color-mix(in srgb, var(--fg-faint) 70%, transparent);
+}
+
+.composer .chips:not(:empty) {
+  padding: 10px 12px 0;
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px 10px 8px;
+}
+
+.composer-row .spacer {
+  flex: 1;
+}
+
+/* 上下文窗口圆环 + hover 气泡 */
+.ctx-ring-slot {
+  display: inline-flex;
+}
+
+/* 只是个指示器，不可点击：不加 hover 底色 */
+.ctx-ring {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 32px;
+  margin-right: 2px;
+  cursor: default;
+  outline: none;
+}
+
+/* 视觉修正：旁边模型名是小写英文，字形重心比行框中心低 1px 多（macOS 的 SF 字体尤其明显），
+   圆环按几何居中会显得偏高，往下挪 1px 对齐文字 */
+.ctx-ring .ring {
+  display: inline-grid;
+  transform: translateY(1px);
+}
+
+.ctx-ring svg {
+  width: 13px;
+  height: 13px;
+}
+
+.ctx-ring .track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--fg-faint) 28%, transparent);
+  stroke-width: 2.6;
+}
+
+.ctx-ring .bar {
+  fill: none;
+  stroke: var(--fg-faint);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+
+.ctx-ring.warn .bar {
+  stroke: #f59f00;
+}
+
+.ctx-ring.danger .bar {
+  stroke: var(--danger);
+}
+
+.ctx-ring .tip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translate(-50%, 4px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: #1f2023;
+  color: #f2f2f2;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  pointer-events: none;
+  z-index: 30;
+}
+
+.ctx-ring .tip-title {
+  color: #a8a8a8;
+}
+
+.ctx-ring:hover .tip,
+.ctx-ring:focus-visible .tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.model-slot {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.mic-btn.recording {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  animation: pulse 1.2s infinite;
+}
+
+.send-btn {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  /* 像 GPT 那样：浅色模式黑底白箭头，深色模式反过来 */
+  background: var(--fg);
+  color: var(--bg);
+  display: grid;
+  place-items: center;
+  margin-left: 6px;
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+}
+
+.send-btn:has(.send-spinner) {
+  opacity: 1;
+}
+
+/* 发送中：按钮里转圈，颜色跟着按钮的前景色走（深浅模式都看得清） */
+.send-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+textarea.sending {
+  opacity: 0.6;
+}
+
+.send-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-soft);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 13px;
+  max-width: 220px;
+}
+
+.chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip button {
+  color: var(--fg-faint);
+}
+
+.composer-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-faint);
+  margin-top: 6px;
+}
+
+.conn-banner {
+  position: absolute;
+  top: calc(56px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--fg);
+  color: var(--bg);
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  z-index: 5;
+}
+
+.conn-banner.clickable {
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ---------- 斜杠命令补全 ---------- */
+
+.composer {
+  position: relative;
+}
+
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 20;
+}
+
+.slash-menu[hidden] {
+  display: none;
+}
+
+.slash-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.slash-item.on {
+  background: var(--bg-hover);
+}
+
+.slash-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slash-name {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.slash-args {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-desc {
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-empty {
+  padding: 10px;
+  color: var(--fg-faint);
+  font-size: 13px;
+}
+
+.slash-item .badge,
+.cmd-row .badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  margin-left: 6px;
+}
