@@ -47,6 +47,14 @@ function openSettings() {
   );
 }
 
+/** 技能页：第一次打开时才加载 */
+export function openSkillsView() {
+  import("./skills.js").then(
+    (m) => m.openSkills(),
+    (err) => toast(`技能页加载失败，刷新页面再试：${err.message}`),
+  );
+}
+
 /** 定时任务页：第一次打开时才加载 */
 export function openTasksView() {
   import("./tasks.js").then(
@@ -81,6 +89,7 @@ export async function boot() {
   // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
   const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
   if (fromHash === "tasks") openTasksView();
+  else if (fromHash === "skills") openSkillsView();
   else if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
   else if (latest) await openConversation(latest.key);
   else newDraft();
@@ -170,6 +179,7 @@ function renderLayout() {
     ),
     // 「最近」上面的入口，像 ChatGPT 的 Tasks。当前在任务页时高亮（renderSidebar 里切换）
     (ui.tasksNav = h("button", { class: "btn new-chat side-nav", onclick: () => openTasksView() }, icon("clock"), "定时任务")),
+    (ui.skillsNav = h("button", { class: "btn new-chat side-nav", onclick: () => openSkillsView() }, icon("spark"), "技能")),
     ui.convList,
     h(
       "div",

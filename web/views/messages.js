@@ -13,9 +13,9 @@ import { changeCwd, forkConversation } from "./conv-actions.js";
 
 // ---------- 打开会话 ----------
 
-/** 从定时任务页回到对话：把输入框放回来 */
+/** 从定时任务页、技能页回到对话：把输入框放回来 */
 function leaveTasksView() {
-  if (S.view !== "tasks") return;
+  if (!S.view) return;
   S.view = null;
   ui.main.classList.remove("tasks-view");
 }

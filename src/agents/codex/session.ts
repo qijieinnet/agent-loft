@@ -7,7 +7,8 @@ import { refusalFor, UnsupportedRequest } from "./refusals.js";
 import { config } from "../../core/config.js";
 import { contextBlock } from "../../core/chat-mode.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
-import { TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { SKILLS_MCP_NAME, skillsMcpSpawn, TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { codexSkillLines } from "../../core/skill-runtime.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
   AgentEvents,
@@ -131,7 +132,7 @@ export async function userMcpServers(): Promise<string[]> {
   if (userMcpCache && Date.now() - userMcpCache.at < 60_000) return userMcpCache.names;
   try {
     const res = await appServer.call<{ config?: { mcp_servers?: Record<string, unknown> | null } }>("config/read", {});
-    const names = Object.keys(res.config?.mcp_servers ?? {}).filter((n) => n !== MEMORY_MCP_NAME && n !== TASKS_MCP_NAME);
+    const names = Object.keys(res.config?.mcp_servers ?? {}).filter((n) => n !== MEMORY_MCP_NAME && n !== TASKS_MCP_NAME && n !== SKILLS_MCP_NAME);
     userMcpCache = { names, at: Date.now() };
     return names;
   } catch (err) {
@@ -368,13 +369,33 @@ export class CodexSession implements AgentSession {
     const mcp = {
       ...(memory ? { [`mcp_servers.${MEMORY_MCP_NAME}`]: memoryMcpSpawn(memory.userId, "codex", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } : {}),
       // 新建 / 修改任务要等用户点授权卡，Codex 默认 60 秒就算工具超时
-      ...(tasks ? { [`mcp_servers.${TASKS_MCP_NAME}`]: { ...tasksMcpSpawn(tasks.userId, tasks.convKey, "codex"), tool_timeout_sec: TASK_TOOL_TIMEOUT_SEC } } : {}),
+      ...(tasks
+        ? {
+            [`mcp_servers.${TASKS_MCP_NAME}`]: { ...tasksMcpSpawn(tasks.userId, tasks.convKey, "codex"), tool_timeout_sec: TASK_TOOL_TIMEOUT_SEC },
+            [`mcp_servers.${SKILLS_MCP_NAME}`]: { ...skillsMcpSpawn(tasks.userId, tasks.convKey, "codex"), tool_timeout_sec: TASK_TOOL_TIMEOUT_SEC },
+          }
+        : {}),
     };
     if (this.chat && !minimal) {
       const off = Object.fromEntries((await userMcpServers()).map((n) => [`mcp_servers.${n}.enabled`, false]));
       return { config: { ...CHAT_CONFIG, ...off, ...mcp } };
     }
-    return Object.keys(mcp).length ? { config: mcp } : {};
+    const work = { ...mcp, ...(minimal ? {} : this.skillConfig()) };
+    return Object.keys(work).length ? { config: work } : {};
+  }
+
+  /**
+   * 工作模式的技能设置：变量逐个写进 shell_environment_policy.set（只作用于这个 thread 里跑的命令，
+   * 一个个键写不会冲掉用户 config.toml 里本来设的）；成员关掉 Codex 自己的技能清单 ——
+   * 那里面是机器上装的技能，只给管理员。成员的技能走 contextBlock 里的清单。
+   */
+  private skillConfig(): Record<string, unknown> {
+    const skills = this.opts.skills;
+    if (!skills) return {};
+    return {
+      ...Object.fromEntries(Object.entries(skills.env).map(([k, v]) => [`shell_environment_policy.set.${k}`, v])),
+      ...(skills.admin ? {} : { "skills.include_instructions": false, "features.skill_search": false }),
+    };
   }
 
   /**
@@ -385,7 +406,7 @@ export class CodexSession implements AgentSession {
   private contextSent = false;
 
   private get contextPending(): boolean {
-    return !this.contextSent && (this.chat || !!this.opts.memory || !!this.opts.announceMode);
+    return !this.contextSent && (this.chat || !!this.opts.memory || !!this.opts.announceMode || codexSkillLines(this.opts.skills).length > 0);
   }
 
   private async openOnce(): Promise<string> {
@@ -503,7 +524,7 @@ export class CodexSession implements AgentSession {
     const note = input.attachments.length ? describeAttachments(input.attachments, inlined, chat) : "";
     const texts = chat ? inlineTextBlocks(input.attachments, textMap) : "";
     // 放在最后：Codex 拿第一条消息的开头当会话预览，不能被这段背景占掉
-    const context = this.contextPending ? contextBlock(chat ? "chat" : "work", this.opts.memory?.prompt, "联网搜索") : "";
+    const context = this.contextPending ? contextBlock(chat ? "chat" : "work", this.opts.memory?.prompt, "联网搜索", codexSkillLines(this.opts.skills)) : "";
     const text = [input.text, note, texts, context].filter(Boolean).join("\n\n");
     const images = input.attachments.filter((a) => a.kind === "image").map((a) => a.path);
     let startedOn: string | undefined;

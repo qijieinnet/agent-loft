@@ -8,6 +8,7 @@ import { addItem, openConversation, openLightbox, renderEmpty, scrollToBottom } 
 import { renderScheduled } from "./schedule.js";
 import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
+import { attachMention } from "./mention.js";
 import { doAction, openModelPicker, openSessions } from "./conv-actions.js";
 
 // ---------- 输入框 ----------
@@ -16,16 +17,21 @@ export function renderComposer() {
   cancelVoice();
   ui.input = h("textarea", {
     rows: 1,
-    placeholder: "随心输入",
+    placeholder: "随心输入，@ 选技能",
     oninput: () => {
       // 识别过程中用户自己动了输入框，以用户为准，停掉识别
       cancelVoice();
       autosize();
       void updateSlashMenu();
+      void ui.mention.update();
     },
-    onblur: () => setTimeout(closeSlashMenu, 150),
+    onblur: () =>
+      setTimeout(() => {
+        closeSlashMenu();
+        ui.mention.close();
+      }, 150),
     onkeydown: (e) => {
-      if (slashKeydown(e)) {
+      if (slashKeydown(e) || ui.mention.keydown(e)) {
         e.preventDefault();
         return;
       }
@@ -62,6 +68,10 @@ export function renderComposer() {
   ui.chips = h("div", { class: "chips" });
   ui.schedBar = h("div", { class: "sched-bar", hidden: true });
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
+  ui.mentionMenu = h("div", { class: "slash-menu", hidden: true });
+  ui.mention = attachMention(ui.input, ui.mentionMenu, {
+    onEmpty: () => import("./skills.js").then((m) => m.openSkills()),
+  });
   ui.composer = h(
     "div",
     {
@@ -78,6 +88,7 @@ export function renderComposer() {
       },
     },
     ui.slashMenu,
+    ui.mentionMenu,
     ui.chips,
     ui.input,
     h(
@@ -253,6 +264,7 @@ export async function sendMessage() {
     return;
   }
   closeSlashMenu();
+  ui.mention.close();
   let key;
   let res;
   setSending(true);

@@ -20,6 +20,7 @@ export type ParsedCommand =
   | { kind: "autoedit"; on?: boolean }
   | { kind: "mode"; mode: "chat" | "work" }
   | { kind: "help" }
+  | { kind: "skills" }
   /** 只发了一个「/」：列出可用命令 */
   | { kind: "commands" }
   | { kind: "approve"; requestId: string; decision: ApprovalDecision }
@@ -75,6 +76,8 @@ export function parseCommand(raw: string): ParsedCommand {
       return arg ? { kind: "chat", text } : { kind: "mode", mode: head.toLowerCase() as "chat" | "work" };
     case "help":
       return { kind: "help" };
+    case "skills":
+      return arg ? { kind: "chat", text } : { kind: "skills" };
     case "approve": {
       const [requestId, decision] = rest;
       if (!requestId || !decision) return { kind: "chat", text };

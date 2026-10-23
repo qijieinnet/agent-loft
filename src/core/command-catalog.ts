@@ -24,6 +24,7 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "effort", args: "[程度]", description: "切换思考程度" },
   { name: "chat", description: "切到聊天模式：精简、只能联网搜索，每轮开销小很多" },
   { name: "work", description: "切到工作模式：agent 原装的全部能力" },
+  { name: "skills", description: "列出能用的技能（消息里写 @名字 点名使用）" },
   { name: "status", description: "查看当前会话、模型、目录、剩余额度" },
   { name: "sessions", args: "[all]", description: "列出历史会话，点按钮恢复；加 all 列所有目录" },
   { name: "resume", args: "<会话ID>", description: "恢复指定会话" },
@@ -42,7 +43,13 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
 ];
 
 /** agent 自己报上来的命令 */
-export type AgentCommand = { name: string; description: string; args?: string };
+export type AgentCommand = {
+  name: string;
+  description: string;
+  args?: string;
+  /** agent 自己带的（Claude Code 的 /compact、自带的技能），不是机器上另外装的 */
+  builtin?: boolean;
+};
 
 /**
  * 用户自定义命令。prompt 里的 $ARGUMENTS 换成命令后面跟的参数；

@@ -59,6 +59,10 @@ async function main(): Promise<void> {
   startTaskRunner();
   // 先查一遍 agent 装没装、登没登录，网页打开时新对话里就只列出能用的
   void agentHealth().catch(() => {});
+  // 读一次 Claude 的命令表：成员会话的技能白名单要带上 Claude Code 自带的那些（见 claude/session.ts 的 claudeBuiltins）
+  if (config().agents.claude.enabled) {
+    setTimeout(() => void hub.driver("claude")?.commands?.(config().workspaceRoot).catch(() => {}), 5000).unref();
+  }
 
   console.log(`[启动] workspace=${config().workspaceRoot}`);
   if (config().workspaceRoot === process.cwd()) {

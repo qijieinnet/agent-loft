@@ -63,6 +63,7 @@ import {
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
+import { handleSkillsApi } from "./skills-api.js";
 import { addSubscription, listSubscriptions, pushToAll, removeSubscription, removeSubscriptionsOf, vapidPublicKey } from "./push.js";
 
 export const COOKIE = "aim_session";
@@ -527,6 +528,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 定时任务 -----
   if (p.startsWith("/api/tasks") && (await handleTasksApi(req, res, p, user))) return;
+  if (p.startsWith("/api/skills") && (await handleSkillsApi(req, res, url, user))) return;
 
   // ----- 目录选择器：列工作区内的子目录 -----
   if (p === "/api/dirs" && method === "GET") {
@@ -844,6 +846,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         allowedAgents: hub.enabledAgents().map((d) => d.id),
         // 带 key 是输入框补全：只列 Web 能用的；不带是设置页排序，全列
         ...(conv ? { channel: "web" } : {}),
+        // 成员看不到机器上装的技能
+        ...(admin ? {} : { member: true }),
       });
       sendJson(res, 200, { commands });
       return;

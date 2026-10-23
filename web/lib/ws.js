@@ -201,6 +201,10 @@ function onWsMessage(msg) {
       // 自己的定时任务变了：定时任务页开着的话会去重新拉（views/tasks.js）
       document.dispatchEvent(new Event("aim:tasks"));
       return;
+    case "skills":
+      // 技能变了（自己的、装了的、广场上的）：技能页重新拉，@ 补全的缓存作废
+      document.dispatchEvent(new Event("aim:skills"));
+      return;
     case "notice":
       // 正看着这条会话就不打扰；普通网页靠 Web Push，这里只给桌面端
       if (!desktop) return;

@@ -36,13 +36,13 @@ export function chatSystemPrompt(search: string, memory?: string): string {
 const OPEN = "<agent-loft-context>";
 const CLOSE = "</agent-loft-context>";
 
-/** Codex：附在会话进程第一条消息后面的背景（模式 + 记忆） */
-export function contextBlock(mode: "chat" | "work", memory: string | undefined, search: string): string {
+/** Codex：附在会话进程第一条消息后面的背景（模式 + 记忆 + 工作模式下的技能清单） */
+export function contextBlock(mode: "chat" | "work", memory: string | undefined, search: string, skills: string[] = []): string {
   const head =
     mode === "chat"
       ? ["当前是「聊天模式」，你作为用户的私人 AI 助手和他聊天：", ...chatRules(search)]
       : ["当前是「工作模式」：可以执行命令、读写文件，按平常的方式干活。之前如果说过「聊天模式下不能做」，那个限制已经解除。"];
-  return wrapContext([...head, ...(memory ? ["", memory] : [])]);
+  return wrapContext([...head, ...(memory ? ["", memory] : []), ...(mode === "work" && skills.length ? ["", ...skills] : [])]);
 }
 
 /** 包成 agent-loft 附上的背景：用户看不到（读历史、实时显示时都剥掉），agent 照着做 */

@@ -16,7 +16,8 @@ import {
 import { agentEnvironment } from "../../core/agent-env.js";
 import { chatSystemPrompt } from "../../core/chat-mode.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
-import { TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { PLUGIN_NAME, projectCommandNames } from "../../core/skill-runtime.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
   AgentEvents,
@@ -130,6 +131,13 @@ function buildContent(input: UserInput, chat: boolean): string | ContentBlock[] 
 const MEMORY_TOOLS = new Set(["remember", "forget", "search_past_chats"].map((t) => `mcp__${MEMORY_MCP_NAME}__${t}`));
 /** 定时任务工具：要用户确认的那几个由 agent-loft 自己弹卡（tasks-bridge.ts），这里不再问一遍 */
 const TASK_TOOLS = new Set(["list_tasks", "create_task", "update_task", "delete_task"].map((t) => `mcp__${TASKS_MCP_NAME}__${t}`));
+/** 技能工具：建、改技能前由 agent-loft 自己弹卡（skills-bridge.ts） */
+const SKILL_TOOLS = new Set(["list_skills", "get_skill", "create_skill", "update_skill", "skill_request"].map((t) => `mcp__${SKILLS_MCP_NAME}__${t}`));
+/**
+ * Claude Code 自带的命令和技能名（supportedCommands 里标了 builtin 的），driver 读命令表时顺手记下。
+ * 成员会话的技能白名单要带上它们；还没读到过就先不带（只少了 /simplify 这类自带技能）。
+ */
+export const claudeBuiltins = new Set<string>();
 /** 聊天模式的全部工具：只能联网，碰不到本机 */
 const CHAT_TOOLS = ["WebSearch", "WebFetch"];
 
@@ -152,7 +160,12 @@ export function modeOptions(opts: SessionOptions): Partial<Options> {
     ...(memory
       ? { [MEMORY_MCP_NAME]: { type: "stdio", ...memoryMcpSpawn(memory.userId, "claude", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } }
       : {}),
-    ...(opts.tasks ? { [TASKS_MCP_NAME]: { type: "stdio", ...tasksMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "claude") } } : {}),
+    ...(opts.tasks
+      ? {
+          [TASKS_MCP_NAME]: { type: "stdio", ...tasksMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "claude") },
+          [SKILLS_MCP_NAME]: { type: "stdio", ...skillsMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "claude") },
+        }
+      : {}),
   };
   if (opts.mode === "chat") {
     return {
@@ -168,11 +181,22 @@ export function modeOptions(opts: SessionOptions): Partial<Options> {
   const switched = opts.announceMode
     ? "这条对话刚从「聊天模式」切到「工作模式」：之前聊天模式下不能执行命令、不能读写文件的限制已经解除，现在可以正常干活。不用为之前说做不到而道歉。"
     : "";
-  const append = [memory?.prompt, switched].filter(Boolean).join("\n\n");
+  const skills = opts.skills;
+  const append = [memory?.prompt, skills?.prompt, switched].filter(Boolean).join("\n\n");
   return {
     systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false },
     ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+    ...(skills?.pluginDir ? { plugins: [{ type: "local" as const, path: skills.pluginDir, skipMcpDiscovery: true }] } : {}),
+    ...(skills && !skills.admin ? { skills: memberSkillAllowlist(skills, opts.cwd) } : {}),
   };
+}
+
+/**
+ * 成员会话能用的技能：agent-loft 里启用的、Claude Code 自带的、项目目录里的。机器上另外装的
+ * （~/.claude/skills、插件市场、claude.ai 同步的）不在里面：模型看不到，Skill 工具也调不了。
+ */
+function memberSkillAllowlist(skills: NonNullable<SessionOptions["skills"]>, cwd: string): string[] {
+  return [...new Set([...skills.list.map((s) => `${PLUGIN_NAME}:${s.name}`), ...claudeBuiltins, ...projectCommandNames(cwd)])];
 }
 
 export class ClaudeSession implements AgentSession {
@@ -228,7 +252,8 @@ export class ClaudeSession implements AgentSession {
       prompt: input.stream(),
       options: {
         cwd: this.opts.cwd,
-        env: agentEnvironment(),
+        // 技能变量只在工作模式注入：聊天模式没有执行命令的工具，用不上
+        env: { ...agentEnvironment(), ...(this.opts.mode === "chat" ? {} : (this.opts.skills?.env ?? {})) },
         // 只能是 default 或 acceptEdits：bypassPermissions 会让 canUseTool 变成死代码。
         // acceptEdits 只放行工作目录（含附件目录）内的改文件，其它照样走 canUseTool
         permissionMode: this.opts.autoEdit ? "acceptEdits" : "default",
@@ -357,7 +382,7 @@ export class ClaudeSession implements AgentSession {
     // 自家的记忆工具，以及聊天模式下的联网工具：不问。
     // 不用 allowedTools 放行 —— SDK 会对每个会话打一条「canUseTool 被绕过」的警告
     if (MEMORY_TOOLS.has(toolName) && this.opts.memory) return { behavior: "allow", updatedInput: input };
-    if (TASK_TOOLS.has(toolName) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
+    if ((TASK_TOOLS.has(toolName) || SKILL_TOOLS.has(toolName)) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
     if (this.opts.mode === "chat" && CHAT_TOOLS.includes(toolName)) return { behavior: "allow", updatedInput: input };
 
     // 提问不是授权：它问的是「你选哪个」

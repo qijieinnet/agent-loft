@@ -36,6 +36,17 @@ export function verifyTaskCaller(userId: string, convKey: string, sig: string): 
   return got.length === want.length && crypto.timingSafeEqual(got, want);
 }
 
+/**
+ * 技能工具（让 agent 帮用户建、改技能）也走这条通道：同一个服务脚本，AGENT_LOFT_TOOLSET=skills 时
+ * 只报技能那几个工具，主进程按工具名分给 skills-bridge.ts。单独挂成一个 MCP 服务，工具名才叫得顺。
+ */
+export const SKILLS_MCP_NAME = "agent_loft_skills";
+
+export function skillsMcpSpawn(userId: string, convKey: string, via: string): StdioSpawn {
+  const base = tasksMcpSpawn(userId, convKey, via);
+  return { ...base, env: { ...base.env, AGENT_LOFT_TOOLSET: "skills" } };
+}
+
 export function tasksMcpSpawn(userId: string, convKey: string, via: string): StdioSpawn {
   return {
     command: process.execPath,

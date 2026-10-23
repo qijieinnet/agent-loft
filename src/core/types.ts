@@ -188,8 +188,27 @@ export type SessionOptions = {
   };
   /** 模式换过、这个 agent 会话还不知道：换不了系统提示的 agent（Codex）要在第一条消息里说一声 */
   announceMode?: boolean;
-  /** 给 agent 定时任务工具（core/tasks-mcp.ts）：替谁、在哪条对话里管理。只有有主人的对话才给 */
+  /**
+   * 给 agent 定时任务工具（core/tasks-mcp.ts）：替谁、在哪条对话里管理。只有有主人的对话才给。
+   * 技能工具（让 agent 帮用户建、改技能）也跟着它一起给。
+   */
   tasks?: { userId: string; convKey: string };
+  /** 这条对话主人的技能（core/skill-runtime.ts）。没主人的对话不给：机器上的技能照旧，没有 agent-loft 的技能 */
+  skills?: SessionSkills;
+};
+
+export type SessionSkills = {
+  userId: string;
+  /** 管理员：机器上原有的技能照常能用；成员：只有 agent-loft 的技能和 agent 自带的 */
+  admin: boolean;
+  /** Claude 插件目录（里面是这个人启用的技能），一个都没有就不给 */
+  pluginDir?: string;
+  /** 启用的技能：名字、说明、SKILL.md 的路径 */
+  list: { name: string; description: string; path: string }[];
+  /** 要注入的环境变量（技能声明过、这个人填了值的） */
+  env: Record<string, string>;
+  /** 变量配没配好的说明，拼进系统提示 / 背景 */
+  prompt?: string;
 };
 
 export type ConversationMode = "chat" | "work";

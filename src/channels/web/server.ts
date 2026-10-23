@@ -14,6 +14,7 @@ import { GLOBAL_ALWAYS_DENIED, hub, type EventEnvelope } from "../../core/hub.js
 import { interactions, type Interaction } from "../../core/interactions.js";
 import { getConversation } from "../../core/store.js";
 import { taskEvents } from "../../core/tasks.js";
+import { skillEvents } from "../../core/skills.js";
 import { RUNNING_VERSION } from "../../core/upgrade.js";
 import type { Settlement } from "../../core/types.js";
 import { getUser, isAdmin, legacyOwnerId, type User } from "../../core/users.js";
@@ -184,6 +185,11 @@ function broadcastInteraction(i: Interaction): void {
 /** 某人的定时任务变了（增删改、跑完一次）：只告诉他自己开着的页面，页面自己去重新拉 */
 function broadcastTasks(owner: string): void {
   for (const client of clients) if (client.user.id === owner) send(client, { t: "tasks" });
+}
+
+/** 技能变了：技能广场谁都可能在看，通知所有人重新拉（列表很小） */
+function broadcastSkills(): void {
+  for (const client of clients) send(client, { t: "skills" });
 }
 
 // ---------- 系统通知（Web Push） ----------
@@ -485,6 +491,7 @@ export async function startWeb(): Promise<void> {
   interactions.on("updated", broadcastInteraction);
   interactions.on("settled", broadcastInteraction);
   taskEvents.on("changed", broadcastTasks);
+  skillEvents.on("changed", broadcastSkills);
 
   await listen(server, host, port);
   console.log(`[web] 已监听 http://${host}:${port}`);
@@ -515,6 +522,7 @@ export async function stopWeb(): Promise<void> {
   interactions.off("updated", broadcastInteraction);
   interactions.off("settled", broadcastInteraction);
   taskEvents.off("changed", broadcastTasks);
+  skillEvents.off("changed", broadcastSkills);
   if (heartbeat) clearInterval(heartbeat);
   for (const client of clients) client.ws.close(1001, "服务重启");
   clients.clear();

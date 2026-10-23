@@ -12,14 +12,14 @@ import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, ren
 
 export function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
-  // 定时任务页：只有标题，模式切换、「更多」都是对话用的
-  const tasks = S.view === "tasks";
+  // 定时任务页、技能页：只有标题，模式切换、「更多」都是对话用的
+  const tasks = S.view === "tasks" || S.view === "skills";
   fill(ui.topbar,
     h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
     h(
       "div",
       { class: "top-title" },
-      tasks ? h("span", { class: "conv-name" }, "定时任务") : c ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)) : null,
+      tasks ? h("span", { class: "conv-name" }, S.view === "skills" ? "技能" : "定时任务") : c ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)) : null,
     ),
     tasks ? null : ui.modeSlot,
     tasks ? null : h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")),

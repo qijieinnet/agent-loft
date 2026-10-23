@@ -31,7 +31,7 @@ import type {
 import { describeUsage, readUsage, toQuota } from "./account.js";
 import { cachedProbe, withProbe } from "./probe.js";
 import { diagnose } from "./errors.js";
-import { ClaudeSession, describeToolUse, summarize, toModelInfo } from "./session.js";
+import { claudeBuiltins, ClaudeSession, describeToolUse, summarize, toModelInfo } from "./session.js";
 
 /** 模型列表几乎不变，缓存 10 分钟；读失败抛给设置页，让它退回手填 */
 const readCatalog = cachedProbe(10 * 60_000, "模型列表", () => withProbe(async (q) => toModelInfo(await q.supportedModels())));
@@ -52,11 +52,15 @@ function readCommands(cwd: string): Promise<AgentCommand[]> {
       () =>
         withProbe(
           async (q) =>
-            (await q.supportedCommands()).map((c) => ({
-              name: c.name,
-              description: c.description,
-              ...(c.argumentHint ? { args: c.argumentHint } : {}),
-            })),
+            (await q.supportedCommands()).map((c) => {
+              if (c.builtin) claudeBuiltins.add(c.name);
+              return {
+                name: c.name,
+                description: c.description,
+                ...(c.argumentHint ? { args: c.argumentHint } : {}),
+                ...(c.builtin ? { builtin: true } : {}),
+              };
+            }),
           cwd,
         ),
       [] as AgentCommand[],

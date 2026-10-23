@@ -19,6 +19,7 @@ import { describeSchedule, formatDateTime, nextRun, normalizeSchedule, parseLoca
 import { TASK_TOOL_TIMEOUT_SEC, tasksSocketPath, verifyTaskCaller } from "./tasks-mcp.js";
 import { createTask, deleteTask, getTask, listTasks, TASKS_PER_USER, updateTask, type Task, type TaskInput } from "./tasks.js";
 import { getUser } from "./users.js";
+import { SKILL_TOOL_NAMES, skillToolCall } from "./skills-bridge.js";
 
 type Reply = { text: string; isError?: boolean };
 const fail = (text: string): Reply => ({ text, isError: true });
@@ -85,6 +86,8 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
   if (!user || user.disabled) return fail("账号已停用。");
   const conv = getConversation(convKey);
   if (!conv || memoryOwnerOf(conv) !== user.id) return fail("这条对话不属于当前用户，不能管理定时任务。");
+  // 技能工具走的也是这条通道（见 tasks-mcp.ts 的 skillsMcpSpawn）
+  if (SKILL_TOOL_NAMES.includes(tool)) return skillToolCall(user.id, convKey, tool, args);
   const now = Date.now();
   const inTaskTurn = !!hub.currentTaskTurn(convKey);
 
@@ -211,7 +214,8 @@ export function startTasksBridge(): void {
       buf += chunk;
       const n = buf.indexOf("\n");
       if (n < 0) {
-        if (buf.length > 64 * 1024) sock.destroy();
+        // 技能工具会带着整份 SKILL.md 和附带文件过来，放宽到 8MB
+        if (buf.length > 8 * 1024 * 1024) sock.destroy();
         return;
       }
       const line = buf.slice(0, n);

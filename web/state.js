@@ -21,7 +21,7 @@ export const S = {
   loadToken: 0,
   /** 登录的用户 { id, name, role } */
   user: null,
-  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页 */
+  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页，"skills" 是技能页 */
   view: null,
 };
 

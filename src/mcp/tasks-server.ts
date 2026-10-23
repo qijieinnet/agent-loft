@@ -1,4 +1,5 @@
 // 定时任务工具的 MCP 服务（stdio）：给 agent 用的 list / create / update / delete。
+// 环境变量 AGENT_LOFT_TOOLSET=skills 时换成技能工具（list / get / create / update_skill），走同一条通道。
 //
 // 这里只是个传话的：每次调用原样转给主进程（core/tasks-bridge.ts，经 unix socket），带上拉起时
 // 定死的用户、对话和签名（见 core/tasks-mcp.ts）。校验、授权卡、真正的增删改都在主进程里做。
@@ -103,6 +104,126 @@ const TOOLS = [
   },
 ];
 
+// ---------- 技能工具（AGENT_LOFT_TOOLSET=skills 时只报这几个） ----------
+
+const VARS = {
+  type: "array",
+  description:
+    "技能要用的环境变量（API 地址、密钥之类）。值由用户自己在网页上填，运行时注入到他的会话环境里，SKILL.md 里用 $NAME 引用。" +
+    "变量名用大写字母、数字和 _，最好带上技能相关的前缀（比如 WEATHER_API_KEY）。",
+  items: {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      description: { type: "string", description: "给用户看的说明：这是什么、去哪里拿" },
+      secret: { type: "boolean", description: "密钥、令牌之类：网页上不回显" },
+      required: { type: "boolean" },
+      hosts: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "secret 时建议给：这个密钥只允许发往的地址（域名或 IP，可带端口，比如 api.example.com）。给了就是受保护的密钥：不放进环境变量，agent 看不到值，" +
+          "只能用 skill_request 工具在请求里写 {{NAME}} 由 agent-loft 代发。这时 body 里要写成用 skill_request 调用，而不是 curl $NAME。",
+      },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+};
+
+const FILES = {
+  type: "array",
+  description: "技能附带的文件（脚本、模板、参考资料），路径相对技能目录，比如 scripts/fetch.sh。只支持文本。",
+  items: {
+    type: "object",
+    properties: { path: { type: "string" }, content: { type: "string" } },
+    required: ["path", "content"],
+    additionalProperties: false,
+  },
+};
+
+const SKILL_TOOLS = [
+  {
+    name: "list_skills",
+    description: "列出用户在 agent-loft 里启用着的技能（名字、说明、谁建的、变量配没配）。",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { title: "查看技能", readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: "get_skill",
+    description: "读一个技能的 SKILL.md 和附带文件清单；给 file 时读那个附带文件。改技能之前先读。",
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string", description: "技能名" }, file: { type: "string", description: "附带文件的相对路径（可选）" } },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    annotations: { title: "读技能", readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: "create_skill",
+    description:
+      "把一套做事的方法存成用户的技能（agent-loft 管理，Claude Code 和 Codex 都能用；格式同 Claude Code 的 SKILL.md）。" +
+      "用户说「把这个做成技能 / 以后都这么做 / 存成 skill」时用。写法：description 一句话说清什么时候该用它（agent 靠它判断）；" +
+      "body 是给 agent 的操作说明（Markdown），步骤具体、可以直接照做；要调接口的，把地址、密钥做成 vars，body 里用 $NAME 引用，不要把真实的密钥写进去。" +
+      "调用后会弹授权卡给用户确认。建好后只有用户自己看得到，下一轮起可用。不要写到 ~/.claude/skills 之类的目录里，那是机器上的，只有管理员能用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "技能名：小写字母、数字和 -，最长 48 个字符，全站唯一" },
+        description: { type: "string", description: "什么时候用这个技能（一两句话）" },
+        body: { type: "string", description: "SKILL.md 的正文（不含 frontmatter）" },
+        files: FILES,
+        vars: VARS,
+      },
+      required: ["name", "description", "body"],
+      additionalProperties: false,
+    },
+    annotations: { title: "新建技能", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "skill_request",
+    description:
+      "替你发一个 HTTP 请求，url、headers、body 里的 {{变量名}} 由 agent-loft 换成用户在技能里填的值 —— 你看不到密钥本身。" +
+      "技能里的受保护密钥（list_skills 里标了「受保护」的）只能这样用，而且只能发往用户确认过的地址；普通变量也可以这样用。" +
+      "不跟随跳转；响应里出现的变量值会被抹掉；最多返回 256KB 文本。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], description: "默认 GET" },
+        url: { type: "string", description: "完整地址，比如 https://api.example.com/v1/weather?city=北京&key={{WEATHER_API_KEY}}" },
+        headers: { type: "object", additionalProperties: { type: "string" }, description: "比如 { \"Authorization\": \"Bearer {{MY_TOKEN}}\" }" },
+        body: { type: "string", description: "请求体（JSON 记得自己序列化，并带上 content-type）" },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    // openWorldHint 不标：Codex 见到它会先弹 MCP 审批（agent-loft 不接，等于拒绝）。能发往哪里由 agent-loft 自己卡着
+    annotations: { title: "代发请求", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "update_skill",
+    description: "修改用户自己建的一个技能：说明、正文、附带文件、变量，只给要改的。会弹授权卡让用户确认。分享出去的技能改了之后，装了的人也会用上新的。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "技能名（不能改名）" },
+        description: { type: "string" },
+        body: { type: "string", description: "新的 SKILL.md 正文（整段替换）" },
+        files: FILES,
+        delete_files: { type: "array", items: { type: "string" }, description: "要删掉的附带文件" },
+        vars: VARS,
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    annotations: { title: "修改技能", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+];
+
+const skillsOnly = process.env.AGENT_LOFT_TOOLSET === "skills";
+const ACTIVE = skillsOnly ? SKILL_TOOLS : TOOLS;
+
 function text(t: string, isError = false) {
   return { content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) };
 }
@@ -111,7 +232,7 @@ function text(t: string, isError = false) {
 function forward(tool: string, args: Record<string, unknown>): Promise<{ text: string; isError?: boolean }> {
   return new Promise((resolve) => {
     if (!socketPath || !caller.user || !caller.conv) {
-      resolve({ text: "定时任务工具没有正确配置（缺少用户或对话）。", isError: true });
+      resolve({ text: `${skillsOnly ? "技能" : "定时任务"}工具没有正确配置（缺少用户或对话）。`, isError: true });
       return;
     }
     const sock = net.createConnection(socketPath);
@@ -147,16 +268,16 @@ async function handle(req: Request): Promise<unknown> {
       return {
         protocolVersion: typeof req.params?.protocolVersion === "string" ? req.params.protocolVersion : "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "agent-loft-tasks", version: "1.0.0" },
+        serverInfo: { name: skillsOnly ? "agent-loft-skills" : "agent-loft-tasks", version: "1.0.0" },
       };
     case "ping":
       return {};
     case "tools/list":
-      return { tools: TOOLS };
+      return { tools: ACTIVE };
     case "tools/call": {
       const params = req.params ?? {};
       const name = String(params.name ?? "");
-      if (!TOOLS.some((t) => t.name === name)) return text(`没有工具 ${name}`, true);
+      if (!ACTIVE.some((t) => t.name === name)) return text(`没有工具 ${name}`, true);
       const res = await forward(name, (params.arguments as Record<string, unknown> | undefined) ?? {});
       return text(res.text, !!res.isError);
     }

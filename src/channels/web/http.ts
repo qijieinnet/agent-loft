@@ -89,8 +89,8 @@ export async function readBody(req: IncomingMessage, limit: number): Promise<Buf
   return Buffer.concat(chunks);
 }
 
-export async function readJsonBody<T = Record<string, unknown>>(req: IncomingMessage): Promise<T> {
-  const raw = await readBody(req, 1024 * 1024);
+export async function readJsonBody<T = Record<string, unknown>>(req: IncomingMessage, limit = 1024 * 1024): Promise<T> {
+  const raw = await readBody(req, limit);
   if (raw.length === 0) return {} as T;
   try {
     return JSON.parse(raw.toString("utf8")) as T;

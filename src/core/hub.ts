@@ -46,7 +46,9 @@ import type {
 import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
 import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
-import { stripContext } from "./chat-mode.js";
+import { stripContext, wrapContext } from "./chat-mode.js";
+import { isMachineCommand, mentionContext, sessionSkills, skillsText } from "./skill-runtime.js";
+import { skillEvents } from "./skills.js";
 import { isSilentReply } from "./task-prompt.js";
 
 // ---------- 事件 ----------
@@ -227,6 +229,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
   constructor() {
     super();
     this.setMaxListeners(100);
+    // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
+    skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
     onConfigChange((next, prev) => {
       // 默认模型可能改了，缓存作废，下次显示时重新读
@@ -520,6 +524,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const memory = sessionMemory(conv);
     // 定时任务工具：和记忆一样只给有主人的对话（飞书群聊里谁都能让机器人建任务，算不清是谁的）
     const taskOwner = memoryOwnerOf(conv);
+    // 技能也跟着主人走：他启用的技能、填的变量；成员看不到机器上原有的技能（见 skill-runtime.ts）
+    const skills = sessionSkills(taskOwner);
     const mode = conv.mode ?? "work";
     // 续着的会话上次被告知的模式和现在不一样（新会话没有历史，算原装的工作模式）
     const announceMode = (resumeId ? (binding.announcedMode ?? "work") : "work") !== mode;
@@ -543,6 +549,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         ...(memory ? { memory } : {}),
         ...(announceMode ? { announceMode: true } : {}),
         ...(taskOwner ? { tasks: { userId: taskOwner, convKey: key } } : {}),
+        ...(skills ? { skills } : {}),
       },
       {
         onTurnStart: () => {
@@ -875,8 +882,38 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         // 清理要等旧会话 dispose，期间可能又点了停止
         if (cancelled()) return;
       }
-      this.sendNow(key, input, task ?? null);
+      const blocked = await this.blockedSlash(key, input.text);
+      if (blocked) {
+        this.emitEvent(key, { type: "notice", text: blocked });
+        return gone(blocked);
+      }
+      this.sendNow(key, this.withMentions(key, input), task ?? null);
     });
+  }
+
+  /**
+   * 消息里 @ 了技能：附一段背景告诉 agent 用哪个、怎么用（用户看不到，见 skill-runtime.ts 的 mentionContext）。
+   * 按发出去这一刻对话的 agent 和模式拼：排队期间可能刚切过。
+   */
+  private withMentions(key: string, input: UserInput): UserInput {
+    const conv = getConversation(key);
+    if (!conv) return input;
+    const lines = mentionContext(stripContext(input.text), { owner: memoryOwnerOf(conv), agent: conv.agent, mode: conv.mode ?? "work" });
+    return lines ? { ...input, text: `${input.text}\n\n${wrapContext(lines)}` } : input;
+  }
+
+  /** 成员直接发「/机器上的技能」：Claude 会绕过技能白名单把它展开，这里先拦下。返回拦下的原因 */
+  private async blockedSlash(key: string, text: string): Promise<string | null> {
+    const m = /^[/／](\S+)/.exec(text.trim());
+    if (!m) return null;
+    const conv = getConversation(key);
+    if (!conv || conv.agent !== "claude" || conv.mode === "chat") return null;
+    const owner = memoryOwnerOf(conv);
+    if (!owner || getUser(owner)?.role === "admin") return null;
+    const driver = this.enabledAgents().find((d) => d.id === conv.agent);
+    if (!driver?.commands) return null;
+    const native = await withTimeout(driver.commands(conv.cwd), "读取命令列表").catch(() => [] as AgentCommand[]);
+    return isMachineCommand(m[1]!, native, conv.cwd) ? `/${m[1]} 是这台机器上装的技能，只有管理员能用。` : null;
   }
 
   /** 刚点过停止（被打断的那一轮还可能晚到一个出错，见 onError 里的 stopped） */
@@ -1140,7 +1177,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         this.staleLive.add(live.id);
         return;
       }
-      await this.drop(key, "记忆已更新");
+      await this.drop(key, "记忆或技能已更新");
     });
   }
 
@@ -1149,9 +1186,15 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
    * agent 自己用 remember / forget 改的不走这里 —— 那些本来就在上下文里，没必要重启进程、白白丢掉提示缓存。
    */
   memoryChanged(userId: string): void {
+    this.personalChanged(new Set([userId]));
+  }
+
+  /** 这些人的记忆或技能变了：他们名下活着的会话空闲下来就重新拉起 */
+  private personalChanged(users: Set<string>): void {
     for (const [key, live] of this.live) {
       const conv = getConversation(key);
-      if (!conv || memoryOwnerOf(conv) !== userId) continue;
+      const owner = conv ? memoryOwnerOf(conv) : undefined;
+      if (!owner || !users.has(owner)) continue;
       this.staleLive.add(live.id);
       this.dropIfStale(key);
     }
@@ -1371,12 +1414,16 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     switch (cmd.kind) {
       case "help":
         return text(helpText(ctx.allowedAgents, channel));
+      case "skills":
+        return text(skillsText(memoryOwnerOf(getConversation(key)!)));
       case "commands": {
         const conv = getConversation(key)!;
+        const owner = memoryOwnerOf(conv);
         const all = await this.commandCatalog(conv.agent, {
           cwd: conv.cwd,
           allowedAgents: ctx.allowedAgents,
           ...(channel ? { channel } : {}),
+          ...(owner && getUser(owner)?.role !== "admin" ? { member: true } : {}),
         });
         return { type: "commands", agent: conv.agent, commands: all.filter((c) => !c.hidden) };
       }
@@ -1449,7 +1496,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
    */
   async commandCatalog(
     agent: string,
-    opts: { cwd?: string; allowedAgents: string[]; channel?: string },
+    opts: { cwd?: string; allowedAgents: string[]; channel?: string; member?: boolean },
   ): Promise<CommandEntry[]> {
     const driver = this.enabledAgents().find((d) => d.id === agent);
     let native: AgentCommand[] = [];
@@ -1459,6 +1506,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         return [];
       });
     }
+    // 成员：机器上装的技能不列（用了也会被 blockedSlash 拦下）
+    if (opts.member) native = native.filter((c) => !isMachineCommand(c.name, native, opts.cwd ?? config().workspaceRoot));
     const prefs = (config().commands as Record<string, CommandPrefs | undefined>)[agent];
     return buildCatalog({ allowedAgents: opts.allowedAgents, native, prefs, ...(opts.channel ? { channel: opts.channel } : {}) });
   }

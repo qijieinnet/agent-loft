@@ -268,6 +268,7 @@ export function renderSidebar() {
   }
   sidebarStale = false;
   ui.tasksNav?.classList.toggle("active", S.view === "tasks");
+  ui.skillsNav?.classList.toggle("active", S.view === "skills");
   const askKeys = new Set([...S.pending.values()].filter((i) => !i.settled).map((i) => i.convKey));
   const visible = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt);
   const cur = S.current ? S.convs.get(S.current) : null;
