@@ -295,24 +295,38 @@ function renderLocalCard(el) {
   const L = state.system.local;
   const busy = state.system.localBusy;
   const localServer = state.servers.find((s) => s.id === state.localId);
-  const btn = (label, method, cls = "") => h("button", { class: `btn ${cls}`, disabled: !!busy, onclick: () => call(method).catch(() => {}) }, label);
   let title;
   let sub;
   let dot;
   let actions = [];
+  // 运行 / 重启 / 停止 / 日志 / 卸载都收进「更多」的下拉菜单（系统菜单，main.js 的 localMenu 按状态排）
+  const more = h("button", {
+    class: "btn icon-btn",
+    title: "更多",
+    "aria-label": "更多",
+    disabled: !!busy,
+    onclick: (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      void call("localMenu", { x: Math.round(r.left), y: Math.round(r.bottom + 4) }).catch(() => {});
+    },
+  });
+  more.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
   if (!L) {
     [title, sub, dot] = ["检测中…", "", "unknown"];
   } else if (busy === "install") {
     [title, sub, dot] = ["正在安装…", "安装在「终端」窗口里进行，装好后会自动加到顶栏。", "unknown"];
   } else if (L.running) {
     // Windows 上看不到服务端是怎么跑的（多半在 WSL 里），不下结论
-    title = busy === "restart" ? "正在重启…" : busy === "uninstall" ? "正在停止…" : state.system.localUnsupported ? "运行中" : L.service ? "运行中 · 开机自动运行" : "运行中（手动启动的，没有开机自启）";
+    title =
+      busy === "restart" ? "正在重启…" : busy === "stop" ? "正在停止…" : busy === "uninstall" ? "正在卸载…" : state.system.localUnsupported ? "运行中" : L.service ? "运行中 · 开机自动运行" : "运行中（手动启动的，没有开机自启）";
     sub = L.url;
     dot = "online";
-    if (L.service) actions = [btn("重启", "localRestart"), btn("日志", "localLogs"), btn("停止", "localUninstall", "danger")];
+    if (L.service) actions = [more];
   } else if (L.service) {
-    [title, sub, dot] = ["已安装，但没有在运行", `${L.url} · 看一下日志里的报错`, "offline"];
-    actions = [btn("启动", "localRestart", "primary"), btn("日志", "localLogs")];
+    // 手动停的，或者起不来（那就看日志）；开机自启还在
+    title = busy === "restart" ? "正在启动…" : busy === "uninstall" ? "正在卸载…" : "已停止 · 开机自动运行";
+    [sub, dot] = [`${L.url} · 不是自己停的话，看一下日志里的报错`, "offline"];
+    actions = [more];
   } else if (state.system.localUnsupported) {
     [title, sub, dot] = ["没有检测到", state.system.localUnsupported, "unknown"];
   } else {
@@ -321,7 +335,7 @@ function renderLocalCard(el) {
     dot = "unknown";
     actions = [h("button", { class: "btn primary", disabled: !!busy, onclick: () => installFromSettings() }, "一键安装")];
   }
-  if (L?.running && !localServer) actions.push(btn("添加到列表", "localConnect", "primary"));
+  if (L?.running && !localServer) actions.unshift(h("button", { class: "btn primary", disabled: !!busy, onclick: () => call("localConnect").catch(() => {}) }, "添加到列表"));
   const rows = [
     h("div", { class: "row" }, h("span", { class: `dot ${dot}` }), h("div", { class: "grow" }, h("div", { class: "name" }, title), h("div", { class: "sub wrap" }, sub)), h("div", { class: "actions" }, actions)),
   ];

@@ -158,7 +158,7 @@ function broadcast() {
   // Linux 上部分桌面（Unity、KDE）的启动器认这个；其他平台没有角标，托盘提示里带上数字
   else if (process.platform === "linux") app.setBadgeCount(unread);
   setTrayUnread(unread);
-  setTrayQuota(state.servers, state.prefs.trayItems);
+  setTrayQuota(state.servers, state.prefs.trayItems, state.prefs.trayBarMode);
   layout();
   rebuildMenu();
 }
@@ -364,6 +364,49 @@ function popupMoreMenu(pos) {
     }),
     ...(usage.length ? [{ type: "separator" }, ...usage] : []),
   ]).popup({ window: win, x: Math.round(Number(pos?.x) || 0), y: Math.round(Number(pos?.y) || BAR) });
+}
+
+/** 本机服务端的操作菜单。操作出错时 system.js 记下错误、卡片上显示，这里不用再管 */
+function popupLocalMenu(pos) {
+  if (!win || win.isDestroyed()) return;
+  const L = systemState().local;
+  if (!L?.service) return;
+  const quiet = (p) => void p.catch(() => {});
+  Menu.buildFromTemplate([
+    // 停了以后「重启」「停止」换成一个「运行」
+    ...(L.running
+      ? [
+          { label: "重启", click: () => quiet(local.restart()) },
+          { label: "停止", click: () => quiet(confirmStopLocal()) },
+        ]
+      : [{ label: "运行", click: () => quiet(local.restart()) }]),
+    { label: "日志", click: () => local.logs() },
+    { label: "卸载", click: () => quiet(confirmUninstallLocal()) },
+  ]).popup({ window: win, x: Math.round(Number(pos?.x) || 0), y: Math.round(Number(pos?.y) || BAR) });
+}
+
+async function confirmStopLocal() {
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    message: "停止本机服务端？",
+    detail: `停掉${THIS_PC}上的 agent-loft，停了以后手机、飞书、其他电脑都连不上它。开机自启不取消，下次开机会自动运行；点「运行」可以马上恢复。配置和会话都不动。`,
+    buttons: ["停止", "取消"],
+    defaultId: 1,
+    cancelId: 1,
+  });
+  if (response === 0) await local.stop();
+}
+
+async function confirmUninstallLocal() {
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    message: "卸载本机服务端？",
+    detail: `和 agent-loft service uninstall 一样：停掉${THIS_PC}上的 agent-loft，并取消开机自启。~/.agent-loft 里的配置和会话都保留，npm 装的程序也还在，以后点「一键安装」或执行 agent-loft service install 就能恢复。`,
+    buttons: ["卸载", "取消"],
+    defaultId: 1,
+    cancelId: 1,
+  });
+  if (response === 0) await local.uninstall();
 }
 
 // ---------- 菜单 ----------
@@ -680,21 +723,8 @@ const calls = {
     reload(id);
     return { id };
   },
-  localRestart: () => local.restart(),
-  localUninstall: async () => {
-    const { response } = await dialog.showMessageBox(win, {
-      type: "warning",
-      message: "停止本机服务端并取消开机自启？",
-      detail: `和 agent-loft service uninstall 一样：停掉${THIS_PC}上的 agent-loft。~/.agent-loft 里的配置和会话都保留，npm 装的程序也还在，以后点「启动」或执行 agent-loft service install 就能恢复。`,
-      buttons: ["停止", "取消"],
-      defaultId: 1,
-      cancelId: 1,
-    });
-    if (response !== 0) return false;
-    await local.uninstall();
-    return true;
-  },
-  localLogs: () => local.logs(),
+  /** 本机服务端卡片的「更多」：重启 / 停止 / 日志 / 卸载（停了的时候前两个换成运行） */
+  localMenu: (pos) => popupLocalMenu(pos),
 
   // ---- Agent 环境（任意服务器） ----
   agentHealth: (id, refresh) => callApi(id, `/api/agents/health${refresh ? "?refresh=1" : ""}`),

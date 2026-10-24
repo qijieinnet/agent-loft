@@ -123,16 +123,36 @@ function systemctl(...args) {
   return spawnSync("systemctl", ["--user", ...args], { encoding: "utf8", env: hostEnv() });
 }
 
-/** 重启（没在跑就是启动） */
+/** 重启（没在跑就是启动）。macOS 上停止时把服务卸下了（见 stopLocal），先装回去再拉起来 */
 export function restartLocal() {
   const problem = localUnsupported();
   if (problem) throw new Error(problem);
+  if (MAC && launchctl("print", `gui/${uid}/${LABEL}`).status !== 0) {
+    const b = launchctl("bootstrap", `gui/${uid}`, serviceFile);
+    if (b.error) throw new Error(`启动失败：${b.error.message}`);
+    if (b.status !== 0) throw new Error(`启动失败：${(b.stderr || b.stdout).trim() || "服务没有装"}`);
+  }
   const r = MAC ? launchctl("kickstart", "-k", `gui/${uid}/${LABEL}`) : systemctl("restart", UNIT);
   if (r.error) throw new Error(`重启失败：${r.error.message}`);
   if (r.status !== 0) throw new Error(`重启失败：${(r.stderr || r.stdout).trim() || "服务没有装"}`);
 }
 
-/** 停掉并取消开机自启（和 agent-loft service uninstall 一样；~/.agent-loft 里的东西都不动） */
+/**
+ * 只停掉，不取消开机自启：服务定义文件留着，下次开机照样自动运行，点「运行」也能马上拉起来。
+ * macOS 的服务配了 KeepAlive，单杀进程会被 launchd 拉回来，所以把服务从 launchd 卸下（bootout）
+ */
+export function stopLocal() {
+  const problem = localUnsupported();
+  if (problem) throw new Error(problem);
+  const r = MAC ? launchctl("bootout", `gui/${uid}/${LABEL}`) : systemctl("stop", UNIT);
+  if (r.error) throw new Error(`停止失败：${r.error.message}`);
+  // macOS 上本来就没在 launchd 里（已经停了）也算停好了
+  if (r.status !== 0 && !(MAC && launchctl("print", `gui/${uid}/${LABEL}`).status !== 0)) {
+    throw new Error(`停止失败：${(r.stderr || r.stdout).trim()}`);
+  }
+}
+
+/** 停掉并取消开机自启（和 agent-loft service uninstall 一样；npm 装的程序和 ~/.agent-loft 里的东西都不动） */
 export function uninstallLocal() {
   const problem = localUnsupported();
   if (problem) throw new Error(problem);

@@ -123,11 +123,12 @@ function buildManage() {
   sortable(manage.list, {
     axis: "y",
     item: ".server-item",
-    ignore: "button, a, input, select, textarea, .expand",
+    ignore: "button, a, input, select, textarea",
     onDrop: (id, to) => void call("moveServer", id, to),
     onEnd: flushRender,
   });
-  manage.prefs = h("div", { class: "card" });
+  manage.quota = h("div", { class: "card" });
+  manage.sleep = h("div", { class: "card" });
   manage.local = h("div", { class: "card" });
   manage.update = h("div", { class: "card", id: "update-card" });
   manage.intro = h("div");
@@ -141,8 +142,10 @@ function buildManage() {
       h("p", { class: "hint", style: { marginTop: "8px" } }, "每台服务器各自登录、各自保存登录状态。切到别的服务器时页面仍在后台连着，回复完成、需要授权时会弹系统通知。"),
       h("h2", {}, "本机服务端"),
       manage.local,
-      h("h2", {}, "通用"),
-      manage.prefs,
+      h("h2", {}, "额度显示"),
+      manage.quota,
+      h("h2", {}, "休眠"),
+      manage.sleep,
       h("h2", {}, "更新"),
       manage.update,
       h("p", { class: "hint", style: { marginTop: "12px" } }, `Agent Loft 桌面端 ${state.version}`),
@@ -164,8 +167,8 @@ function renderManage() {
       : h(
           "div",
           { class: "list-head" },
-          h("h1", {}, "服务器"),
-          h("button", { class: "btn primary", onclick: () => openServerDialog(null) }, "添加服务器"),
+          h("h2", {}, "服务器"),
+          h("button", { class: "btn", onclick: () => openServerDialog(null) }, "添加服务器"),
         ),
   );
   manage.list.hidden = empty;
@@ -202,29 +205,9 @@ function renderManage() {
             "div",
             { class: "actions" },
             serverUpgradeButton(s),
-            s.status === "online"
-              ? h(
-                  "button",
-                  {
-                    class: `btn ${manage.expanded === s.id ? "on" : ""}`,
-                    title: "Claude Code、Codex 装好、登录了没有",
-                    onclick: () => {
-                      manage.expanded = manage.expanded === s.id ? null : s.id;
-                      if (manage.expanded && agentEnv.id !== s.id) {
-                        agentEnv.data = null;
-                        void loadAgentEnv(s.id);
-                      }
-                      renderManage();
-                    },
-                  },
-                  "Agent 环境",
-                )
-              : null,
             h("button", { class: "btn", onclick: () => openServerDialog(s) }, "编辑"),
-            h("button", { class: "btn", onclick: () => call("select", s.id) }, "打开"),
           ),
         ),
-        manage.expanded === s.id && s.status === "online" ? h("div", { class: "expand" }, agentEnvBox()) : null,
       ),
     ),
   );
@@ -375,8 +358,9 @@ function awakePrefs(p, toggle) {
 }
 
 /**
- * macOS 菜单栏图标上显示哪些 5 小时额度：「所有服务器（取最高）」一行，连着多台时每台再一行，
- * 每行 Claude / Codex 可多选。存成「服务器 id:agent」，* 是所有服务器；顺序就是这里从上到下、Claude 在前
+ * macOS 菜单栏图标上显示哪些额度条（5 小时 + 周）：「所有服务器（取最高）」一行，连着多台时每台再一行，
+ * 每行 Claude / Codex 可多选。存成「服务器 id:agent」，* 是所有服务器；顺序就是这里从上到下、Claude 在前。
+ * 图标上不写服务器名，只看宠物的样子分 Claude / Codex
  */
 function trayPicker(items) {
   const AGENTS = [
@@ -392,12 +376,8 @@ function trayPicker(items) {
     h(
       "div",
       { class: "grow" },
-      "菜单栏显示 5 小时额度",
-      h(
-        "div",
-        { class: "sub" },
-        "图标换成所选的 5 小时已用百分比；按服务器选的，图标下面的小字会带上服务器名。都不选就只显示图标。",
-      ),
+      "菜单栏显示额度",
+      h("div", { class: "sub" }, "图标换成所选 agent 的小宠物：身子是 5 小时额度，下面一条是周额度。都不选就只显示图标。"),
       h(
         "div",
         { class: "tray-pick" },
@@ -434,6 +414,24 @@ function trayPicker(items) {
   );
 }
 
+/** 额度条的实心部分表示剩余还是已用 */
+function trayBarMode(mode) {
+  const MODES = [
+    ["remaining", "剩余额度"],
+    ["used", "已用额度"],
+  ];
+  return h(
+    "div",
+    { class: "row" },
+    h("div", { class: "grow" }, "额度条显示", h("div", { class: "sub" }, mode === "used" ? "实心部分是已经用掉的，用得越多越长。" : "实心部分是还能用的，用得越多越短，像电池电量。")),
+    h(
+      "div",
+      { class: "pick" },
+      MODES.map(([key, name]) => h("button", { class: mode === key ? "on" : "", "aria-pressed": String(mode === key), onclick: () => call("setPref", "trayBarMode", key) }, name)),
+    ),
+  );
+}
+
 function renderPrefs() {
   const p = state.prefs;
   const toggle = (key, label, hint) =>
@@ -454,16 +452,17 @@ function renderPrefs() {
       if (Number.isFinite(v) && v >= 1) void call("setPref", "quotaRefreshMin", v);
     },
   });
-  const tray = IS_MAC ? trayPicker(p.trayItems) : null;
-  // 正在改数字时别重画，不然光标会跳
-  if (manage.prefs.contains(document.activeElement) && ["number", "time"].includes(document.activeElement.type)) return;
+  // 正在改数字、时间时别重画，不然光标会跳
+  const editing = document.activeElement;
+  if ((manage.quota.contains(editing) || manage.sleep.contains(editing)) && ["number", "time"].includes(editing.type)) return;
   fill(
-    manage.prefs,
-    toggle("openAtLogin", "登录时自动启动", `启动后只在${TRAY_PLACE}，不弹窗口。`),
-    awakePrefs(p, toggle),
-    tray,
+    manage.quota,
+    IS_MAC ? trayPicker(p.trayItems) : null,
+    IS_MAC ? trayBarMode(p.trayBarMode) : null,
     h("div", { class: "row" }, h("div", { class: "grow" }, "额度刷新间隔（分钟）", h("div", { class: "sub" }, PLATFORM === "linux" ? "跑完一轮时也会刷新。" : `跑完一轮、打开${TRAY_PLACE}面板时也会刷新。`)), interval),
+    toggle("openAtLogin", "登录时自动启动", `启动后只在${TRAY_PLACE}，不弹窗口。`),
   );
+  fill(manage.sleep, awakePrefs(p, toggle));
 }
 
 // ---------- 状态 ----------

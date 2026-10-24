@@ -1,4 +1,4 @@
-// 菜单栏（右上角）图标：默认是 App 图标；设置里选了 agent、并且查到了额度时，换成各 agent 的 5 小时额度读数
+// 菜单栏（右上角）图标：默认是 App 图标；设置里选了 agent、并且查到了额度时，换成各 agent 的 5 小时 / 周额度条
 // （见 tray-image.js），悬停、点击照旧。
 //   - 鼠标移上去：弹出面板（不抢焦点），列出各服务器的额度、待处理、运行中；鼠标离开图标和面板就收起；
 //   - 点击：面板固定住（拿到焦点，可以点里面的东西），点别处收起；
@@ -11,7 +11,7 @@
 import { BrowserWindow, Menu, nativeImage, nativeTheme, screen, Tray } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { fiveHourPercents, renderQuotaImage } from "./tray-image.js";
+import { quotaBars, renderQuotaImage } from "./tray-image.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MAC = process.platform === "darwin";
@@ -132,12 +132,12 @@ let wantKey = null;
 
 /**
  * macOS：按各服务器的额度更新菜单栏图标。items 是设置里选的「服务器:agent」（见 tray-image.js），一个都没选、
- * 或者选的都还没查到额度，用默认图标。其他平台的托盘图标太小放不下字，不变。
+ * 或者选的都还没查到额度，用默认图标；mode 是实心表示剩余还是已用。其他平台的托盘图标太小放不下，不变。
  */
-export function setTrayQuota(servers, items) {
+export function setTrayQuota(servers, items, mode) {
   if (!MAC || !tray || tray.isDestroyed()) return;
-  const cols = fiveHourPercents(servers, items);
-  const key = cols.length ? JSON.stringify(cols) : null;
+  const bars = quotaBars(servers, items, mode);
+  const key = bars.length ? JSON.stringify(bars) : null;
   if (key === wantKey) return;
   wantKey = key;
   if (!key) {
@@ -145,7 +145,7 @@ export function setTrayQuota(servers, items) {
     tray.setImage(trayIcon());
     return;
   }
-  void renderQuotaImage(cols).then((image) => {
+  void renderQuotaImage(bars).then((image) => {
     // 画的这段时间里又变了：以最新的为准
     if (wantKey !== key || !tray || tray.isDestroyed()) return;
     if (!image) {

@@ -4,7 +4,7 @@ import { app, Notification, shell } from "electron";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { installLocalInTerminal, localStatus, localUnsupported, openLogs, restartLocal, runInTerminal, uninstallLocal, waitUntilUp } from "./local-server.js";
+import { installLocalInTerminal, localStatus, localUnsupported, openLogs, restartLocal, runInTerminal, stopLocal, uninstallLocal, waitUntilUp } from "./local-server.js";
 import { store } from "./store.js";
 import { canSelfUpdate, checkForUpdate, installUpdate } from "./updater.js";
 
@@ -13,7 +13,7 @@ export const system = new EventEmitter();
 const state = {
   /** @type {Awaited<ReturnType<typeof localStatus>> | null} */
   local: null,
-  /** 正在做的本机服务端操作：install / restart / uninstall */
+  /** 正在做的本机服务端操作：install / restart / stop / uninstall */
   /** @type {string | null} */
   localBusy: null,
   /** @type {string | null} */
@@ -84,6 +84,13 @@ export const local = {
     busy("restart", async () => {
       restartLocal();
       if (!(await waitUntilUp(60_000))) throw new Error("服务端重启后没有响应，看一下日志");
+    }),
+  stop: () =>
+    busy("stop", async () => {
+      stopLocal();
+      // bootout 返回时进程可能还没退干净：等端口不再响应，状态才准
+      const until = Date.now() + 10_000;
+      while (Date.now() < until && (await localStatus()).running) await new Promise((r) => setTimeout(r, 500));
     }),
   uninstall: () => busy("uninstall", async () => uninstallLocal()),
   logs: () => {

@@ -25,9 +25,11 @@ import { defaultWindow, normalizeWindows } from "./awake.js";
  *   sleepWindows: import("./awake.js").SleepWindow[],
  *   sleepRequireLocked: boolean,
  *   trayItems: string[],
+ *   trayBarMode: "remaining" | "used",
  * }} Prefs
- *   trayItems：macOS 菜单栏图标上显示哪些 5 小时额度（按这个顺序），每项是「服务器 id:agent」，
+ *   trayItems：macOS 菜单栏图标上显示哪些额度条（按这个顺序），每项是「服务器 id:agent」，
  *     服务器 id 是 * 表示所有服务器合起来取最高；空数组就只显示图标。
+ *   trayBarMode：额度条的实心部分是剩余额度（remaining，像电池）还是已用额度（used）。
  *   keepAwake：本机服务端有会话在跑（或在等授权 / 回答）时不让这台 Mac 休眠；只管本机，不管远程服务器。
  *   awakeMode / sleepWindows / sleepRequireLocked：防休眠模式和定时休眠的时段，见 awake.js。
  */
@@ -43,6 +45,7 @@ const DEFAULT_PREFS = {
   sleepWindows: [defaultWindow()],
   sleepRequireLocked: true,
   trayItems: ["*:claude", "*:codex"],
+  trayBarMode: "remaining",
 };
 
 let data = {
@@ -265,6 +268,7 @@ export const store = {
     if (key === "trayItems") {
       value = [...new Set(value.filter((a) => typeof a === "string" && /^(\*|[\w-]{1,64}):[a-z0-9_-]{1,32}$/.test(a)))].slice(0, 12);
     }
+    if (key === "trayBarMode" && !["remaining", "used"].includes(value)) throw new Error("未知的额度条显示方式");
     if (key === "awakeMode" && !["system", "always", "scheduled"].includes(value)) throw new Error("未知的防休眠模式");
     if (key === "sleepWindows") value = normalizeWindows(value);
     if (key === "quotaRefreshMin") value = Math.max(1, Math.min(1440, Math.round(value)));
