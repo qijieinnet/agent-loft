@@ -5,9 +5,10 @@
 // preload 转给这里，弹系统通知（桌面端收不到 Web Push）。菜单栏（Windows / Linux 是托盘）另有图标，
 // 鼠标移上去 / 点一下弹出各服务器的额度和待处理（见 tray.js）。
 // Windows / Linux 用系统自己的标题栏，菜单栏默认收起（按 Alt 出来）。
-import { app, BaseWindow, dialog, ipcMain, Menu, nativeTheme, Notification, powerSaveBlocker, WebContentsView } from "electron";
+import { app, BaseWindow, dialog, ipcMain, Menu, nativeTheme, Notification, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createAwake } from "./awake.js";
 import { openedAtLogin, setOpenAtLogin, syncOpenAtLogin } from "./autostart.js";
 import { localPort, localUrl, readSetupToken } from "./local-server.js";
 import {
@@ -85,7 +86,7 @@ function snapshot() {
     onboarded: store.onboarded(),
     localId: localServerId(),
     system: systemState(),
-    keepingAwake: keepAwakeId !== null,
+    awake: awake?.state() ?? null,
     // 全屏时没有红绿灯，顶栏左边不用让位
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(),
   };
@@ -131,31 +132,23 @@ function ensureLocalServer() {
   return server.id;
 }
 
-// ---------- 防休眠 ----------
-
-/** powerSaveBlocker 的 id；没在阻止休眠时是 null */
-let keepAwakeId = null;
+// ---------- 防休眠（见 awake.js） ----------
 
 /**
- * 本机服务端有会话在跑、或在等授权 / 回答时，不让这台 Mac 休眠（屏幕照常可以关）。
- * 只看本机那一项：远程服务器在别的机器上跑，这台睡不睡和它无关。
+ * 本机服务端有会话在跑、或在等授权 / 回答。只看本机那一项：远程服务器在别的机器上跑，这台睡不睡和它无关。
  * 会话状态来自本机页面经 preload 报上来的 busy / pending，页面连不上（不在线）时不算。
  */
-function updateKeepAwake() {
+function localSessionActive() {
   const id = localServerId();
   const r = id ? rt(id) : null;
-  const active = !!r && r.status === "online" && (r.busy > 0 || r.pending.length > 0);
-  const want = store.prefs().keepAwake && active;
-  if (want && keepAwakeId === null) {
-    keepAwakeId = powerSaveBlocker.start("prevent-app-suspension");
-  } else if (!want && keepAwakeId !== null) {
-    powerSaveBlocker.stop(keepAwakeId);
-    keepAwakeId = null;
-  }
+  return !!r && r.status === "online" && (r.busy > 0 || r.pending.length > 0);
 }
 
+/** @type {ReturnType<typeof createAwake> | null} 在 app ready 之后才建（要用 powerMonitor） */
+let awake = null;
+
 function broadcast() {
-  updateKeepAwake();
+  awake?.evaluate();
   const state = snapshot();
   for (const wc of [shellView?.webContents, popoverWebContents()]) {
     if (wc && !wc.isDestroyed()) wc.send("shell:state", state);
@@ -654,6 +647,9 @@ const calls = {
     if (key === "autoUpdate" || key === "updateCheckHours") scheduleUpdates();
     broadcast();
   },
+  /** 合盖不休眠：弹系统管理员密码框；取消了状态就不变 */
+  setLidGuard: (on) => awake?.setLidGuard(!!on),
+  refreshLidGuard: () => awake?.refreshLid(),
 
   // ---- 首次启动向导、本机服务端 ----
   finishOnboarding: (selectId) => {
@@ -763,6 +759,13 @@ app.whenReady().then(() => {
   loadStore();
   syncOpenAtLogin(store.prefs().openAtLogin);
   void refreshLocal();
+  awake = createAwake({
+    prefs: () => store.prefs(),
+    sessionActive: localSessionActive,
+    handled: () => store.sleepHandled(),
+    setHandled: (id, due) => store.setSleepHandled(id, due),
+    onChange: () => broadcast(),
+  });
 
   createTray({
     showMain,

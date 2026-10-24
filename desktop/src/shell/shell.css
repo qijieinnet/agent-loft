@@ -761,3 +761,57 @@ details.advanced .field input {
   border-color: var(--accent);
 }
 
+
+/* 定时休眠的时段：一行一个 */
+.sleep-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 10px 0 8px;
+}
+.sleep-window {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sleep-window.off > :not(.switch) {
+  opacity: 0.5;
+}
+.sleep-window .sub {
+  font-size: 12px;
+}
+.sleep-window .until {
+  min-width: 72px;
+}
+.sleep-window input.time,
+.sleep-window .select {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+.pick.days {
+  gap: 4px;
+}
+.pick.days button {
+  width: 26px;
+  padding: 0;
+}
+.sleep-window .btn,
+.add-window {
+  height: 26px;
+  font-size: 12px;
+}
+/* 一个时段两行：开关、时间、时长、删除一行；星期另起一行，和时间对齐 */
+.sleep-window .del {
+  margin-left: auto;
+}
+.sleep-window .pick.days {
+  flex-basis: 100%;
+  padding-left: 42px;
+}

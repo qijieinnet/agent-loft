@@ -5,6 +5,7 @@ import { app, safeStorage } from "electron";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { defaultWindow, normalizeWindows } from "./awake.js";
 
 /**
  * @typedef {{
@@ -20,11 +21,15 @@ import path from "node:path";
  *   openAtLogin: boolean, quotaRefreshMin: number,
  *   autoUpdate: boolean, updateCheckHours: number,
  *   keepAwake: boolean,
+ *   awakeMode: "system" | "always" | "scheduled",
+ *   sleepWindows: import("./awake.js").SleepWindow[],
+ *   sleepRequireLocked: boolean,
  *   trayItems: string[],
  * }} Prefs
  *   trayItems：macOS 菜单栏图标上显示哪些 5 小时额度（按这个顺序），每项是「服务器 id:agent」，
  *     服务器 id 是 * 表示所有服务器合起来取最高；空数组就只显示图标。
  *   keepAwake：本机服务端有会话在跑（或在等授权 / 回答）时不让这台 Mac 休眠；只管本机，不管远程服务器。
+ *   awakeMode / sleepWindows / sleepRequireLocked：防休眠模式和定时休眠的时段，见 awake.js。
  */
 
 /** @type {Prefs} */
@@ -34,6 +39,9 @@ const DEFAULT_PREFS = {
   autoUpdate: true,
   updateCheckHours: 24,
   keepAwake: false,
+  awakeMode: "system",
+  sleepWindows: [defaultWindow()],
+  sleepRequireLocked: true,
   trayItems: ["*:claude", "*:codex"],
 };
 
@@ -50,6 +58,9 @@ let data = {
   /** 已经弹过通知的新版本号：同一个版本只提醒一次 */
   /** @type {string | null} */
   notifiedUpdate: null,
+  /** 定时休眠：每个时段最近一次睡过的那次的开始时间（毫秒），免得同一个时段睡两次 */
+  /** @type {Record<string, number>} */
+  sleepHandled: {},
 };
 
 const file = () => path.join(app.getPath("userData"), "config.json");
@@ -254,6 +265,8 @@ export const store = {
     if (key === "trayItems") {
       value = [...new Set(value.filter((a) => typeof a === "string" && /^(\*|[\w-]{1,64}):[a-z0-9_-]{1,32}$/.test(a)))].slice(0, 12);
     }
+    if (key === "awakeMode" && !["system", "always", "scheduled"].includes(value)) throw new Error("未知的防休眠模式");
+    if (key === "sleepWindows") value = normalizeWindows(value);
     if (key === "quotaRefreshMin") value = Math.max(1, Math.min(1440, Math.round(value)));
     if (key === "updateCheckHours") value = Math.max(1, Math.min(24 * 30, Math.round(value)));
     data.prefs[key] = value;
@@ -268,6 +281,12 @@ export const store = {
   notifiedUpdate: () => data.notifiedUpdate,
   setNotifiedUpdate(version) {
     data.notifiedUpdate = version;
+    save();
+  },
+
+  sleepHandled: () => data.sleepHandled,
+  setSleepHandled(id, due) {
+    data.sleepHandled = { ...data.sleepHandled, [id]: due };
     save();
   },
 

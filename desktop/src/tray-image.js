@@ -79,8 +79,9 @@ function ensurePainter() {
 
 /** 在画图窗口里跑的：量好每栏宽度，画字和竖线，返回 PNG 的 data URL 和逻辑宽度 */
 function draw(cols, height, scale) {
-  const PCT_FONT = `600 ${12.5 * scale}px -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif`;
-  const NAME_FONT = `500 ${7.5 * scale}px -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif`;
+  // 字重和 iStat Menus 的读数一致：百分比 medium，名字 regular
+  const PCT_FONT = `500 ${12.5 * scale}px -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif`;
+  const NAME_FONT = `400 ${7.5 * scale}px -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif`;
   const PAD = 3 * scale;
   const GAP = 7 * scale;
   const canvas = document.createElement("canvas");

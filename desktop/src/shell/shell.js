@@ -233,11 +233,145 @@ function renderManage() {
   renderUpdateCard(manage.update);
 }
 
-/** 防休眠只管本机服务端：说清楚现在是什么情况 */
+/** 「本机有会话在跑时不休眠」：说清楚现在是什么情况 */
 function keepAwakeHint() {
   if (!state.localId) return `只对${THIS_PC}上的服务端生效。服务器列表里还没有本机，加上之后才会起作用。`;
-  if (state.keepingAwake) return "本机正有会话在跑，正在阻止系统休眠（屏幕仍可以关）。合上笔记本盖子依然会睡。";
+  if (state.awake?.reason === "本机有会话在跑") return "本机正有会话在跑，正在阻止系统休眠（屏幕仍可以关）。";
   return `只对${THIS_PC}上的服务端生效，远程服务器不受影响。会话跑完后恢复正常休眠，屏幕照常可以关。`;
+}
+
+const AWAKE_MODES = [
+  ["system", "跟随系统"],
+  ["always", "永不休眠"],
+  ...(IS_MAC ? [["scheduled", "定时休眠"]] : []),
+];
+const WINDOW_LENGTHS = [30, 60, 120, 180, 240, 360, 480, 600, 720];
+const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
+const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+const lengthText = (min) => (min < 60 ? `${min} 分钟` : `${min / 60} 小时`);
+
+function awakeModeHint(p) {
+  const a = state.awake;
+  if (p.awakeMode === "always") return "一直阻止系统闲置休眠，屏幕照常可以关。";
+  if (p.awakeMode === "scheduled") {
+    if (!p.sleepWindows.some((w) => w.enabled && w.days.length)) return "还没有可用的休眠时段，先加一个。";
+    if (a?.waiting) return `已到休眠时段，${a.waiting}。`;
+    if (a?.reason === "休眠时段外") return "现在在休眠时段外，正在阻止系统休眠。";
+    return "现在在休眠时段内，系统可以正常休眠。";
+  }
+  return "按系统的节能设置休眠。";
+}
+
+/** 定时休眠的一个时段：开始时间、持续多久、哪几天、启用 / 删除 */
+function sleepWindowRow(w, list) {
+  const save = (patch) => call("setPref", "sleepWindows", list.map((x) => (x.id === w.id ? { ...x, ...patch } : x)));
+  const end = w.start + w.length;
+  return h(
+    "div",
+    { class: `sleep-window ${w.enabled ? "" : "off"}` },
+    h("input", { type: "checkbox", class: "switch", checked: w.enabled, title: "启用这个时段", onchange: (e) => save({ enabled: e.target.checked }) }),
+    h("input", {
+      type: "time",
+      class: "time",
+      value: hhmm(w.start),
+      onchange: (e) => {
+        const [hh, mm] = e.target.value.split(":").map(Number);
+        if (Number.isFinite(hh) && Number.isFinite(mm)) void save({ start: hh * 60 + mm });
+      },
+    }),
+    h("span", { class: "sub" }, "起"),
+    h(
+      "select",
+      { class: "select", onchange: (e) => save({ length: Number(e.target.value) }) },
+      [...new Set([...WINDOW_LENGTHS, w.length])].sort((a, b) => a - b).map((m) => h("option", { value: m, selected: m === w.length }, lengthText(m))),
+    ),
+    h("span", { class: "sub until" }, `到${end >= 24 * 60 ? "次日 " : ""}${hhmm(end % (24 * 60))}`),
+    h("button", { class: "btn del", title: "删除这个时段", onclick: () => call("setPref", "sleepWindows", list.filter((x) => x.id !== w.id)) }, "删除"),
+    h(
+      "div",
+      { class: "pick days" },
+      WEEKDAYS.map((name, d) => {
+        const on = w.days.includes(d);
+        return h("button", { class: on ? "on" : "", "aria-pressed": String(on), onclick: () => save({ days: on ? w.days.filter((x) => x !== d) : [...w.days, d] }) }, name);
+      }),
+    ),
+  );
+}
+
+/** 防休眠这一组设置 */
+function awakePrefs(p, toggle) {
+  const mode = h(
+    "div",
+    { class: "row" },
+    h("div", { class: "grow" }, "防休眠", h("div", { class: "sub" }, awakeModeHint(p))),
+    h(
+      "div",
+      { class: "pick" },
+      AWAKE_MODES.map(([key, name]) => h("button", { class: p.awakeMode === key ? "on" : "", "aria-pressed": String(p.awakeMode === key), onclick: () => call("setPref", "awakeMode", key) }, name)),
+    ),
+  );
+  const scheduled = IS_MAC && p.awakeMode === "scheduled";
+  const windows = scheduled
+    ? h(
+        "div",
+        { class: "row" },
+        h(
+          "div",
+          { class: "grow" },
+          "休眠时段",
+          h("div", { class: "sub wrap" }, "时段外一直不休眠；进了时段，本机没有会话在跑时让 Mac 睡下去，每个时段只睡一次。"),
+          h("div", { class: "sleep-windows" }, p.sleepWindows.map((w) => sleepWindowRow(w, p.sleepWindows))),
+          p.sleepWindows.length < 10
+            ? h(
+                "button",
+                {
+                  class: "btn add-window",
+                  onclick: () => call("setPref", "sleepWindows", [...p.sleepWindows, { id: Math.random().toString(36).slice(2, 10), enabled: true, start: 23 * 60, length: 480, days: [0, 1, 2, 3, 4, 5, 6] }]),
+                },
+                "添加时段",
+              )
+            : null,
+        ),
+      )
+    : null;
+  const locked = scheduled ? toggle("sleepRequireLocked", "锁屏后才休眠", "到了休眠时段也要等屏幕锁上才睡，免得正在用电脑时突然睡过去。") : null;
+  const lid = IS_MAC
+    ? h(
+        "div",
+        { class: "row switch-row" },
+        h(
+          "label",
+          { for: "p-lidGuard" },
+          h("div", {}, "合盖不休眠"),
+          h(
+            "div",
+            { class: "sub wrap" },
+            state.awake?.lidGuard === null
+              ? "读不到系统的状态。"
+              : "系统级设置（pmset disablesleep），开关都要输管理员密码。打开后退出 Agent Loft、重启也一直有效，合盖放进包里也不会睡，记得用完关掉。",
+          ),
+        ),
+        h("input", {
+          id: "p-lidGuard",
+          type: "checkbox",
+          class: "switch",
+          checked: !!state.awake?.lidGuard,
+          disabled: state.awake?.lidGuard === null,
+          onchange: async (e) => {
+            const want = e.target.checked;
+            e.target.disabled = true;
+            try {
+              await call("setLidGuard", want);
+            } catch (err) {
+              alert(errText(err));
+            }
+            // 取消授权时状态没变，界面跟着系统实际值回去
+            renderPrefs();
+          },
+        }),
+      )
+    : null;
+  return [toggle("keepAwake", "本机有会话在跑时不休眠", keepAwakeHint()), mode, windows, locked, lid];
 }
 
 /**
@@ -322,10 +456,11 @@ function renderPrefs() {
   });
   const tray = IS_MAC ? trayPicker(p.trayItems) : null;
   // 正在改数字时别重画，不然光标会跳
-  if (manage.prefs.contains(document.activeElement) && document.activeElement.type === "number") return;
-  manage.prefs.replaceChildren(
+  if (manage.prefs.contains(document.activeElement) && ["number", "time"].includes(document.activeElement.type)) return;
+  fill(
+    manage.prefs,
     toggle("openAtLogin", "登录时自动启动", `启动后只在${TRAY_PLACE}，不弹窗口。`),
-    toggle("keepAwake", "本机有会话在跑时不休眠", keepAwakeHint()),
+    awakePrefs(p, toggle),
     tray,
     h("div", { class: "row" }, h("div", { class: "grow" }, "额度刷新间隔（分钟）", h("div", { class: "sub" }, PLATFORM === "linux" ? "跑完一轮时也会刷新。" : `跑完一轮、打开${TRAY_PLACE}面板时也会刷新。`)), interval),
   );

@@ -85,6 +85,15 @@ export async function runSmoke({ openPopover }) {
     await until(() => js(`!!document.getElementById("p-keepAwake")`), "「不休眠」开关");
     await js(`document.getElementById("p-keepAwake").click()`);
     await until(() => js(`window.loft.state().then((s) => s.prefs.keepAwake === true)`), "「不休眠」设置保存");
+    // 防休眠模式：切到定时休眠（只有 macOS 有），时段列表画得出来，加一个时段能存上；最后切回跟随系统
+    if (process.platform === "darwin") {
+      await js(`[...document.querySelectorAll("#panel .pick button")].find((b) => b.textContent === "定时休眠").click()`);
+      await until(() => js(`document.querySelectorAll(".sleep-window").length === 1 && !!document.getElementById("p-sleepRequireLocked")`), "定时休眠的时段列表");
+      await js(`document.querySelector(".add-window").click()`);
+      await until(() => js(`window.loft.state().then((s) => s.prefs.sleepWindows.length === 2)`), "添加休眠时段");
+      if (!(await js(`window.loft.state().then((s) => !!s.awake && typeof s.awake.keeping === "boolean")`))) return fail("状态里没有防休眠信息");
+      await js(`window.loft.call("setPref", "awakeMode", "system")`);
+    }
 
     // 拖动排序：再加两台，用真的鼠标事件在设置页列表里竖着拖、在顶栏里横着拖
     await js(`window.loft.call("addServer", "排序二", "127.0.0.1:10", null, "🐢").then(() => window.loft.call("addServer", "排序三", "127.0.0.1:11", null, "🦊"))`);
