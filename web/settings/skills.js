@@ -2,54 +2,41 @@ import { fill, h, icon, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { renderMarkdown } from "../lib/markdown.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
-import { S, ui } from "../state.js";
-import { WS } from "../lib/ws.js";
-import { closeSide, renderSidebar } from "./sidebar.js";
-import { renderTopbar } from "./topbar.js";
 
-// ---------- 技能页 ----------
-// 三块：我的技能（自己建的 + 装了的，可以停用、填变量）、技能广场（别人分享给我、公开的，点安装）、
-// 本机技能（机器上原有的，只有管理员看得到、用得到）。
-// 装的是作者那一份本身：作者改了，装了的人跟着用新的。技能有变化时服务端推 { t: "skills" }，这里重新拉。
+// ---------- 技能（设置里的一页） ----------
+// 我的技能：自己建的，加上以前从别人那装的（可以停用、填变量、卸载）；管理员另有「本机技能」（机器上原有的）。
+// 技能有变化时服务端推 { t: "skills" }（lib/ws.js 转成 aim:skills 事件），这一页开着就重新拉。
 
-const K = { data: null, tab: "mine", query: "", token: 0, reloadTimer: 0 };
+const K = { data: null, tab: "mine", query: "", token: 0, reloadTimer: 0, box: null };
 
-const VISIBILITY = { private: "仅自己", users: "指定的人", all: "所有人" };
+/** 以前分享出去的技能（现在不能再设了）：卡片上标一下还有谁看得到 */
+const SHARED = { users: "分享给了指定的人", all: "所有人可见" };
 
-export async function openSkills() {
-  if (S.current) WS.raw({ t: "unsub", key: S.current });
-  S.current = null;
-  S.view = "skills";
-  S.items = [];
-  S.turnAi = null;
-  history.replaceState(null, "", "#skills");
-  WS.presence();
-  ui.spacer.style.height = "0px";
-  ui.follow = false;
-  // 和定时任务页一样：藏起输入框（css/tasks.css 的 .tasks-view）
-  ui.main.classList.add("tasks-view");
-  closeSide();
-  renderTopbar();
-  renderSidebar();
-  fill(ui.msgInner, h("div", { class: "empty" }, starsLoader("lg")));
+export async function skillsTab(panel) {
+  K.tab = "mine";
+  K.query = "";
+  K.box = h("div", { class: "skills-page" }, h("div", { class: "section" }, h("h4", {}, "技能"), h("span", { class: "spinner" })));
+  fill(panel, K.box);
   await reload();
-  ui.messages.scrollTop = 0;
 }
+
+/** 这一页还开着（没关设置、没切到别的标签页） */
+const showing = () => !!K.box?.isConnected;
 
 async function reload() {
   const my = ++K.token;
   try {
     const data = await api("/api/skills");
-    if (my !== K.token || S.view !== "skills") return;
+    if (my !== K.token || !showing()) return;
     K.data = data;
     render();
   } catch (err) {
-    if (my === K.token && S.view === "skills") fill(ui.msgInner, h("div", { class: "empty" }, err.message));
+    if (my === K.token && showing()) fill(K.box, h("div", { class: "error-text" }, err.message));
   }
 }
 
 document.addEventListener("aim:skills", () => {
-  if (S.view !== "skills") return;
+  if (!showing()) return;
   clearTimeout(K.reloadTimer);
   K.reloadTimer = setTimeout(() => void reload(), 300);
 });
@@ -58,76 +45,66 @@ function mine() {
   return K.data.skills.filter((s) => s.installed).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function plaza() {
-  return K.data.skills.filter((s) => !s.mine).sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
 function matches(s) {
   const q = K.query.trim().toLowerCase();
   return !q || s.name.includes(q) || s.description.toLowerCase().includes(q) || (s.ownerName ?? "").toLowerCase().includes(q);
 }
 
 function render() {
-  const tabs = [
-    ["mine", `我的技能 ${mine().length}`],
-    ["plaza", `技能广场 ${plaza().length}`],
-    ...(K.data.machine ? [["machine", `本机技能 ${K.data.machine.length}`]] : []),
-  ];
-  const search = h("input", { class: "skill-search", type: "search", placeholder: "搜索名字、说明、作者", value: K.query });
+  const tabs = K.data.machine
+    ? [
+        ["mine", `我的技能 ${mine().length}`],
+        ["machine", `本机技能 ${K.data.machine.length}`],
+      ]
+    : [];
+  const search = h("input", { class: "skill-search", type: "search", placeholder: "搜索名字、说明", value: K.query });
   search.oninput = () => {
     K.query = search.value;
     fill(listBox, renderList());
   };
   const listBox = h("div", { class: "skill-list-box" }, renderList());
   fill(
-    ui.msgInner,
+    K.box,
     h(
       "div",
-      { class: "tasks-page skills-page" },
+      { class: "skills-head" },
       h(
-        "div",
-        { class: "tasks-head" },
-        h(
-          "div",
-          { class: "grow" },
-          h("h2", {}, "技能"),
-          h(
-            "p",
-            {},
-            "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。工作模式下 agent 遇到对得上的事会自己用；在输入框或定时任务里输入 @ 可以点名用哪个。",
-          ),
-        ),
-        h(
-          "div",
-          { class: "skill-head-btns" },
-          h("button", { class: "btn", onclick: () => pickUpload() }, "上传"),
-          h("button", { class: "btn primary", onclick: () => openEditor() }, icon("plus"), "新建"),
-        ),
+        "p",
+        { class: "skill-note" },
+        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。工作模式下 agent 遇到对得上的事会自己用；在输入框或定时任务里输入 @ 可以点名用哪个。",
       ),
       h(
         "div",
-        { class: "skill-tabs" },
-        h(
-          "div",
-          { class: "seg" },
-          tabs.map(([id, label]) =>
-            h(
-              "button",
-              {
-                class: K.tab === id ? "on" : "",
-                onclick: () => {
-                  K.tab = id;
-                  render();
-                },
-              },
-              label,
-            ),
-          ),
-        ),
-        search,
+        { class: "skill-head-btns" },
+        h("button", { class: "btn", onclick: () => pickUpload() }, "上传"),
+        h("button", { class: "btn primary", onclick: () => openEditor() }, icon("plus"), "新建"),
       ),
-      listBox,
     ),
+    h(
+      "div",
+      { class: "skill-tabs" },
+      tabs.length
+        ? h(
+            "div",
+            { class: "seg" },
+            tabs.map(([id, label]) =>
+              h(
+                "button",
+                {
+                  class: K.tab === id ? "on" : "",
+                  onclick: () => {
+                    K.tab = id;
+                    render();
+                  },
+                },
+                label,
+              ),
+            ),
+          )
+        : null,
+      search,
+    ),
+    listBox,
   );
 }
 
@@ -135,15 +112,9 @@ function renderList() {
   if (K.tab === "machine") {
     const list = K.data.machine.filter((m) => matches({ ...m, ownerName: "" }));
     return [
-      h("p", { class: "skill-note" }, "这台机器上原有的技能（~/.claude/skills、~/.agents/skills 等）。只有管理员的会话能用，其他人的会话里看不到、也调不了。要分给别人用，请复制内容新建一个 agent-loft 技能再分享。"),
+      h("p", { class: "skill-note" }, "这台机器上原有的技能（~/.claude/skills、~/.agents/skills 等）。只有管理员的会话能用，其他人的会话里看不到、也调不了。要给别人用，请复制内容，在他的账号里新建一个。"),
       list.length ? h("div", { class: "task-list" }, list.map(machineCard)) : h("div", { class: "skill-empty" }, "没有找到"),
     ];
-  }
-  if (K.tab === "plaza") {
-    const list = plaza().filter(matches);
-    return list.length
-      ? h("div", { class: "task-list" }, list.map(plazaCard))
-      : h("div", { class: "skill-empty" }, K.query ? "没有找到" : "还没有人分享技能给你。自己建的技能可以设成「所有人」或者分享给指定的人。");
   }
   const list = mine().filter(matches);
   if (list.length) return h("div", { class: "task-list" }, list.map(mineCard));
@@ -152,11 +123,7 @@ function renderList() {
     "div",
     { class: "tasks-empty" },
     h("div", { class: "t" }, "还没有技能"),
-    h(
-      "div",
-      { class: "s" },
-      "点「新建」写一个，「上传」一个技能包（.zip / .skill / SKILL.md / 文件夹），去「技能广场」装别人分享的，或者在对话里让 agent「把刚才的做法存成技能」。",
-    ),
+    h("div", { class: "s" }, "点「新建」写一个，「上传」一个技能包（.zip / .skill / SKILL.md / 文件夹），或者在对话里让 agent「把刚才的做法存成技能」。"),
   );
 }
 
@@ -203,7 +170,7 @@ function mineCard(s) {
       "sep",
       s.mine
         ? { label: "删除", danger: true, onclick: () => removeSkill(s) }
-        : { label: "卸载", danger: true, onclick: () => install(s, false) },
+        : { label: "卸载", danger: true, onclick: () => uninstall(s) },
     ]);
   return h(
     "div",
@@ -219,7 +186,7 @@ function mineCard(s) {
       "div",
       { class: "task-meta" },
       h("span", {}, s.mine ? "我建的" : `${s.ownerName} 建的`),
-      s.mine ? h("span", {}, `${VISIBILITY[s.visibility]}可见${s.visibility === "users" ? `（${s.sharedWith.length} 人）` : ""}`) : null,
+      s.mine && SHARED[s.visibility] ? h("span", {}, SHARED[s.visibility]) : null,
       s.mine && s.installs ? h("span", {}, `${s.installs} 人安装`) : null,
       s.source === "agent" ? h("span", {}, "agent 生成") : null,
       varsState(s),
@@ -228,28 +195,6 @@ function mineCard(s) {
     varsNeedAttention(s)
       ? h("button", { class: "task-run", onclick: () => openVars(s) }, s.vars.some((v) => v.required && !K.data.vars[v.name]?.set) ? "填写变量后才能正常使用 →" : "确认密钥的发送地址 →")
       : null,
-  );
-}
-
-function plazaCard(s) {
-  const btn = s.installed
-    ? h("button", { class: "btn", onclick: () => install(s, false) }, "已安装")
-    : h("button", { class: "btn primary", onclick: () => install(s, true) }, "安装");
-  const more = s.canDelete ? h("button", { class: "icon-btn", title: "更多" }, icon("more")) : null;
-  if (more) more.onclick = () => showMenu(more, [{ label: "下架（删除）", danger: true, onclick: () => removeSkill(s) }]);
-  return h(
-    "div",
-    { class: "task-card skill-card" },
-    h("div", { class: "task-top" }, h("button", { class: "task-title skill-name", title: "查看", onclick: () => openDetail(s) }, s.name), btn, more),
-    h(
-      "div",
-      { class: "task-meta" },
-      h("span", {}, `${s.ownerName} 建的`),
-      h("span", {}, s.visibility === "all" ? "公开" : "分享给你"),
-      h("span", {}, `更新于 ${new Date(s.updatedAt).toLocaleDateString()}`),
-      s.vars.length ? h("span", {}, `要填 ${s.vars.length} 个变量`) : null,
-    ),
-    h("div", { class: "task-prompt" }, s.description),
   );
 }
 
@@ -265,12 +210,19 @@ function machineCard(m) {
 
 // ---------- 操作 ----------
 
-async function install(s, on) {
+/** 卸载以前从别人那装的技能。不再有广场，卸了就装不回来了，先问一句 */
+async function uninstall(s) {
+  const sure = await confirmDialog({
+    title: `卸载「${s.name}」？`,
+    message: `这是 ${s.ownerName} 建的技能。卸载后就装不回来了，要用的话得请他把内容发给你，自己新建一个。`,
+    confirmText: "卸载",
+    danger: true,
+  });
+  if (!sure) return;
   try {
-    await api(`/api/skills/${s.id}/install`, { method: "POST", body: { on } });
-    toast(on ? `已安装 ${s.name}，新消息起可用` : `已卸载 ${s.name}`);
-    await reload();
-    if (on && s.vars.some((v) => v.required)) openVars(K.data.skills.find((x) => x.id === s.id) ?? s);
+    await api(`/api/skills/${s.id}/install`, { method: "POST", body: { on: false } });
+    toast(`已卸载 ${s.name}`);
+    void reload();
   } catch (err) {
     toast(err.message);
   }
@@ -278,11 +230,9 @@ async function install(s, on) {
 
 async function removeSkill(s) {
   const sure = await confirmDialog({
-    title: s.mine ? `删除技能「${s.name}」？` : `下架「${s.name}」？`,
-    message: s.mine
-      ? `删除后找不回来${s.installs ? `，装了它的 ${s.installs} 个人也用不了了` : ""}。`
-      : `这是 ${s.ownerName} 建的技能，下架会直接删除它，装了的人都用不了了。`,
-    confirmText: s.mine ? "删除" : "下架",
+    title: `删除技能「${s.name}」？`,
+    message: `删除后找不回来${s.installs ? `，装了它的 ${s.installs} 个人也用不了了` : ""}。`,
+    confirmText: "删除",
     danger: true,
   });
   if (!sure) return;
@@ -314,7 +264,7 @@ async function openDetail(s) {
       "div",
       { class: "task-meta" },
       h("span", {}, d.mine ? "我建的" : `${d.ownerName} 建的`),
-      h("span", {}, `${VISIBILITY[d.visibility]}可见`),
+      d.mine && SHARED[d.visibility] ? h("span", {}, SHARED[d.visibility]) : null,
       h("span", {}, `更新于 ${new Date(d.updatedAt).toLocaleString()}`),
     ),
     h("p", { class: "skill-desc" }, d.description),
@@ -464,38 +414,6 @@ function openVars(s) {
 
 // ---------- 新建 / 编辑 ----------
 
-/** 谁能看到：仅自己 / 指定的人 / 所有人 */
-function visibilityPicker(cur) {
-  const state = { visibility: cur?.visibility ?? "private", sharedWith: new Set(cur?.sharedWith ?? []) };
-  const users = K.data.users;
-  const select = h(
-    "select",
-    {},
-    Object.entries(VISIBILITY).map(([v, label]) =>
-      h("option", { value: v, selected: v === state.visibility, disabled: v === "users" && users.length === 0 }, v === "all" ? "所有人（出现在技能广场）" : label),
-    ),
-  );
-  const people = h(
-    "div",
-    { class: "skill-people" },
-    users.map((u) => {
-      const box = h("input", { type: "checkbox", checked: state.sharedWith.has(u.id) });
-      box.onchange = () => (box.checked ? state.sharedWith.add(u.id) : state.sharedWith.delete(u.id));
-      return h("label", { class: "skill-person" }, box, u.name);
-    }),
-  );
-  const sync = () => {
-    state.visibility = select.value;
-    people.hidden = select.value !== "users";
-  };
-  select.onchange = sync;
-  sync();
-  return {
-    el: h("div", { class: "skill-visibility" }, select, people),
-    value: () => ({ visibility: state.visibility, sharedWith: [...state.sharedWith] }),
-  };
-}
-
 /** 变量声明的编辑器：一行一个 */
 function varsEditor(list) {
   const rows = [];
@@ -580,7 +498,6 @@ async function openEditor(s) {
   const body = h("textarea", { rows: 14, class: "skill-body-input", spellcheck: "false", placeholder: "写给 agent 的操作说明（Markdown）" });
   body.value = d?.body ?? (s ? "" : BODY_TEMPLATE);
   const vars = varsEditor(d?.vars);
-  const vis = visibilityPicker(d);
   const save = h("button", { class: "btn primary" }, d ? "保存" : "创建");
   const close = modal({
     title: d ? `编辑 ${d.name}` : "新建技能",
@@ -597,21 +514,19 @@ async function openEditor(s) {
         vars.el,
         "要调的接口地址、密钥之类，每个人填自己的值。普通变量注入到他自己的会话环境里，正文里用 $变量名 引用；密钥再填上「只允许发往」的地址就受保护：agent 看不到值，正文里写成让 agent 用 skill_request 工具发请求、在地址或请求头里写 {{变量名}}。",
       ),
-      field("谁能看到", vis.el, "看得到的人可以在技能广场安装。你以后改了，装了的人也跟着用新的。"),
     ),
     foot: h("div", { class: "modal-foot" }, save),
   });
   (d ? desc : name).focus();
   save.onclick = async () => {
-    const payload = { description: desc.value, body: body.value, vars: vars.value(), ...vis.value() };
+    const payload = { description: desc.value, body: body.value, vars: vars.value() };
     save.disabled = true;
     try {
       if (d) await api(`/api/skills/${d.id}`, { method: "PATCH", body: payload });
       else await api("/api/skills", { method: "POST", body: { name: name.value.trim().toLowerCase(), ...payload } });
       close();
       toast(d ? "已保存" : "已创建");
-      if (S.view === "skills") void reload();
-      else void openSkills();
+      void reload();
     } catch (err) {
       save.disabled = false;
       toast(err.message);
@@ -634,7 +549,7 @@ function toBase64(buf) {
 
 /**
  * 上传技能：压缩包（.zip / .skill）、单个 SKILL.md，或者整个文件夹。target 给了就是替换那个技能的内容。
- * 新建的先设成「仅自己」，传完打开编辑框让人确认说明、变量和分享范围。
+ * 传完打开编辑框让人确认说明和变量。
  */
 function pickUpload(target) {
   const choose = (folder) => {
@@ -653,7 +568,7 @@ function pickUpload(target) {
       "div",
       { class: "modal-body" },
       h("p", { class: "skill-note" }, "技能包里要有 SKILL.md（开头的 frontmatter 写 name 和 description），可以带脚本、模板等文件。要声明变量的话，放一个 agent-loft.json：{ \"vars\": [{ \"name\": \"MY_API_KEY\", \"secret\": true, \"required\": true }] }。"),
-      target ? h("p", { class: "skill-note" }, "替换后名字不变，包里写的 name 会被忽略；装了它的人会跟着用新的。") : null,
+      target ? h("p", { class: "skill-note" }, "替换后名字不变，包里写的 name 会被忽略。") : null,
       h(
         "div",
         { class: "skill-upload-btns" },
@@ -692,9 +607,8 @@ async function upload(files, target) {
       return;
     }
     const s = await api("/api/skills", { method: "POST", body: { upload: payload, visibility: "private" } });
-    toast(`已导入 ${s.name}，现在只有你自己看得到`);
-    if (S.view === "skills") await reload();
-    else await openSkills();
+    toast(`已导入 ${s.name}`);
+    void reload();
     await openEditor(s);
   } catch (err) {
     toast(err.message);

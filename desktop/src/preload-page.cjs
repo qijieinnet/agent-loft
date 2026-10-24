@@ -14,12 +14,16 @@ ipcRenderer.on("page:open-settings", () => {
   else settingsPending = true;
 });
 
+// 顶栏「更多」里点了页面报来的菜单项
+let menuHandler = null;
+ipcRenderer.on("page:menu", (_e, id) => menuHandler?.(id));
+
 let quotaHandler = null;
 ipcRenderer.on("page:quota-update", (_e, payload) => quotaHandler?.(payload));
 
 contextBridge.exposeInMainWorld("agentLoftDesktop", {
-  /** 2：额度由桌面端查（onQuota / refreshQuota） */
-  version: 2,
+  /** 2：额度由桌面端查（onQuota / refreshQuota）；3：「更多」菜单交给桌面端（setMenu / onMenu） */
+  version: 3,
   /** @param {{ key: string, title: string, body: string, tag: string }} notice */
   notify: (notice) => ipcRenderer.send("page:notify", notice),
   /** @param {{ pending: { id: string, key: string, title: string, conv: string }[], busy: number }} state */
@@ -33,6 +37,15 @@ contextBridge.exposeInMainWorld("agentLoftDesktop", {
   onQuota: (handler) => {
     quotaHandler = typeof handler === "function" ? handler : null;
     if (quotaHandler) ipcRenderer.send("page:quota-want");
+  },
+  /**
+   * 页面右上角「更多」里的菜单交给桌面端，排在桌面端顶栏「更多」的最上面；usage 是几行用量说明，排在最下面。
+   * 菜单变了就再报一次。@param {{ items: ({ type: "separator" } | { id: string, label: string, checked?: boolean })[], usage?: string[] }} menu
+   */
+  setMenu: (menu) => ipcRenderer.send("page:menu-set", menu),
+  /** 点了 setMenu 报的菜单项，参数是它的 id。重复注册只保留最后一个。 */
+  onMenu: (handler) => {
+    menuHandler = typeof handler === "function" ? handler : null;
   },
   /** 请桌面端马上重新查这台服务器的额度，查完经 onQuota 推回来 */
   refreshQuota: () => ipcRenderer.send("page:quota-refresh"),

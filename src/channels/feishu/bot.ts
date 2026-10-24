@@ -272,9 +272,9 @@ export class FeishuBot {
     // 最近几句：读历史可能要一会儿，读不到也不影响接上
     const history = await hub.history(webKey).catch(() => []);
     const recent = history
-      .filter((m) => m.text.trim())
+      .filter((m) => m.role !== "question" && m.text.trim())
       .slice(-4)
-      .map((m) => ({ role: m.role, text: m.text }));
+      .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: m.text }));
     await this.client.sendCard(
       chatId,
       attachedCard({ conv: entry, recent, sessionKey: feishuKey, ctx: this.cardCtx(feishuKey, chatId) }),

@@ -21,7 +21,7 @@ export const S = {
   loadToken: 0,
   /** 登录的用户 { id, name, role } */
   user: null,
-  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页，"skills" 是技能页 */
+  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页 */
   view: null,
 };
 
@@ -39,8 +39,9 @@ export const desktopQuota = typeof desktop?.onQuota === "function";
 // 桌面端里：顶栏、侧栏顶部可以按住拖动窗口（样式见 css/topbar.css 的 .in-desktop）
 if (desktop) document.documentElement.classList.add("in-desktop");
 /**
- * 新版桌面端顶栏的「更多」里能打开每台服务器的设置：侧栏底部的设置按钮就不显示了（额度照常显示，数据由桌面端推）。
- * 老版本桌面端没有这个入口，照旧显示，免得设置打不开。
+ * 新版桌面端顶栏的「更多」里能打开每台服务器的设置：页面「更多」里的设置就不放了。
+ * 老版本桌面端没有这个入口，照旧放，免得设置打不开。
  */
 export const desktopSettings = typeof desktop?.onOpenSettings === "function";
-if (desktopSettings) document.documentElement.classList.add("desktop-settings");
+/** 更新的桌面端：页面右上角的「更多」整个交给桌面端顶栏的「更多」（排在最上面），页面上不显示这个按钮 */
+export const desktopMenu = typeof desktop?.setMenu === "function";

@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
 import { attachFooters, copyFooters, formatDuration, recordFooter } from "./footers.js";
+import { flushUsage, recordUsage, usageOf, type UsageTotals } from "./usage.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
   agentBinding,
@@ -65,7 +66,15 @@ export type Origin = {
 };
 
 export type ConvEvent =
-  | { type: "user"; text: string; attachments: string[]; files?: AttachmentInfo[]; origin: Origin }
+  /** id：这条消息的编号，后面的 queue 事件按它对上；queued：收到时前面还有在跑 / 在等的，要排队 */
+  | { type: "user"; text: string; attachments: string[]; files?: AttachmentInfo[]; origin: Origin; id?: string; queued?: boolean }
+  /** 排队的消息：轮到它了（started，或者被当成提问的回答用掉了），或者没发出去（dropped：停止、会话切换…） */
+  | { type: "queue"; id: string; state: "started" | "dropped" }
+  /**
+   * 这里弹出过一张授权 / 提问卡（内容和状态在 interactions 里按 id 查）。只是给卡片在对话里占个位置：
+   * 刷新页面时进行中的这一轮靠重放事件画出来，没有它卡片就丢了
+   */
+  | { type: "ix"; id: string }
   | { type: "turn_start" }
   | { type: "step"; kind: StepKind; text: string }
   | { type: "delta"; text: string }
@@ -141,6 +150,8 @@ export type ConversationInfo = {
   runtimeEffort?: string;
   /** 当前 agent 会话的上下文占用（这次启动以来跑过至少一轮才有） */
   context?: ContextUsage;
+  /** 当前 agent 会话累计消耗的 token（升级后跑过至少一轮才有） */
+  usage?: UsageTotals;
   busy: boolean;
   activeAt: number;
   createdAt: number;
@@ -190,6 +201,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
   private seq = 0;
   /** 每条会话还没收到结果的轮数，> 0 即忙 */
   private inflight = new Map<string, number>();
+  /**
+   * 已经交给 agent 会话、还没出结果的消息，和 inflight、turnTags 一一对应：第一条在跑，后面的在排队。
+   * 用来告诉页面哪条消息轮到了 / 被丢了，以及「打断并发送」时把哪条挪到前面
+   */
+  private turnFifo = new Map<string, { id: string; input: UserInput; queued: boolean }[]>();
+  /** 收到了、还在串行队列里没交给 agent 的消息数：这时再来的消息也算排队 */
+  private waitingSends = new Map<string, number>();
+  private msgSeq = 0;
   private announced = new Set<string>();
   /** 每条会话因缓冲区溢出被丢掉的最后一个 seq */
   private truncated = new Map<string, number>();
@@ -229,6 +248,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
   constructor() {
     super();
     this.setMaxListeners(100);
+    interactions.on("created", (i) => this.emitEvent(i.convKey, { type: "ix", id: i.id }));
     // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
     skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
@@ -461,6 +481,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         const ctx = binding.sessionId ? this.contextBySession.get(binding.sessionId) : undefined;
         return ctx ? { context: ctx } : {};
       })(),
+      ...(() => {
+        const usage = usageOf(binding.sessionId);
+        return usage ? { usage } : {};
+      })(),
       busy: this.isBusy(key),
       activeAt: conv.activeAt,
       createdAt: conv.createdAt,
@@ -581,6 +605,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
           const conv = getConversation(key);
           recordFooter(holder.session?.sessionId ?? (conv ? agentBinding(conv, agent).sessionId : undefined), result.text, footer);
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+          this.finishTurn(key);
           this.refreshRuntimeOnce(key, liveId);
           this.syncTitle(key, agent);
           this.dropIfStale(key);
@@ -607,6 +632,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
             this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
           }
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+          this.finishTurn(key);
           this.dropIfStale(key);
         },
         onContext: (ctx) => {
@@ -622,6 +648,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
           // Codex 一轮里会报好几次，数字没变就不打扰前端
           if (prev?.used !== ctx.used || prev?.window !== ctx.window) this.emitEvent(key, { type: "meta" });
         },
+        // 不用另发 meta：一轮结束的 result / error 会把会话信息（含用量）推给页面
+        onUsage: (usage, cumulative) => alive() && recordUsage(holder.session?.sessionId, usage, cumulative),
         onDropped: (n) => {
           if (!alive() || n <= 0) return;
           // 丢的是排在最后、还没开始的那 n 条（Codex 先报正在跑的那轮出错、再报丢弃，那时队头已经取走了）
@@ -630,6 +658,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
             if (tag) this.emit("task", { ...tag, key, status: "interrupted", text: "排队时被停止了" });
           }
           this.setInflight(key, (this.inflight.get(key) ?? n) - n);
+          // 第一条是在跑的那一轮（它自己会报结果），丢的只会是后面排队的
+          const fifo = this.turnFifo.get(key) ?? [];
+          const k = Math.min(n, Math.max(0, fifo.length - 1));
+          for (const e of fifo.splice(fifo.length - k, k)) this.emitEvent(key, { type: "queue", id: e.id, state: "dropped" });
         },
         onSessionId: (sessionId) => {
           // 切走之后旧会话晚到的回调不该覆盖新绑定
@@ -703,6 +735,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     this.live.delete(key);
     for (const tag of this.turnTags.get(key) ?? []) if (tag) this.emit("task", { ...tag, key, status: "interrupted", text: note });
     this.turnTags.delete(key);
+    this.clearFifo(key);
     this.setInflight(key, 0);
     if (!existing) return;
     // dispose 卡住（CLI 不响应）不能把这条会话的操作队列永远堵死
@@ -831,6 +864,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       attachments: input.attachments.map((a) => `${KIND_LABEL[a.kind]} ${a.name}`),
       files: input.attachments.map(attachmentInfo),
       origin,
+      id: `m${++this.msgSeq}`,
+      queued: false,
     };
     const by = `${origin.name ?? "用户"}以消息作答`;
 
@@ -865,29 +900,42 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       updateConversation(key, { title: shown.text.trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
       this.emitEvent(key, { type: "meta" });
     }
+    // 前面有在跑的、或者还在串行队列里等着的：这条要排队
+    shown.queued = this.isBusy(key) || (this.waitingSends.get(key) ?? 0) > 0;
     this.emitEvent(key, shown);
+    const dropped = () => this.emitEvent(key, { type: "queue", id: shown.id, state: "dropped" });
     const gone = (text: string) => {
+      dropped();
       if (task) this.emit("task", { ...task, key, status: "interrupted", text });
     };
+    this.waitingSends.set(key, (this.waitingSends.get(key) ?? 0) + 1);
     void this.serial(key, async () => {
-      if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
-      if (questionAtEntry && tryAnswer(questionAtEntry)) return;
-      // 收到之后发生过显式切换（恢复 / 分叉 / 新会话…）：用户已经明确指定了会话，不再按旧的闲置时间作废它。
-      // 定时任务也不按闲置过期：每天跑一次的任务要接着上次的上下文
-      const ttl = config().sessionTtlMs;
-      const switchedAfterEntry = (this.lastSwitch.get(key)?.at ?? 0) >= g.at;
-      const expired = !task && !switchedAfterEntry && ttl > 0 && Date.now() - lastActive > ttl;
-      if (expired) {
-        await this.expireNow(key);
-        // 清理要等旧会话 dispose，期间可能又点了停止
-        if (cancelled()) return;
+      try {
+        if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
+        if (questionAtEntry && tryAnswer(questionAtEntry)) {
+          // 被当成提问的回答用掉了：不再排队
+          if (shown.queued) this.emitEvent(key, { type: "queue", id: shown.id, state: "started" });
+          return;
+        }
+        // 收到之后发生过显式切换（恢复 / 分叉 / 新会话…）：用户已经明确指定了会话，不再按旧的闲置时间作废它。
+        // 定时任务也不按闲置过期：每天跑一次的任务要接着上次的上下文
+        const ttl = config().sessionTtlMs;
+        const switchedAfterEntry = (this.lastSwitch.get(key)?.at ?? 0) >= g.at;
+        const expired = !task && !switchedAfterEntry && ttl > 0 && Date.now() - lastActive > ttl;
+        if (expired) {
+          await this.expireNow(key);
+          // 清理要等旧会话 dispose，期间可能又点了停止
+          if (cancelled()) return dropped();
+        }
+        const blocked = await this.blockedSlash(key, input.text);
+        if (blocked) {
+          this.emitEvent(key, { type: "notice", text: blocked });
+          return gone(blocked);
+        }
+        this.sendNow(key, this.withMentions(key, input), task ?? null, { id: shown.id, queued: shown.queued });
+      } finally {
+        this.waitingSends.set(key, Math.max(0, (this.waitingSends.get(key) ?? 1) - 1));
       }
-      const blocked = await this.blockedSlash(key, input.text);
-      if (blocked) {
-        this.emitEvent(key, { type: "notice", text: blocked });
-        return gone(blocked);
-      }
-      this.sendNow(key, this.withMentions(key, input), task ?? null);
     });
   }
 
@@ -946,7 +994,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     this.emitEvent(key, { type: "meta" });
   }
 
-  private sendNow(key: string, input: UserInput, tag: TaskTurn | null): void {
+  /** msg：页面上那条消息的编号和收到时是否排队（见 send 里的 shown） */
+  private sendNow(key: string, input: UserInput, tag: TaskTurn | null, msg: { id: string; queued: boolean }): void {
     const fail = (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       this.emitEvent(key, { type: "error", message });
@@ -963,12 +1012,22 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const tags = this.turnTags.get(key) ?? [];
     tags.push(tag);
     this.turnTags.set(key, tags);
+    const fifo = this.turnFifo.get(key) ?? [];
+    fifo.push({ id: msg.id, input, queued: msg.queued });
+    this.turnFifo.set(key, fifo);
     try {
       session.send(input);
     } catch (err) {
       tags.pop();
+      fifo.pop();
       this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
       fail(err);
+      return;
+    }
+    // 收到时在排队（前面的在串行队列里等着），交出去时前面已经空了：这就开始了
+    if (fifo.length === 1 && msg.queued) {
+      fifo[0]!.queued = false;
+      this.emitEvent(key, { type: "queue", id: msg.id, state: "started" });
     }
   }
 
@@ -1247,8 +1306,49 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 和 inflight 一起清零：被打断的那一轮不一定还会报结果，留着的话下一轮的结果会被当成定时任务的
     for (const tag of this.turnTags.get(key) ?? []) if (tag) this.emit("task", { ...tag, key, status: "interrupted", text: "被停止了" });
     this.turnTags.delete(key);
+    this.clearFifo(key);
     this.setInflight(key, 0);
     return "已请求中断。";
+  }
+
+  /**
+   * 打断并发送：停掉正在跑的这一轮，排着队的 id 这条挪到最前面，马上处理它；其余排着的照常接在后面。
+   * 和停止不同，不丢排队的消息、也不清计数 —— 被打断的这一轮会正常报结果（已中断），之后就轮到它
+   */
+  async jump(key: string, id: string): Promise<string> {
+    const fifo = this.turnFifo.get(key) ?? [];
+    const idx = fifo.findIndex((e) => e.id === id);
+    if (idx === 0) return "这条已经在处理了。";
+    const live = this.live.get(key);
+    if (idx < 0 || !live) return "这条消息已经不在排队了。";
+    const [entry] = fifo.splice(idx, 1);
+    fifo.splice(1, 0, entry!);
+    // turnTags 和 fifo 一一对应，一起挪
+    const tags = this.turnTags.get(key);
+    if (tags && tags.length === fifo.length) tags.splice(1, 0, ...tags.splice(idx, 1));
+    this.stoppedAt.set(key, Date.now());
+    interactions.cancelAll(key, "本轮已中断");
+    await live.session.interrupt({ keepQueue: true, first: entry!.input });
+    return "已打断，马上处理这条。";
+  }
+
+  /** 一轮出结果了：队首出队，下一条要是排过队的，告诉页面轮到它了 */
+  private finishTurn(key: string): void {
+    const fifo = this.turnFifo.get(key);
+    if (!fifo) return;
+    fifo.shift();
+    const next = fifo[0];
+    if (next?.queued) {
+      next.queued = false;
+      this.emitEvent(key, { type: "queue", id: next.id, state: "started" });
+    }
+    if (fifo.length === 0) this.turnFifo.delete(key);
+  }
+
+  /** 停止 / 会话丢了：在跑的那条不管（它的结果或中断自己会报），排着队的都没发出 */
+  private clearFifo(key: string): void {
+    for (const e of (this.turnFifo.get(key) ?? []).slice(1)) this.emitEvent(key, { type: "queue", id: e.id, state: "dropped" });
+    this.turnFifo.delete(key);
   }
 
   private async cdNow(key: string, dir: string, op: SwitchOp): Promise<string> {
@@ -1515,6 +1615,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
   async shutdown(): Promise<void> {
     for (const key of [...this.live.keys()]) await this.drop(key, "服务正在重启");
     for (const driver of this.drivers.values()) await driver.stop().catch(() => {});
+    flushUsage();
   }
 }
 

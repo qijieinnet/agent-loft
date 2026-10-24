@@ -101,6 +101,7 @@ function quotaLevel(p) {
 export function renderQuota() {
   if (!ui.quota) return;
   const list = S.quotaEnabled ? (quotaState.data ?? []) : [];
+  if (ui.sideBottom) ui.sideBottom.hidden = list.length === 0;
   if (list.length === 0) return fill(ui.quota);
   const rows = list.map((q) =>
     h(

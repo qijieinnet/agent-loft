@@ -1,10 +1,11 @@
 import { agentIcon, fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
-import { S, ui } from "../state.js";
+import { desktop, desktopMenu, desktopSettings, S, ui } from "../state.js";
 import { agentLabel, convTitle, openSide } from "./sidebar.js";
 import { closeMenu, confirmDialog, modal, placePopover, showMenu, showPopover } from "../lib/overlay.js";
 import { newDraft, openConversation } from "./messages.js";
+import { openSettings } from "./layout.js";
 import { openSchedule } from "./schedule.js";
 import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, renameConv, switchAgent } from "./conv-actions.js";
 
@@ -12,29 +13,168 @@ import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, ren
 
 export function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
-  // 定时任务页、技能页：只有标题，模式切换、「更多」都是对话用的
-  const tasks = S.view === "tasks" || S.view === "skills";
+  const tasks = S.view === "tasks";
   fill(ui.topbar,
     h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
     h(
       "div",
       { class: "top-title" },
-      tasks ? h("span", { class: "conv-name" }, S.view === "skills" ? "技能" : "定时任务") : c ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)) : null,
+      tasks
+        ? h("span", { class: "conv-name" }, "定时任务")
+        : c
+          ? [
+              // 聊天模式的对话：标题前面挂个聊天图标
+              c.mode === "chat" ? h("span", { class: "conv-mode-icon", title: "聊天模式", html: ICON.chat }) : null,
+              h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)),
+            ]
+          : null,
     ),
-    tasks ? null : ui.modeSlot,
-    tasks ? null : h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")),
+    // 桌面端里这个菜单放到桌面端顶栏的「更多」里了
+    desktopMenu ? null : h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")),
   );
   renderContext();
+  syncDesktopMenu();
 }
 
-/** 顶栏右上角「更多」 */
+/**
+ * 右上角「更多」里的项。对话页（含新对话）有聊天模式、定时发送；设置哪个页面都有，
+ * 桌面端自己的「更多」里已经有每台服务器的设置时不放
+ */
+function topMenuItems() {
+  const items = [];
+  if (!S.view) {
+    const c = S.current ? S.convs.get(S.current) : null;
+    const chat = (c ? (c.mode ?? "work") : S.draftMode) === "chat";
+    items.push({ id: "mode", label: "聊天模式", icon: "chat", checked: chat, onclick: () => void toggleMode() });
+    items.push({ id: "schedule", label: "定时发送…", icon: "clock", onclick: () => openSchedule() });
+  }
+  if (!desktopSettings) {
+    if (items.length) items.push("sep");
+    items.push({ id: "settings", label: "设置", icon: "gear", onclick: () => openSettings() });
+  }
+  return items;
+}
+
+/** 顶栏右上角「更多」：菜单项 + 最下面当前会话的 token 用量 */
 function openTopMore(anchor) {
   if (ui.menu?.anchor === anchor) return closeMenu();
-  showMenu(anchor, [{ label: "定时发送…", onclick: () => openSchedule() }]);
-  ui.menu.anchor = anchor;
-  // 贴着按钮右边对齐，别超出屏幕
-  const r = anchor.getBoundingClientRect();
-  ui.menu.style.left = `${Math.max(8, r.right - ui.menu.offsetWidth)}px`;
+  const pop = showPopover(anchor, { place: "below", align: "right" });
+  pop.classList.add("top-menu");
+  const usage = renderUsage();
+  fill(
+    pop,
+    topMenuItems().map((it) =>
+      it === "sep"
+        ? h("div", { class: "sep" })
+        : h(
+            "button",
+            { class: `pop-item${it.checked ? " on" : ""}`, onclick: () => (closeMenu(), it.onclick()) },
+            icon(it.icon),
+            h("span", { class: "grow" }, it.label),
+            it.checked ? h("span", { class: "check" }, "✓") : null,
+          ),
+    ),
+    usage ? [h("div", { class: "sep" }), usage] : null,
+  );
+  placePopover(pop, anchor);
+}
+
+// ---------- 当前会话的 token 用量（「更多」菜单底部） ----------
+
+/** 分布的各项，顺序和颜色固定（颜色见 css/topbar.css 的 --usage-*） */
+const USAGE_PARTS = [
+  { key: "input", label: "输入", cls: "u-input" },
+  { key: "cacheWrite", label: "缓存写入", cls: "u-cwrite" },
+  { key: "cacheRead", label: "缓存读取", cls: "u-cread" },
+  { key: "output", label: "输出", cls: "u-output" },
+];
+
+/** 1234 → 1.2k，1234567 → 1.23M */
+function fmtCount(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e8 ? 0 : n >= 1e7 ? 1 : 2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}k`;
+  return String(n);
+}
+
+const pctText = (n, total) => {
+  const p = (n / total) * 100;
+  return p > 0 && p < 1 ? "<1%" : `${Math.round(p)}%`;
+};
+
+/** 对话页才有：{ total, parts（为 0 的不列）, usage }；还没有记录时 total 为 0。新对话、任务页返回 null */
+function usageSummary() {
+  if (S.view || !S.current) return null;
+  const u = S.convs.get(S.current)?.usage;
+  const parts = USAGE_PARTS.map((p) => ({ ...p, n: u?.[p.key] ?? 0 })).filter((p) => p.n > 0);
+  return { total: parts.reduce((sum, p) => sum + p.n, 0), parts, usage: u };
+}
+
+function renderUsage() {
+  const sum = usageSummary();
+  if (!sum) return null;
+  if (!sum.total) return h("div", { class: "usage" }, h("div", { class: "usage-empty" }, "本会话还没有 token 用量记录"));
+  const { total, parts, usage } = sum;
+  const exact = (n) => n.toLocaleString();
+  return h(
+    "div",
+    { class: "usage", role: "group", "aria-label": "本会话的 token 用量" },
+    h("div", { class: "usage-head" }, h("span", {}, "本会话 Token"), h("b", { title: `${exact(total)} tokens` }, fmtCount(total))),
+    h(
+      "div",
+      { class: "usage-bar", "aria-hidden": "true" },
+      parts.map((p) => h("i", { class: p.cls, style: { flexGrow: String(p.n) }, title: `${p.label} ${exact(p.n)}（${pctText(p.n, total)}）` })),
+    ),
+    parts.map((p) =>
+      h(
+        "div",
+        { class: "usage-row", title: `${exact(p.n)} tokens` },
+        h("span", { class: `usage-dot ${p.cls}` }),
+        h("span", { class: "usage-name" }, p.label, p.key === "output" && usage.reasoning ? h("small", {}, `含推理 ${fmtCount(usage.reasoning)}`) : null),
+        h("span", { class: "usage-num" }, fmtCount(p.n)),
+        h("span", { class: "usage-pct" }, pctText(p.n, total)),
+      ),
+    ),
+    usage.costUsd ? h("div", { class: "usage-foot" }, `按 API 价格约 $${usage.costUsd.toFixed(2)}`) : null,
+  );
+}
+
+/** 桌面端原生菜单里只能放文字：用量写成几行 */
+function usageLines() {
+  const sum = usageSummary();
+  if (!sum) return [];
+  if (!sum.total) return ["本会话还没有 token 用量记录"];
+  const { total, parts, usage } = sum;
+  return [
+    `本会话 Token 共 ${fmtCount(total)}${usage.costUsd ? `（按 API 价格约 $${usage.costUsd.toFixed(2)}）` : ""}`,
+    ...parts.map(
+      (p) => `　${p.label} ${fmtCount(p.n)}　${pctText(p.n, total)}${p.key === "output" && usage.reasoning ? `（含推理 ${fmtCount(usage.reasoning)}）` : ""}`,
+    ),
+  ];
+}
+
+// ---------- 桌面端：菜单交给它的顶栏「更多」 ----------
+
+let desktopActions = new Map();
+let desktopMenuSig = "";
+
+/** 菜单（模式、用量…）变了就报给桌面端 */
+function syncDesktopMenu() {
+  if (!desktopMenu) return;
+  const items = topMenuItems();
+  desktopActions = new Map(items.filter((it) => it !== "sep").map((it) => [it.id, it.onclick]));
+  const menu = {
+    items: items.map((it) => (it === "sep" ? { type: "separator" } : { id: it.id, label: it.label, ...(it.checked !== undefined ? { checked: it.checked } : {}) })),
+    usage: usageLines(),
+  };
+  const sig = JSON.stringify(menu);
+  if (sig === desktopMenuSig) return;
+  desktopMenuSig = sig;
+  desktop.setMenu(menu);
+}
+
+/** 桌面端「更多」里点了页面的菜单项 */
+export function runDesktopMenu(id) {
+  desktopActions.get(id)?.();
 }
 
 export function baseName(p) {
@@ -180,7 +320,6 @@ export function renderContext() {
     effort = (c ? (c.runtimeEffort ?? c.effort) : pick.effort) ?? defaults.effort;
   }
   renderCtxRing();
-  renderModePill(c);
   fill(
     ui.modelSlot,
     model
@@ -195,34 +334,18 @@ export function renderContext() {
   );
 }
 
-/** 输入框里的「聊天 / 工作」切换。会话里切换走服务端（同一条对话接着聊），新对话里只是记下选择 */
-function renderModePill(c) {
-  if (!ui.modeSlot) return;
-  const mode = c ? (c.mode ?? "work") : S.draftMode;
-  const chat = mode === "chat";
-  fill(
-    ui.modeSlot,
-    h(
-      "button",
-      {
-        class: `mode-pill${chat ? " chat" : ""}`,
-        title: chat
-          ? "聊天模式：精简的系统提示，只能联网搜索，不执行命令、不读写文件，每轮开销小很多。点击切到工作模式"
-          : "工作模式：agent 原装的全部能力。点击切到聊天模式（更省、更快，适合日常聊天和查资料）",
-        onclick: () => void toggleMode(),
-      },
-      chat ? "💬 聊天" : "🛠 工作",
-    ),
-  );
-}
-
+/**
+ * 「更多」里的聊天模式开关。聊天模式：精简的系统提示，只能联网搜索，不执行命令、不读写文件，每轮开销小很多；
+ * 工作模式：agent 原装的全部能力。会话里切换走服务端（同一条对话接着聊），新对话里只是记下选择
+ */
 async function toggleMode() {
   const c = S.current ? S.convs.get(S.current) : null;
   const next = (c ? (c.mode ?? "work") : S.draftMode) === "chat" ? "work" : "chat";
   if (!c) {
     S.draftMode = next;
     localStorage.setItem("aim.mode", next);
-    renderContext();
+    renderTopbar();
+    toast(next === "chat" ? "新对话用聊天模式：更省、更快，只能联网搜索，不执行命令、不读写文件" : "新对话用工作模式");
     return;
   }
   // 聊过的聊天对话切到工作模式：工作模式会在对话里留下一大段 Claude Code / Codex 的背景，
@@ -365,14 +488,19 @@ async function continueInFeishu(key) {
   );
 }
 
-/** 飞书机器人的历史会话：这个机器人的所有聊天，按活跃时间排，点一下打开 */
-export function openBotConversations(botId) {
+/** 飞书机器人的历史会话：这个机器人的所有聊天（侧栏只拿了最近的一条，这里去服务端拉全），按活跃时间排，点一下打开 */
+export async function openBotConversations(botId) {
   const bot = S.bots.find((b) => b.id === botId);
-  const convs = [...S.convs.values()]
-    .filter((c) => c.channel === "feishu" && c.channelId === botId && !c.hidden)
-    .sort((a, b) => b.activeAt - a.activeAt);
-  const body = h("div", { class: "modal-body" });
+  const body = h("div", { class: "modal-body" }, h("span", { class: "spinner" }));
   const close = modal({ title: `历史会话${bot ? ` · ${bot.name}` : ""}`, body });
+  let convs;
+  try {
+    convs = (await api(`/api/conversations/page?${new URLSearchParams({ scope: "bot", bot: botId })}`)).conversations;
+  } catch (err) {
+    fill(body, h("div", { class: "error-text" }, err.message));
+    return;
+  }
+  for (const c of convs) S.convs.set(c.key, c);
   fill(
     body,
     ...(convs.length === 0

@@ -143,6 +143,8 @@ type Client = {
   /** 页面在前台，且正看着哪条会话（前端在切会话、切前后台时上报） */
   visible: boolean;
   viewing: string | null;
+  /** 最后一次收到这个页面的消息（含 ping） */
+  seen: number;
 };
 
 /** 每次进程启动换一个：客户端发现变了，就知道 seq 已经从头计数，得整页重拉 */
@@ -187,16 +189,22 @@ function broadcastTasks(owner: string): void {
   for (const client of clients) if (client.user.id === owner) send(client, { t: "tasks" });
 }
 
-/** 技能变了：技能广场谁都可能在看，通知所有人重新拉（列表很小） */
+/** 技能变了：以前装过别人技能的人也受影响，通知所有人重新拉（列表很小） */
 function broadcastSkills(): void {
   for (const client of clients) send(client, { t: "skills" });
 }
 
 // ---------- 系统通知（Web Push） ----------
 
-/** 有页面正在前台看着这条会话：人就在眼前，不用推 */
+/**
+ * 有页面正在前台看着这条会话：人就在眼前，不用推。
+ * 页面每 25 秒发一次 ping；40 秒没收到它的任何消息就不算（手机切走后网络断了，连接还没被心跳清掉，
+ * 最后报的还是「在看」）
+ */
+const SEEN_MS = 40_000;
 function watching(key: string): boolean {
-  for (const client of clients) if (client.visible && client.viewing === key) return true;
+  const now = Date.now();
+  for (const client of clients) if (client.visible && client.viewing === key && now - client.seen < SEEN_MS) return true;
   return false;
 }
 
@@ -275,6 +283,7 @@ function handleClientMessage(client: Client, raw: string): void {
   // 每条消息都复查登录态：握手时有效不代表现在还有效（改了密码、被踢了）
   const user = checkClient(client);
   if (!user) return;
+  client.seen = Date.now();
   let msg: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -448,7 +457,7 @@ export async function startWeb(): Promise<void> {
       }
       const token = cookies(req)[COOKIE] ?? "";
       wss!.handleUpgrade(req, socket, head, (ws) => {
-        const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null };
+        const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null, seen: Date.now() };
         clients.add(client);
         ws.on("pong", () => (client.alive = true));
         ws.on("message", (data) => {

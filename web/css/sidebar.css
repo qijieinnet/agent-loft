@@ -324,13 +324,13 @@ button.conv-group:hover {
   min-height: 48px;
 }
 
-.side-gear {
-  margin-left: auto;
+/* 没有额度可显示：连上面的分隔线一起藏起来 */
+.side-bottom[hidden] {
+  display: none;
 }
 
-/* 桌面端里：设置在顶栏「更多」里，侧栏底部只留额度（额度由桌面端统一查好推过来） */
-.desktop-settings .side-gear {
-  display: none;
+.conv-item .chat-mark {
+  color: var(--fg-soft);
 }
 
 /* ---- 侧栏底部的额度 ---- */

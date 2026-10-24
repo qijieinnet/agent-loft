@@ -61,6 +61,7 @@ import {
   takeAttempt,
 } from "./auth.js";
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
+import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleSkillsApi } from "./skills-api.js";
@@ -469,6 +470,45 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 总览 -----
   if (p === "/api/bootstrap" && method === "GET") {
+    // 会话只给侧栏第一屏要的（见 conv-pages.ts）：「最近」的前 recent 棵树、展开着的目录各自的前几棵，
+    // 每个飞书机器人最近的一条，再加上正在跑的、等你处理的（侧栏要显示状态）。其余点「展开显示」再拉
+    const all = hub.list(visible).filter((c) => !c.hidden);
+    const pending = interactions.listPending().filter((i) => visible(getConversation(i.convKey)));
+    const recent = pageOf(all.filter(inRecent), null, clampLimit(url.searchParams.get("recent"), 10));
+    let open: [string, number][] = [];
+    try {
+      const raw: unknown = JSON.parse(url.searchParams.get("open") ?? "[]");
+      if (Array.isArray(raw)) {
+        open = raw
+          .slice(0, 50)
+          .filter((x): x is [string, unknown] => Array.isArray(x) && typeof x[0] === "string")
+          .map(([dir, n]) => [dir, clampLimit(n, 5)]);
+      }
+    } catch {
+      // 参数坏了就当没有展开的目录
+    }
+    const dirPages = new Map(open.map(([dir, n]) => [dir, pageOf(all.filter(inDir(dir)), null, n)]));
+    const byKey = new Map(all.map((c) => [c.key, c]));
+    const keep = new Map(recent.conversations.map((c) => [c.key, c]));
+    for (const page of dirPages.values()) for (const c of page.conversations) keep.set(c.key, c);
+    const asking = new Set(pending.map((i) => i.convKey));
+    const bots = new Set<string>();
+    for (const c of all) {
+      // all 已按活跃时间从新到旧：每个机器人遇到的第一条就是它最近的
+      if (c.channel === "feishu" && !bots.has(c.channelId)) {
+        bots.add(c.channelId);
+        keep.set(c.key, c);
+      }
+      if (c.busy || asking.has(c.key)) keep.set(c.key, c);
+    }
+    // 正开着的会话（可能是后面几页里的，重连时页面上还显示着它）
+    const current = byKey.get(url.searchParams.get("current") ?? "");
+    if (current) keep.set(current.key, current);
+    // 分叉来源：提示里要写它的标题
+    for (const c of [...keep.values()]) {
+      const parent = c.forkOf ? byKey.get(c.forkOf) : undefined;
+      if (parent) keep.set(parent.key, parent);
+    }
     sendJson(res, 200, {
       agents: [...AGENT_IDS].map((id) => {
         const d = hub.driver(id);
@@ -488,8 +528,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
       quotaEnabled: config().web.quotaEnabled,
-      conversations: hub.list(visible),
-      pending: interactions.listPending().filter((i) => visible(getConversation(i.convKey))),
+      conversations: [...keep.values()],
+      sidebar: {
+        recent: { next: recent.next },
+        // 展开着的目录带上翻页游标（没带 next 的目录前端还没拉过）
+        dirs: dirsOf(all).map((d) => (dirPages.has(d.dir) ? { ...d, next: dirPages.get(d.dir)!.next } : d)),
+      },
+      pending,
       user: publicMe(user),
       serverTime: Date.now(),
     });
@@ -539,6 +584,21 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
 
   // ----- 会话 -----
+  // 侧栏按页拉：scope=recent（最近）/ dir（某个项目目录）按树分页；bot（某个飞书机器人的全部聊天）平铺
+  if (p === "/api/conversations/page" && method === "GET") {
+    const all = hub.list(visible).filter((c) => !c.hidden);
+    const scope = url.searchParams.get("scope");
+    if (scope === "bot") {
+      const bot = url.searchParams.get("bot") ?? "";
+      sendJson(res, 200, { conversations: all.filter((c) => c.channel === "feishu" && c.channelId === bot).slice(0, 200), next: null });
+      return;
+    }
+    if (scope !== "recent" && scope !== "dir") throw new HttpError(400, "scope 只能是 recent / dir / bot");
+    const list = scope === "recent" ? all.filter(inRecent) : all.filter(inDir(url.searchParams.get("dir") ?? ""));
+    const before = parseCursor(url.searchParams.get("at"), url.searchParams.get("key"));
+    sendJson(res, 200, pageOf(list, before, clampLimit(url.searchParams.get("limit"), 10)));
+    return;
+  }
   if (p === "/api/conversations" && method === "GET") {
     sendJson(res, 200, hub.list(visible));
     return;
@@ -653,6 +713,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         info: hub.info(key),
         messages,
         live,
+        // 进行中这一轮弹过的卡（已经处理了的也要）：重放到 ix 事件时放回原位
+        interactions: live.flatMap((e) => (e.ev.type === "ix" ? [interactions.get(e.ev.id)].filter((i) => !!i) : [])),
         seq,
         pending: interactions.listPending(key),
         allowedAgents: allowedAgentsFor(key),
@@ -737,6 +799,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           break;
         case "stop":
           text = await hub.stop(key);
+          break;
+        // 打断并发送：value 是排队中那条消息的编号
+        case "jump":
+          text = await hub.jump(key, value);
           break;
         case "cd":
           text = await hub.cd(key, value);

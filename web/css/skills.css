@@ -1,4 +1,4 @@
-/* ---------- 技能页（版式沿用定时任务页的 .tasks-page / .task-card） ---------- */
+/* ---------- 技能（设置里的一页，卡片沿用定时任务页的 .task-card） ---------- */
 
 .skill-head-btns {
   display: flex;
@@ -365,4 +365,21 @@
   .skill-var-line input:first-child {
     flex: 1 1 100%;
   }
+}
+
+/* 设置里的技能页 */
+.skills-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.skills-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.skills-head .skill-note {
+  flex: 1;
 }

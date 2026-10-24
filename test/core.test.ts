@@ -866,3 +866,101 @@ test("回复脚注：重新加载历史后按正文结尾对回去，同样的�
   );
   assert.deepEqual(attachFooters("没有的会话", [{ role: "assistant", text: "x" }]), [{ role: "assistant", text: "x" }]);
 });
+
+test("hub：排队的消息标出来，轮到了 / 被丢了都告诉页面；打断并发送把它挪到最前面", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  type Input = { text: string; attachments: never[] };
+  let events!: { onResult: (r: { text: string; durationMs: number }) => void; onDropped?: (n: number) => void };
+  const pending: Input[] = [];
+  const delivered: string[] = [];
+  let busy = false;
+  let interrupted: { keepQueue?: boolean; first?: Input } | undefined;
+  // 和 Claude 的会话一样：一轮没完就留在本地排队，出结果后交出下一条
+  const deliver = (input: Input) => {
+    busy = true;
+    delivered.push(input.text);
+  };
+  const finish = () => {
+    events.onResult({ text: "ok", durationMs: 1 });
+    busy = false;
+    const next = pending.shift();
+    if (next) deliver(next);
+  };
+  hub.registerDriver({
+    id: "claude",
+    label: "Fake",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (_opts, ev) => {
+      events = ev as never;
+      return {
+        sessionId: "s-queue",
+        send: (input) => (busy ? pending.push(input as Input) : deliver(input as Input)),
+        interrupt: async (opts) => {
+          interrupted = opts as never;
+          if (opts?.keepQueue) {
+            const i = pending.indexOf(opts.first as Input);
+            if (i > 0) pending.unshift(...pending.splice(i, 1));
+          } else {
+            const n = pending.length;
+            pending.length = 0;
+            if (n) events.onDropped?.(n);
+          }
+        },
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: async () => {},
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    catalog: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  const key = "web:queue";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const seen: { type: string; id?: string; queued?: boolean; state?: string; text?: string }[] = [];
+  hub.on("event", (env: { key: string; ev: (typeof seen)[number] }) => env.key === key && seen.push(env.ev));
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+  const origin = { channel: "web", channelId: "web" };
+  const idOf = (text: string) => seen.find((e) => e.type === "user" && e.text === text)!.id!;
+  const queueEvents = () => seen.filter((e) => e.type === "queue").map((e) => `${e.state}:${e.id}`);
+
+  hub.send(key, { text: "A", attachments: [] }, origin);
+  await tick();
+  hub.send(key, { text: "B", attachments: [] }, origin);
+  hub.send(key, { text: "C", attachments: [] }, origin);
+  hub.send(key, { text: "D", attachments: [] }, origin);
+  await tick();
+  assert.deepEqual(
+    seen.filter((e) => e.type === "user").map((e) => [e.text, e.queued]),
+    [["A", false], ["B", true], ["C", true], ["D", true]],
+  );
+  assert.deepEqual(delivered, ["A"]);
+
+  // A 出结果：轮到 B
+  finish();
+  assert.deepEqual(delivered, ["A", "B"]);
+  assert.deepEqual(queueEvents(), [`started:${idOf("B")}`]);
+
+  // B 在跑时对 D 打断并发送：只停这一轮、不丢排队的，D 挪到 C 前面
+  assert.equal(await hub.jump(key, idOf("D")), "已打断，马上处理这条。");
+  assert.equal(interrupted?.keepQueue, true);
+  assert.equal(interrupted?.first?.text, "D");
+  assert.equal(hub.isBusy(key), true);
+  finish(); // 被打断的 B 报结果
+  assert.deepEqual(delivered, ["A", "B", "D"]);
+  assert.deepEqual(queueEvents().slice(-1), [`started:${idOf("D")}`]);
+  assert.equal(await hub.jump(key, idOf("D")), "这条已经在处理了。");
+
+  // 停止：还排着的 C 没发出
+  await hub.stop(key);
+  assert.deepEqual(queueEvents().slice(-1), [`dropped:${idOf("C")}`]);
+  assert.equal(hub.isBusy(key), false);
+  assert.equal(await hub.jump(key, idOf("C")), "这条消息已经不在排队了。");
+});

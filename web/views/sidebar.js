@@ -1,4 +1,5 @@
 import { fill, h, icon, ICON, toast } from "../lib/dom.js";
+import { api } from "../lib/api.js";
 import { desktop, S, ui } from "../state.js";
 import { baseName } from "./topbar.js";
 import { newDraft, openConversation } from "./messages.js";
@@ -190,7 +191,7 @@ function agentShort(id) {
   return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
 }
 
-/** 侧栏里展开 / 收起的状态：哪些项目目录展开了、「最近」和各目录是否显示全部 */
+/** 侧栏里展开 / 收起的状态：哪些项目目录展开了、哪些分组折叠了、目录的顺序（more 是老版本的，不再用） */
 export const sideState = { open: [], more: [], folded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
 
 /**
@@ -249,6 +250,95 @@ function toggleSide(list, id) {
 let autoOpenedFor = null;
 const RECENT_LIMIT = 10;
 const PROJECT_LIMIT = 5;
+/** 「展开显示」一次多显示几条 */
+const MORE_STEP = 10;
+
+// ---------- 分页（服务端见 channels/web/conv-pages.ts） ----------
+// 打开页面只拿「最近」的前 10 条、展开着的目录各自的前 5 条（一条 = 主对话连同它的分叉），
+// 正在跑的、等你处理的、每个飞书机器人最近的一条也都在；点「展开显示」多显示 10 条，本地不够再按页拉。
+// 新出现的、变活跃的会话经 WebSocket 的 conv 消息补进 S.convs。
+// next：下一页的游标；null = 没有更多了；undefined = 这个目录还没拉过。
+
+/** full：老版本服务端一次给了全部，不用再拉 */
+const pages = { recent: { show: RECENT_LIMIT, next: null, loading: false }, dirs: new Map(), dirAt: new Map(), full: false };
+
+function dirState(dir) {
+  let st = pages.dirs.get(dir);
+  if (!st) pages.dirs.set(dir, (st = { show: PROJECT_LIMIT, next: pages.full ? null : undefined, loading: false }));
+  return st;
+}
+
+/** /api/bootstrap 的参数：按现在显示了多少条要（重连后整份换掉时，已经展开的不会缩回去） */
+export function bootstrapQuery() {
+  const q = new URLSearchParams({ recent: String(pages.recent.show), open: JSON.stringify(sideState.open.map((d) => [d, dirState(d).show])) });
+  // 正开着的会话；刚打开页面时是地址里带的那条（可能在后面几页）
+  const current = S.current ?? decodeURIComponent(location.hash.slice(1));
+  if (current) q.set("current", current);
+  return `?${q}`;
+}
+
+export function applyBootstrap(data) {
+  S.convs = new Map(data.conversations.map((c) => [c.key, c]));
+  pages.full = !data.sidebar;
+  pages.recent.next = data.sidebar?.recent.next ?? null;
+  pages.dirAt = new Map((data.sidebar?.dirs ?? []).map((d) => [d.dir, d.at]));
+  const fetched = new Map((data.sidebar?.dirs ?? []).filter((d) => "next" in d).map((d) => [d.dir, d.next]));
+  for (const [dir, st] of pages.dirs) {
+    // 这次要了的（展开着的）目录用新游标；没要的下次展开时重新拉
+    st.next = pages.full ? null : sideState.open.includes(dir) ? (fetched.get(dir) ?? null) : undefined;
+  }
+  for (const [dir, next] of fetched) dirState(dir).next = next;
+}
+
+/** 拉下一页，合进 S.convs。失败了不自动重试（否则每次重绘都去拉），点「展开显示」再试 */
+async function fetchPage(st, params) {
+  if (st.loading) return;
+  st.loading = true;
+  st.failed = false;
+  try {
+    const q = new URLSearchParams(params);
+    if (st.next) {
+      q.set("at", String(st.next.at));
+      q.set("key", st.next.key);
+    }
+    const data = await api(`/api/conversations/page?${q}`);
+    for (const c of data.conversations) S.convs.set(c.key, c);
+    st.next = data.next;
+  } catch (err) {
+    st.failed = true;
+    toast(`会话列表加载失败：${err.message}`);
+  } finally {
+    st.loading = false;
+    scheduleSidebar();
+  }
+}
+
+/**
+ * 只显示连续拉到的那一段：比下一页游标还旧的（正在跑的、地址里带的老会话先拉来了），
+ * 中间还隔着没拉的，先不显示，免得顺序看着跳
+ */
+const loadedPrefix = (st, list) => (st.next ? list.filter((x) => x.at >= st.next.at) : list);
+
+/** 「展开显示」「收起」：count 是能显示的条数，limit 是默认显示几条 */
+function moreButton(st, count, limit, load) {
+  if (st.loading) return h("button", { class: "conv-more", disabled: true }, "加载中…");
+  if (count > st.show || st.next) {
+    return h(
+      "button",
+      {
+        class: "conv-more",
+        onclick: () => {
+          st.show += MORE_STEP;
+          if (count < st.show && st.next) void load(Math.max(MORE_STEP, st.show - count));
+          renderSidebar();
+        },
+      },
+      "展开显示",
+    );
+  }
+  if (st.show > limit) return h("button", { class: "conv-more", onclick: () => ((st.show = limit), renderSidebar()) }, "收起");
+  return null;
+}
 
 /** 待处理的授权 / 提问和正在跑的会话，报给桌面端显示在菜单栏里 */
 export function reportDesktop() {
@@ -268,7 +358,6 @@ export function renderSidebar() {
   }
   sidebarStale = false;
   ui.tasksNav?.classList.toggle("active", S.view === "tasks");
-  ui.skillsNav?.classList.toggle("active", S.view === "skills");
   const askKeys = new Set([...S.pending.values()].filter((i) => !i.settled).map((i) => i.convKey));
   const visible = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt);
   const cur = S.current ? S.convs.get(S.current) : null;
@@ -282,9 +371,6 @@ export function renderSidebar() {
     closeSide();
     if (key !== S.current) void openConversation(key);
   };
-  const more = (list, id, expanded) =>
-    h("button", { class: "conv-more", onclick: () => toggleSide(list, id) }, expanded ? "收起" : "展开显示");
-
   // 一行会话。orphan：是分叉出来的、但父对话不在这一组里（删了 / 在别的目录），没有连线可画，用图标标一下
   const convRow = (c, cls, detail, orphan) =>
     h(
@@ -298,6 +384,8 @@ export function renderSidebar() {
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
       // 定时任务的专用对话
       c.taskId ? h("span", { class: "brand-icon lead task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
+      // 聊天模式的对话
+      c.mode === "chat" ? h("span", { class: "brand-icon lead chat-mark", title: "聊天模式", html: ICON.chat }) : null,
       h("span", { class: "title" }, convTitle(c)),
       status([c.key]),
     );
@@ -329,13 +417,15 @@ export function renderSidebar() {
     });
   }
   recent.sort((a, b) => b.at - a.at);
-  const recentAll = sideState.more.includes("@recent");
   const recentFolded = sideState.folded.includes("@recent");
   const nodes = [groupHead("最近", "@recent", recentFolded)];
   if (!recentFolded) {
-    if (recent.length === 0) nodes.push(h("div", { class: "conv-empty" }, "还没有会话"));
-    nodes.push(...recent.slice(0, recentAll ? recent.length : RECENT_LIMIT).map((r) => r.el));
-    if (recent.length > RECENT_LIMIT) nodes.push(more("more", "@recent", recentAll));
+    const rs = pages.recent;
+    const shown = loadedPrefix(rs, recent);
+    if (shown.length === 0 && !rs.loading) nodes.push(h("div", { class: "conv-empty" }, "还没有会话"));
+    nodes.push(...shown.slice(0, rs.show).map((r) => r.el));
+    const btn = moreButton(rs, shown.length, RECENT_LIMIT, (limit) => fetchPage(rs, { scope: "recent", limit: String(limit) }));
+    if (btn) nodes.push(btn);
   }
 
   // ---- 项目：Web 会话按工作目录分组，目录按最近活跃排序 ----
@@ -352,10 +442,13 @@ export function renderSidebar() {
       localStorage.setItem("aim.side", JSON.stringify(sideState));
     }
   }
+  // 目录行要全部显示：服务端给了每个目录最近的活跃时间，加上本地已有的（刚建的、刚变活跃的）
+  const dirAt = new Map(pages.dirAt);
+  for (const [dir, convs] of byDir) dirAt.set(dir, Math.max(dirAt.get(dir) ?? 0, convs[0].activeAt));
   const projFolded = sideState.folded.includes("@projects");
-  if (byDir.size) nodes.push(groupHead("项目", "@projects", projFolded));
-  projDirs = orderProjectDirs([...byDir.keys()]);
-  if (byDir.size && !projFolded) {
+  if (dirAt.size) nodes.push(groupHead("项目", "@projects", projFolded));
+  projDirs = orderProjectDirs([...dirAt.keys()].sort((a, b) => dirAt.get(b) - dirAt.get(a)));
+  if (dirAt.size && !projFolded) {
     const clearDrop = () => ui.convList.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
     const endDrag = () => {
       dirDrag = null;
@@ -363,9 +456,8 @@ export function renderSidebar() {
       if (sidebarStale) renderSidebar();
     };
     for (const dir of projDirs) {
-      const convs = byDir.get(dir);
+      const convs = byDir.get(dir) ?? [];
       const expanded = sideState.open.includes(dir);
-      const showAll = sideState.more.includes(dir);
       // 鼠标在目标行的上半截就插到它前面，下半截插到后面
       const isAfter = (e, row) => {
         const r = row.getBoundingClientRect();
@@ -436,12 +528,17 @@ export function renderSidebar() {
         ),
       );
       if (!expanded) continue;
+      // 刚展开、还没拉过这个目录：去拉第一页（本地可能已经有几条正在跑的，先显示着）
+      const st = dirState(dir);
+      const load = (limit) => fetchPage(st, { scope: "dir", dir, limit: String(limit) });
+      if (st.next === undefined && !st.loading && !st.failed) void load(st.show);
       // 「展开显示」按主对话算条数，分叉跟着主对话一起出现
-      const forest = forkForest(convs);
-      for (const node of forest.slice(0, showAll ? forest.length : PROJECT_LIMIT)) {
+      const forest = loadedPrefix(st, forkForest(convs));
+      for (const node of forest.slice(0, st.show)) {
         nodes.push(renderForkNode(node, (c, orphan) => convRow(c, " sub", agentLabel(c.agent), orphan), " in-proj"));
       }
-      if (forest.length > PROJECT_LIMIT) nodes.push(h("div", { class: "sub-more" }, more("more", dir, showAll)));
+      const btn = moreButton(st, forest.length, PROJECT_LIMIT, load);
+      if (btn) nodes.push(h("div", { class: "sub-more" }, btn));
     }
   }
   // 重绘会换掉 DOM：如果鼠标正停在某个标题上，重绘后接着滚

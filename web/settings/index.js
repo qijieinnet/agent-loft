@@ -9,11 +9,13 @@ import { agentsTab } from "./agents.js";
 import { feishuTab } from "./feishu.js";
 import { authTab, securityTab } from "./security.js";
 import { memoryTab } from "./memory.js";
+import { skillsTab } from "./skills.js";
 import { systemTab, usersTab } from "./users.js";
 
 // ---------- 设置 ----------
 
-export async function openSettings() {
+/** tab：直接打开哪一页（标签名，如「技能」），不给就是第一页 */
+export async function openSettings(tab) {
   const nav = h("div", { class: "settings-nav" });
   const panel = h("div", { class: "settings-body" });
   // 设置弹窗高度固定，切标签页时不跟着内容一伸一缩
@@ -22,6 +24,7 @@ export async function openSettings() {
   if (!isAdmin()) {
     const tabs = [
       ["记忆", () => memoryTab(panel)],
+      ["技能", () => skillsTab(panel)],
       ["通知", () => notifyTab(panel)],
       ["账号", () => securityTab(panel)],
     ];
@@ -31,7 +34,7 @@ export async function openSettings() {
       tabs[i][1]();
     };
     nav.append(...tabs.map(([name], i) => h("button", { onclick: () => select(i) }, name)));
-    select(0);
+    select(Math.max(0, tabs.findIndex(([name]) => name === tab)));
     return;
   }
   let cfg;
@@ -45,6 +48,7 @@ export async function openSettings() {
     ["通用", () => generalTab(cfg, panel)],
     ["Agent", () => agentsTab(cfg, panel)],
     ["命令", () => commandsTab(cfg, panel)],
+    ["技能", () => skillsTab(panel)],
     ["飞书机器人", () => feishuTab(cfg, panel)],
     ["授权", () => authTab(panel)],
     ["记忆", () => memoryTab(panel)],
@@ -59,5 +63,5 @@ export async function openSettings() {
     tabs[i][1]();
   };
   nav.append(...tabs.map(([name], i) => h("button", { onclick: () => select(i) }, name)));
-  select(0);
+  select(Math.max(0, tabs.findIndex(([name]) => name === tab)));
 }

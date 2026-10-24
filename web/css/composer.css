@@ -167,31 +167,6 @@ button.ctx-item:hover {
   flex-shrink: 0;
 }
 
-.mode-pill {
-  display: inline-flex;
-  align-items: center;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 13px;
-  color: var(--fg-faint);
-  white-space: nowrap;
-}
-
-.mode-pill:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-
-.mode-pill.chat {
-  color: var(--accent);
-}
-
-.topbar .mode-slot {
-  display: inline-flex;
-  flex-shrink: 0;
-}
-
 .topbar .top-more svg {
   width: 20px;
   height: 20px;

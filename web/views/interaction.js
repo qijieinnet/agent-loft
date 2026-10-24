@@ -28,7 +28,13 @@ export function upsertInteraction(ix) {
     return;
   }
   if (ix.settled) return;
-  // 卡片插在这一轮中间：之前的输出先封口，之后的输出接在卡片下面，顺序才对
+  insertCard(ix);
+  notifyIfHidden(ix);
+}
+
+/** 把卡片放进对话：插在这一轮中间的话，之前的输出先封口，之后的输出接在卡片下面，顺序才对 */
+export function insertCard(ix) {
+  if (S.items.some((i) => i.type === "ix" && i.id === ix.id)) return;
   if (S.turnAi && !S.turnAi.done) {
     S.turnAi.done = true;
     S.turnAi.segment = true;
@@ -36,8 +42,10 @@ export function upsertInteraction(ix) {
     S.turnAi = null;
   }
   addItem({ type: "ix", id: ix.id, ix });
-  notifyIfHidden(ix);
 }
+
+/** 已处理：「已回答 · 已在 Web 处理」。从会话记录里还原的不知道是谁处理的，只写结果 */
+const settledText = (s) => [SETTLE_LABEL[s.settlement] ?? s.settlement, s.by].filter(Boolean).join(" · ");
 
 function notifyIfHidden(ix) {
   // 桌面端由服务端的 notice 统一弹，这里再弹就重复了
@@ -82,7 +90,7 @@ export function renderInteraction(item) {
       h("div", { class: "ix-title" }, settled ? "" : "⚠️", spec.title),
       h("div", { class: "ix-detail" }, renderMarkdown(spec.detail)),
       settled
-        ? h("div", { class: "ix-meta" }, `${SETTLE_LABEL[settled.settlement] ?? settled.settlement} · ${settled.by}`)
+        ? h("div", { class: "ix-meta" }, settledText(settled))
         : h(
             "div",
             { class: "ix-buttons" },
@@ -128,7 +136,7 @@ export function renderInteraction(item) {
       );
     }),
     settled
-      ? h("div", { class: "ix-meta" }, `${SETTLE_LABEL[settled.settlement] ?? settled.settlement} · ${settled.by}`)
+      ? h("div", { class: "ix-meta" }, settledText(settled))
       : h(
           "div",
           { class: "ix-buttons" },

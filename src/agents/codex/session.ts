@@ -16,6 +16,7 @@ import type {
   InteractionHost,
   InteractionOutcome,
   InteractionSpec,
+  InterruptOptions,
   QuestionSpec,
   RuntimeInfo,
   SavedAttachment,
@@ -182,6 +183,16 @@ function allowed(s: Settlement): boolean {
 
 type ParsedQuestion = QuestionSpec & { secret: boolean };
 
+/** thread/tokenUsage/updated 里的一份用量（app-server 的 TokenUsageBreakdown） */
+type TokenBreakdown = {
+  totalTokens?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+};
+
 function parseQuestions(raw: unknown): ParsedQuestion[] | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const specs: ParsedQuestion[] = [];
@@ -251,6 +262,10 @@ export class CodexSession implements AgentSession {
   private allowAll = false;
   private replyText = "";
   private lastTokens: number | undefined;
+  /** 上次看到的 thread 累计 token 数：变了才说明有新的模型请求（同一次请求可能报好几遍） */
+  private seenTotal: number | undefined;
+  /** 这个对象里开始过轮次：恢复 thread 时补报的旧用量不算新的消耗 */
+  private turnSeen = false;
   /** 分叉已经真正完成（拿到并接管了新 thread）。失败了不算，重试还要接着分叉 */
   private forked = false;
   /** agentMessage 的 itemId → 是不是旁白（commentary 属于过程，不流式到正文里） */
@@ -601,9 +616,15 @@ export class CodexSession implements AgentSession {
     return this.runtime;
   }
 
-  async interrupt(): Promise<void> {
-    // 停止 = 这一轮和排着队的都不要了
-    this.queue = [];
+  async interrupt(opts: InterruptOptions = {}): Promise<void> {
+    if (opts.keepQueue) {
+      // 打断并发送：排着的留着，选中的挪到最前面，这一轮结束后 drainQueue 就开它
+      const i = opts.first ? this.queue.indexOf(opts.first) : -1;
+      if (i > 0) this.queue.unshift(...this.queue.splice(i, 1));
+    } else {
+      // 停止 = 这一轮和排着队的都不要了
+      this.queue = [];
+    }
     if (this.phase === "starting" && !this.turnId) {
       // 轮次还没真正开始：记下来，拿到轮次 id 立刻中断
       this.stopRequested = true;
@@ -757,6 +778,7 @@ export class CodexSession implements AgentSession {
         if (this.phase === "idle" || (id && this.endedTurns.has(id))) return;
         if (id) this.onTurnId(id);
         this.commentaryItems.clear();
+        this.turnSeen = true;
         this.events.onTurnStart?.();
         return;
       }
@@ -776,10 +798,24 @@ export class CodexSession implements AgentSession {
       }
 
       case "thread/tokenUsage/updated": {
-        // last 是这一轮的用量，total 是整条 thread 的累计；页脚显示这一轮的
-        const usage = (
-          params as { tokenUsage?: { last?: { totalTokens?: number }; modelContextWindow?: number | null } }
-        ).tokenUsage;
+        // last 是最近一次模型请求的用量，total 是整条 thread 的累计；页脚显示最近一次的
+        const usage = (params as { tokenUsage?: { total?: TokenBreakdown; last?: TokenBreakdown; modelContextWindow?: number | null } })
+          .tokenUsage;
+        const total = usage?.total?.totalTokens;
+        if (this.turnSeen && usage?.last && typeof total === "number" && total !== this.seenTotal) {
+          const l = usage.last;
+          // OpenAI 的 inputTokens 含命中缓存的部分，拆出来
+          const cached = l.cachedInputTokens ?? 0;
+          const written = l.cacheWriteInputTokens ?? 0;
+          this.events.onUsage?.({
+            input: Math.max(0, (l.inputTokens ?? 0) - cached - written),
+            cacheRead: cached,
+            cacheWrite: written,
+            output: l.outputTokens ?? 0,
+            reasoning: l.reasoningOutputTokens ?? 0,
+          });
+        }
+        if (typeof total === "number") this.seenTotal = total;
         const turnTokens = usage?.last?.totalTokens;
         if (typeof turnTokens === "number") this.lastTokens = turnTokens;
         // 最近一次请求的用量 ≈ 当前上下文大小（Codex 自己的「剩余上下文」也是这么算的）

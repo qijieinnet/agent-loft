@@ -1,19 +1,20 @@
 import { agentIcon, fill, h, icon, starsLoader } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { clockTime, liveDuration, serverNow, setServerTime, tidyFooter } from "../lib/time.js";
-import { copyText, renderMarkdown } from "../lib/markdown.js";
+import { copyText, patchMarkdown, renderMarkdown } from "../lib/markdown.js";
 import { S, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { agentLabel, convTitle, renderSidebar } from "./sidebar.js";
 import { baseName, renderContext, renderTopbar, updateCtxVisibility, usableAgents } from "./topbar.js";
-import { renderInteraction, upsertInteraction } from "./interaction.js";
+import { insertCard, renderInteraction, upsertInteraction } from "./interaction.js";
 import { renderChips, setBusy } from "./composer.js";
 import { renderScheduled } from "./schedule.js";
-import { changeCwd, forkConversation } from "./conv-actions.js";
+import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
+import { scheduleNav } from "./msg-nav.js";
 
 // ---------- 打开会话 ----------
 
-/** 从定时任务页、技能页回到对话：把输入框放回来 */
+/** 从定时任务页回到对话：把输入框放回来 */
 function leaveTasksView() {
   if (!S.view) return;
   S.view = null;
@@ -39,6 +40,7 @@ export function newDraft() {
   renderEmpty();
   renderChips();
   renderSidebar();
+  scheduleNav();
   ui.input?.focus();
 }
 
@@ -101,18 +103,35 @@ export async function openConversation(key) {
     }
   }
   if (token !== S.loadToken) return; // 期间又切到别的会话了
+  // 侧栏分页：打开的可能是还没拉到的那条（通知、地址里带的），拿到了就补进侧栏
+  const known = S.convs.has(key);
   S.convs.set(key, data.info);
+  if (!known) renderSidebar();
   S.allowedAgents = data.allowedAgents;
   if (Number.isFinite(data.serverTime)) setServerTime(data.serverTime);
   fill(ui.msgInner, );
-  for (const m of data.messages) {
-    if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null });
-    else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor });
+  // 历史一次性加进来，最后再统一排版，免得每加一条就强制排版一次
+  bulk = true;
+  try {
+    for (const m of data.messages) {
+      if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null });
+      else if (m.role === "question") addItem({ type: "ix", id: m.question.id, ix: historyQuestion(key, m) });
+      else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor, segment: m.segment });
+    }
+    S.seq.set(key, 0);
+    // 进行中这一轮弹过的卡（含已处理的）：重放到 ix 事件时放回原位
+    replayCards = new Map((data.interactions ?? []).map((ix) => [ix.id, ix]));
+    for (const env of data.live) applyEvent(env);
+    replayCards = new Map();
+    S.seq.set(key, Math.max(S.seq.get(key) ?? 0, data.seq));
+    for (const ix of data.pending) upsertInteraction(ix);
+  } finally {
+    bulk = false;
   }
-  S.seq.set(key, 0);
-  for (const env of data.live) applyEvent(env);
-  S.seq.set(key, Math.max(S.seq.get(key) ?? 0, data.seq));
-  for (const ix of data.pending) upsertInteraction(ix);
+  clampLongUsers(S.items);
+  markLatestAi();
+  updateCtxVisibility();
+  scheduleNav();
   if (S.items.length === 0) {
     ui.msgInner.append(
       h(
@@ -128,6 +147,22 @@ export async function openConversation(key) {
   WS.subscribe(key, S.seq.get(key));
   renderScheduled();
   scrollToBottom();
+}
+
+/** 打开会话、重放进行中这一轮时，ix 事件对应的卡片内容（见 openConversation） */
+let replayCards = new Map();
+
+/** 会话记录里还原出来的提问（问了什么、你怎么答的）→ 画成一张已处理的提问卡 */
+function historyQuestion(key, m) {
+  const q = m.question;
+  return {
+    id: q.id,
+    convKey: key,
+    spec: { kind: "question", title: q.title, questions: q.questions },
+    selections: q.selections,
+    freeText: q.freeText,
+    settled: { settlement: q.skipped ? "skipped" : "answered", by: "", at: m.ts ?? 0 },
+  };
 }
 
 // ---------- 消息渲染 ----------
@@ -183,8 +218,8 @@ function pinToTop(el) {
   updateToBottomBtn();
 }
 
-/** 用户自己动了滚动：停止自动滚动 */
-function userScrolled() {
+/** 用户自己动了滚动（或者点了快速定位、展开了长消息）：停止自动滚动 */
+export function userScrolled() {
   ui.follow = false;
   ui.smoothUntil = 0;
 }
@@ -222,11 +257,19 @@ function markLatestAi() {
   for (const it of S.items) if (it.type === "ai") it.el?.classList.toggle("latest", it === latest);
 }
 
+/** 正在批量加历史：addItem 先不排版，加完由 openConversation 统一做 */
+let bulk = false;
+
 export function addItem(item) {
   ui.msgInner.querySelector(".empty")?.remove();
   item.el = renderItem(item);
   ui.msgInner.append(item.el);
   S.items.push(item);
+  if (bulk) return item;
+  if (item.type === "user") {
+    clampLongUsers([item]);
+    scheduleNav();
+  }
   markLatestAi();
   updateCtxVisibility();
   afterLayout();
@@ -243,6 +286,11 @@ export function updateItem(item) {
     flushScheduled = false;
     for (const it of dirty) {
       if (!it.el?.isConnected) continue;
+      // 回复原地更新；其它（交互卡片等）不常变，整个重建
+      if (it.type === "ai") {
+        patchAi(it);
+        continue;
+      }
       const next = renderItem(it);
       it.el.replaceWith(next);
       it.el = next;
@@ -330,6 +378,59 @@ export function openLightbox(src, name, download) {
   document.addEventListener("keydown", onKey, true);
 }
 
+/** 用户消息超过这个高度（约 10 行）就先收起来，像 ChatGPT；只多出一两行的不收 */
+const USER_CLAMP = 260;
+
+/** 太长的用户消息收起来，下面放「展开显示」。先把高度都量完再统一改，只排版一次 */
+function clampLongUsers(items) {
+  const long = items.filter((it) => {
+    if (it.type !== "user" || !it.bubble || it.clampChecked) return false;
+    it.clampChecked = true;
+    return it.bubble.scrollHeight > USER_CLAMP + 60;
+  });
+  for (const it of long) {
+    const bubble = it.bubble;
+    bubble.classList.add("clamped");
+    const btn = h(
+      "button",
+      {
+        class: "msg-more",
+        onclick: () => {
+          // 自己展开 / 收起：别被自动滚动拉回底部
+          userScrolled();
+          const open = !bubble.classList.toggle("clamped");
+          btn.textContent = open ? "收起" : "展开显示";
+          // 收起后按钮可能跑到视口上面去了：拉回来
+          if (!open) btn.scrollIntoView({ block: "nearest" });
+        },
+      },
+      "展开显示",
+    );
+    bubble.after(btn);
+  }
+}
+
+/** 排队中的消息下面：「排队中 · 打断并发送」；停止、会话切换后没发出去的：「没有发出」 */
+function queueNote(item, state) {
+  if (state === "dropped") return h("div", { class: "queue-note dropped" }, "没有发出");
+  return h(
+    "div",
+    { class: "queue-note" },
+    h("span", { class: "shimmer" }, "排队中，等上一条回复完"),
+    h("button", { class: "queue-jump", title: "停掉正在进行的回复，马上处理这条", onclick: () => void doAction("jump", item.id) }, "打断并发送"),
+  );
+}
+
+/** state：queued / dropped / null（轮到它了，去掉标记） */
+function setQueueState(item, state) {
+  item.queued = state === "queued";
+  const next = state ? queueNote(item, state) : null;
+  if (item.queueEl && next) item.queueEl.replaceWith(next);
+  else if (item.queueEl) item.queueEl.remove();
+  else if (next) item.el.insertBefore(next, item.el.querySelector(".user-actions"));
+  item.queueEl = next;
+}
+
 function renderItem(item) {
   switch (item.type) {
     case "user": {
@@ -340,7 +441,8 @@ function renderItem(item) {
         // 只发了附件、没有文字：「来自飞书」挂在附件上面
         !item.text && origin ? h("span", { class: "origin" }, origin) : null,
         renderUserFiles(item.files),
-        item.text ? h("div", { class: "msg-user" }, origin ? h("span", { class: "origin" }, origin) : null, item.text) : null,
+        item.text ? (item.bubble = h("div", { class: "msg-user" }, origin ? h("span", { class: "origin" }, origin) : null, item.text)) : null,
+        (item.queueEl = item.queued ? queueNote(item, "queued") : null),
         item.text
           ? h("div", { class: "user-actions" }, h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(item.text) }, icon("copy")))
           : null,
@@ -361,74 +463,113 @@ function renderItem(item) {
 /** 定时任务的 agent 判断这次不用提醒时，回复第一行写的暗号（见 core/task-prompt.ts） */
 const SILENT_MARK = "[[静默]]";
 
+/**
+ * 回复流式输出时每帧都会更新：不整条重建，只改变了的部分（item.v 记着各部分的元素）。
+ * 前面已经输出完的 markdown 块、步骤列表、星星动画都原地不动，选中的文字和滚动位置也就不会丢。
+ */
 function renderAi(item) {
+  item.v = {};
+  item.el = h("div", { class: "msg-ai" });
+  patchAi(item);
+  return item.el;
+}
+
+function patchAi(item) {
+  const v = item.v;
   const raw = item.committed + (item.partial ? (item.committed ? "\n\n" : "") + item.partial : "");
   const silent = raw.trimStart().startsWith(SILENT_MARK);
   const body = silent ? raw.trimStart().slice(SILENT_MARK.length).trim() : raw;
   const working = !item.done;
-  const steps =
-    item.steps.length > 0
-      ? h(
-          "details",
-          {
-            class: "steps",
-            open: item.stepsOpen ?? false,
-            ontoggle: (e) => (item.stepsOpen = e.currentTarget.open),
-          },
-          h(
-            "summary",
-            {},
-            h(
-              "span",
-              { class: `steps-text${working ? " shimmer" : ""}` },
-              working
-                ? item.steps[item.steps.length - 1].split("\n")[0]
-                : `${item.segment ? "" : "已完成 "}${item.steps.length} 步${item.segment ? "过程" : ""}`,
-            ),
-            h("span", { class: "chev" }, "›"),
-          ),
-          h("ol", {}, item.steps.map((s) => h("li", {}, s))),
-        )
-      : null;
-  return h(
-    "div",
-    { class: "msg-ai" },
-    steps,
-    // 定时任务这次没什么要说的：折叠成一行，展开能看到它顺手记的检查结果
-    silent && body
-      ? h("details", { class: "silent-run" }, h("summary", {}, "🔕 定时任务：这次无需提醒"), renderMarkdown(body))
-      : silent
-        ? h("div", { class: "silent-run" }, "🔕 定时任务：这次无需提醒")
-        : body
-          ? renderMarkdown(body)
+
+  if (item.steps.length > 0) {
+    if (!v.steps) {
+      v.stepsText = h("span", { class: "steps-text" });
+      v.stepsList = h("ol", {});
+      v.steps = h(
+        "details",
+        { class: "steps", open: item.stepsOpen ?? false, ontoggle: (e) => (item.stepsOpen = e.currentTarget.open) },
+        h("summary", {}, v.stepsText, h("span", { class: "chev" }, "›")),
+        v.stepsList,
+      );
+    }
+    setText(
+      v.stepsText,
+      working
+        ? item.steps[item.steps.length - 1].split("\n")[0]
+        : `${item.segment ? "" : "已完成 "}${item.steps.length} 步${item.segment ? "过程" : ""}`,
+    );
+    v.stepsText.classList.toggle("shimmer", working);
+    // 步骤只会往后加，补上新的就行
+    const ol = v.stepsList;
+    if (ol.childElementCount > item.steps.length) ol.replaceChildren();
+    for (let i = ol.childElementCount; i < item.steps.length; i++) ol.append(h("li", {}, item.steps[i]));
+  }
+
+  // 定时任务这次没什么要说的：折叠成一行，展开能看到它顺手记的检查结果
+  const bodyKey = silent ? `silent\n${body}` : body ? "md" : "";
+  if (v.bodyKey !== bodyKey) {
+    v.bodyKey = bodyKey;
+    v.body = silent
+      ? body
+        ? h("details", { class: "silent-run" }, h("summary", {}, "🔕 定时任务：这次无需提醒"), renderMarkdown(body))
+        : h("div", { class: "silent-run" }, "🔕 定时任务：这次无需提醒")
+      : body
+        ? h("div", { class: "md" })
+        : null;
+  }
+  if (bodyKey === "md") patchMarkdown(v.body, body, { live: working });
+
+  // 还在回复：末尾挂上星星动画和实时用时；什么都还没出来时旁边带一句「思考中…」
+  if (working) {
+    if (!v.thinking) {
+      v.hint = h("span", { class: "shimmer" }, "思考中…");
+      v.thinking = h(
+        "div",
+        { class: "thinking" },
+        starsLoader(),
+        item.startAt ? h("span", { class: "ai-elapsed", "data-start": item.startAt }, liveDuration(serverNow() - item.startAt)) : null,
+      );
+    }
+    const hint = !body && item.steps.length === 0;
+    if (hint && !v.hint.isConnected) v.thinking.firstChild.after(v.hint);
+    else if (!hint) v.hint.remove();
+  } else v.thinking = null;
+
+  if (!item.error) v.error = null;
+  else if (v.error?.textContent !== item.error) v.error = h("div", { class: "error-box" }, item.error);
+
+  placeChildren(item.el, [v.steps, v.body, v.thinking, v.error, renderAiActions(item, body)]);
+}
+
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+/** 按顺序放好子元素：不要的删掉，缺的插进去，已经在的不挪（挪动会让动画重播、滚动位置复位） */
+function placeChildren(parent, nodes) {
+  const want = new Set(nodes.filter(Boolean));
+  for (const c of [...parent.childNodes]) if (!want.has(c)) c.remove();
+  let ref = parent.firstChild;
+  for (const n of want) {
+    if (n === ref) ref = ref.nextSibling;
+    else parent.insertBefore(n, ref);
+  }
+}
+
+function renderAiActions(item, body) {
+  return item.done && !item.segment && (body || item.footer)
+    ? h(
+        "div",
+        { class: "ai-actions" },
+        body ? h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(body) }, icon("copy")) : null,
+        item.anchor && S.convs.get(S.current)?.canFork
+          ? h("button", { class: "icon-btn", title: "从这里分叉成新对话", onclick: () => forkConversation(item.anchor) }, icon("fork"))
           : null,
-    // 还在回复：末尾挂上星星动画和实时用时；什么都还没出来时旁边带一句「思考中…」
-    working
-      ? h(
-          "div",
-          { class: "thinking" },
-          starsLoader(),
-          !body && item.steps.length === 0 ? h("span", { class: "shimmer" }, "思考中…") : null,
-          item.startAt
-            ? h("span", { class: "ai-elapsed", "data-start": item.startAt }, liveDuration(serverNow() - item.startAt))
-            : null,
-        )
-      : null,
-    item.error ? h("div", { class: "error-box" }, item.error) : null,
-    item.done && !item.segment && (body || item.footer)
-      ? h(
-          "div",
-          { class: "ai-actions" },
-          body ? h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(body) }, icon("copy")) : null,
-          item.anchor && S.convs.get(S.current)?.canFork
-            ? h("button", { class: "icon-btn", title: "从这里分叉成新对话", onclick: () => forkConversation(item.anchor) }, icon("fork"))
-            : null,
-          item.footer || item.at
-            ? h("span", { class: "footer-note" }, [item.at ? clockTime(item.at) : "", tidyFooter(item.footer)].filter(Boolean).join("　"))
-            : null,
-        )
-      : null,
-  );
+        item.footer || item.at
+          ? h("span", { class: "footer-note" }, [item.at ? clockTime(item.at) : "", tidyFooter(item.footer)].filter(Boolean).join("　"))
+          : null,
+      )
+    : null;
 }
 
 /**
@@ -454,21 +595,38 @@ export function applyEvent(env) {
   const ev = env.ev;
   switch (ev.type) {
     case "user": {
-      if (S.turnAi && !S.turnAi.done && S.turnAi.steps.length === 0 && !S.turnAi.committed) {
+      // 排队的消息：正在进行的那一轮照常在上面接着输出，这条等轮到它（queue 事件）再挂占位
+      const queued = !!ev.queued;
+      if (!queued && S.turnAi && !S.turnAi.done && S.turnAi.steps.length === 0 && !S.turnAi.committed) {
         // 上一个占位还空着（比如消息被当成了作答），不再多留一个
         S.turnAi.el.remove();
         S.items = S.items.filter((i) => i !== S.turnAi);
         S.turnAi = null;
       }
-      // 上一轮还没结束时发的消息会排队，不改正在进行那一轮的开始时间
-      if (!S.turnAi || S.turnAi.done) turnStartAt = env.ts;
-      const it = addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin });
+      if (!queued && (!S.turnAi || S.turnAi.done)) turnStartAt = env.ts;
+      const it = addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin, id: ev.id, queued });
       // 这个页面刚发的：顶到最上面
       if (S.pinNext && ev.origin?.channel === "web") {
         S.pinNext = false;
         pinToTop(it.el);
       }
-      currentAi(env.ts);
+      if (!queued) currentAi(env.ts);
+      return;
+    }
+    case "ix": {
+      // 这里弹过一张卡：实时的由 WS 的 ix 消息放（upsertInteraction），这里只管重放时把它放回原位
+      const ix = S.pending.get(ev.id) ?? replayCards.get(ev.id);
+      if (ix) insertCard(ix);
+      return;
+    }
+    case "queue": {
+      const it = S.items.find((i) => i.type === "user" && i.id === ev.id);
+      if (it) setQueueState(it, ev.state === "dropped" ? "dropped" : null);
+      // 轮到它了（上一轮刚出结果）：挂上「思考中」占位，用时从现在算。被当成提问的回答时那一轮还在跑，不用挂
+      if (ev.state === "started" && (!S.turnAi || S.turnAi.done)) {
+        turnStartAt = env.ts;
+        currentAi(env.ts);
+      }
       return;
     }
     case "step": {

@@ -10,6 +10,7 @@ import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
 import { attachMention } from "./mention.js";
 import { doAction, openModelPicker, openSessions } from "./conv-actions.js";
+import { openSettings } from "./layout.js";
 
 // ---------- 输入框 ----------
 
@@ -70,7 +71,7 @@ export function renderComposer() {
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
   ui.mentionMenu = h("div", { class: "slash-menu", hidden: true });
   ui.mention = attachMention(ui.input, ui.mentionMenu, {
-    onEmpty: () => import("./skills.js").then((m) => m.openSkills()),
+    onEmpty: () => openSettings("技能"),
   });
   ui.composer = h(
     "div",

@@ -100,10 +100,21 @@ export type AgentEvents = {
   onDropped?: (n: number) => void;
   /** 上下文窗口占用更新了（一般在每轮结束后） */
   onContext?: (ctx: ContextUsage) => void;
+  /**
+   * token 用量更新了。cumulative = 报的是这个会话到目前的累计值（Claude，每轮结束报一次）；
+   * 否则是新增的量（Codex，每次模型请求报一次），由核心累加
+   */
+  onUsage?: (usage: TokenUsage, cumulative?: boolean) => void;
 };
 
 /** 上下文窗口占用：used / window 都是 token 数，percent 是 0-100（可能略超 100） */
 export type ContextUsage = { used: number; window: number; percent: number };
+
+/**
+ * token 用量。input 是没命中缓存的输入；cacheRead 是命中缓存读的；cacheWrite 是写进缓存的（Claude 单独计费）；
+ * output 含推理，reasoning 是其中推理的部分（Codex 才有）。costUsd 是 agent 自己算的费用（Claude 才有）
+ */
+export type TokenUsage = { input: number; cacheRead: number; cacheWrite: number; output: number; reasoning?: number; costUsd?: number };
 
 /** 账号额度（订阅的用量窗口）。没有订阅额度（API key 之类）时 driver 返回 null */
 export type QuotaInfo = {
@@ -148,8 +159,13 @@ export type SessionSummary = {
 };
 
 export type HistoryMessage = {
-  role: "user" | "assistant";
+  /** question：agent 问过的问题和你的回答（答过的提问卡，刷新后照样显示） */
+  role: "user" | "assistant" | "question";
   text: string;
+  /** 助手消息：被提问卡打断的前半段（只显示过程，不带复制 / 分叉 / 脚注） */
+  segment?: boolean;
+  /** 提问：问了什么、选了哪些（按问题下标）、自由作答的内容；skipped = 没作答（跳过 / 超时） */
+  question?: { id: string; title: string; questions: QuestionSpec[]; selections: number[][]; freeText: Record<number, string>; skipped?: boolean };
   /** 助手这一条之前的过程摘要 */
   steps?: string[];
   /** 毫秒时间戳；助手消息是这一轮结束的时间 */
@@ -213,10 +229,16 @@ export type SessionSkills = {
 
 export type ConversationMode = "chat" | "work";
 
+/**
+ * 中断的方式。默认（停止）：这一轮和排着队的都不要了。
+ * keepQueue（打断并发送）：只停这一轮，排着的留着；给了 first 就把它挪到最前面，这一轮一结束就轮到它
+ */
+export type InterruptOptions = { keepQueue?: boolean; first?: UserInput };
+
 export interface AgentSession {
   readonly sessionId: string | undefined;
   send(input: UserInput): void;
-  interrupt(): Promise<void>;
+  interrupt(opts?: InterruptOptions): Promise<void>;
   setModel(model?: string, effort?: string): Promise<void>;
   describeRuntime(): Promise<RuntimeInfo>;
   /** 手上已知的模型 / 思考程度，同步返回：不拉起进程、不发请求 */

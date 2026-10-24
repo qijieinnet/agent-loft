@@ -7,6 +7,7 @@ import fs from "node:fs";
 import {
   query,
   type McpServerConfig,
+  type ModelUsage,
   type Options,
   type PermissionResult,
   type Query,
@@ -26,7 +27,9 @@ import type {
   ModelInfo,
   RuntimeInfo,
   SavedAttachment,
+  InterruptOptions,
   SessionOptions,
+  TokenUsage,
   UserInput,
 } from "../../core/types.js";
 import {
@@ -226,12 +229,19 @@ export class ClaudeSession implements AgentSession {
    * 恢复历史、进程重启），就重新逐条询问。
    */
   private allowAll = false;
+  /**
+   * 上一轮结束时的累计费用。result 里的 total_cost_usd 是这个会话到目前的累计值，这一轮的 = 差值。
+   * 恢复 / 分叉来的会话第一轮不知道之前累计了多少，这一轮先不报费用
+   */
+  private costSoFar: number | undefined;
 
   constructor(
     private readonly opts: SessionOptions,
     private readonly events: AgentEvents,
     private readonly host: InteractionHost,
-  ) {}
+  ) {
+    this.costSoFar = opts.resumeId ? undefined : 0;
+  }
 
   get sessionId(): string | undefined {
     return this.currentId;
@@ -336,10 +346,12 @@ export class ClaudeSession implements AgentSession {
     }
 
     if (message.type === "result") {
+      const costUsd = this.turnCost(message.total_cost_usd);
+      this.reportUsage(message.modelUsage);
       if (message.subtype === "success") {
         this.events.onResult({
           text: message.result,
-          costUsd: message.total_cost_usd,
+          ...(costUsd !== undefined ? { costUsd } : {}),
           durationMs: message.duration_ms,
           ...(this.lastAssistantUuid ? { anchor: this.lastAssistantUuid } : {}),
         });
@@ -349,6 +361,32 @@ export class ClaudeSession implements AgentSession {
       this.onTurnEnd();
       void this.readContext();
     }
+  }
+
+  /** 这一轮的费用 = 累计费用的差值。崩溃时的 result 费用是 0，不当成新的起点 */
+  private turnCost(total: number | undefined): number | undefined {
+    if (typeof total !== "number" || !(total > 0)) return undefined;
+    const prev = this.costSoFar;
+    this.costSoFar = total;
+    return prev !== undefined && total >= prev ? total - prev : undefined;
+  }
+
+  /**
+   * 报这个会话到目前的累计用量。用 modelUsage 而不是 usage：usage 只有主循环这一轮的，
+   * modelUsage 含子 agent、压缩等所有调用，而且是累计值（恢复的会话接着原来的总数算）
+   */
+  private reportUsage(modelUsage: Record<string, ModelUsage> | undefined): void {
+    const sum: TokenUsage = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0 };
+    for (const m of Object.values(modelUsage ?? {})) {
+      sum.input += m.inputTokens || 0;
+      sum.cacheRead += m.cacheReadInputTokens || 0;
+      sum.cacheWrite += m.cacheCreationInputTokens || 0;
+      sum.output += m.outputTokens || 0;
+      sum.reasoning! += m.thinkingTokens || 0;
+      sum.costUsd! += m.costUSD || 0;
+    }
+    // 崩溃时的 result 全是 0
+    if (sum.input + sum.cacheRead + sum.cacheWrite + sum.output > 0) this.events.onUsage?.(sum, true);
   }
 
   /**
@@ -537,11 +575,17 @@ export class ClaudeSession implements AgentSession {
     return this.runtime;
   }
 
-  async interrupt(): Promise<void> {
-    // 停止 = 这一轮和排着队的都不要了
-    const dropped = this.pending.length + this.queue.clear();
-    this.pending = [];
-    if (dropped > 0) this.events.onDropped?.(dropped);
+  async interrupt(opts: InterruptOptions = {}): Promise<void> {
+    if (opts.keepQueue) {
+      // 打断并发送：排着的留着，选中的挪到最前面，这一轮出结果后 onTurnEnd 就交出它
+      const i = opts.first ? this.pending.indexOf(opts.first) : -1;
+      if (i > 0) this.pending.unshift(...this.pending.splice(i, 1));
+    } else {
+      // 停止 = 这一轮和排着队的都不要了
+      const dropped = this.pending.length + this.queue.clear();
+      this.pending = [];
+      if (dropped > 0) this.events.onDropped?.(dropped);
+    }
     if (!this.q) return;
     try {
       await this.q.interrupt();

@@ -345,7 +345,7 @@ export function skillsText(owner: string | undefined): string {
   if (loft.length) {
     lines.push(`**能用的技能（${loft.length} 个）**`, "", ...loft.map((t) => `- \`@${t.name}\` ${t.description}`));
   } else {
-    lines.push("还没有启用任何技能。可以在网页侧栏「技能」里新建、上传，或者从技能广场安装；也可以直接让 agent「把刚才的做法存成技能」。");
+    lines.push("还没有启用任何技能。可以在网页「设置 → 技能」里新建、上传；也可以直接让 agent「把刚才的做法存成技能」。");
   }
   if (machine.length) lines.push("", `**本机技能（只有管理员能用，${machine.length} 个）**：${machine.map((t) => `\`@${t.name}\``).join(" ")}`);
   lines.push("", "在消息里写 @名字 点名使用；工作模式下 agent 也会自己挑合适的用。");

@@ -23,6 +23,7 @@ import type {
   HistoryMessage,
   InteractionHost,
   ModelInfo,
+  QuestionSpec,
   QuotaInfo,
   RuntimeInfo,
   SessionOptions,
@@ -32,6 +33,7 @@ import { describeUsage, readUsage, toQuota } from "./account.js";
 import { cachedProbe, withProbe } from "./probe.js";
 import { diagnose } from "./errors.js";
 import { claudeBuiltins, ClaudeSession, describeToolUse, summarize, toModelInfo } from "./session.js";
+import { parseQuestions } from "./permissions.js";
 
 /** 模型列表几乎不变，缓存 10 分钟；读失败抛给设置页，让它退回手填 */
 const readCatalog = cachedProbe(10 * 60_000, "模型列表", () => withProbe(async (q) => toModelInfo(await q.supportedModels())));
@@ -79,7 +81,55 @@ function titleOf(info: { customTitle?: string; summary?: string; firstPrompt?: s
   return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
 }
 
-type Block = { type?: string; text?: string; name?: string; input?: unknown; thinking?: string };
+type Block = {
+  type?: string;
+  text?: string;
+  name?: string;
+  input?: unknown;
+  thinking?: string;
+  id?: string;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+};
+
+/** tool_result 的内容：字符串，或者一组 text 块 */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((b) => (typeof b?.text === "string" ? b.text : "")).join("");
+}
+
+/**
+ * 从 AskUserQuestion 的工具结果里取回答。Claude Code 写的是
+ * Your questions have been answered: "问题1"="答案1", "问题2"="答案2". You can now continue…
+ * 问题原文已知（工具参数里有），按顺序切开，答案里有引号、逗号也不怕。多选的答案是「a, b」
+ */
+export function parseQuestionAnswers(text: string, questions: QuestionSpec[]): { selections: number[][]; freeText: Record<number, string> } | null {
+  const body = text.replace(/^[\s\S]*?answered:\s*/, "").replace(/\.\s*You can now continue[\s\S]*$/, "");
+  const selections: number[][] = questions.map(() => []);
+  const freeText: Record<number, string> = {};
+  let found = false;
+  questions.forEach((q, i) => {
+    const head = `"${q.question}"="`;
+    const start = body.indexOf(head);
+    if (start < 0) return;
+    const from = start + head.length;
+    const nextQ = questions[i + 1];
+    const next = nextQ ? body.indexOf(`", "${nextQ.question}"="`, from) : -1;
+    const answer = body.slice(from, next >= 0 ? next : body.lastIndexOf('"')).trim();
+    if (!answer) return;
+    found = true;
+    const index = (label: string) => q.options.findIndex((o) => o.label === label);
+    // 整句就是一个选项（选项文字里本身带逗号）→ 按「, 」拆开都是选项（多选）→ 都不是就是自由作答
+    const whole = index(answer);
+    const parts = answer.split(", ").map(index);
+    if (whole >= 0) selections[i] = [whole];
+    else if (parts.every((n) => n >= 0)) selections[i] = parts;
+    else freeText[i] = answer;
+  });
+  return found ? { selections, freeText } : null;
+}
 
 function blocksOf(message: unknown): Block[] {
   const content = (message as { content?: unknown } | null)?.content;
@@ -135,6 +185,8 @@ export class ClaudeDriver implements AgentDriver {
    * 把会话记录整理成「一问一答」：用户一条，助手把这一轮所有文本拼成一条，
    * 中间的工具调用作为过程摘要挂在助手那条上。工具结果（type=user 的 tool_result）
    * 和子 agent 的消息不算对话。
+   * 例外是 AskUserQuestion：在那里把这一轮切开，中间放一条 question（问了什么、你怎么答的），
+   * 和实时看到的一样；还没答的不放（它还挂着，页面从待处理里拿）。
    */
   async readHistory(id: string, cwd: string): Promise<HistoryMessage[]> {
     if (!SESSION_ID.test(id)) return [];
@@ -145,12 +197,22 @@ export class ClaudeDriver implements AgentDriver {
       if (assistant && (assistant.text.trim() || assistant.steps?.length)) out.push(assistant);
       assistant = null;
     };
+    /** 问了、还没对上回答的：tool_use id → 那条 question */
+    const asked = new Map<string, HistoryMessage>();
     for (const msg of raw) {
       if (msg.parent_tool_use_id) continue;
       const blocks = blocksOf(msg.message);
       // 运行时带着 timestamp（ISO 字符串），类型声明里没有
       const ts = Date.parse((msg as { timestamp?: string }).timestamp ?? "");
       if (msg.type === "user") {
+        for (const b of blocks) {
+          const q = b.type === "tool_result" && b.tool_use_id ? asked.get(b.tool_use_id) : undefined;
+          if (!q?.question) continue;
+          asked.delete(b.tool_use_id!);
+          const answers = b.is_error ? null : parseQuestionAnswers(resultText(b.content), q.question.questions);
+          if (answers) Object.assign(q.question, answers);
+          else q.question.skipped = true;
+        }
         // Claude Code 自己塞进记录的「用户消息」不是人发的：后台命令跑完的 <task-notification> 等，
         // 记录里 origin.kind 不是 human。老记录可能没有 origin，再按正文开头兜底
         const origin = (msg as { origin?: { kind?: string } }).origin;
@@ -184,6 +246,21 @@ export class ClaudeDriver implements AgentDriver {
         for (const b of blocks) {
           if (b.type === "text" && b.text?.trim()) {
             assistant.text += (assistant.text ? "\n\n" : "") + b.text;
+          } else if (b.type === "tool_use" && b.name === "AskUserQuestion" && b.id) {
+            const questions = parseQuestions((b.input ?? {}) as Record<string, unknown>);
+            if (!questions) continue;
+            // 前半段封口，提问卡放中间，之后的输出另起一条
+            assistant.segment = true;
+            flush();
+            const q: HistoryMessage = {
+              role: "question",
+              text: "",
+              question: { id: `hist:${b.id}`, title: "Claude 想确认一下", questions, selections: questions.map(() => []), freeText: {} },
+              ...(Number.isFinite(ts) ? { ts } : {}),
+            };
+            asked.set(b.id, q);
+            out.push(q);
+            assistant = { role: "assistant", text: "", steps: [] };
           } else if (b.type === "tool_use" && b.name) {
             assistant.steps!.push(`🔧 ${describeToolUse(b.name, b.input)}`);
           } else if (b.type === "thinking" && b.thinking) {
@@ -194,7 +271,8 @@ export class ClaudeDriver implements AgentDriver {
       }
     }
     flush();
-    return out;
+    // 还没答的提问不放：它还挂着，页面从待处理里拿；进程挂了没答上的，也就不显示了
+    return out.filter((m) => m.role !== "question" || !asked.has(m.question!.id.slice(5)));
   }
 
   async forkAt(id: string, cwd: string, anchor?: string): Promise<string> {

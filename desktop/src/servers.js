@@ -39,7 +39,14 @@ const CF_LOGIN_HOST = /(^|\.)cloudflareaccess\.com$/i;
  *   busy: number,
  *   unread: number,
  *   view?: Electron.WebContentsView,
+ *   pageMenu?: PageMenu,
  * }} Runtime
+ */
+
+/**
+ * 页面报来的「更多」菜单（preload-page.cjs 的 setMenu）：顶栏「更多」里排在最上面，用量排在最下面。
+ * checked 有值的是勾选项；点了把 id 发回页面
+ * @typedef {{ items: ({ type: "separator" } | { id: string, label: string, checked?: boolean })[], usage: string[] }} PageMenu
  */
 
 /**
@@ -298,6 +305,8 @@ export function viewFor(id) {
     if (details.reason !== "clean-exit") setTimeout(() => !wc.isDestroyed() && wc.reload(), 1000);
   });
   wc.once("destroyed", () => viewOwner.delete(wc.id));
+  // 页面重新加载：旧菜单里的项新页面不认，等它加载完重新报
+  wc.on("did-start-loading", () => delete rt(id).pageMenu);
 
   void wc.loadURL(`${server.url}/`);
   return view;
@@ -707,6 +716,22 @@ export function setPageState(id, state) {
   patch(id, { pending, busy, status: "online" });
 }
 
+/** 页面报来的「更多」菜单（只信形状对的部分） */
+export function setPageMenu(id, menu) {
+  const items = Array.isArray(menu?.items)
+    ? menu.items
+        .slice(0, 20)
+        .map((it) =>
+          it?.type === "separator"
+            ? { type: "separator" }
+            : { id: str(it?.id, 40), label: str(it?.label, 80), ...(typeof it?.checked === "boolean" ? { checked: it.checked } : {}) },
+        )
+        .filter((it) => it.type === "separator" || (it.id && it.label))
+    : [];
+  const usage = Array.isArray(menu?.usage) ? menu.usage.slice(0, 10).map((l) => str(l, 120)).filter(Boolean) : [];
+  rt(id).pageMenu = { items, usage };
+}
+
 /** 老版本页面自己查了额度报上来（新版页面在桌面端里不查，等这边推） */
 export function setPageQuota(id, quotas) {
   if (!Array.isArray(quotas)) return;
@@ -726,6 +751,6 @@ export function clearUnread(id) {
 
 /** 给侧栏和菜单栏面板用的快照（不含视图对象） */
 export function publicState(id) {
-  const { view: _view, ...rest } = rt(id);
+  const { view: _view, pageMenu: _menu, ...rest } = rt(id);
   return rest;
 }

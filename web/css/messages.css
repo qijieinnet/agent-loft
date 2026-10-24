@@ -227,6 +227,26 @@ a.att-file:hover {
   word-break: break-word;
 }
 
+/* 太长的用户消息：收起到约 10 行，底部淡出，下面一个「展开显示」 */
+.msg-user.clamped {
+  max-height: 260px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+}
+
+.msg-more {
+  margin-top: -2px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+.msg-more:hover {
+  color: var(--fg);
+}
+
 .msg-user .origin {
   display: block;
   font-size: 12px;
@@ -731,4 +751,153 @@ a.att-file:hover {
 
 .lightbox-dl:hover {
   background: rgba(255, 255, 255, 0.26);
+}
+
+/* ---------- 右边的快速定位：每条用户消息一道横线，鼠标移上去展开成列表 ---------- */
+.msg-nav {
+  position: absolute;
+  right: 14px;
+  top: 45%;
+  transform: translateY(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+}
+
+.msg-nav[hidden],
+.main.tasks-view .msg-nav {
+  display: none;
+}
+
+.msg-nav-ticks {
+  display: flex;
+  flex-direction: column;
+  max-height: 50vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+  opacity: 0.55;
+  transition: opacity 0.2s;
+}
+
+.msg-nav-ticks::-webkit-scrollbar {
+  display: none;
+}
+
+.msg-nav.scrolling .msg-nav-ticks,
+.msg-nav:hover .msg-nav-ticks {
+  opacity: 1;
+}
+
+/* 点击范围比横线大：整个 20×10 都能点 */
+.msg-nav-tick {
+  flex-shrink: 0;
+  width: 20px;
+  height: 10px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.msg-nav-tick i {
+  display: block;
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--fg-faint);
+  transition: width 0.15s, background 0.15s;
+}
+
+.msg-nav-tick:hover i {
+  background: var(--fg-soft);
+}
+
+.msg-nav-tick.on i {
+  width: 16px;
+  background: var(--fg);
+}
+
+/* 展开的列表：在横线左边，鼠标移开就收起 */
+.msg-nav-panel {
+  position: absolute;
+  right: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 260px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s, visibility 0.12s;
+}
+
+/* 键盘 Tab 进来时也展开；鼠标点过之后不因为焦点还在就一直开着 */
+.msg-nav:hover .msg-nav-panel,
+.msg-nav:has(:focus-visible) .msg-nav-panel {
+  opacity: 1;
+  visibility: visible;
+}
+
+.msg-nav-row {
+  flex-shrink: 0;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-nav-row:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.msg-nav-row.on {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* 手机上没地方放，也没有悬停 */
+@media (max-width: 768px) {
+  .msg-nav {
+    display: none;
+  }
+}
+
+/* 排队中的消息：「排队中 · 打断并发送」 */
+.queue-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -2px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.queue-note.dropped {
+  color: var(--danger);
+}
+
+.queue-jump {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+}
+
+.queue-jump:hover {
+  color: var(--fg);
+  background: var(--bg-hover);
 }

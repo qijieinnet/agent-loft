@@ -40,7 +40,7 @@ function match(list, q) {
 
 /**
  * 给一个输入框挂上 @ 补全。menu 是放菜单的元素（调用方决定放哪、怎么定位，样式用 .slash-menu）。
- * onEmpty：一个技能都没有时，菜单里给个入口（去技能页）。返回 { update, keydown, close }：
+ * onEmpty：一个技能都没有时，菜单里给个入口（去设置里的技能页）。返回 { update, keydown, close }：
  * 输入框的 input / keydown / blur 里分别调用。
  */
 export function attachMention(input, menu, { onEmpty, onPicked } = {}) {
@@ -146,7 +146,7 @@ export function attachMention(input, menu, { onEmpty, onPicked } = {}) {
             },
           },
           h("div", { class: "slash-head" }, h("span", { class: "slash-name" }, "还没有技能")),
-          h("div", { class: "slash-desc" }, "去「技能」页新建、上传，或者从技能广场安装"),
+          h("div", { class: "slash-desc" }, "去「设置 → 技能」新建、上传"),
         ),
       );
       return;

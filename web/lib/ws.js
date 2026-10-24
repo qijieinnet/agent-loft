@@ -2,7 +2,7 @@ import { h } from "./dom.js";
 import { api } from "./api.js";
 import { desktop, S, ui } from "../state.js";
 import { showAuth } from "../views/auth.js";
-import { renderSidebar, scheduleSidebar } from "../views/sidebar.js";
+import { applyBootstrap, bootstrapQuery, renderSidebar, scheduleSidebar } from "../views/sidebar.js";
 import { scheduleQuota } from "../views/quota.js";
 import { renderTopbar } from "../views/topbar.js";
 import { applyEvent, openConversation } from "../views/messages.js";
@@ -92,13 +92,52 @@ export const WS = {
   },
 
   /** 告诉服务器我是否在前台、正看着哪条会话：正看着的会话不推系统通知 */
+  /**
+   * 告诉服务端「我正看着这条会话」：看着的时候不推送。要页面在前台、有焦点，而且最近还有人在动它 ——
+   * 窗口开着人走开了（电脑上停在这条会话、人在用手机），照样推
+   */
   presence() {
-    const visible = document.visibilityState === "visible" && document.hasFocus();
+    const visible = document.visibilityState === "visible" && document.hasFocus() && Date.now() - lastInput < IDLE_MS;
     this.raw({ t: "presence", visible, key: S.current ?? "" });
   },
 };
 
-for (const ev of ["focus", "blur"]) window.addEventListener(ev, () => WS.presence());
+// 切回窗口本身就算动了一下
+window.addEventListener("focus", () => (markActive(), WS.presence()));
+window.addEventListener("blur", () => WS.presence());
+
+// ---------- 有没有人在动页面 ----------
+// 超过 IDLE_MS 没点、没按键、没滚动，就当人不在了：报一次 presence，服务端照常推送；一动又报回来
+
+const IDLE_MS = 2 * 60_000;
+let lastInput = Date.now();
+let idle = false;
+let idleTimer = 0;
+function markActive() {
+  lastInput = Date.now();
+  idle = false;
+  armIdle();
+}
+function armIdle() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idle = true;
+    WS.presence();
+  }, IDLE_MS);
+}
+function onInput() {
+  const now = Date.now();
+  // 滚动一秒几十次，重设计时器不用那么勤
+  if (!idle && now - lastInput < 5000) return;
+  lastInput = now;
+  if (idle) {
+    idle = false;
+    WS.presence();
+  }
+  armIdle();
+}
+for (const ev of ["pointerdown", "keydown", "wheel", "touchstart", "scroll"]) window.addEventListener(ev, onInput, { capture: true, passive: true });
+armIdle();
 
 /** 打开 / 切回页面：清掉桌面图标角标和计数（计数由 sw.js 在收到推送时累加） */
 export function clearAppBadge() {
@@ -108,6 +147,7 @@ export function clearAppBadge() {
 }
 
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") markActive();
   WS.presence();
   clearAppBadge();
   // 手机切回前台：连接多半已经被系统掐了，立刻重连而不是等退避
@@ -120,8 +160,8 @@ document.addEventListener("visibilitychange", () => {
 /** 重连后：以服务器上的会话列表和待处理授权为准，清掉本地已失效的 */
 async function resync() {
   try {
-    const data = await api("/api/bootstrap");
-    S.convs = new Map(data.conversations.map((c) => [c.key, c]));
+    const data = await api(`/api/bootstrap${bootstrapQuery()}`);
+    applyBootstrap(data);
     const live = new Set(data.pending.map((i) => i.id));
     for (const ix of S.pending.values()) {
       // 快照生成之后才出现的授权，快照里当然没有，不能当成「已在别处处理」
@@ -202,7 +242,7 @@ function onWsMessage(msg) {
       document.dispatchEvent(new Event("aim:tasks"));
       return;
     case "skills":
-      // 技能变了（自己的、装了的、广场上的）：技能页重新拉，@ 补全的缓存作废
+      // 技能变了：设置里的技能页开着就重新拉，@ 补全的缓存作废
       document.dispatchEvent(new Event("aim:skills"));
       return;
     case "notice":
