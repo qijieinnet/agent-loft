@@ -46,7 +46,7 @@ function topMenuItems() {
     const c = S.current ? S.convs.get(S.current) : null;
     const chat = (c ? (c.mode ?? "work") : S.draftMode) === "chat";
     items.push({ id: "mode", label: "聊天模式", icon: "chat", checked: chat, onclick: () => void toggleMode() });
-    items.push({ id: "schedule", label: "定时发送…", icon: "clock", onclick: () => openSchedule() });
+    items.push({ id: "schedule", label: "定时发送", icon: "clock", onclick: () => openSchedule() });
   }
   if (!desktopSettings) {
     if (items.length) items.push("sep");

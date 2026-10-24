@@ -36,7 +36,7 @@ import {
 import { loadStore, store } from "./store.js";
 import { applyUpdate, checkUpdates, local, loginAgent, refreshLocal, scheduleUpdates, system, systemState } from "./system.js";
 import { runSmoke, prepareSmoke, smoke } from "./smoke.js";
-import { createTray, hidePopover, openPopoverForTest, popoverResize, popoverWebContents, setTrayUnread } from "./tray.js";
+import { createTray, hidePopover, openPopoverForTest, popoverResize, popoverWebContents, setTrayQuota, setTrayUnread } from "./tray.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === "darwin";
@@ -165,6 +165,7 @@ function broadcast() {
   // Linux 上部分桌面（Unity、KDE）的启动器认这个；其他平台没有角标，托盘提示里带上数字
   else if (process.platform === "linux") app.setBadgeCount(unread);
   setTrayUnread(unread);
+  setTrayQuota(state.servers, state.prefs.trayItems);
   layout();
   rebuildMenu();
 }

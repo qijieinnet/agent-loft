@@ -649,7 +649,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
           if (prev?.used !== ctx.used || prev?.window !== ctx.window) this.emitEvent(key, { type: "meta" });
         },
         // 不用另发 meta：一轮结束的 result / error 会把会话信息（含用量）推给页面
-        onUsage: (usage, cumulative) => alive() && recordUsage(holder.session?.sessionId, usage, cumulative),
+        onUsage: (usage, cumulative) => {
+          if (!alive()) return;
+          // 模型用来按单价估算没报费用的 agent（Codex）的金额
+          const current = getConversation(key);
+          const model = current ? this.displayRuntime(current, agentBinding(current, agent)).model : undefined;
+          recordUsage(holder.session?.sessionId, usage, cumulative, { owner: current?.owner, agent, model });
+        },
         onDropped: (n) => {
           if (!alive() || n <= 0) return;
           // 丢的是排在最后、还没开始的那 n 条（Codex 先报正在跑的那轮出错、再报丢弃，那时队头已经取走了）

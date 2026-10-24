@@ -398,6 +398,51 @@ form.server-form {
 .switch:checked::after {
   transform: translateX(14px);
 }
+/* 菜单栏显示哪些额度：每台服务器一行 */
+.tray-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.tray-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tray-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+/* 多选：菜单栏显示哪几个 agent 的额度 */
+.pick {
+  display: inline-flex;
+  gap: 6px;
+  flex: none;
+}
+.pick button {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 13px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pick button:hover {
+  color: var(--fg);
+}
+.pick button.on {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+}
 input.num {
   width: 64px;
   height: 26px;

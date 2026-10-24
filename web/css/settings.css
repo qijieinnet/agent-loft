@@ -333,3 +333,197 @@
   background: var(--code-bg);
   font-size: 12px;
 }
+
+/* ---------- 用量（按日 / 月 / 年统计 Token 和费用） ---------- */
+
+.usage-stats h5 {
+  margin: 4px 0 -4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-soft);
+}
+
+.us-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.us-head h4 {
+  flex: 1;
+}
+
+.us-head .seg {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--bg-soft);
+}
+
+.us-head .seg button {
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+
+.us-head .seg button.on {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.us-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.us-title {
+  min-width: 7.5em;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.us-empty {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.us-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.us-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-soft);
+}
+
+.us-tile span {
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+
+.us-tile b {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 趋势：单一系列，用主题前景色；没用量的格子留空，悬停看数字 */
+.us-trend {
+  position: relative;
+  padding-top: 16px;
+}
+
+.us-bars {
+  display: grid;
+  gap: 2px;
+  height: 120px;
+  align-items: end;
+  border-bottom: 1px solid var(--border);
+}
+
+.us-col {
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 4px 4px 0 0;
+}
+
+.us-col:hover {
+  background: var(--bg-soft);
+}
+
+.us-col i {
+  width: 100%;
+  background: var(--fg);
+  opacity: 0.78;
+  border-radius: 4px 4px 0 0;
+}
+
+.us-col:hover i {
+  opacity: 1;
+}
+
+.us-axis {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.us-max {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.usage-stats .usage {
+  padding: 0;
+  font-size: 13px;
+}
+
+.us-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.us-item {
+  display: grid;
+  grid-template-columns: minmax(5em, 9em) 1fr 4.5em 4.5em;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.us-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.us-meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+
+.us-meter i {
+  display: block;
+  height: 100%;
+  background: var(--fg-soft);
+  border-radius: 3px;
+}
+
+.us-num,
+.us-cost {
+  text-align: right;
+}
+
+.us-cost {
+  color: var(--fg-soft);
+}
+
+@media (max-width: 640px) {
+  .us-tiles {
+    grid-template-columns: 1fr 1fr;
+  }
+}

@@ -240,6 +240,66 @@ function keepAwakeHint() {
   return `只对${THIS_PC}上的服务端生效，远程服务器不受影响。会话跑完后恢复正常休眠，屏幕照常可以关。`;
 }
 
+/**
+ * macOS 菜单栏图标上显示哪些 5 小时额度：「所有服务器（取最高）」一行，连着多台时每台再一行，
+ * 每行 Claude / Codex 可多选。存成「服务器 id:agent」，* 是所有服务器；顺序就是这里从上到下、Claude 在前
+ */
+function trayPicker(items) {
+  const AGENTS = [
+    ["claude", "Claude"],
+    ["codex", "Codex"],
+  ];
+  const lines = [["*", "所有服务器（取最高）"]];
+  if (state.servers.length > 1) for (const s of state.servers) lines.push([s.id, `${s.icon ? `${s.icon} ` : ""}${s.name}`]);
+  const order = lines.flatMap(([sid]) => AGENTS.map(([a]) => `${sid}:${a}`));
+  return h(
+    "div",
+    { class: "row" },
+    h(
+      "div",
+      { class: "grow" },
+      "菜单栏显示 5 小时额度",
+      h(
+        "div",
+        { class: "sub" },
+        "图标换成所选的 5 小时已用百分比；按服务器选的，图标下面的小字会带上服务器名。都不选就只显示图标。",
+      ),
+      h(
+        "div",
+        { class: "tray-pick" },
+        lines.map(([sid, label]) =>
+          h(
+            "div",
+            { class: "tray-line" },
+            h("span", { class: "tray-label" }, label),
+            h(
+              "div",
+              { class: "pick" },
+              AGENTS.map(([agent, name]) => {
+                const key = `${sid}:${agent}`;
+                const on = items.includes(key);
+                return h(
+                  "button",
+                  {
+                    class: on ? "on" : "",
+                    "aria-pressed": String(on),
+                    onclick: () => {
+                      // 删掉的服务器留下的项顺手清掉
+                      const next = order.filter((k) => (k === key ? !on : items.includes(k)));
+                      void call("setPref", "trayItems", next);
+                    },
+                  },
+                  name,
+                );
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 function renderPrefs() {
   const p = state.prefs;
   const toggle = (key, label, hint) =>
@@ -260,11 +320,13 @@ function renderPrefs() {
       if (Number.isFinite(v) && v >= 1) void call("setPref", "quotaRefreshMin", v);
     },
   });
+  const tray = IS_MAC ? trayPicker(p.trayItems) : null;
   // 正在改数字时别重画，不然光标会跳
   if (manage.prefs.contains(document.activeElement) && document.activeElement.type === "number") return;
   manage.prefs.replaceChildren(
     toggle("openAtLogin", "登录时自动启动", `启动后只在${TRAY_PLACE}，不弹窗口。`),
     toggle("keepAwake", "本机有会话在跑时不休眠", keepAwakeHint()),
+    tray,
     h("div", { class: "row" }, h("div", { class: "grow" }, "额度刷新间隔（分钟）", h("div", { class: "sub" }, PLATFORM === "linux" ? "跑完一轮时也会刷新。" : `跑完一轮、打开${TRAY_PLACE}面板时也会刷新。`)), interval),
   );
 }

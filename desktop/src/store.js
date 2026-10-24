@@ -20,7 +20,10 @@ import path from "node:path";
  *   openAtLogin: boolean, quotaRefreshMin: number,
  *   autoUpdate: boolean, updateCheckHours: number,
  *   keepAwake: boolean,
+ *   trayItems: string[],
  * }} Prefs
+ *   trayItems：macOS 菜单栏图标上显示哪些 5 小时额度（按这个顺序），每项是「服务器 id:agent」，
+ *     服务器 id 是 * 表示所有服务器合起来取最高；空数组就只显示图标。
  *   keepAwake：本机服务端有会话在跑（或在等授权 / 回答）时不让这台 Mac 休眠；只管本机，不管远程服务器。
  */
 
@@ -31,6 +34,7 @@ const DEFAULT_PREFS = {
   autoUpdate: true,
   updateCheckHours: 24,
   keepAwake: false,
+  trayItems: ["*:claude", "*:codex"],
 };
 
 let data = {
@@ -228,6 +232,8 @@ export const store = {
     tokenCache.delete(id);
     data.servers = data.servers.filter((s) => s.id !== id);
     if (data.lastActive === id) data.lastActive = null;
+    // 菜单栏额度里选了这台的项
+    data.prefs.trayItems = data.prefs.trayItems.filter((k) => !k.startsWith(`${id}:`));
     save();
   },
 
@@ -242,7 +248,12 @@ export const store = {
 
   setPref(key, value) {
     if (!(key in DEFAULT_PREFS)) throw new Error(`未知设置：${key}`);
-    if (typeof value !== typeof DEFAULT_PREFS[key]) throw new Error(`设置 ${key} 的值类型不对`);
+    if (typeof value !== typeof DEFAULT_PREFS[key] || Array.isArray(value) !== Array.isArray(DEFAULT_PREFS[key])) {
+      throw new Error(`设置 ${key} 的值类型不对`);
+    }
+    if (key === "trayItems") {
+      value = [...new Set(value.filter((a) => typeof a === "string" && /^(\*|[\w-]{1,64}):[a-z0-9_-]{1,32}$/.test(a)))].slice(0, 12);
+    }
     if (key === "quotaRefreshMin") value = Math.max(1, Math.min(1440, Math.round(value)));
     if (key === "updateCheckHours") value = Math.max(1, Math.min(24 * 30, Math.round(value)));
     data.prefs[key] = value;
