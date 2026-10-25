@@ -6,6 +6,7 @@ import { deleteUserTasks } from "./tasks.js";
 import { purgeUserSkills } from "./skills.js";
 import type { Conversation } from "./store.js";
 import { getUser, legacyOwnerId } from "./users.js";
+import { deleteUiPrefs } from "./ui-prefs.js";
 
 /**
  * 这条对话该用谁的记忆。比会话列表的归属规则（users.ts 的 ownedBy）更严：
@@ -45,4 +46,5 @@ export function purgeUserData(userId: string): void {
   unlinkUser(userId);
   deleteUserTasks(userId);
   purgeUserSkills(userId);
+  deleteUiPrefs(userId);
 }

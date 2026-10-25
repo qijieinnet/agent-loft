@@ -26,6 +26,7 @@ import {
 } from "../../core/users.js";
 import type { SavedAttachment } from "../../core/types.js";
 import { dailyUsage } from "../../core/usage.js";
+import { appendDirOrder, getDirOrder, setDirOrder } from "../../core/ui-prefs.js";
 import {
   addMemoryItem,
   clearMemory,
@@ -558,11 +559,21 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         // 展开着的目录带上翻页游标（没带 next 的目录前端还没拉过）
         dirs: dirsOf(all).map((d) => (dirPages.has(d.dir) ? { ...d, next: dirPages.get(d.dir)!.next } : d)),
       },
+      // 「项目」目录的顺序（拖拽排的），跟着账号走；null = 还没存过
+      dirOrder: getDirOrder(user.id) ?? null,
       pending,
       user: publicMe(user),
       remote: remoteStatus(user),
       serverTime: Date.now(),
     });
+    return;
+  }
+
+  // ----- 侧栏「项目」目录顺序：order 整份换掉，append 只把新目录接在最后 -----
+  if (p === "/api/ui/dir-order" && method === "PUT") {
+    const body = await readJsonBody<{ order?: unknown; append?: unknown }>(req);
+    const order = body.order !== undefined ? setDirOrder(user.id, body.order) : appendDirOrder(user.id, body.append);
+    sendJson(res, 200, { order });
     return;
   }
 

@@ -49,6 +49,35 @@
     display: none;
   }
 
+  /* 「/」「@」补全：键盘弹出后屏幕只剩一半，菜单改成一行一条、最多露出五条多一点，
+     露出半条好让人知道还能往下滑 */
+  .slash-menu {
+    bottom: calc(100% + 4px);
+    max-height: min(196px, 30vh);
+    padding: 4px;
+  }
+
+  .slash-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 7px 8px;
+  }
+
+  .slash-head {
+    flex: none;
+    max-width: 60%;
+  }
+
+  .slash-args {
+    display: none;
+  }
+
+  .slash-desc {
+    flex: 1;
+    min-width: 0;
+  }
+
   .ctx-bar {
     margin: 0 10px -22px;
     font-size: 13px;

@@ -195,17 +195,47 @@ function agentShort(id) {
 export const sideState = { open: [], more: [], folded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
 
 /**
- * 「项目」目录的顺序：没手动排过时按最近活跃；拖过之后按 sideState.order，
- * 之后新出现的目录排在已排好的后面（同样按活跃），不会挤掉用户置顶的目录
+ * 「项目」目录的顺序固定按 sideState.order，新消息不会把目录顶到前面。
+ * 顺序存在服务端、跟着账号走（换设备也一样）；新出现的目录接在最后（几个一起出现时按活跃排），
+ * 接上之后名次也就定了
  */
 function orderProjectDirs(dirs) {
   const rank = new Map(sideState.order.map((d, i) => [d, i]));
   const ranked = dirs.filter((d) => rank.has(d)).sort((a, b) => rank.get(a) - rank.get(b));
-  return [...ranked, ...dirs.filter((d) => !rank.has(d))];
+  const fresh = dirs.filter((d) => !rank.has(d));
+  if (fresh.length && orderSynced) {
+    sideState.order = [...sideState.order, ...fresh];
+    saveSideState();
+    void putDirOrder({ append: fresh });
+  }
+  return [...ranked, ...fresh];
+}
+
+/** 拿到服务端存的顺序之前不往上写，免得这台设备本地的旧顺序盖掉别处排好的 */
+let orderSynced = false;
+
+function saveSideState() {
+  localStorage.setItem("aim.side", JSON.stringify(sideState));
+}
+
+async function putDirOrder(body) {
+  try {
+    const data = await api("/api/ui/dir-order", { method: "PUT", body });
+    // 追加时以服务端的为准（别的设备可能刚排过）
+    if (body.append && data?.order && data.order.join("\n") !== sideState.order.join("\n")) {
+      sideState.order = data.order;
+      saveSideState();
+      scheduleSidebar();
+    }
+  } catch (err) {
+    toast(`保存目录顺序失败：${err.message}`);
+  }
 }
 
 /** 当前侧栏里显示的目录顺序（renderSidebar 时记下，拖拽 / 右键菜单用） */
 export let projDirs = [];
+/** 同一批目录按最近活跃的顺序（「按最近活跃重排」用） */
+let projDirsByActivity = [];
 
 /** 把目录 dir 挪到 target 前面（after 为 true 时挪到后面）；target 为 null 表示挪到最前 */
 export function moveProjectDir(dir, target, after = false) {
@@ -215,14 +245,18 @@ export function moveProjectDir(dir, target, after = false) {
   if (idx < 0) return;
   list.splice(idx + (after ? 1 : 0), 0, dir);
   // 暂时没显示出来的目录（会话都被隐藏了之类）保留原来的名次，排在后面
-  sideState.order = [...list, ...sideState.order.filter((d) => !list.includes(d))];
-  localStorage.setItem("aim.side", JSON.stringify(sideState));
-  renderSidebar();
+  setProjectOrder([...list, ...sideState.order.filter((d) => !list.includes(d))]);
 }
 
+/** 按最近活跃重排一次，之后照样固定 */
 export function resetProjectOrder() {
-  sideState.order = [];
-  localStorage.setItem("aim.side", JSON.stringify(sideState));
+  setProjectOrder([...projDirsByActivity, ...sideState.order.filter((d) => !projDirsByActivity.includes(d))]);
+}
+
+function setProjectOrder(order) {
+  sideState.order = order;
+  saveSideState();
+  if (orderSynced) void putDirOrder({ order });
   renderSidebar();
 }
 
@@ -288,6 +322,17 @@ export function applyBootstrap(data) {
     st.next = pages.full ? null : sideState.open.includes(dir) ? (fetched.get(dir) ?? null) : undefined;
   }
   for (const [dir, next] of fetched) dirState(dir).next = next;
+  // 老版本服务端没有这个字段：顺序只存在本地
+  if ("dirOrder" in data) {
+    if (data.dirOrder) {
+      sideState.order = data.dirOrder;
+      saveSideState();
+    } else if (sideState.order.length) {
+      // 以前只存在这台设备上的顺序，第一次搬到服务端
+      void putDirOrder({ order: sideState.order });
+    }
+    orderSynced = true;
+  }
 }
 
 /** 拉下一页，合进 S.convs。失败了不自动重试（否则每次重绘都去拉），点「展开显示」再试 */
@@ -433,7 +478,7 @@ export function renderSidebar() {
     if (btn) nodes.push(btn);
   }
 
-  // ---- 项目：Web 会话按工作目录分组，目录按最近活跃排序 ----
+  // ---- 项目：Web 会话按工作目录分组，目录按用户排的顺序（见 orderProjectDirs） ----
   const byDir = new Map();
   for (const c of visible.filter((c) => c.channel === "web")) {
     if (!byDir.has(c.cwd)) byDir.set(c.cwd, []);
@@ -452,7 +497,8 @@ export function renderSidebar() {
   for (const [dir, convs] of byDir) dirAt.set(dir, Math.max(dirAt.get(dir) ?? 0, convs[0].activeAt));
   const projFolded = sideState.folded.includes("@projects");
   if (dirAt.size) nodes.push(groupHead("项目", "@projects", projFolded));
-  projDirs = orderProjectDirs([...dirAt.keys()].sort((a, b) => dirAt.get(b) - dirAt.get(a)));
+  projDirsByActivity = [...dirAt.keys()].sort((a, b) => dirAt.get(b) - dirAt.get(a));
+  projDirs = orderProjectDirs(projDirsByActivity);
   if (dirAt.size && !projFolded) {
     const clearDrop = () => ui.convList.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
     const endDrag = () => {

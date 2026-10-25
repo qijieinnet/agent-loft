@@ -14,7 +14,6 @@ import {
   reportDesktop,
   resetProjectOrder,
   setSideWidth,
-  sideState,
   startMarquee,
   startSideResize,
   stopMarquee,
@@ -197,7 +196,7 @@ function renderLayout() {
         ...(i > 0 ? [{ label: "置顶", onclick: () => moveProjectDir(dir, null) }, { label: "上移", onclick: () => moveProjectDir(dir, projDirs[i - 1]) }] : []),
         ...(i >= 0 && i < projDirs.length - 1 ? [{ label: "下移", onclick: () => moveProjectDir(dir, projDirs[i + 1], true) }] : []),
       ];
-      const reset = sideState.order.length ? [{ label: "恢复按最近活跃排序", onclick: resetProjectOrder }] : [];
+      const reset = projDirs.length > 1 ? [{ label: "按最近活跃重排", onclick: resetProjectOrder }] : [];
       const items = moves.length && reset.length ? [...moves, "sep", ...reset] : [...moves, ...reset];
       if (!items.length) return;
       e.preventDefault();
