@@ -53,6 +53,17 @@
   }
 }
 
+/* 顶栏下沿的渐变、模糊是给滚动的聊天内容用的：远程控制页下面是工具栏，会被它盖住一截 */
+.main.remote-view .topbar {
+  padding-bottom: 8px;
+  background: var(--bg);
+}
+
+.main.remote-view .topbar::before,
+.main.remote-view .topbar::after {
+  display: none;
+}
+
 .remote-head {
   display: flex;
   align-items: center;
@@ -313,18 +324,48 @@
   opacity: 0.4;
 }
 
-/* 浏览器全屏时只剩画面 */
-.remote-body:fullscreen .desk-status {
+/* 全屏时只剩画面 */
+.remote-body.full .desk-status {
   display: none;
 }
 
-/* 不支持元素全屏（iPhone）：铺满整个页面，盖住顶栏、侧栏，弹窗和提示还在上面 */
+/* 不支持元素全屏（iPhone）：铺满整个页面，盖住顶栏、侧栏，弹窗和提示还在上面。
+   左右不留安全区：画面本来就居中、两边是黑边，刘海落在黑边里 */
 .remote-body.desk-full {
   position: fixed;
   inset: 0;
   z-index: 35;
   background: #111;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + var(--kb-inset, 0px)) env(safe-area-inset-left);
+  padding: env(safe-area-inset-top) 0 var(--kb-inset, 0px);
+}
+
+/* 全屏时下面那排键默认收起，左上角的按钮拉出来；拉出来时是深色、矮一点的一条 */
+.remote-body.full .desk-keys {
+  padding: 4px max(8px, env(safe-area-inset-left)) calc(4px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-right));
+  border-top: none;
+  background: #111;
+}
+
+.remote-body.full:not(.keys-open) .desk-keys {
+  display: none;
+}
+
+/* 有软键盘垫着时不用再让出底部安全区 */
+.remote-body.desk-full .desk-keys {
+  padding-bottom: calc(4px + max(0px, env(safe-area-inset-bottom) - var(--kb-inset, 0px)));
+}
+
+.remote-body.full .desk-keys .term-key {
+  height: 30px;
+  border-color: #333;
+  background: #262626;
+  color: #eee;
+}
+
+.remote-body.full .desk-keys .term-key.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
 }
 
 /* 没连着时画面中间的「连接桌面」 */
@@ -341,7 +382,7 @@
 }
 
 .desk-idle[hidden],
-.desk-exitfull[hidden] {
+.desk-fbtn[hidden] {
   display: none;
 }
 
@@ -362,12 +403,26 @@
   height: 16px;
 }
 
-/* 全屏时左上角「退出全屏」 */
-.desk-exitfull {
+/* 全屏时左上角「退出全屏」「按键」 */
+.desk-fullbar {
   position: absolute;
-  left: 10px;
+  left: max(10px, env(safe-area-inset-left));
   top: 10px;
   z-index: 3;
+  display: flex;
+  gap: 8px;
+}
+
+.desk-fullbar[hidden] {
+  display: none;
+}
+
+.desk-fbtn.on {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.desk-fbtn {
   display: grid;
   place-items: center;
   width: 34px;
@@ -378,7 +433,7 @@
   color: #fff;
 }
 
-.desk-exitfull svg {
+.desk-fbtn svg {
   width: 18px;
   height: 18px;
 }

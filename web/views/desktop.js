@@ -57,8 +57,12 @@ export function showDesktop(pane, tools) {
       h("div", { class: "muted" }, "远程桌面未连接"),
       h("button", { class: "btn primary", onclick: reconnect }, icon("plug"), "连接桌面"),
     );
-    D.exitFull = h("button", { class: "desk-exitfull", hidden: true, title: "退出全屏", "aria-label": "退出全屏", onclick: () => setFull(false) }, icon("shrink"));
-    D.viewport = h("div", { class: "desk-viewport" }, D.screen, D.zoomBadge, D.hint, D.idle, D.exitFull);
+    D.keysBtn = isTouch
+      ? h("button", { class: "desk-fbtn", title: "按键", "aria-label": "按键", onclick: () => toggleFullKeys() }, icon("keyboard"))
+      : null;
+    D.exitFull = h("button", { class: "desk-fbtn", title: "退出全屏", "aria-label": "退出全屏", onclick: () => setFull(false) }, icon("shrink"));
+    D.fullBar = h("div", { class: "desk-fullbar", hidden: true }, D.exitFull, D.keysBtn);
+    D.viewport = h("div", { class: "desk-viewport" }, D.screen, D.zoomBadge, D.hint, D.idle, D.fullBar);
     D.keyInput = isTouch ? mobileKeyInput() : null;
     D.keyRow = isTouch ? keyRow() : null;
     fill(pane, D.status, D.viewport, D.keyRow, D.keyInput);
@@ -104,6 +108,8 @@ async function connect() {
   rfb.resizeSession = false;
   rfb.viewOnly = D.viewOnly;
   rfb.showDotCursor = true;
+  // 画面没铺满时的边：和外框一个颜色，别再多出一圈灰
+  rfb.background = "#111";
   rfb.qualityLevel = 6;
   rfb.compressionLevel = 2;
   rfb.addEventListener("connect", () => {
@@ -282,11 +288,25 @@ function setFull(on) {
   syncFull();
 }
 
-/** 全屏时画面上一个「退出全屏」（手机上没有 Esc；真全屏在电脑上按 Esc 就行，不显示） */
+/**
+ * 全屏时画面左上角「退出全屏」（手机上没有 Esc；真全屏在电脑上按 Esc 就行，不显示）。
+ * 手机上全屏时下面那排键先收起来，左上角的「按键」拉出来
+ */
 function syncFull() {
   if (!D.pane) return;
   const pseudo = D.pane.classList.contains("desk-full");
-  D.exitFull.hidden = !(pseudo || (isTouch && fsElement() === D.pane));
+  const full = pseudo || fsElement() === D.pane;
+  if (full !== D.pane.classList.contains("full")) {
+    D.pane.classList.toggle("full", full);
+    toggleFullKeys(false);
+  }
+  D.fullBar.hidden = !(pseudo || (isTouch && full));
+}
+
+function toggleFullKeys(open = !D.pane.classList.contains("keys-open")) {
+  D.pane.classList.toggle("keys-open", open);
+  D.keysBtn?.classList.toggle("on", open);
+  if (!open && document.activeElement === D.keyInput) D.keyInput.blur();
 }
 document.addEventListener("fullscreenchange", syncFull);
 document.addEventListener("webkitfullscreenchange", syncFull);
