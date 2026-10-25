@@ -96,5 +96,24 @@
 
   .settings-nav button {
     white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* 横排时分组标题换成一道竖线 */
+  .settings-group {
+    flex-shrink: 0;
+    width: 1px;
+    margin: 6px 4px;
+    padding: 0;
+    font-size: 0;
+    background: var(--border);
+  }
+
+  .settings-group:first-child {
+    display: none;
+  }
+
+  .settings-body {
+    padding: 12px;
   }
 }

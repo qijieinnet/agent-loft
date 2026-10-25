@@ -37,7 +37,7 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "codex", description: "切换到 Codex", multiAgentOnly: true },
   { name: "web", description: "接上一条 Web 会话，在飞书里查看和回复", feishuOnly: true },
   { name: "detach", description: "不再接着 Web 会话，回到这个聊天自己的会话", feishuOnly: true },
-  { name: "bind", args: "<绑定码>", description: "把这个飞书账号绑定到你的 agent-loft 用户（绑定码在 Web 的「设置 → 我的账号」里生成）", feishuOnly: true },
+  { name: "bind", args: "<绑定码>", description: "把这个飞书账号绑定到你的 agent-loft 用户（绑定码在 Web 的「设置 → 账号」里生成）", feishuOnly: true },
   { name: "help", description: "显示帮助" },
   { name: "approve", args: "<请求ID> allow-once|allow-always|allow-session|deny", description: "审批兜底（卡片失效时用）" },
 ];

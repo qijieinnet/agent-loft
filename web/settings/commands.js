@@ -1,9 +1,9 @@
-import { fill, h, icon, toast } from "../lib/dom.js";
+import { fill, h, icon } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { agentLabel } from "../views/sidebar.js";
 import { confirmDialog, modal } from "../lib/overlay.js";
 import { commandUsage, currentAgentId, oneLine, slash } from "../views/slash.js";
-import { field, saveConfig } from "./common.js";
+import { field, hasDirty, markClean, markDirty, saveButton, saveConfig } from "./common.js";
 
 /**
  * 默认模型 + 默认思考程度的联动下拉框。
@@ -129,8 +129,9 @@ function customDialog({ agent, entry, taken }, onSave) {
  * 默认 agent-loft 内置命令按常用程度排在最前，agent 自己的命令排在后面且默认不勾（服务端 buildCatalog 决定）。
  * 保存时把整张表的顺序存下来；以后新装的 skill 不在表里，会自动接在最后、默认不勾。
  * 用户可以自己添加命令（一段预设的提示词），自己加的可以编辑、删除，增删改后立即保存。
+ * 保存后服务端会同步到飞书机器人的指令面板，同步状态在「飞书」页里看。
  */
-export function commandsTab(cfg, panel) {
+export function commandsTab(cfg, page) {
   const agentIds = Object.keys(cfg.agents);
   let agent = currentAgentId();
   if (!agentIds.includes(agent)) agent = agentIds[0];
@@ -141,6 +142,7 @@ export function commandsTab(cfg, panel) {
   const tabs = h("div", { class: "row" });
   const search = h("input", {
     class: "input",
+    "data-nodirty": "",
     placeholder: "筛选命令（只影响显示，排序仍按整张表）",
     oninput: () => {
       filter = search.value.trim().toLowerCase();
@@ -154,6 +156,7 @@ export function commandsTab(cfg, panel) {
     const [item] = list.splice(from, 1);
     list.splice(to, 0, item);
     renderList();
+    markDirty(form);
   };
 
   const renderTabs = () =>
@@ -162,7 +165,7 @@ export function commandsTab(cfg, panel) {
       ...agentIds.map((id) =>
         h(
           "button",
-          { class: `btn small${id === agent ? " primary" : ""}`, onclick: () => id !== agent && load(id) },
+          { class: `btn small${id === agent ? " primary" : ""}`, onclick: () => void switchAgent(id) },
           agentLabel(id),
         ),
       ),
@@ -237,8 +240,6 @@ export function commandsTab(cfg, panel) {
   const save = async (prefs) => {
     const ok = await saveConfig(cfg, { commands: { [agent]: prefs } });
     slash.cache.clear();
-    // 服务端 3 秒防抖后才开始同步，稍等再看状态
-    if (ok) setTimeout(() => void refreshFeishu(), 3500);
     return ok;
   };
   const prefsOf = (rows) => ({
@@ -252,6 +253,8 @@ export function commandsTab(cfg, panel) {
     if (!(await save(prefsOf(rows)))) return false;
     list = rows;
     renderList();
+    // 连同排序和显示一起存了
+    markClean(form);
     return true;
   };
   const addCustom = () =>
@@ -277,46 +280,17 @@ export function commandsTab(cfg, panel) {
     if (sure) await commit(list.filter((x) => x !== c));
   };
 
-  // ---- 飞书指令面板同步状态 ----
-  const feishuBox = h("div", { class: "cmd-feishu" });
-  let feishuTimer = null;
-  const describeSlash = (st) => {
-    if (st.state === "syncing") return "同步中…（重建时每条间隔 1 秒，命令多要一两分钟）";
-    if (st.state === "error") return `同步失败：${st.error}`;
-    if (st.state === "done") {
-      const when = new Date(st.at).toLocaleTimeString();
-      const skipped = st.skipped?.length
-        ? `；${st.skipped.length} 个名字不符合飞书规则（只能小写字母、数字、- _，最长 32）没注册：${st.skipped.slice(0, 8).join("、")}${st.skipped.length > 8 ? " 等" : ""}`
-        : "";
-      return `${when} ${st.changed ? "已同步" : "已是最新"}，共 ${st.registered} 条${skipped}。飞书端约 5～8 分钟后生效。`;
-    }
-    return "等待首次同步";
-  };
-  async function refreshFeishu() {
-    let data;
-    try {
-      data = await api("/api/feishu/slash");
-    } catch (err) {
-      fill(feishuBox, h("div", { class: "error-text" }, err.message));
+  /** 换一个 agent 的表：这张表还有没保存的改动就先问 */
+  const switchAgent = async (id) => {
+    if (id === agent) return;
+    if (
+      hasDirty(page) &&
+      !(await confirmDialog({ title: "排序还没保存", message: `${agentLabel(agent)} 的命令顺序和显示改了还没保存，切过去就不保存了。`, confirmText: "不保存", danger: true }))
+    )
       return;
-    }
-    fill(
-      feishuBox,
-      data.bots.length === 0
-        ? h("div", { class: "muted" }, "没有运行中的飞书机器人。")
-        : data.bots.map((b) =>
-            h(
-              "div",
-              { class: `muted${b.status.state === "error" ? " error-text" : ""}` },
-              h("b", {}, b.name),
-              "：",
-              describeSlash(b.status),
-            ),
-          ),
-    );
-    clearTimeout(feishuTimer);
-    feishuTimer = data.bots.some((b) => b.status.state === "syncing") ? setTimeout(() => feishuBox.isConnected && void refreshFeishu(), 2000) : null;
-  }
+    markClean(form);
+    void load(id);
+  };
 
   async function load(id) {
     agent = id;
@@ -331,81 +305,37 @@ export function commandsTab(cfg, panel) {
     }
   }
 
-  panel.append(
+  const form = h(
+    "div",
+    { class: "section", "data-form": "" },
+    h("h4", {}, "命令列表"),
     h(
       "div",
-      { class: "section" },
-      h("h4", {}, "命令列表"),
-      h(
-        "div",
-        { class: "muted" },
-        "在输入框里打「/」时弹出的命令，按这里的顺序排列；保存后会自动同步到飞书机器人的指令面板。取消勾选的不会出现在列表里，但照样可以手动输入。带 agent 名标记的是 agent 自己的命令（skills 等），默认不勾选，需要的话勾上并保存；它们会原样转给 agent。",
-      ),
-      tabs,
-      h(
-        "div",
-        { class: "row cmd-tools" },
-        search,
-        h("button", { class: "btn", onclick: () => addCustom() }, icon("plus"), "添加命令"),
-      ),
-      listBox,
-      h(
-        "div",
-        { class: "row" },
-        h(
-          "button",
-          {
-            class: "btn primary",
-            onclick: () => save(prefsOf(list)),
-          },
-          "保存",
-        ),
-        h(
-          "button",
-          {
-            class: "btn",
-            onclick: async () => {
-              if (!(await confirmDialog({ title: "恢复默认？", message: `把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认（自定义命令保留）。`, confirmText: "恢复默认" }))) return;
-              await save({ order: [], hidden: [] });
-              await load(agent);
-            },
-          },
-          "恢复默认",
-        ),
-      ),
+      { class: "muted" },
+      "在输入框里打「/」时弹出的命令，按这里的顺序排列；保存后会自动同步到飞书机器人的指令面板（同步状态在「飞书」里看）。取消勾选的不会出现在列表里，但照样可以手动输入。带 agent 名标记的是 agent 自己的命令（skills 等），默认不勾选，需要的话勾上并保存；它们会原样转给 agent。",
     ),
+    tabs,
+    h("div", { class: "row cmd-tools" }, search, h("button", { class: "btn", onclick: () => addCustom() }, icon("plus"), "添加命令")),
+    listBox,
     h(
       "div",
-      { class: "section" },
+      { class: "row" },
+      saveButton(() => save(prefsOf(list))),
       h(
-        "h4",
-        {},
-        "飞书指令面板",
-        h("span", { class: "grow" }),
-        h(
-          "button",
-          {
-            class: "btn small",
-            onclick: async () => {
-              try {
-                await api("/api/feishu/slash/sync", { method: "POST" });
-                setTimeout(() => void refreshFeishu(), 500);
-              } catch (err) {
-                toast(err.message);
-              }
-            },
+        "button",
+        {
+          class: "btn",
+          onclick: async () => {
+            if (!(await confirmDialog({ title: "恢复默认？", message: `把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认（自定义命令保留）。`, confirmText: "恢复默认" }))) return;
+            if (!(await save({ order: [], hidden: [] }))) return;
+            markClean(form);
+            await load(agent);
           },
-          "立即同步",
-        ),
+        },
+        "恢复默认",
       ),
-      h(
-        "div",
-        { class: "muted" },
-        "飞书输入框打「/」看到的指令。面板是每个机器人一份：默认 agent 的命令在前，其它 agent 的命令接在后面。启动时、保存命令设置后、以及每 6 小时会自动同步。",
-      ),
-      feishuBox,
     ),
   );
+  page.append(form);
   void load(agent);
-  void refreshFeishu();
 }

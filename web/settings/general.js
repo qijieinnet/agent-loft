@@ -1,109 +1,57 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop, desktopQuota } from "../state.js";
-import { field, saveConfig } from "./common.js";
+import { desktop } from "../state.js";
+import { field, saveButton, saveConfig } from "./common.js";
 
-/** 服务端版本：有新版就能一键升级（npm install -g，系统服务下自动重启） */
-export function serverVersionSection() {
-  const box = h("div", { class: "section" });
-  const load = async (refresh) => {
-    fill(box, h("h4", {}, "服务端版本", h("span", { class: "grow" }), h("span", { class: "spinner" })));
-    let v;
-    try {
-      v = await api(`/api/server/version${refresh ? "?refresh=1" : ""}`);
-    } catch (err) {
-      fill(box, h("h4", {}, "服务端版本"), h("div", { class: "error-text" }, err.message));
-      return;
-    }
-    const recheck = h("button", { class: "btn small", onclick: () => load(true) }, "检查更新");
-    const status = v.updateAvailable
-      ? `有新版本 ${v.latest}`
-      : v.latest
-        ? "已是最新版本"
-        : `查不到最新版本${v.latestError ? `：${v.latestError}` : ""}`;
-    const upgradeBtn =
-      v.updateAvailable && v.canUpgrade
-        ? h(
-            "button",
-            {
-              class: "btn small primary",
-              onclick: async () => {
-                upgradeBtn.disabled = true;
-                upgradeBtn.textContent = "正在升级…";
-                try {
-                  const r = await api("/api/server/upgrade", { method: "POST" });
-                  toast(r.restarting ? `已升级到 ${r.to}，服务正在重启，页面会自动重连` : `已升级到 ${r.to}，重启 agent-loft 后生效`, 6000);
-                  void load(false);
-                } catch (err) {
-                  toast(`升级失败：${err.message}`, 6000);
-                  upgradeBtn.disabled = false;
-                  upgradeBtn.textContent = "升级";
-                }
-              },
-            },
-            "升级",
-          )
-        : null;
-    fill(
-      box,
-      h("h4", {}, "服务端版本", h("span", { class: "grow" }), upgradeBtn, recheck),
-      h("div", { class: "health-meta" }, `当前 ${v.version} · ${status}`),
-      v.updateAvailable && !v.canUpgrade && v.reason ? h("div", { class: "health-meta" }, v.reason) : null,
-      v.updateAvailable && v.canUpgrade && !v.service ? h("div", { class: "health-meta" }, "agent-loft 是在前台手动运行的，升级后要自己重启一下。") : null,
-    );
-  };
-  void load(false);
-  return box;
-}
-
-export function generalTab(cfg, panel) {
+/** 设置 → 对话：所有会话共用的规矩——在哪个目录、多久算新会话、授权卡等多久、Claude 的「总是允许」 */
+export async function conversationTab(cfg, page) {
   const root = h("input", { value: cfg.workspaceRoot });
-  const approval = h("input", { type: "number", min: 1, value: Math.round(cfg.approvalTimeoutMs / 60000) });
   const ttl = h("input", { type: "number", min: 0, value: Math.round(cfg.sessionTtlMs / 3600000) });
-  const quotaMin = h("input", { type: "number", min: 0, max: 1440, value: cfg.web?.quotaRefreshMin ?? 10 });
-  const quotaOn = h("input", { type: "checkbox", checked: cfg.web?.quotaEnabled !== false });
-  panel.append(
+  const approval = h("input", { type: "number", min: 1, value: Math.round(cfg.approvalTimeoutMs / 60000) });
+  const allowBox = h("div", { class: "section", "data-form": "" }, h("h4", {}, "Claude「总是允许」名单"), h("span", { class: "spinner" }));
+  page.append(
     h(
       "div",
-      { class: "section" },
-      h("h4", {}, "通用"),
+      { class: "section", "data-form": "" },
+      h("h4", {}, "会话"),
       field("工作目录（workspace）", root, "所有会话的默认目录，/cd 只能在它之内"),
-      field("授权等待超时（分钟）", approval, "超时按拒绝处理"),
       field("会话闲置多久自动开新会话（小时）", ttl, "0 表示永不过期"),
-      h("label", { class: "check" }, quotaOn, "查询账号额度"),
-      h("div", { class: "muted" }, "关掉后侧栏、/status、桌面端都不再去问 agent 的额度（Claude 每次要临时起一个 CLI 进程才查得到）"),
-      field(
-        "额度自动刷新间隔（分钟）",
-        quotaMin,
-        desktopQuota
-          ? "在桌面端里额度由桌面端统一刷新，以桌面端设置里的间隔为准；这里只对浏览器打开的页面生效"
-          : "侧栏底部的额度，空闲时多久刷新一次；0 表示不自动刷新（跑完一轮、点击额度区域仍会刷新）",
-      ),
+      field("授权卡等待多久（分钟）", approval, "agent 要执行命令、改文件时弹出的授权卡，没人处理超过这么久就按拒绝处理"),
       h(
         "div",
         { class: "row" },
-        h(
-          "button",
-          {
-            class: "btn primary",
-            onclick: () =>
-              saveConfig(cfg, {
-                workspaceRoot: root.value,
-                approvalTimeoutMs: Number(approval.value) * 60000,
-                sessionTtlMs: Number(ttl.value) * 3600000,
-                web: { quotaRefreshMin: Number(quotaMin.value), quotaEnabled: quotaOn.checked },
-              }),
-          },
-          "保存",
+        saveButton(() =>
+          saveConfig(cfg, {
+            workspaceRoot: root.value,
+            sessionTtlMs: Number(ttl.value) * 3600000,
+            approvalTimeoutMs: Number(approval.value) * 60000,
+          }),
         ),
       ),
     ),
-    remoteSection(cfg),
+    allowBox,
+  );
+  const allowlist = await api("/api/claude/allowlist");
+  const allowText = h("textarea", { rows: 8 });
+  allowText.value = allowlist.join("\n");
+  fill(
+    allowBox,
+    h("h4", {}, "Claude「总是允许」名单"),
+    h("div", { class: "muted" }, "授权卡上点过「总是允许」的会记在这里，以后同类操作不再弹卡。Bash:git 表示 git 开头的命令都放行；Edit:/路径 表示该目录下的修改都放行。一行一条，删掉即撤销。"),
+    allowText,
+    h(
+      "div",
+      { class: "row" },
+      saveButton(async () => {
+        await api("/api/claude/allowlist", { method: "PUT", body: { list: allowText.value.split("\n") } });
+        toast("已保存");
+      }),
+    ),
   );
 }
 
-/** 远程控制：终端、桌面各自的开关，没人连着多久结束，桌面从哪来。成员能不能用在「用户」里一个个开 */
-function remoteSection(cfg) {
+/** 设置 → 远程控制：终端、桌面各自的开关，没人连着多久结束，桌面从哪来。成员能不能用在「用户」里一个个开 */
+export function remoteTab(cfg, page) {
   const r = cfg.remote ?? {};
   const termOn = h("input", { type: "checkbox", checked: r.terminal !== false });
   const deskOn = h("input", { type: "checkbox", checked: r.desktop !== false });
@@ -131,11 +79,15 @@ function remoteSection(cfg) {
       "macOS：屏幕共享 →「电脑设置…」里勾选「VNC 显示程序可以使用密码控制屏幕」并设这个密码。开通了远程控制的成员连桌面时，页面会拿到这个密码",
     ),
   );
+  // 桌面关着时，桌面来源那几项用不上，收起来
+  const deskBox = h("div", { class: "field-group" }, field("桌面来源", source), autoBox, vncBox);
   const sync = () => {
     autoBox.hidden = source.value !== "auto";
     vncBox.hidden = source.value !== "vnc";
+    deskBox.hidden = !deskOn.checked;
   };
   source.addEventListener("change", sync);
+  deskOn.addEventListener("change", sync);
   sync();
   // 终端、桌面用不了时的原因（没装 node-pty、没有图形桌面、没装 x11vnc…）
   const status = h("div", { class: "error-text", hidden: true });
@@ -152,46 +104,40 @@ function remoteSection(cfg) {
       () => {},
     );
   void loadStatus();
-  return h(
-    "div",
-    { class: "section" },
-    h("h4", {}, "远程控制"),
+  page.append(
     h(
       "div",
-      { class: "muted" },
-      "侧栏「远程控制」里直接操作这台机器的桌面和终端，切回对话时连接留在后台。以运行 agent-loft 的系统用户执行，没有授权卡。管理员能用；成员要在「用户」里单独开通。",
-    ),
-    status,
-    h("label", { class: "check" }, termOn, "网页终端"),
-    h("label", { class: "check" }, deskOn, "远程桌面"),
-    field("桌面来源", source),
-    autoBox,
-    vncBox,
-    field("没有页面连着多久后结束（分钟）", keep, "关掉页面、断线后 shell 继续运行，重新打开能接着用；共享桌面用的 x11vnc 也是这么久没人连就停掉"),
-    h(
-      "div",
-      { class: "row" },
+      { class: "section", "data-form": "" },
+      h("h4", {}, "远程控制"),
       h(
-        "button",
-        {
-          class: "btn primary",
-          onclick: async () => {
-            const ok = await saveConfig(cfg, {
-              remote: {
-                terminal: termOn.checked,
-                desktop: deskOn.checked,
-                keepAliveMin: Number(keep.value),
-                desktopSource: source.value,
-                display: display.value.trim(),
-                vncHost: host.value.trim(),
-                vncPort: Number(port.value),
-                vncPassword: password.value,
-              },
-            });
-            if (ok) void loadStatus();
-          },
-        },
-        "保存",
+        "div",
+        { class: "muted" },
+        "侧栏「远程控制」里直接操作这台机器的桌面和终端，切回对话时连接留在后台。以运行 agent-loft 的系统用户执行，没有授权卡。管理员能用；成员要在 管理 →「用户」里单独开通。",
+      ),
+      status,
+      h("label", { class: "check" }, termOn, "网页终端"),
+      h("label", { class: "check" }, deskOn, "远程桌面"),
+      deskBox,
+      field("没有页面连着多久后结束（分钟）", keep, "关掉页面、断线后 shell 继续运行，重新打开能接着用；共享桌面用的 x11vnc 也是这么久没人连就停掉"),
+      h(
+        "div",
+        { class: "row" },
+        saveButton(async () => {
+          const ok = await saveConfig(cfg, {
+            remote: {
+              terminal: termOn.checked,
+              desktop: deskOn.checked,
+              keepAliveMin: Number(keep.value),
+              desktopSource: source.value,
+              display: display.value.trim(),
+              vncHost: host.value.trim(),
+              vncPort: Number(port.value),
+              vncPassword: password.value,
+            },
+          });
+          if (ok) void loadStatus();
+          return ok;
+        }),
       ),
     ),
   );
@@ -209,7 +155,7 @@ function loopbackHost(host) {
  */
 export function networkSection(cfg) {
   const net = cfg.network ?? { lan: [], local: true, listening: null };
-  const box = h("div", { class: "section" });
+  const box = h("div", { class: "section", "data-form": "" });
   const lanOn = h("input", { type: "checkbox", checked: !loopbackHost(cfg.web.host) });
   const port = h("input", { type: "number", min: 1, max: 65535, value: cfg.web.port });
   const hint = h("small", {});
@@ -241,17 +187,20 @@ export function networkSection(cfg) {
 
   const save = async () => {
     const p = Number(port.value);
-    if (!Number.isInteger(p) || p < 1 || p > 65535) return toast("端口要是 1 到 65535 之间的整数");
+    if (!Number.isInteger(p) || p < 1 || p > 65535) {
+      toast("端口要是 1 到 65535 之间的整数");
+      return false;
+    }
     // 打开：原来是本机地址就改成所有网卡；原来就是某个具体地址（手改过配置）就保留
     const host = lanOn.checked ? (loopbackHost(cfg.web.host) ? "0.0.0.0" : cfg.web.host) : "127.0.0.1";
-    if (host === cfg.web.host && p === cfg.web.port) return toast("没有改动");
+    if (host === cfg.web.host && p === cfg.web.port) return true;
     const oldPort = cfg.web.port;
     let next;
     try {
       next = await api("/api/config", { method: "PUT", body: { web: { host, port: p } } });
     } catch (err) {
       toast(err.message, 5000);
-      return;
+      return false;
     }
     Object.assign(cfg, next);
     if (p !== oldPort && direct) {
@@ -262,10 +211,11 @@ export function networkSection(cfg) {
       // 桌面端里由它改掉存着的服务器地址再重新打开（直接跳过去会被当成外部链接）
       if (typeof desktop?.serverMoved === "function") desktop.serverMoved(url.origin);
       else setTimeout(() => (location.href = url.href), 600);
-      return;
+      return true;
     }
     toast(p !== oldPort ? `已改为端口 ${p}，记得把反向代理 / 隧道也指向它` : "已保存", p !== oldPort ? 6000 : 2600);
     box.replaceWith(networkSection(cfg));
+    return true;
   };
 
   fill(
@@ -274,7 +224,7 @@ export function networkSection(cfg) {
     h("label", { class: "check" }, lanOn, "允许局域网内的其他设备访问"),
     hint,
     field("端口", port, "改了立即生效，不用重启"),
-    h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => void save() }, "保存")),
+    h("div", { class: "row" }, saveButton(save)),
   );
   return box;
 }

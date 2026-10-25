@@ -1,10 +1,9 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
-import { copyText } from "../lib/markdown.js";
 import { agentCatalog } from "../views/topbar.js";
 import { confirmDialog } from "../lib/overlay.js";
-import { field } from "./common.js";
+import { field, saveButton } from "./common.js";
 
 // ---------- 记忆（每个人自己的） ----------
 
@@ -70,8 +69,7 @@ export async function memoryTab(panel) {
 
   const about = h("textarea", { rows: 5, maxlength: mem.limits.about, placeholder: "比如：我叫小明，在深圳做后端开发，家里有台 QNAP NAS。回答尽量简短，代码用 TypeScript。" });
   about.value = mem.about;
-  const saveAbout = h("button", { class: "btn primary" }, "保存");
-  saveAbout.onclick = run(saveAbout, async () => {
+  const saveAbout = saveButton(async () => {
     await api("/api/account/memory", { method: "PUT", body: { about: about.value } });
     toast("已保存，之后的对话会用上");
   });
@@ -147,7 +145,7 @@ export async function memoryTab(panel) {
       ),
       h("div", { class: "row" }, clearHistory),
     ),
-    h("div", { class: "section" }, h("h4", {}, "关于我"), field("写给 agent 看的自我介绍：你是谁、在做什么、希望它怎么回答", about, `每次对话都会带上，最多 ${mem.limits.about} 字`), h("div", { class: "row" }, saveAbout)),
+    h("div", { class: "section", "data-form": "" }, h("h4", {}, "关于我"), field("写给 agent 看的自我介绍：你是谁、在做什么、希望它怎么回答", about, `每次对话都会带上，最多 ${mem.limits.about} 字`), h("div", { class: "row" }, saveAbout)),
     h(
       "div",
       { class: "section" },
@@ -289,78 +287,5 @@ function curateSection(mem, reload) {
     );
   };
   render();
-  return box;
-}
-
-/** 「账号」页里的飞书绑定：Web 上生成绑定码，再在飞书私聊里发 /bind，两边都证明是本人 */
-export function feishuLinkSection() {
-  const box = h("div", { class: "section" });
-  const load = async () => {
-    let data;
-    try {
-      data = await api("/api/account/feishu");
-    } catch (err) {
-      fill(box, h("h4", {}, "飞书账号"), h("div", { class: "error-text" }, err.message));
-      return;
-    }
-    // 没有飞书机器人、也没绑过：整节不显示
-    if (!data.bots.length && !data.links.length) return fill(box);
-    const codeBox = h("div");
-    const gen = h("button", { class: "btn" }, data.links.length ? "再绑一个" : "生成绑定码");
-    gen.onclick = async () => {
-      gen.disabled = true;
-      try {
-        const { code, expiresAt } = await api("/api/account/feishu/code", { method: "POST" });
-        const cmd = `/bind ${code}`;
-        const copy = h("button", { class: "btn small" }, "复制");
-        copy.onclick = () => copyText(cmd, copy);
-        fill(
-          codeBox,
-          h(
-            "div",
-            { class: "list-item" },
-            h(
-              "div",
-              { class: "grow" },
-              h("div", { class: "t" }, h("code", {}, cmd)),
-              h("div", { class: "s" }, `在飞书里私聊机器人（${data.bots.map((b) => b.name).join("、") || "飞书机器人"}）发这条消息，${Math.round((expiresAt - Date.now()) / 60000)} 分钟内有效。没用过机器人的话，要先让管理员批准你的配对码。`),
-            ),
-            copy,
-          ),
-        );
-      } catch (err) {
-        toast(err.message);
-      }
-      gen.disabled = false;
-    };
-    fill(
-      box,
-      h("h4", {}, "飞书账号"),
-      h("div", { class: "muted" }, "绑定后，你和飞书机器人的私聊就是你的个人会话：用你的记忆，/sessions 只列你的会话，/web 能接上你自己的 Web 会话。群聊不受影响。"),
-      data.links.map((l) => {
-        const rm = h("button", { class: "btn small danger" }, "解除绑定");
-        rm.onclick = async () => {
-          rm.disabled = true;
-          try {
-            await api("/api/account/feishu", { method: "DELETE", body: { botId: l.botId, openId: l.openId } });
-            toast("已解除，那个私聊不再用你的记忆");
-            void load();
-          } catch (err) {
-            toast(err.message);
-            rm.disabled = false;
-          }
-        };
-        return h(
-          "div",
-          { class: "list-item" },
-          h("div", { class: "grow" }, h("div", { class: "t" }, l.botName), h("div", { class: "s" }, `${l.openIdShort} · 绑定于 ${relTime(l.boundAt)}`)),
-          rm,
-        );
-      }),
-      h("div", { class: "row" }, gen),
-      codeBox,
-    );
-  };
-  void load();
   return box;
 }

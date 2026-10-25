@@ -50,6 +50,19 @@ export async function notifyTab(panel) {
       support.ok
         ? h("div", { class: "row" }, here ? offBtn : onBtn, data.subscriptions.length ? testBtn : null)
         : h("div", { class: "error-text" }, support.why),
+      // 推送用不了（比如不是 HTTPS）：至少让页面开着、切到别的窗口时能弹提醒
+      !support.ok && "Notification" in window && Notification.permission === "default"
+        ? h(
+            "div",
+            { class: "row" },
+            h(
+              "button",
+              { class: "btn", onclick: async () => (await Notification.requestPermission(), void render()) },
+              "允许这个页面弹出提醒",
+            ),
+            h("span", { class: "muted" }, "页面开着、但你在看别的窗口时，需要授权会弹出浏览器提醒"),
+          )
+        : null,
       support.ok && Notification.permission === "denied"
         ? h("div", { class: "error-text" }, "这个设备的通知权限已被拒绝，需要到系统设置（iPhone：设置 → 通知 → Agent Loft）里重新打开。")
         : null,

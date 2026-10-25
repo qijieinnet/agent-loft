@@ -1,10 +1,10 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { copyText } from "../lib/markdown.js";
-import { S } from "../state.js";
+import { desktopQuota, S } from "../state.js";
 import { defaultEntryName, usableAgents } from "../views/topbar.js";
 import { renderEmpty } from "../views/messages.js";
-import { field, saveConfig } from "./common.js";
+import { field, saveButton, saveConfig } from "./common.js";
 import { modelPicker } from "./commands.js";
 
 /**
@@ -133,8 +133,8 @@ function installCodexButton(after) {
   return h("div", {}, btn);
 }
 
-export function agentsTab(cfg, panel) {
-  panel.append(agentHealthSection());
+export function agentsTab(cfg, page) {
+  page.append(agentHealthSection());
   const a = structuredClone(cfg.agents);
   const claudeOn = h("input", { type: "checkbox", checked: a.claude.enabled });
   const claudePick = modelPicker("claude", a.claude.defaultModel, a.claude.defaultEffort, "跟随 Claude Code 默认");
@@ -151,60 +151,90 @@ export function agentsTab(cfg, panel) {
   const codexModels = modelChecklist("codex", a.codex.models ?? []);
   // 一组勾选框不能放进 <label>（点哪都会切到第一个），所以不用 field()
   const checksField = (list) => h("div", { class: "field" }, h("span", {}, "输入框可选模型"), list.el);
-  panel.append(
+  // 两个 agent 一起保存：整组算一张表单
+  page.append(
     h(
       "div",
-      { class: "section" },
-      h("h4", {}, "Claude Code", h("span", { class: "grow" }), h("label", { class: "check" }, claudeOn, "启用")),
-      field("默认模型", claudePick.modelEl),
-      field("默认思考程度", claudePick.effortEl),
-      checksField(claudeModels),
+      { class: "settings-stack", "data-form": "" },
+      h(
+        "div",
+        { class: "section" },
+        h("h4", {}, "Claude Code", h("span", { class: "grow" }), h("label", { class: "check" }, claudeOn, "启用")),
+        field("默认模型", claudePick.modelEl),
+        field("默认思考程度", claudePick.effortEl),
+        checksField(claudeModels),
+      ),
+      h(
+        "div",
+        { class: "section" },
+        h("h4", {}, "Codex", h("span", { class: "grow" }), h("label", { class: "check" }, codexOn, "启用")),
+        field("codex 可执行文件", codexPath, "以系统服务运行时 PATH 很短，建议写绝对路径"),
+        field("CODEX_HOME", codexHome),
+        field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"),
+        field("默认模型", codexPick.modelEl),
+        field("默认思考程度", codexPick.effortEl),
+        checksField(codexModels),
+      ),
+      h(
+        "div",
+        { class: "row" },
+        saveButton(() => {
+          const claudeList = claudeModels.value();
+          const codexList = codexModels.value();
+          if (!claudeList || !codexList) {
+            toast(`${!claudeList ? "Claude Code" : "Codex"} 至少勾选一个模型`);
+            return false;
+          }
+          return saveConfig(cfg, {
+            agents: {
+              claude: {
+                enabled: claudeOn.checked,
+                defaultModel: claudePick.model(),
+                defaultEffort: claudePick.effort(),
+                models: claudeList,
+              },
+              codex: {
+                enabled: codexOn.checked,
+                path: codexPath.value.trim() || "codex",
+                home: codexHome.value.trim(),
+                sandbox: sandbox.value,
+                defaultModel: codexPick.model(),
+                defaultEffort: codexPick.effort(),
+                models: codexList,
+              },
+            },
+          });
+        }, "保存 Agent 设置"),
+      ),
     ),
-    h(
-      "div",
-      { class: "section" },
-      h("h4", {}, "Codex", h("span", { class: "grow" }), h("label", { class: "check" }, codexOn, "启用")),
-      field("codex 可执行文件", codexPath, "以系统服务运行时 PATH 很短，建议写绝对路径"),
-      field("CODEX_HOME", codexHome),
-      field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"),
-      field("默认模型", codexPick.modelEl),
-      field("默认思考程度", codexPick.effortEl),
-      checksField(codexModels),
-    ),
+    quotaSection(cfg),
+  );
+}
+
+/** 账号额度：侧栏底部、/status、桌面端显示的 Claude / Codex 订阅额度，查不查、多久查一次 */
+function quotaSection(cfg) {
+  const quotaOn = h("input", { type: "checkbox", checked: cfg.web?.quotaEnabled !== false });
+  const quotaMin = h("input", { type: "number", min: 0, max: 1440, value: cfg.web?.quotaRefreshMin ?? 10 });
+  const minField = field(
+    "自动刷新间隔（分钟）",
+    quotaMin,
+    desktopQuota
+      ? "在桌面端里额度由桌面端统一刷新，以桌面端设置里的间隔为准；这里只对浏览器打开的页面生效"
+      : "侧栏底部的额度，空闲时多久刷新一次；0 表示不自动刷新（跑完一轮、点击额度区域仍会刷新）",
+  );
+  const sync = () => (minField.hidden = !quotaOn.checked);
+  quotaOn.addEventListener("change", sync);
+  sync();
+  return h(
+    "div",
+    { class: "section", "data-form": "" },
+    h("h4", {}, "账号额度", h("span", { class: "grow" }), h("label", { class: "check" }, quotaOn, "查询")),
+    h("div", { class: "muted" }, "侧栏底部、/status、桌面端显示的订阅额度（5 小时、每周）。关掉后都不再去问 agent（Claude 每次要临时起一个 CLI 进程才查得到）。"),
+    minField,
     h(
       "div",
       { class: "row" },
-      h(
-        "button",
-        {
-          class: "btn primary",
-          onclick: () => {
-            const claudeList = claudeModels.value();
-            const codexList = codexModels.value();
-            if (!claudeList || !codexList) return toast(`${!claudeList ? "Claude Code" : "Codex"} 至少勾选一个模型`);
-            return saveConfig(cfg, {
-              agents: {
-                claude: {
-                  enabled: claudeOn.checked,
-                  defaultModel: claudePick.model(),
-                  defaultEffort: claudePick.effort(),
-                  models: claudeList,
-                },
-                codex: {
-                  enabled: codexOn.checked,
-                  path: codexPath.value.trim() || "codex",
-                  home: codexHome.value.trim(),
-                  sandbox: sandbox.value,
-                  defaultModel: codexPick.model(),
-                  defaultEffort: codexPick.effort(),
-                  models: codexList,
-                },
-              },
-            });
-          },
-        },
-        "保存",
-      ),
+      saveButton(() => saveConfig(cfg, { web: { quotaRefreshMin: Number(quotaMin.value), quotaEnabled: quotaOn.checked } })),
     ),
   );
 }

@@ -100,7 +100,7 @@ export function redeemLinkCode(code: string, botId: string, openId: string): Use
   sweep();
   const key = code.trim().toUpperCase();
   const entry = codes.get(key);
-  if (!entry) throw new Error("绑定码不对或已过期。请在 Web 上（设置 → 我的账号）重新生成一个。");
+  if (!entry) throw new Error("绑定码不对或已过期。请在 Web 上（设置 → 账号）重新生成一个。");
   const user = getUser(entry.userId);
   if (!user || user.disabled) {
     codes.delete(key);

@@ -1,188 +1,175 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
+import { copyText } from "../lib/markdown.js";
 import { isAdmin, S } from "../state.js";
 import { dropPushSub } from "../lib/push.js";
-import { field } from "./common.js";
-import { feishuLinkSection } from "./memory.js";
+import { field, saveButton } from "./common.js";
 
-export async function authTab(panel) {
-  const [pairs, allowlist] = await Promise.all([api("/api/pairing"), api("/api/claude/allowlist")]);
-  const botName = (id) => S.bots.find((b) => b.id === id)?.name ?? id;
-  const allowText = h("textarea", { rows: 8 });
-  allowText.value = allowlist.join("\n");
-  panel.append(
-    h(
-      "div",
-      { class: "section" },
-      h("h4", {}, "待批准的配对"),
-      pairs.pending.length === 0
-        ? h("div", { class: "muted" }, "没有待批准的请求。陌生人给机器人发消息时会出现在这里。")
-        : pairs.pending.map(({ channelId, request }) =>
-            h(
-              "div",
-              { class: "list-item" },
-              h("div", { class: "grow" }, h("div", { class: "t" }, `${request.code} · ${botName(channelId)}`), h("div", { class: "s" }, `${request.userId} · ${relTime(request.createdAt)}`)),
-              h(
-                "button",
-                {
-                  class: "btn small accent",
-                  onclick: async () => {
-                    try {
-                      await api("/api/pairing/approve", { method: "POST", body: { code: request.code } });
-                      toast("已批准");
-                      fill(panel, );
-                      void authTab(panel);
-                    } catch (err) {
-                      toast(err.message);
-                    }
-                  },
-                },
-                "批准",
-              ),
-            ),
-          ),
-    ),
-    h(
-      "div",
-      { class: "section" },
-      h("h4", {}, "已配对的用户"),
-      pairs.approved.length === 0
-        ? h("div", { class: "muted" }, "无")
-        : pairs.approved.map(({ channelId, userId }) =>
-            h(
-              "div",
-              { class: "list-item" },
-              h("div", { class: "grow" }, h("div", { class: "t" }, userId), h("div", { class: "s" }, botName(channelId))),
-              h(
-                "button",
-                {
-                  class: "btn small danger",
-                  onclick: async () => {
-                    await api("/api/pairing/revoke", { method: "POST", body: { channelId, userId } });
-                    fill(panel, );
-                    void authTab(panel);
-                  },
-                },
-                "撤销",
-              ),
-            ),
-          ),
-    ),
-    h(
-      "div",
-      { class: "section" },
-      h("h4", {}, "Claude「总是允许」名单"),
-      h("div", { class: "muted" }, "点过「总是允许」的会记在这里。Bash:git 表示 git 开头的命令都放行；Edit:/路径 表示该目录下的修改都放行。一行一条，删掉即撤销。"),
-      allowText,
-      h(
-        "div",
-        { class: "row" },
-        h(
-          "button",
-          {
-            class: "btn primary",
-            onclick: async () => {
-              await api("/api/claude/allowlist", { method: "PUT", body: { list: allowText.value.split("\n") } });
-              toast("已保存");
-            },
-          },
-          "保存",
-        ),
-      ),
-    ),
-  );
-}
-
-export async function securityTab(panel) {
+/** 设置 → 账号：我是谁、改密码、绑定飞书、我登录着的设备。别人的设备在 管理 →「用户」里 */
+export async function accountTab(page) {
+  const logout = h("button", { class: "btn small danger" }, "退出登录");
+  logout.onclick = async () => {
+    logout.disabled = true;
+    // 退出了就别再收这个账号的通知：换个人在这台设备上登录，不能收到上一个人的
+    await dropPushSub().catch(() => {});
+    await api("/api/logout", { method: "POST" });
+    location.reload();
+  };
   const old = h("input", { type: "password", autocomplete: "current-password" });
   const pw = h("input", { type: "password", autocomplete: "new-password" });
-  const sessions = await api("/api/web-sessions");
-  // 管理员看到的是所有人的设备：不止一个人时标上是谁的
-  const owners = new Set(sessions.map((s) => s.userId));
-  const showOwner = isAdmin() && owners.size > 1;
-  panel.append(
-    S.user
-      ? h(
-          "div",
-          { class: "section" },
-          h("h4", {}, "当前账号"),
-          h("div", {}, S.user.name, " ", h("span", { class: "status-tag" }, S.user.role === "admin" ? "管理员" : "成员")),
-        )
-      : null,
+  const devicesBox = h("div", { class: "section" }, h("h4", {}, "已登录的设备"), h("span", { class: "spinner" }));
+  page.append(
     h(
       "div",
       { class: "section" },
+      h(
+        "h4",
+        {},
+        "当前账号",
+        h("span", { class: "grow" }),
+        logout,
+      ),
+      S.user ? h("div", {}, S.user.name, " ", h("span", { class: "status-tag" }, S.user.role === "admin" ? "管理员" : "成员")) : null,
+    ),
+    h(
+      "div",
+      { class: "section", "data-form": "" },
       h("h4", {}, "修改登录密码"),
       field("原密码", old),
       field("新密码（至少 8 位）", pw),
       h(
         "div",
         { class: "row" },
-        h(
-          "button",
-          {
-            class: "btn primary",
-            onclick: async () => {
-              try {
-                await api("/api/password", { method: "POST", body: { old: old.value, password: pw.value } });
-                toast("密码已修改，你的其它设备已下线");
-                old.value = pw.value = "";
-              } catch (err) {
-                toast(err.message);
-              }
-            },
-          },
-          "修改",
-        ),
+        saveButton(async () => {
+          await api("/api/password", { method: "POST", body: { old: old.value, password: pw.value } });
+          toast("密码已修改，你的其它设备已下线");
+          old.value = pw.value = "";
+          void loadDevices();
+        }, "修改"),
       ),
     ),
     feishuLinkSection(),
-    h(
-      "div",
-      { class: "section" },
-      h("h4", {}, showOwner ? "已登录的设备（所有用户）" : "已登录的设备"),
-      sessions.map((s) =>
+    devicesBox,
+  );
+  const loadDevices = async () => {
+    let sessions;
+    try {
+      sessions = await api("/api/web-sessions");
+    } catch (err) {
+      fill(devicesBox, h("h4", {}, "已登录的设备"), h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    // 管理员拿到的是所有人的：这里只放自己的（以前单用户时登录的设备没有主人，也算管理员自己的）
+    const mine = isAdmin() && S.user ? sessions.filter((s) => !s.userId || s.userId === S.user.id) : sessions;
+    fill(devicesBox, h("h4", {}, `已登录的设备（${mine.length}）`), deviceList(mine, { onChange: loadDevices }));
+  };
+  await loadDevices();
+}
+
+/** 登录设备列表，每台一个「下线」。showOwner：标上是谁的（管理员看所有人时） */
+export function deviceList(sessions, { showOwner = false, onChange }) {
+  if (!sessions.length) return h("div", { class: "muted" }, "没有");
+  return sessions
+    .slice()
+    .sort((a, b) => b.lastSeen - a.lastSeen)
+    .map((s) => {
+      const off = h("button", { class: "btn small danger" }, "下线");
+      off.onclick = async () => {
+        off.disabled = true;
+        try {
+          await api("/api/web-sessions/revoke", { method: "POST", body: { id: s.id } });
+          toast("已下线");
+          onChange();
+        } catch (err) {
+          toast(err.message);
+          off.disabled = false;
+        }
+      };
+      return h(
+        "div",
+        { class: "list-item" },
         h(
           "div",
-          { class: "list-item" },
+          { class: "grow" },
+          h("div", { class: "t" }, s.userAgent.slice(0, 80) || "未知设备"),
+          h("div", { class: "s" }, `${showOwner ? `${s.userName ?? "已删除的用户"} · ` : ""}${s.ip} · 最近活动 ${relTime(s.lastSeen)}`),
+        ),
+        off,
+      );
+    });
+}
+
+/** 「账号」页里的飞书绑定：Web 上生成绑定码，再在飞书私聊里发 /bind，两边都证明是本人 */
+function feishuLinkSection() {
+  const box = h("div", { class: "section" });
+  const load = async () => {
+    let data;
+    try {
+      data = await api("/api/account/feishu");
+    } catch (err) {
+      fill(box, h("h4", {}, "飞书账号"), h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    // 没有飞书机器人、也没绑过：整节不显示
+    box.hidden = !data.bots.length && !data.links.length;
+    if (box.hidden) return fill(box);
+    const codeBox = h("div");
+    const gen = h("button", { class: "btn" }, data.links.length ? "再绑一个" : "生成绑定码");
+    gen.onclick = async () => {
+      gen.disabled = true;
+      try {
+        const { code, expiresAt } = await api("/api/account/feishu/code", { method: "POST" });
+        const cmd = `/bind ${code}`;
+        const copy = h("button", { class: "btn small" }, "复制");
+        copy.onclick = () => copyText(cmd, copy);
+        fill(
+          codeBox,
           h(
             "div",
-            { class: "grow" },
-            h("div", { class: "t" }, s.userAgent.slice(0, 80) || "未知设备"),
-            h("div", { class: "s" }, `${showOwner ? `${s.userName ?? "已删除的用户"} · ` : ""}${s.ip} · 最近活动 ${relTime(s.lastSeen)}`),
+            { class: "list-item" },
+            h(
+              "div",
+              { class: "grow" },
+              h("div", { class: "t" }, h("code", {}, cmd)),
+              h("div", { class: "s" }, `在飞书里私聊机器人（${data.bots.map((b) => b.name).join("、") || "飞书机器人"}）发这条消息，${Math.round((expiresAt - Date.now()) / 60000)} 分钟内有效。没用过机器人的话，要先让管理员批准你的配对码。`),
+            ),
+            copy,
           ),
-          h(
-            "button",
-            {
-              class: "btn small danger",
-              onclick: async () => {
-                await api("/api/web-sessions/revoke", { method: "POST", body: { id: s.id } });
-                fill(panel, );
-                void securityTab(panel);
-              },
-            },
-            "下线",
-          ),
-        ),
-      ),
-    ),
-    h(
-      "div",
-      { class: "row" },
-      h(
-        "button",
-        {
-          class: "btn danger",
-          onclick: async () => {
-            // 退出了就别再收这个账号的通知：换个人在这台设备上登录，不能收到上一个人的
-            await dropPushSub().catch(() => {});
-            await api("/api/logout", { method: "POST" });
-            location.reload();
-          },
-        },
-        "退出登录",
-      ),
-    ),
-  );
+        );
+      } catch (err) {
+        toast(err.message);
+      }
+      gen.disabled = false;
+    };
+    fill(
+      box,
+      h("h4", {}, "飞书账号"),
+      h("div", { class: "muted" }, "绑定后，你和飞书机器人的私聊就是你的个人会话：用你的记忆，/sessions 只列你的会话，/web 能接上你自己的 Web 会话。群聊不受影响。"),
+      data.links.map((l) => {
+        const rm = h("button", { class: "btn small danger" }, "解除绑定");
+        rm.onclick = async () => {
+          rm.disabled = true;
+          try {
+            await api("/api/account/feishu", { method: "DELETE", body: { botId: l.botId, openId: l.openId } });
+            toast("已解除，那个私聊不再用你的记忆");
+            void load();
+          } catch (err) {
+            toast(err.message);
+            rm.disabled = false;
+          }
+        };
+        return h(
+          "div",
+          { class: "list-item" },
+          h("div", { class: "grow" }, h("div", { class: "t" }, l.botName), h("div", { class: "s" }, `${l.openIdShort} · 绑定于 ${relTime(l.boundAt)}`)),
+          rm,
+        );
+      }),
+      h("div", { class: "row" }, gen),
+      codeBox,
+    );
+  };
+  void load();
+  return box;
 }
