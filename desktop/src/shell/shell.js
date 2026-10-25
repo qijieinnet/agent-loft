@@ -1,4 +1,4 @@
-// 顶栏（服务器标签、更多）+ 下面的面板（服务器管理、连不上、证书确认）。
+// 顶栏（服务器标签、更多）+ 下面的面板（服务器管理、总量汇总、连不上、证书确认）。
 // 当前服务器正常时，面板被服务器自己的页面盖住，看不到。
 
 let state = null;
@@ -57,6 +57,12 @@ function renderPanel() {
     return;
   }
   const active = state.servers.find((s) => s.id === state.activeId);
+  // 总量汇总：只在切进来时建一次、拉一次数据，之后状态推过来不重画
+  if (state.managing && state.panel === "usage" && state.servers.length) {
+    if (mode !== "usage") usagePanel.build($panel);
+    mode = "usage";
+    return;
+  }
   if (state.managing || !active) {
     if (mode !== "manage") buildManage();
     mode = "manage";

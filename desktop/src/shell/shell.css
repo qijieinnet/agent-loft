@@ -815,3 +815,223 @@ details.advanced .field input {
   flex-basis: 100%;
   padding-left: 42px;
 }
+
+/* ---------- 总量汇总（照着网页设置 →「用量」，见 usage.js） ---------- */
+
+.usage-stats .us-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 16px;
+}
+.us-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.us-nav .icon-btn {
+  font-size: 16px;
+}
+.us-title {
+  min-width: 7.5em;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.us-loading {
+  display: grid;
+  place-items: center;
+  padding: 48px 0;
+}
+.us-empty {
+  padding: 40px 0;
+  text-align: center;
+}
+.us-skipped {
+  margin-bottom: 12px;
+}
+.us-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.us-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.us-tile span {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.us-tile b {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.us-card {
+  padding: 12px 14px;
+}
+.usage-stats .card + h2 {
+  margin-top: 24px;
+}
+.usage-stats > .hint:last-child {
+  margin-top: 20px;
+}
+
+/* 趋势：单一系列，用前景色；没用量的格子留空，悬停看数字 */
+.us-trend {
+  position: relative;
+  padding-top: 16px;
+}
+.us-bars {
+  display: grid;
+  gap: 2px;
+  height: 120px;
+  align-items: end;
+  border-bottom: 1px solid var(--line);
+}
+.us-col {
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 4px 4px 0 0;
+}
+.us-col:hover {
+  background: var(--hover);
+}
+.us-col i {
+  width: 100%;
+  background: var(--fg);
+  opacity: 0.78;
+  border-radius: 4px 4px 0 0;
+}
+.us-col:hover i {
+  opacity: 1;
+}
+.us-axis {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-3);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.us-max {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* 构成：四种颜色和顺序跟网页一致（输入、缓存写入、缓存读取、输出） */
+.usage {
+  --usage-input: #2a78d6;
+  --usage-cwrite: #eb6834;
+  --usage-cread: #1baf7a;
+  --usage-output: #eda100;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-color-scheme: dark) {
+  .usage {
+    --usage-input: #3987e5;
+    --usage-cwrite: #d95926;
+    --usage-cread: #199e70;
+    --usage-output: #c98500;
+  }
+}
+.usage .u-input {
+  background: var(--usage-input);
+}
+.usage .u-cwrite {
+  background: var(--usage-cwrite);
+}
+.usage .u-cread {
+  background: var(--usage-cread);
+}
+.usage .u-output {
+  background: var(--usage-output);
+}
+/* 段与段之间留 2px 的缝，两端圆角；很小的一段也至少看得见 */
+.usage-bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.usage-bar i {
+  flex: 1 1 0;
+  min-width: 3px;
+}
+.usage-row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto 3.2em;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.usage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.usage-name {
+  min-width: 0;
+}
+.usage-name small {
+  margin-left: 6px;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+.usage-pct {
+  text-align: right;
+  color: var(--fg-3);
+}
+
+.us-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.us-item {
+  display: grid;
+  grid-template-columns: minmax(5em, 11em) 1fr 4.5em 4.5em;
+  align-items: center;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.us-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.us-meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--track);
+  overflow: hidden;
+}
+.us-meter i {
+  display: block;
+  height: 100%;
+  background: var(--fg-2);
+  border-radius: 3px;
+}
+.us-num,
+.us-cost {
+  text-align: right;
+}
+.us-cost {
+  color: var(--fg-2);
+}

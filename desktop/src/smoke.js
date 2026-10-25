@@ -1,7 +1,7 @@
 // 冒烟测试：npm run smoke（AGENT_LOFT_DESKTOP_SMOKE=1 electron .）
 //
 // 用临时配置目录启动，检查自己的几个界面真的画得出来、没有脚本报错：
-// 首次启动向导 → 点「只连接其他服务器」→ 设置页的各个区块 → 菜单栏面板。
+// 首次启动向导 → 点「只连接其他服务器」→ 设置页的各个区块 → 总量汇总 → 菜单栏面板。
 // 这些界面是普通脚本拼的，没有类型检查，改坏了只会表现成「一片空白、点什么都没反应」。
 import { app, webContents } from "electron";
 import fs from "node:fs";
@@ -130,6 +130,15 @@ export async function runSmoke({ openPopover }) {
     shell.sendInputEvent({ type: "mouseDown", x: Math.round(cx), y: Math.round(cy), button: "left", clickCount: 1 });
     shell.sendInputEvent({ type: "mouseUp", x: Math.round(cx), y: Math.round(cy), button: "left", clickCount: 1 });
     await until(() => js(`window.loft.state().then((s) => !s.managing && s.servers.find((x) => x.id === s.activeId)?.name === "排序二")`), "点标签切换到「排序二」", 3000);
+    await js(`window.loft.call("manage")`);
+
+    // 总量汇总：三台都连不上，画得出来并注明哪几台没算进去；翻到上个月也正常
+    await js(`window.loft.call("showUsage")`);
+    await until(() => js(`document.querySelector(".usage-stats")?.innerText.includes("没算进去")`), "总量汇总页");
+    await js(`document.querySelector('.us-nav [aria-label="上一个"]').click()`);
+    await until(() => js(`document.querySelector(".usage-stats")?.innerText.includes("没算进去")`), "总量汇总翻到上个月");
+    junk = junkIn(await js(`document.getElementById("panel").innerText`));
+    if (junk) return fail(`总量汇总里有渲染残渣：「${junk}」`);
     await js(`window.loft.call("manage")`);
 
     const pop = openPopover();

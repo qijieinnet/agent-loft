@@ -52,8 +52,10 @@ let win = null;
 let shellView = null;
 /** @type {string | null} */
 let activeId = null;
-/** 正显示「服务器管理」面板（这时不挂服务器页面） */
+/** 正显示桌面端自己的面板（这时不挂服务器页面） */
 let managing = false;
+/** managing 时显示哪个面板：manage 是桌面端设置，usage 是所有服务器的总量汇总 */
+let panel = "manage";
 let quitting = false;
 
 // 开发时用另一个配置目录，不碰日常在用的那份
@@ -81,6 +83,7 @@ function snapshot() {
     })),
     activeId,
     managing,
+    panel,
     prefs: store.prefs(),
     version: app.getVersion(),
     onboarded: store.onboarded(),
@@ -298,8 +301,39 @@ function select(id) {
 function showManage(what = "manage") {
   showMain();
   managing = true;
+  panel = "manage";
   broadcast();
   shellView?.webContents.send("shell:show", what);
+}
+
+function showUsage() {
+  showMain();
+  managing = true;
+  panel = "usage";
+  broadcast();
+}
+
+/**
+ * 所有服务器某段时间的用量（和网页设置 →「用量」同一个接口），给总量汇总用。
+ * 不在线的不去问，连同出错的一起带上原因，界面上注明哪几台没算进去
+ */
+async function usageOfAll(from, to) {
+  const day = /^\d{4}-\d{2}-\d{2}$/;
+  if (!day.test(String(from)) || !day.test(String(to))) throw new Error("日期格式不对");
+  return Promise.all(
+    store.servers().map(async (s) => {
+      const status = rt(s.id).status;
+      if (status !== "online") return { id: s.id, status };
+      try {
+        const data = await callApi(s.id, `/api/usage?from=${from}&to=${to}`, { timeoutMs: 20_000 });
+        return { id: s.id, rows: Array.isArray(data?.rows) ? data.rows : [], users: data?.users ?? {}, admin: !!data?.admin };
+      } catch (err) {
+        // 老版本服务端没有这个接口
+        const error = err?.status === 404 ? "服务端版本太旧，没有用量统计" : err instanceof Error ? err.message : String(err);
+        return { id: s.id, error };
+      }
+    }),
+  );
 }
 
 /** 跳到某台服务器的某条会话（点通知、点菜单栏里的待处理项） */
@@ -349,12 +383,22 @@ function popupMoreMenu(pos) {
   Menu.buildFromTemplate([
     ...pageItems,
     ...(pageItems.length ? [{ type: "separator" }] : []),
+    // 已经开着：再点一下回到当前服务器（和原来的设置按钮一样）
+    ...(list.length
+      ? [
+          {
+            label: "总量汇总",
+            type: "checkbox",
+            checked: managing && panel === "usage",
+            click: () => (managing && panel === "usage" && activeId ? select(activeId) : showUsage()),
+          },
+        ]
+      : []),
     {
       label: appUpdate ? "桌面端设置（有新版本）" : "桌面端设置",
       type: "checkbox",
-      checked: managing,
-      // 已经开着：再点一下回到当前服务器（和原来的设置按钮一样）
-      click: () => (managing && activeId ? select(activeId) : showManage()),
+      checked: managing && panel === "manage",
+      click: () => (managing && panel === "manage" && activeId ? select(activeId) : showManage()),
     },
     ...(list.length ? [{ type: "separator" }] : []),
     ...list.map((s) => {
@@ -624,6 +668,10 @@ const calls = {
     showManage();
   },
   moreMenu: (pos) => popupMoreMenu(pos),
+  showUsage: () => {
+    hidePopover();
+    showUsage();
+  },
   showMain: () => {
     hidePopover();
     showMain();
@@ -672,6 +720,7 @@ const calls = {
     store.removeServer(id);
     if (activeId === id) activeId = null;
     managing = !activeId;
+    if (!store.servers().length) panel = "manage";
     broadcast();
     return true;
   },
@@ -682,6 +731,7 @@ const calls = {
   reload: (id) => reload(id),
   trustCert: (id) => trustCert(id),
   refresh: () => refreshAll({ quota: true }),
+  usage: (from, to) => usageOfAll(from, to),
 
   setPref: (key, value) => {
     store.setPref(key, value);
