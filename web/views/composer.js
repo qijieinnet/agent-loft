@@ -14,6 +14,23 @@ import { openSettings } from "./layout.js";
 
 // ---------- 输入框 ----------
 
+/**
+ * 手机上「/」「@」菜单刚弹出来时收起键盘：不然键盘加菜单把屏幕占满了。
+ * 菜单留着，点一条就选；想接着打字筛选就点一下输入框，点别处菜单关掉
+ */
+let keepMenus = false;
+export function hideKeyboardForMenu() {
+  if (!isTouch || document.activeElement !== ui.input) return;
+  keepMenus = true;
+  ui.input.blur();
+}
+document.addEventListener("pointerdown", (e) => {
+  if (!keepMenus || [ui.input, ui.slashMenu, ui.mentionMenu].some((el) => el?.contains(e.target))) return;
+  keepMenus = false;
+  closeSlashMenu();
+  ui.mention?.close();
+});
+
 export function renderComposer() {
   cancelVoice();
   ui.input = h("textarea", {
@@ -26,8 +43,11 @@ export function renderComposer() {
       void updateSlashMenu();
       void ui.mention.update();
     },
+    onfocus: () => (keepMenus = false),
     onblur: () =>
       setTimeout(() => {
+        // 为了让出地方收起的键盘（见 hideKeyboardForMenu）：菜单留着；点回输入框也不关
+        if (keepMenus || document.activeElement === ui.input) return;
         closeSlashMenu();
         ui.mention.close();
       }, 150),
@@ -72,6 +92,7 @@ export function renderComposer() {
   ui.mentionMenu = h("div", { class: "slash-menu", hidden: true });
   ui.mention = attachMention(ui.input, ui.mentionMenu, {
     onEmpty: () => openSettings("技能"),
+    onShown: hideKeyboardForMenu,
   });
   ui.composer = h(
     "div",

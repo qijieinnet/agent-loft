@@ -334,6 +334,7 @@
 .remote-body.desk-full {
   position: fixed;
   inset: 0;
+  overflow: hidden;
   z-index: 35;
   background: #111;
   padding: env(safe-area-inset-top) 0 var(--kb-inset, 0px);
@@ -445,11 +446,12 @@
   resize: vertical;
 }
 
-/* 手机上收软键盘输入用：看不见，但要能拿到焦点 */
+/* 手机上收软键盘输入用：看不见，但要能拿到焦点。
+   放在顶上：放在底下会被键盘盖住，iOS 为了露出它把整页往上推（横屏时画面整个被推出屏幕） */
 .desk-keyinput {
   position: absolute;
   left: 0;
-  bottom: 0;
+  top: 0;
   width: 1px;
   height: 1px;
   opacity: 0;

@@ -40,14 +40,21 @@ function match(list, q) {
 
 /**
  * 给一个输入框挂上 @ 补全。menu 是放菜单的元素（调用方决定放哪、怎么定位，样式用 .slash-menu）。
- * onEmpty：一个技能都没有时，菜单里给个入口（去设置里的技能页）。返回 { update, keydown, close }：
+ * onEmpty：一个技能都没有时，菜单里给个入口（去设置里的技能页）。onShown：菜单关着时弹出来、有了内容那一下。返回 { update, keydown, close }：
  * 输入框的 input / keydown / blur 里分别调用。
  */
-export function attachMention(input, menu, { onEmpty, onPicked } = {}) {
-  const st = { open: false, items: [], index: 0, token: 0, at: null };
+export function attachMention(input, menu, { onEmpty, onPicked, onShown } = {}) {
+  const st = { open: false, shown: false, items: [], index: 0, token: 0, at: null };
+
+  const shown = () => {
+    if (st.shown) return;
+    st.shown = true;
+    onShown?.();
+  };
 
   const close = () => {
     st.open = false;
+    st.shown = false;
     st.items = [];
     st.index = 0;
     st.token++;
@@ -149,6 +156,7 @@ export function attachMention(input, menu, { onEmpty, onPicked } = {}) {
           h("div", { class: "slash-desc" }, "去「设置 → 技能」新建、上传"),
         ),
       );
+      shown();
       return;
     }
     const items = match(list, now.query);
@@ -156,6 +164,7 @@ export function attachMention(input, menu, { onEmpty, onPicked } = {}) {
     st.items = items;
     st.index = Math.min(st.index, items.length - 1);
     render(items);
+    shown();
   };
 
   /** 菜单开着时接管方向键 / Tab / 回车 / Esc；返回 true 表示已处理 */

@@ -3,6 +3,7 @@ import { api } from "../lib/api.js";
 import { desktop, remoteTabs, S, ui } from "../state.js";
 import { baseName } from "./topbar.js";
 import { newDraft, openConversation } from "./messages.js";
+import { leaveRemote } from "./remote.js";
 
 // ---------- 侧栏标题跑马灯：名字被省略时，hover 来回滚动显示全名 ----------
 
@@ -420,13 +421,15 @@ export function renderSidebar() {
   const open = (key) => {
     closeSide();
     if (key !== S.current) void openConversation(key);
+    // 在远程控制页上点进来之前那条对话：对话没动过，退出远程控制就露出来了
+    else if (S.view === "remote") leaveRemote();
   };
   // 一行会话。orphan：是分叉出来的、但父对话不在这一组里（删了 / 在别的目录），没有连线可画，用图标标一下
   const convRow = (c, cls, detail, orphan) =>
     h(
       "button",
       {
-        class: `conv-item${cls}${c.key === S.current ? " active" : ""}`,
+        class: `conv-item${cls}${c.key === S.current && !S.view ? " active" : ""}`,
         "data-key": c.key,
         title: `${convTitle(c)}${forkNote(c)}\n${detail}\n双击重命名，右键更多操作`,
         onclick: () => open(c.key),
@@ -455,7 +458,7 @@ export function renderSidebar() {
       el: h(
         "button",
         {
-          class: `conv-item${cur?.channel === "feishu" && cur.channelId === bot.id ? " active" : ""}`,
+          class: `conv-item${!S.view && cur?.channel === "feishu" && cur.channelId === bot.id ? " active" : ""}`,
           "data-bot": bot.id,
           title: latest ? `飞书 · ${bot.name}\n${agentLabel(latest.agent)} · ${latest.cwd}` : `飞书 · ${bot.name}\n还没有会话`,
           onclick: () => (latest ? open(latest.key) : toast("这个机器人还没有会话，先在飞书里给它发条消息")),

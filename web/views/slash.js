@@ -3,14 +3,14 @@ import { api } from "../lib/api.js";
 import { S, ui } from "../state.js";
 import { agentLabel } from "./sidebar.js";
 import { usableAgents } from "./topbar.js";
-import { autosize, sendMessage, updateSendBtn } from "./composer.js";
+import { autosize, hideKeyboardForMenu, sendMessage, updateSendBtn } from "./composer.js";
 
 // ---------- 斜杠命令补全 ----------
 //
 // 输入框里只有「/xxx」（还没打空格）时弹出命令表，顺序就是设置 → 命令里排好的。
 // 列表按 agent + 会话目录缓存一分钟：Claude 的原生命令要起一次进程才问得到。
 
-export const slash = { open: false, items: [], index: 0, cache: new Map(), token: 0 };
+export const slash = { open: false, shown: false, items: [], index: 0, cache: new Map(), token: 0 };
 
 export function commandUsage(c) {
   return `/${c.name}${c.args ? ` ${c.args}` : ""}`;
@@ -75,6 +75,10 @@ export async function updateSlashMenu() {
   slash.items = items;
   slash.index = Math.min(slash.index, items.length - 1);
   renderSlashMenu(items);
+  if (!slash.shown) {
+    slash.shown = true;
+    hideKeyboardForMenu();
+  }
 }
 
 function renderSlashMenu(items, error) {
@@ -126,6 +130,7 @@ function highlightSlash() {
 
 export function closeSlashMenu() {
   slash.open = false;
+  slash.shown = false;
   slash.items = [];
   slash.index = 0;
   slash.token++;
