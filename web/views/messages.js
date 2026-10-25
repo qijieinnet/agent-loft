@@ -111,6 +111,13 @@ export async function openConversation(key) {
   if (!known) renderSidebar();
   S.allowedAgents = data.allowedAgents;
   if (Number.isFinite(data.serverTime)) setServerTime(data.serverTime);
+  // 等历史的时候 WS 刚连上（刚打开页面），订阅回放的进行中这一轮可能已经先画进来了：
+  // 下面整页重画、live 会再重放一遍，这里得一起清掉，不然 S.turnAi 还指着被清掉的那个占位，
+  // 回复全写进一个不在页面上的元素里
+  S.items = [];
+  S.turnAi = null;
+  turnStartAt = null;
+  ui.pinEl = null;
   fill(ui.msgInner, );
   // 历史一次性加进来，最后再统一排版，免得每加一条就强制排版一次
   bulk = true;
