@@ -9,6 +9,7 @@ import { createTouch } from "./desktop-touch.js";
 
 // ---------- 远程桌面（noVNC） ----------
 // 画面、鼠标、键盘、剪贴板都走 VNC 协议：页面 ↔ /ws/desktop ↔ 服务端的 VNC（Linux 上是 agent-loft 按需起的 x11vnc）。
+// 进来时不自动连，点了「连接」才连（Linux 上会起 x11vnc）。
 // 离开远程控制页时连接不断，画面在后台照常更新；断线了自己重连，点了「断开」才不连。
 // 手机上：触摸事件由 desktop-touch.js 接管（触控板 / 触摸两种模式、双指本地放大），下面多一排按键。
 
@@ -41,7 +42,7 @@ function setLive(on) {
   renderSidebar();
 }
 
-/** 远程控制页切到「桌面」：第一次进来就连上 */
+/** 远程控制页切到「桌面」：没连着时中间一个「连接」按钮，点了才连 */
 export function showDesktop(pane, tools) {
   if (!D.pane) {
     D.pane = pane;
@@ -49,7 +50,15 @@ export function showDesktop(pane, tools) {
     D.screen = h("div", { class: "desk-screen" });
     D.zoomBadge = h("button", { class: "desk-zoom", hidden: true, onclick: () => D.touch?.resetZoom() });
     D.hint = h("div", { class: "desk-hint", hidden: true });
-    D.viewport = h("div", { class: "desk-viewport" }, D.screen, D.zoomBadge, D.hint);
+    D.idle = h(
+      "div",
+      { class: "desk-idle", hidden: true },
+      icon("monitor"),
+      h("div", { class: "muted" }, "远程桌面未连接"),
+      h("button", { class: "btn primary", onclick: reconnect }, icon("plug"), "连接桌面"),
+    );
+    D.exitFull = h("button", { class: "desk-exitfull", hidden: true, title: "退出全屏", "aria-label": "退出全屏", onclick: () => setFull(false) }, icon("shrink"));
+    D.viewport = h("div", { class: "desk-viewport" }, D.screen, D.zoomBadge, D.hint, D.idle, D.exitFull);
     D.keyInput = isTouch ? mobileKeyInput() : null;
     D.keyRow = isTouch ? keyRow() : null;
     fill(pane, D.status, D.viewport, D.keyRow, D.keyInput);
@@ -70,10 +79,6 @@ export function showDesktop(pane, tools) {
   D.tools = tools;
   renderTools();
   renderStatus();
-  if (!D.rfb && D.state !== "connecting") {
-    D.want = true;
-    void connect();
-  }
 }
 
 async function connect() {
@@ -204,13 +209,15 @@ function renderStatus() {
         ? "正在连接桌面…"
         : D.state === "error"
           ? D.message
-          : "已断开";
+          : null;
   D.status.hidden = !text;
   fill(
     D.status,
     text ? h("span", { class: D.state === "error" ? "error-text" : "muted" }, text) : null,
-    D.state === "idle" || (D.state === "error" && !D.want) ? h("button", { class: "btn small", onclick: reconnect }, "连接") : null,
+    D.state === "error" && !D.want ? h("button", { class: "btn small", onclick: reconnect }, "连接") : null,
   );
+  // 没连着（还没点过连接、点了断开）：中间的「连接桌面」
+  D.idle.hidden = D.state !== "idle";
   D.screen.classList.toggle("dim", D.state !== "connected");
   D.touch?.refresh();
 }
@@ -252,12 +259,37 @@ function renderTools() {
     tool(D.viewOnly ? "只看（点一下恢复控制）" : "只看不控制", "eye", toggleViewOnly, { on: D.viewOnly }),
     // 手机上靠双指放大，不切原始大小
     isTouch ? null : tool(D.fit ? "原始大小" : "缩放到窗口", D.fit ? "maximize" : "restore", toggleFit),
-    document.fullscreenEnabled ? tool("全屏", "expand", () => D.pane.requestFullscreen?.()) : null,
-    on || D.state === "connecting"
-      ? tool("断开", "power", disconnect)
-      : tool("连接", "power", reconnect),
+    tool("全屏", "expand", () => setFull(true)),
+    on || D.state === "connecting" ? tool("断开连接", "unplug", disconnect) : tool("连接", "plug", reconnect),
   );
 }
+
+// 全屏：浏览器支持就用真全屏；iPhone 的 Safari 不支持元素全屏，改成铺满整个页面（盖住顶栏、侧栏）
+const fsEnabled = () => document.fullscreenEnabled || document.webkitFullscreenEnabled;
+const fsElement = () => document.fullscreenElement ?? document.webkitFullscreenElement;
+
+function setFull(on) {
+  if (on) {
+    if (fsEnabled()) {
+      const req = D.pane.requestFullscreen ?? D.pane.webkitRequestFullscreen;
+      // 被浏览器拒了（比如不是用户点的）：退回铺满页面
+      Promise.resolve(req?.call(D.pane)).catch(() => D.pane.classList.add("desk-full"));
+    } else D.pane.classList.add("desk-full");
+  } else {
+    D.pane.classList.remove("desk-full");
+    if (fsElement() === D.pane) (document.exitFullscreen ?? document.webkitExitFullscreen)?.call(document);
+  }
+  syncFull();
+}
+
+/** 全屏时画面上一个「退出全屏」（手机上没有 Esc；真全屏在电脑上按 Esc 就行，不显示） */
+function syncFull() {
+  if (!D.pane) return;
+  const pseudo = D.pane.classList.contains("desk-full");
+  D.exitFull.hidden = !(pseudo || (isTouch && fsElement() === D.pane));
+}
+document.addEventListener("fullscreenchange", syncFull);
+document.addEventListener("webkitfullscreenchange", syncFull);
 
 function toggleViewOnly() {
   D.viewOnly = !D.viewOnly;
