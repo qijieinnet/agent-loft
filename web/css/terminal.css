@@ -1,0 +1,243 @@
+/* ---------- 终端（views/terminal.js） ---------- */
+
+/* 底部面板：在输入框下面，高度可拖动 */
+.term-dock {
+  --term-h: 38vh;
+  display: flex;
+  flex-direction: column;
+  height: var(--term-h);
+  min-height: 120px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  position: relative;
+  z-index: 6;
+}
+
+.term-dock[hidden] {
+  display: none;
+}
+
+.term-resizer {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 1;
+}
+
+body.resizing-v {
+  cursor: row-resize;
+  user-select: none;
+}
+
+.term-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px 0;
+  min-height: 36px;
+}
+
+.term-head .grow {
+  flex: 1;
+}
+
+.term-act {
+  width: 30px;
+  height: 30px;
+}
+
+.term-act[hidden] {
+  display: none;
+}
+
+.term-act svg {
+  width: 16px;
+  height: 16px;
+}
+
+.term-tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.term-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 5px 6px 5px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--fg-soft);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.term-tab:hover {
+  background: var(--bg-hover);
+}
+
+.term-tab.on {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+
+.term-tab.ended .term-tab-name {
+  text-decoration: line-through;
+  color: var(--fg-faint);
+}
+
+.term-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.term-tab-x {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.term-tab-x svg {
+  width: 12px;
+  height: 12px;
+}
+
+.term-tab:hover .term-tab-x,
+.term-tab.on .term-tab-x {
+  opacity: 0.7;
+}
+
+/* 触屏上没有悬停：× 一直显示 */
+@media (hover: none) {
+  .term-tab .term-tab-x {
+    opacity: 0.7;
+  }
+}
+
+.term-tab-x:hover {
+  opacity: 1;
+  background: var(--bg-hover);
+}
+
+.term-panes {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding: 4px 4px 4px 10px;
+}
+
+.term-pane {
+  position: absolute;
+  inset: 4px 4px 4px 10px;
+}
+
+.term-pane[hidden] {
+  display: none;
+}
+
+.term-pane .xterm {
+  height: 100%;
+}
+
+.term-pane .xterm-viewport {
+  background: transparent !important;
+}
+
+.term-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  padding: 16px;
+  text-align: center;
+}
+
+/* 手机上的快捷键行 */
+.term-keys {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-top: 1px solid var(--border);
+}
+
+.term-key {
+  flex-shrink: 0;
+  min-width: 40px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--fg);
+  font: 14px var(--mono);
+}
+
+.term-key.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* 放在远程控制页里：占满那一块，不能拖高度 */
+.term-dock.embedded {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  border-top: none;
+}
+
+.term-dock.embedded .term-resizer {
+  display: none;
+}
+
+/* 手机上长按选了字：上面一条「复制 / 全选 / 取消」（views/terminal-touch.js） */
+.term-selbar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  display: flex;
+  gap: 1px;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  background: var(--border);
+}
+
+.term-selbar[hidden] {
+  display: none;
+}
+
+.term-selbar button {
+  padding: 8px 14px;
+  border: none;
+  background: var(--bg-input);
+  color: var(--fg);
+  font: 14px var(--font);
+}
+
+/* 手指翻历史时别让浏览器去滚页面 */
+.term-pane {
+  touch-action: none;
+}

@@ -1,6 +1,6 @@
 import { fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop, S, ui } from "../state.js";
+import { desktop, remoteTabs, S, ui } from "../state.js";
 import { baseName } from "./topbar.js";
 import { newDraft, openConversation } from "./messages.js";
 
@@ -358,6 +358,11 @@ export function renderSidebar() {
   }
   sidebarStale = false;
   ui.tasksNav?.classList.toggle("active", S.view === "tasks");
+  if (ui.remoteNav) {
+    ui.remoteNav.hidden = !remoteTabs().length;
+    ui.remoteNav.classList.toggle("active", S.view === "remote");
+    ui.remoteNav.classList.toggle("live", S.remoteLive.desktop || S.remoteLive.terminals > 0);
+  }
   const askKeys = new Set([...S.pending.values()].filter((i) => !i.settled).map((i) => i.convKey));
   const visible = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt);
   const cur = S.current ? S.convs.get(S.current) : null;

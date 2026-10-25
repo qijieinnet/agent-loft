@@ -67,6 +67,8 @@ import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor } from "./conv
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleSkillsApi } from "./skills-api.js";
+import { handleTerminalApi } from "./terminal.js";
+import { handleDesktopApi, remoteStatus } from "./desktop.js";
 import { addSubscription, listSubscriptions, pushToAll, removeSubscription, removeSubscriptionsOf, vapidPublicKey } from "./push.js";
 
 export const COOKIE = "aim_session";
@@ -194,6 +196,8 @@ function publicConfig(): unknown {
     ...cfg,
     web: { ...cfg.web, passwordHash: undefined },
     feishu: { ...cfg.feishu, bots: cfg.feishu.bots.map((b) => ({ ...b, appSecret: maskSecret(b.appSecret) })) },
+    // VNC 密码最多 8 位，不能像 appSecret 那样露出后 4 位
+    remote: { ...cfg.remote, vncPassword: cfg.remote.vncPassword ? MASK : "" },
   };
 }
 
@@ -224,6 +228,24 @@ function applyConfig(input: Partial<AppConfig>): void {
     const q = Number(next.web.quotaRefreshMin);
     next.web.quotaRefreshMin = Number.isFinite(q) ? Math.max(0, Math.min(1440, Math.round(q))) : 10;
     next.web.quotaEnabled = next.web.quotaEnabled !== false;
+  }
+  if (input.remote) {
+    const r = input.remote as Partial<AppConfig["remote"]>;
+    if (typeof r.terminal === "boolean") next.remote.terminal = r.terminal;
+    if (typeof r.desktop === "boolean") next.remote.desktop = r.desktop;
+    const k = Number(r.keepAliveMin);
+    if (r.keepAliveMin !== undefined && Number.isFinite(k)) next.remote.keepAliveMin = Math.max(1, Math.min(1440, Math.round(k)));
+    if (r.desktopSource === "auto" || r.desktopSource === "vnc") next.remote.desktopSource = r.desktopSource;
+    if (typeof r.display === "string") {
+      const d = r.display.trim();
+      if (d && !/^:\d{1,3}(\.\d)?$/.test(d)) throw new HttpError(400, "X 显示要写成 :0、:1 这样，留空自动找");
+      next.remote.display = d;
+    }
+    if (typeof r.vncHost === "string" && r.vncHost.trim()) next.remote.vncHost = r.vncHost.trim();
+    const port = Number(r.vncPort);
+    if (r.vncPort !== undefined && Number.isInteger(port) && port >= 1 && port <= 65535) next.remote.vncPort = port;
+    // 回传的是打了码的旧值：不改
+    if (typeof r.vncPassword === "string" && !r.vncPassword.startsWith(MASK)) next.remote.vncPassword = r.vncPassword;
   }
   if (input.commands) {
     // 只收字符串数组，别的一律当没传
@@ -538,6 +560,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       },
       pending,
       user: publicMe(user),
+      remote: remoteStatus(user),
       serverTime: Date.now(),
     });
     return;
@@ -576,6 +599,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   // ----- 定时任务 -----
   if (p.startsWith("/api/tasks") && (await handleTasksApi(req, res, p, user))) return;
   if (p.startsWith("/api/skills") && (await handleSkillsApi(req, res, url, user))) return;
+  if (p.startsWith("/api/terminals") && (await handleTerminalApi(req, res, p, user))) return;
+  if ((p === "/api/remote" || p.startsWith("/api/desktop/")) && (await handleDesktopApi(req, res, p, user))) return;
 
   // ----- 目录选择器：列工作区内的子目录 -----
   if (p === "/api/dirs" && method === "GET") {
@@ -1097,7 +1122,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const id = userMatch[1]!;
     if (!getUser(id)) throw new HttpError(404, "用户不存在");
     if (method === "PATCH") {
-      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string }>(req);
+      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean }>(req);
       if (id === user.id && (body.disabled === true || (body.role !== undefined && body.role !== "admin"))) {
         throw new HttpError(400, "不能停用自己，也不能取消自己的管理员");
       }
@@ -1108,6 +1133,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           ...(body.role === "admin" || body.role === "member" ? { role: body.role } : {}),
           ...(typeof body.disabled === "boolean" ? { disabled: body.disabled } : {}),
           ...(typeof body.password === "string" ? { password: body.password } : {}),
+          ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}),
         }),
       );
       // 管理员在用户列表里重置了自己的密码：当前这台换个新登录态，别把自己踢出去

@@ -14,11 +14,13 @@ import { scheduleNav } from "./msg-nav.js";
 
 // ---------- 打开会话 ----------
 
-/** 从定时任务页回到对话：把输入框放回来 */
+/** 从定时任务页、远程控制回到对话：把输入框放回来 */
 function leaveTasksView() {
   if (!S.view) return;
   S.view = null;
   ui.main.classList.remove("tasks-view");
+  // 远程控制页藏起来，连接留着（views/remote.js）
+  document.dispatchEvent(new Event("aim:leave-view"));
 }
 
 export function newDraft() {

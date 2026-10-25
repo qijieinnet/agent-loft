@@ -98,6 +98,102 @@ export function generalTab(cfg, panel) {
         ),
       ),
     ),
+    remoteSection(cfg),
+  );
+}
+
+/** 远程控制：终端、桌面各自的开关，没人连着多久结束，桌面从哪来。成员能不能用在「用户」里一个个开 */
+function remoteSection(cfg) {
+  const r = cfg.remote ?? {};
+  const termOn = h("input", { type: "checkbox", checked: r.terminal !== false });
+  const deskOn = h("input", { type: "checkbox", checked: r.desktop !== false });
+  const keep = h("input", { type: "number", min: 1, max: 1440, value: r.keepAliveMin ?? 30 });
+  const source = h(
+    "select",
+    {},
+    h("option", { value: "auto" }, "共享这台机器当前的桌面（Linux，用 x11vnc）"),
+    h("option", { value: "vnc" }, "连已有的 VNC 服务（macOS 屏幕共享等）"),
+  );
+  source.value = r.desktopSource ?? "auto";
+  const display = h("input", { value: r.display ?? "", placeholder: "留空自动找，如 :0", autocapitalize: "off", spellcheck: "false" });
+  const host = h("input", { value: r.vncHost ?? "127.0.0.1", autocapitalize: "off", spellcheck: "false" });
+  const port = h("input", { type: "number", min: 1, max: 65535, value: r.vncPort ?? 5900 });
+  const password = h("input", { type: "password", value: r.vncPassword ?? "", autocomplete: "new-password", placeholder: "VNC 密码" });
+  const autoBox = h("div", { class: "field-group" }, field("X 显示", display, "一台机器上有好几个桌面（比如登录界面 :0、登录后的桌面 :1）时可以指定"));
+  const vncBox = h(
+    "div",
+    { class: "field-group" },
+    field("地址", host),
+    field("端口", port),
+    field(
+      "密码",
+      password,
+      "macOS：屏幕共享 →「电脑设置…」里勾选「VNC 显示程序可以使用密码控制屏幕」并设这个密码。开通了远程控制的成员连桌面时，页面会拿到这个密码",
+    ),
+  );
+  const sync = () => {
+    autoBox.hidden = source.value !== "auto";
+    vncBox.hidden = source.value !== "vnc";
+  };
+  source.addEventListener("change", sync);
+  sync();
+  // 终端、桌面用不了时的原因（没装 node-pty、没有图形桌面、没装 x11vnc…）
+  const status = h("div", { class: "error-text", hidden: true });
+  const loadStatus = () =>
+    api("/api/remote").then(
+      (st) => {
+        const lines = [
+          st.terminal.available ? null : `终端：${st.terminal.reason ?? "用不了"}`,
+          st.desktop.available ? null : `桌面：${st.desktop.reason ?? "这台机器没有桌面"}（远程控制里只有终端）`,
+        ].filter(Boolean);
+        fill(status, lines.map((l, i) => [i ? h("br") : null, l]));
+        status.hidden = !lines.length;
+      },
+      () => {},
+    );
+  void loadStatus();
+  return h(
+    "div",
+    { class: "section" },
+    h("h4", {}, "远程控制"),
+    h(
+      "div",
+      { class: "muted" },
+      "侧栏「远程控制」里直接操作这台机器的桌面和终端，切回对话时连接留在后台。以运行 agent-loft 的系统用户执行，没有授权卡。管理员能用；成员要在「用户」里单独开通。",
+    ),
+    status,
+    h("label", { class: "check" }, termOn, "网页终端"),
+    h("label", { class: "check" }, deskOn, "远程桌面"),
+    field("桌面来源", source),
+    autoBox,
+    vncBox,
+    field("没有页面连着多久后结束（分钟）", keep, "关掉页面、断线后 shell 继续运行，重新打开能接着用；共享桌面用的 x11vnc 也是这么久没人连就停掉"),
+    h(
+      "div",
+      { class: "row" },
+      h(
+        "button",
+        {
+          class: "btn primary",
+          onclick: async () => {
+            const ok = await saveConfig(cfg, {
+              remote: {
+                terminal: termOn.checked,
+                desktop: deskOn.checked,
+                keepAliveMin: Number(keep.value),
+                desktopSource: source.value,
+                display: display.value.trim(),
+                vncHost: host.value.trim(),
+                vncPort: Number(port.value),
+                vncPassword: password.value,
+              },
+            });
+            if (ok) void loadStatus();
+          },
+        },
+        "保存",
+      ),
+    ),
   );
 }
 

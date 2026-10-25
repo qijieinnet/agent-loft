@@ -15,9 +15,10 @@ import { interactions, type Interaction } from "../../core/interactions.js";
 import { getConversation } from "../../core/store.js";
 import { taskEvents } from "../../core/tasks.js";
 import { skillEvents } from "../../core/skills.js";
+import { enforceTerminalAccess, killAllTerminals, terminalEvents, watchTerminalAccess } from "../../core/terminals.js";
 import { RUNNING_VERSION } from "../../core/upgrade.js";
 import type { Settlement } from "../../core/types.js";
-import { getUser, isAdmin, legacyOwnerId, type User } from "../../core/users.js";
+import { getUser, isAdmin, legacyOwnerId, userEvents, type User } from "../../core/users.js";
 import { currentUser, handleApi, takeUploads } from "./api.js";
 import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
 import { canSeeKey, sessionVisibleTo } from "./access.js";
@@ -26,6 +27,9 @@ import { COOKIE } from "./api.js";
 import { HttpError, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 import { hasSubscriptions, pushToAll } from "./push.js";
 import { closeListener, listen, listening, rebind } from "./listen.js";
+import { closeTerminalClients, pingTerminalClients, recheckTerminalClients, upgradeTerminal } from "./terminal.js";
+import { closeDesktopClients, pingDesktopClients, recheckDesktopClients, upgradeDesktop } from "./desktop.js";
+import { stopDesktop } from "../../core/desktop.js";
 
 const require = createRequire(import.meta.url);
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
@@ -52,6 +56,9 @@ const VENDOR: Record<string, () => string> = {
   "/vendor/hljs.js": () => pkgFile("@highlightjs/cdn-assets", "es/highlight.min.js"),
   "/vendor/hljs-light.css": () => pkgFile("@highlightjs/cdn-assets", "styles/github.min.css"),
   "/vendor/hljs-dark.css": () => pkgFile("@highlightjs/cdn-assets", "styles/github-dark.min.css"),
+  "/vendor/xterm.js": () => pkgFile("@xterm/xterm", "lib/xterm.mjs"),
+  "/vendor/xterm.css": () => pkgFile("@xterm/xterm", "css/xterm.css"),
+  "/vendor/xterm-fit.js": () => pkgFile("@xterm/addon-fit", "lib/addon-fit.mjs"),
 };
 
 const MIME: Record<string, string> = {
@@ -97,7 +104,21 @@ function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: st
   });
 }
 
+/** noVNC 是一堆互相 import 的 ES module：整个 core/、vendor/ 目录按原样给，只给 .js */
+function novncFile(pathname: string): string | undefined {
+  const rel = pathname.slice("/vendor/novnc/".length);
+  if (!/^(core|vendor)\/[\w./-]+\.js$/.test(rel) || rel.split("/").includes("..")) return undefined;
+  return path.join(pkgDir("@novnc/novnc"), rel);
+}
+
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  if (url.pathname.startsWith("/vendor/novnc/")) {
+    const file = novncFile(url.pathname);
+    if (file) return serveFile(req, res, file);
+    res.writeHead(404, SECURITY_HEADERS);
+    res.end();
+    return;
+  }
   const vendor = VENDOR[url.pathname];
   if (vendor) {
     try {
@@ -187,6 +208,16 @@ function broadcastInteraction(i: Interaction): void {
 /** 某人的定时任务变了（增删改、跑完一次）：只告诉他自己开着的页面，页面自己去重新拉 */
 function broadcastTasks(owner: string): void {
   for (const client of clients) if (client.user.id === owner) send(client, { t: "tasks" });
+}
+
+/** 某人的终端开了 / 结束了：他开着的页面重新拉终端列表（别的设备上开的也能接上） */
+function broadcastTerminals(owner: string): void {
+  for (const client of clients) if (client.user.id === owner) send(client, { t: "remote" });
+}
+
+/** 用户改了（比如远程控制权限被开通 / 收回）、远程控制的设置改了：页面重新问一下能用什么 */
+function broadcastUsersChanged(): void {
+  for (const client of clients) send(client, { t: "remote" });
 }
 
 /** 技能变了：以前装过别人技能的人也受影响，通知所有人重新拉（列表很小） */
@@ -409,6 +440,7 @@ let server: http.Server | null = null;
 let wss: WebSocketServer | null = null;
 let heartbeat: NodeJS.Timeout | null = null;
 let stopWatchingListen: (() => void) | null = null;
+let stopWatchingRemote: (() => void) | null = null;
 
 export async function startWeb(): Promise<void> {
   const { host, port } = config().web;
@@ -449,13 +481,15 @@ export async function startWeb(): Promise<void> {
   server.on("upgrade", (req, socket, head) => {
     try {
       const url = new URL(req.url ?? "/", "http://local");
-      const user = url.pathname === "/ws" && sameOrigin(req) ? currentUser(req) : undefined;
+      const user = ["/ws", "/ws/term", "/ws/desktop"].includes(url.pathname) && sameOrigin(req) ? currentUser(req) : undefined;
       if (!user) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
       const token = cookies(req)[COOKIE] ?? "";
+      if (url.pathname === "/ws/term") return upgradeTerminal(wss!, req, socket, head, user, token, url);
+      if (url.pathname === "/ws/desktop") return upgradeDesktop(wss!, req, socket, head, user, token);
       wss!.handleUpgrade(req, socket, head, (ws) => {
         const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null, seen: Date.now() };
         clients.add(client);
@@ -490,6 +524,9 @@ export async function startWeb(): Promise<void> {
       client.alive = false;
       client.ws.ping();
     }
+    enforceTerminalAccess();
+    pingTerminalClients();
+    pingDesktopClients();
   }, 30_000);
   heartbeat.unref();
 
@@ -501,6 +538,21 @@ export async function startWeb(): Promise<void> {
   interactions.on("settled", broadcastInteraction);
   taskEvents.on("changed", broadcastTasks);
   skillEvents.on("changed", broadcastSkills);
+  terminalEvents.on("changed", broadcastTerminals);
+  userEvents.on("changed", broadcastUsersChanged);
+  watchTerminalAccess();
+  // 设置里关了远程桌面 / 换了桌面来源：连着的断开，自己起的 x11vnc 停掉（下次连时按新设置起）
+  stopWatchingRemote = onConfigChange((next, prev) => {
+    if (JSON.stringify(next.remote) === JSON.stringify(prev.remote)) return;
+    const r = next.remote;
+    const p = prev.remote;
+    if (!r.desktop || r.desktopSource !== p.desktopSource || r.display !== p.display) {
+      closeDesktopClients();
+      stopDesktop();
+    }
+    recheckDesktopClients();
+    broadcastUsersChanged();
+  });
 
   await listen(server, host, port);
   console.log(`[web] 已监听 http://${host}:${port}`);
@@ -520,6 +572,8 @@ export async function startWeb(): Promise<void> {
 
 function onRevoked(): void {
   for (const client of [...clients]) checkClient(client);
+  recheckTerminalClients();
+  recheckDesktopClients();
 }
 
 export async function stopWeb(): Promise<void> {
@@ -532,6 +586,14 @@ export async function stopWeb(): Promise<void> {
   interactions.off("settled", broadcastInteraction);
   taskEvents.off("changed", broadcastTasks);
   skillEvents.off("changed", broadcastSkills);
+  terminalEvents.off("changed", broadcastTerminals);
+  userEvents.off("changed", broadcastUsersChanged);
+  stopWatchingRemote?.();
+  stopWatchingRemote = null;
+  closeTerminalClients();
+  killAllTerminals();
+  closeDesktopClients();
+  stopDesktop();
   if (heartbeat) clearInterval(heartbeat);
   for (const client of clients) client.ws.close(1001, "服务重启");
   clients.clear();

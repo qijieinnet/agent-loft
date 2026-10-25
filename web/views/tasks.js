@@ -82,6 +82,8 @@ function toLocalInput(ms) {
 export async function openTasks() {
   if (S.current) WS.raw({ t: "unsub", key: S.current });
   S.current = null;
+  // 远程控制页藏起来，连接留着（views/remote.js）
+  document.dispatchEvent(new Event("aim:leave-view"));
   S.view = "tasks";
   S.items = [];
   S.turnAi = null;

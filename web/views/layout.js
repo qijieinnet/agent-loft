@@ -1,6 +1,6 @@
 import { $app, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop, desktopMenu, desktopQuota, desktopSettings, S, ui } from "../state.js";
+import { desktop, desktopMenu, desktopQuota, desktopSettings, remoteTabs, S, ui } from "../state.js";
 import { clearAppBadge, WS } from "../lib/ws.js";
 import { showAuth } from "./auth.js";
 import {
@@ -51,6 +51,47 @@ export function openSettings(tab) {
   );
 }
 
+/**
+ * 远程控制（桌面 / 终端）：第一次用到时才加载（连 noVNC、xterm.js 一起）。
+ * 加载过的模块记着：权限变了要告诉它们
+ */
+const loaded = {};
+function lazy(name, load) {
+  loaded[name] ??= load().catch((err) => {
+    delete loaded[name];
+    toast(`远程控制加载失败，刷新页面再试：${err.message}`);
+    throw err;
+  });
+  return loaded[name];
+}
+/** 侧栏的「远程控制」；tab：desktop / terminal，不给就是上次看的 */
+export function openRemoteView(tab) {
+  if (remoteTabs().length) void lazy("remote", () => import("./remote.js")).then((m) => m.openRemote(tab));
+}
+/** Ctrl+`：对话下面的终端面板开 / 关 */
+function toggleTerminalDock() {
+  if (S.remote?.terminal?.allowed) void lazy("terminal", () => import("./terminal.js")).then((m) => m.toggleDock());
+}
+
+// 终端开了 / 关了、权限或设置变了：更新入口，已经加载了的让它们对一下
+document.addEventListener("aim:remote", async () => {
+  try {
+    S.remote = await api("/api/remote");
+  } catch {
+    return;
+  }
+  renderSidebar();
+  void loaded.terminal?.then((m) => m.syncTerminals());
+  void loaded.remote?.then((m) => m.syncRemote());
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === "Backquote" && S.remote?.terminal?.allowed) {
+    e.preventDefault();
+    toggleTerminalDock();
+  }
+});
+
 /** 定时任务页：第一次打开时才加载 */
 export function openTasksView() {
   import("./tasks.js").then(
@@ -72,6 +113,7 @@ export async function boot() {
   S.workspaceRoot = data.workspaceRoot;
   S.quotaRefreshMin = data.quotaRefreshMin ?? 10;
   S.quotaEnabled = data.quotaEnabled !== false;
+  S.remote = data.remote ?? null;
   applyBootstrap(data);
   S.pending = new Map(data.pending.map((i) => [i.id, i]));
   const enabled = usableAgents().map((a) => a.id);
@@ -85,6 +127,12 @@ export async function boot() {
   // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
   const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
   if (fromHash === "tasks") openTasksView();
+  else if (fromHash.startsWith("remote") && remoteTabs().length) {
+    // 刷新前在远程控制里：底下先放上最近的对话，切回对话时就是它
+    if (latest) await openConversation(latest.key);
+    else newDraft();
+    openRemoteView(fromHash.split("/")[1]);
+  }
   else if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
   else if (latest) await openConversation(latest.key);
   else newDraft();
@@ -179,6 +227,14 @@ function renderLayout() {
     ),
     // 「最近」上面的入口，像 ChatGPT 的 Tasks。当前在任务页时高亮（renderSidebar 里切换）
     (ui.tasksNav = h("button", { class: "btn new-chat side-nav", onclick: () => openTasksView() }, icon("clock"), "定时任务")),
+    // 远程控制：这台机器的桌面和终端。后台连着时右边亮个小绿点（renderSidebar 里切换）
+    (ui.remoteNav = h(
+      "button",
+      { class: "btn new-chat side-nav", hidden: !remoteTabs().length, onclick: () => openRemoteView() },
+      icon("monitor"),
+      "远程控制",
+      h("span", { class: "live-dot", title: "在后台连着" }),
+    )),
     ui.convList,
     // 底部只有额度：没有额度可显示（关了查询、还没查到）时整块藏起来，连分隔线一起
     (ui.sideBottom = h(

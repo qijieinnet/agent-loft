@@ -98,7 +98,8 @@ export const WS = {
    */
   presence() {
     const visible = document.visibilityState === "visible" && document.hasFocus() && Date.now() - lastInput < IDLE_MS;
-    this.raw({ t: "presence", visible, key: S.current ?? "" });
+    // 在定时任务、远程控制页上：没在看哪条对话（远程控制页不清 S.current，回来时对话还在）
+    this.raw({ t: "presence", visible, key: S.view ? "" : (S.current ?? "") });
   },
 };
 
@@ -240,6 +241,10 @@ function onWsMessage(msg) {
     case "tasks":
       // 自己的定时任务变了：定时任务页开着的话会去重新拉（views/tasks.js）
       document.dispatchEvent(new Event("aim:tasks"));
+      return;
+    case "remote":
+      // 自己的终端开了 / 关了，或者远程控制的权限、设置变了：重新问一下（views/layout.js）
+      document.dispatchEvent(new Event("aim:remote"));
       return;
     case "skills":
       // 技能变了：设置里的技能页开着就重新拉，@ 补全的缓存作废

@@ -21,11 +21,22 @@ export const S = {
   loadToken: 0,
   /** 登录的用户 { id, name, role } */
   user: null,
-  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页 */
+  /** 远程控制能用什么：{ allowed, terminal: {…}, desktop: {…} }，见 /api/remote */
+  remote: null,
+  /** 远程控制在后台连着的：桌面连着没、开着几个终端（侧栏「远程控制」上的小绿点） */
+  remoteLive: { desktop: false, terminals: 0 },
+  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页，"remote" 是远程控制 */
   view: null,
 };
 
 export const isAdmin = () => S.user?.role === "admin";
+
+/** 远程控制里能切到哪几页：桌面要这台机器有桌面才有；都没有就不显示入口 */
+export function remoteTabs() {
+  const r = S.remote;
+  if (!r?.allowed) return [];
+  return [r.desktop?.allowed && r.desktop.available ? "desktop" : null, r.terminal?.allowed ? "terminal" : null].filter(Boolean);
+}
 
 export const ui = {};
 

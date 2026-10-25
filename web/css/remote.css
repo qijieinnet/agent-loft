@@ -1,0 +1,350 @@
+/* ---------- 远程控制（views/remote.js、desktop.js） ---------- */
+
+/* 侧栏入口：没权限、没有能用的时藏起来（.side-nav 的 display 会盖过 hidden） */
+.side-nav[hidden] {
+  display: none;
+}
+
+/* 后台连着时右边一个小绿点 */
+.side-nav .live-dot {
+  display: none;
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.side-nav.live .live-dot {
+  display: block;
+}
+
+/* 远程控制页：对话、输入框都藏起来（只是藏，回来时还在），这一页占满顶栏下面 */
+.main.remote-view .messages,
+.main.remote-view .msg-nav,
+.main.remote-view .composer-wrap,
+.main.remote-view .to-bottom,
+.main.remote-view > .term-dock {
+  display: none;
+}
+
+.remote-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: calc(52px + env(safe-area-inset-top));
+}
+
+/* 软键盘盖住的高度（views/remote.js），iOS 上才不为 0 */
+.remote-pane,
+.main > .term-dock {
+  padding-bottom: var(--kb-inset, 0px);
+}
+
+.remote-pane[hidden] {
+  display: none;
+}
+
+/* iOS 主屏 PWA 里顶栏是 sticky 的、本来就占位置 */
+@media (display-mode: standalone) and (max-width: 768px) {
+  .remote-pane {
+    margin-top: 0;
+  }
+}
+
+.remote-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 6px;
+  min-height: 36px;
+}
+
+.remote-head .grow {
+  flex: 1;
+}
+
+.remote-switch {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg-soft);
+}
+
+.remote-switch:empty {
+  display: none;
+}
+
+.remote-tab {
+  display: flex;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.remote-tab svg {
+  width: 15px;
+  height: 15px;
+}
+
+.remote-tab.on {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.remote-tools {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* 手机：切换只留图标，工具栏挤一挤 */
+@media (max-width: 768px) {
+  .remote-head {
+    padding: 0 8px 6px;
+    gap: 4px;
+  }
+
+  .remote-tab {
+    padding: 6px 10px;
+  }
+
+  .remote-tab span {
+    display: none;
+  }
+
+  .desk-tool {
+    width: 30px;
+    flex-shrink: 0;
+  }
+}
+
+.desk-tool {
+  width: 32px;
+  height: 32px;
+}
+
+.desk-tool svg {
+  width: 17px;
+  height: 17px;
+}
+
+.desk-tool.on {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.desk-tool:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.remote-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.remote-body[hidden] {
+  display: none;
+}
+
+/* ---------- 桌面 ---------- */
+
+.desk-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.desk-status[hidden] {
+  display: none;
+}
+
+/* 外框负责裁剪；里面那块交给 noVNC，手机上在它上面做 CSS 放大（views/desktop-touch.js） */
+.desk-viewport {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #111;
+  /* 手势全由页面自己处理：别让浏览器拿去缩放、滚动页面 */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.desk-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-origin: 0 0;
+  transition: opacity 0.2s;
+}
+
+/* 触控板模式下的指针（远程那边的指针不画在画面里） */
+.desk-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 24px;
+  margin: -1px 0 0 -2px;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+  z-index: 2;
+}
+
+.desk-cursor[hidden] {
+  display: none;
+}
+
+.desk-cursor svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* 长按到了：要开始拖了 */
+.desk-cursor.armed::after,
+.desk-cursor.pressed::after {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: -12px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* 放大了：右下角「2.0× · 还原」 */
+.desk-zoom {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font: 12px var(--font);
+}
+
+.desk-zoom[hidden],
+.desk-hint[hidden] {
+  display: none;
+}
+
+.desk-hint {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.desk-keys .term-key.icon {
+  display: grid;
+  place-items: center;
+}
+
+.desk-keys .term-key.icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.desk-keys .term-key.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.gesture-sec h4 {
+  margin: 4px 0 8px;
+  font-size: 14px;
+}
+
+.gesture-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.gesture-row {
+  display: contents;
+}
+
+.gesture-row span {
+  color: var(--fg-soft);
+}
+
+.desk-screen.dim {
+  opacity: 0.4;
+}
+
+/* 浏览器全屏时只剩画面 */
+.remote-body:fullscreen .desk-status {
+  display: none;
+}
+
+.desk-clip {
+  width: 100%;
+  margin-top: 10px;
+  font: 13px var(--mono);
+  resize: vertical;
+}
+
+/* 手机上收软键盘输入用：看不见，但要能拿到焦点 */
+.desk-keyinput {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: none;
+  padding: 0;
+  resize: none;
+  /* 小于 16px 的输入框，iOS 聚焦时会把整页放大 */
+  font-size: 16px;
+}
+
+/* 设置里按选项显示的一组输入框：照常吃 section 的间距 */
+.field-group {
+  display: contents;
+}
+
+.field-group[hidden] {
+  display: none;
+}

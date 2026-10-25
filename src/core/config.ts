@@ -72,6 +72,23 @@ export type AppConfig = {
   };
   /** 输入「/」时命令列表的顺序和隐藏项，按 agent 分开（设置 → 命令） */
   commands: { claude: CommandPrefs; codex: CommandPrefs };
+  /** 远程控制：网页终端和远程桌面。管理员能用；成员要在 设置 → 用户 里单独开（users.json 的 remote） */
+  remote: {
+    terminal: boolean;
+    desktop: boolean;
+    /** 没有页面连着多久后结束 shell、停掉共享桌面用的 x11vnc（分钟） */
+    keepAliveMin: number;
+    /**
+     * 桌面从哪来。auto：Linux 上用 x11vnc 共享这台机器当前的图形桌面（按需起、只听本机）；
+     * vnc：连一个已有的 VNC 服务，比如 macOS 的屏幕共享（127.0.0.1:5900）
+     */
+    desktopSource: "auto" | "vnc";
+    /** auto 时用哪个 X 显示，留空自动找（如 :0、:1） */
+    display: string;
+    vncHost: string;
+    vncPort: number;
+    vncPassword: string;
+  };
   feishu: {
     /** 长连接掉线多久就重建，0 关闭 */
     watchdogMs: number;
@@ -100,6 +117,16 @@ export function defaultConfig(): AppConfig {
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10, quotaEnabled: true },
     commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] } },
+    remote: {
+      terminal: true,
+      desktop: true,
+      keepAliveMin: 30,
+      desktopSource: process.platform === "darwin" ? "vnc" : "auto",
+      display: "",
+      vncHost: "127.0.0.1",
+      vncPort: 5900,
+      vncPassword: "",
+    },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },
   };
 }

@@ -25,6 +25,8 @@ export type User = {
   passwordHash: string;
   createdAt: number;
   disabled?: boolean;
+  /** 成员能不能用远程控制（终端、桌面）。管理员一直能用，不看这个 */
+  remote?: boolean;
 };
 
 export type PublicUser = Omit<User, "passwordHash">;
@@ -165,6 +167,12 @@ export function isAdmin(user: Pick<User, "role"> | undefined): boolean {
   return user?.role === "admin";
 }
 
+/** 能不能用远程控制（终端、桌面）：管理员能用，成员要单独开。设置里各自还有总开关 */
+export function canUseRemote(user: Pick<User, "role" | "disabled" | "remote"> | undefined): boolean {
+  if (!user || user.disabled) return false;
+  return user.role === "admin" || user.remote === true;
+}
+
 /**
  * 升级前的登录态、推送订阅没有记是谁的：都算最早的那个管理员的（就是迁移出来的 admin）。
  */
@@ -220,7 +228,10 @@ export function createUser(params: { name: string; password: string; role?: Role
   return publicUser(user);
 }
 
-export function updateUser(id: string, patch: { name?: string; role?: Role; disabled?: boolean; password?: string }): PublicUser {
+export function updateUser(
+  id: string,
+  patch: { name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean },
+): PublicUser {
   const list = load().map((u) => ({ ...u }));
   const user = list.find((u) => u.id === id);
   if (!user) throw new Error("用户不存在");
@@ -233,6 +244,10 @@ export function updateUser(id: string, patch: { name?: string; role?: Role; disa
   if (patch.disabled !== undefined) {
     if (patch.disabled) user.disabled = true;
     else delete user.disabled;
+  }
+  if (patch.remote !== undefined) {
+    if (patch.remote) user.remote = true;
+    else delete user.remote;
   }
   if (patch.password !== undefined) {
     checkPassword(patch.password);

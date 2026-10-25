@@ -14,13 +14,14 @@ import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, ren
 export function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
   const tasks = S.view === "tasks";
+  const remote = S.view === "remote";
   fill(ui.topbar,
     h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
     h(
       "div",
       { class: "top-title" },
-      tasks
-        ? h("span", { class: "conv-name" }, "定时任务")
+      tasks || remote
+        ? h("span", { class: "conv-name" }, tasks ? "定时任务" : "远程控制")
         : c
           ? [
               // 聊天模式的对话：标题前面挂个聊天图标
@@ -181,7 +182,7 @@ export function baseName(p) {
   return (p ?? "").split(/[\\/]/).filter(Boolean).pop() || p || "";
 }
 
-function currentCwd() {
+export function currentCwd() {
   const c = S.current ? S.convs.get(S.current) : null;
   return c ? c.cwd : (S.draftCwd ?? S.workspaceRoot ?? "");
 }

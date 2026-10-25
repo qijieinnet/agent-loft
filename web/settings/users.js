@@ -66,7 +66,27 @@ export async function usersTab(panel) {
       const roleBtn = h("button", { class: "btn small", disabled: self }, u.role === "admin" ? "设为成员" : "设为管理员");
       roleBtn.onclick = act(roleBtn, () => patch(u, { role: u.role === "admin" ? "member" : "admin" }));
       const disBtn = h("button", { class: "btn small", disabled: self }, u.disabled ? "启用" : "停用");
-      disBtn.onclick = act(disBtn, () => patch(u, { disabled: !u.disabled }));
+      // 远程控制：管理员一直能用，成员要单独开
+      const remoteBtn =
+        u.role === "admin"
+          ? null
+          : h("button", { class: "btn small", title: "远程控制：直接用服务器的终端和桌面，不经过授权" }, u.remote ? "关闭远程控制" : "开通远程控制");
+      if (remoteBtn) {
+        remoteBtn.onclick = act(remoteBtn, async () => {
+          if (!u.remote) {
+            const sure = await confirmDialog({
+              title: `给「${u.name}」开通远程控制？`,
+              message:
+                "他能在网页里直接用这台机器的终端和桌面，以运行 agent-loft 的系统用户（和登录桌面的人）做任何事，不经过授权卡：读写这台机器上的所有文件（包括别人的对话记录和配置里的密钥）、装软件、停掉服务。只开给完全信任的人。",
+              confirmText: "开通",
+              danger: true,
+            });
+            if (!sure) return false;
+          }
+          await patch(u, { remote: !u.remote });
+          toast(u.remote ? "已关闭，他开着的终端和桌面已经断开" : "已开通");
+        });
+      }
       const memBtn = h("button", { class: "btn small", title: "删除他的「关于我」和所有记住的事。管理员看不到记忆的内容" }, "清空记忆");
       memBtn.onclick = act(memBtn, async () => {
         const sure = await confirmDialog({
@@ -112,6 +132,7 @@ export async function usersTab(panel) {
             " ",
             h("span", { class: "status-tag" }, u.role === "admin" ? "管理员" : "成员"),
             u.disabled ? h("span", { class: "status-tag bad" }, "已停用") : null,
+            u.role !== "admin" && u.remote ? h("span", { class: "status-tag" }, "远程控制") : null,
           ),
           h("div", { class: "s" }, `创建于 ${relTime(u.createdAt)} · ${u.devices} 台设备已登录${u.feishuLinks ? ` · 绑定了 ${u.feishuLinks} 个飞书账号` : ""}`),
           extra,
@@ -119,6 +140,7 @@ export async function usersTab(panel) {
         pwBtn,
         roleBtn,
         disBtn,
+        remoteBtn,
         memBtn,
         linkBtn,
         rmBtn,

@@ -1,0 +1,183 @@
+// 远程控制的接口：GET /api/remote 告诉页面终端、桌面各自能不能用；
+// POST /api/desktop/session 准备好桌面（必要时起 x11vnc），把这次的 VNC 密码给页面；
+// /ws/desktop 把页面（noVNC）的 WebSocket 原样转到 VNC 服务的 TCP 端口，和 websockify 一样。
+import net from "node:net";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
+import type { WebSocket, WebSocketServer } from "ws";
+import { canUseDesktop, desktopAvailability, desktopTarget, desktopViewer } from "../../core/desktop.js";
+import { canUseRemote, isAdmin, type User } from "../../core/users.js";
+import { config } from "../../core/config.js";
+import { sessionUser } from "./auth.js";
+import { HttpError, sendJson } from "./http.js";
+import { terminalStatus } from "./terminal.js";
+
+/** 页面要知道的：能不能用远程控制，终端、桌面各自开着没、能不能用 */
+export function remoteStatus(user: User) {
+  const desktop = desktopAvailability();
+  return {
+    allowed: canUseRemote(user),
+    terminal: terminalStatus(user),
+    desktop: {
+      allowed: canUseDesktop(user),
+      available: desktop.available,
+      source: desktop.source,
+      // 为什么用不了、怎么装：只给管理员看（成员只知道没有桌面）
+      ...(desktop.reason && isAdmin(user) ? { reason: desktop.reason } : {}),
+    },
+  };
+}
+
+export async function handleDesktopApi(req: IncomingMessage, res: ServerResponse, p: string, user: User): Promise<boolean> {
+  const method = req.method ?? "GET";
+  if (p === "/api/remote" && method === "GET") {
+    sendJson(res, 200, remoteStatus(user));
+    return true;
+  }
+  if (p === "/api/desktop/session" && method === "POST") {
+    if (!canUseDesktop(user)) throw new HttpError(403, "你没有使用远程桌面的权限，找管理员在 设置 → 用户 里开通");
+    let target;
+    try {
+      target = await desktopTarget();
+    } catch (err) {
+      throw new HttpError(503, err instanceof Error ? err.message : String(err));
+    }
+    // 已有的 VNC 服务（比如 macOS 屏幕共享）没开：现在就说清楚，别让页面一直「正在重连」
+    if (config().remote.desktopSource === "vnc" && !(await reachable(target.host, target.port))) {
+      throw new HttpError(503, `连不上 VNC 服务 ${target.host}:${target.port}，先确认它开着（macOS：系统设置 → 通用 → 共享 → 屏幕共享）`);
+    }
+    sendJson(res, 200, { password: target.password, source: config().remote.desktopSource });
+    return true;
+  }
+  return false;
+}
+
+/** 3 秒内能不能连上这个 TCP 端口 */
+function reachable(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = net.connect(port, host);
+    const done = (ok: boolean) => {
+      s.destroy();
+      resolve(ok);
+    };
+    s.setTimeout(3000, () => done(false));
+    s.once("connect", () => done(true));
+    s.once("error", () => done(false));
+  });
+}
+
+// ---------- WebSocket ↔ VNC ----------
+
+type DesktopClient = { ws: WebSocket; tcp: net.Socket; token: string; alive: boolean };
+const clients = new Set<DesktopClient>();
+
+/** 同时连着桌面的页面最多这么多（每个都是一整路画面） */
+const MAX_CLIENTS = 6;
+/** 页面收得慢：攒到这么多就先不读 VNC 那头，等它消化掉 */
+const HIGH_WATER = 4 * 1024 * 1024;
+
+function drop(client: DesktopClient): void {
+  if (!clients.delete(client)) return;
+  client.tcp.destroy();
+  desktopViewer(-1);
+}
+
+function stillAllowed(client: DesktopClient): boolean {
+  const user = sessionUser(client.token);
+  if (user && canUseDesktop(user)) return true;
+  client.ws.close(user ? 4403 : 4401, user ? "远程桌面权限已被收回" : "登录已失效");
+  drop(client);
+  return false;
+}
+
+function reject(socket: Duplex, status: string): void {
+  socket.write(`HTTP/1.1 ${status}\r\n\r\n`);
+  socket.destroy();
+}
+
+/** /ws/desktop 的握手：user 已经由调用方核对过登录和 Origin */
+export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socket: Duplex, head: Buffer, user: User, token: string): void {
+  if (!canUseDesktop(user)) return reject(socket, "403 Forbidden");
+  if (clients.size >= MAX_CLIENTS) return reject(socket, "429 Too Many Requests");
+  // 下面要等 x11vnc 起来（最多 10 秒）：这期间浏览器断开的话，socket 上没人接 error 会把进程带崩
+  const onError = () => socket.destroy();
+  socket.on("error", onError);
+  void desktopTarget().then(
+    (target) => {
+      if (socket.destroyed) return;
+      const tcp = net.connect(target.port, target.host);
+      tcp.once("error", () => {
+        if (!socket.destroyed) reject(socket, "502 Bad Gateway");
+      });
+      tcp.once("connect", () => {
+        if (socket.destroyed) return void tcp.destroy();
+        socket.off("error", onError);
+        wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, tcp, token));
+      });
+    },
+    (err) => {
+      console.error("[桌面] 准备桌面失败:", err instanceof Error ? err.message : err);
+      reject(socket, "503 Service Unavailable");
+    },
+  );
+}
+
+function bridge(ws: WebSocket, tcp: net.Socket, token: string): void {
+  const client: DesktopClient = { ws, tcp, token, alive: true };
+  clients.add(client);
+  desktopViewer(1);
+  tcp.removeAllListeners("error");
+  tcp.setNoDelay(true);
+  let paused = false;
+  const resumeWhenDrained = () => {
+    if (ws.readyState !== ws.OPEN) return;
+    if (ws.bufferedAmount < HIGH_WATER / 2) {
+      paused = false;
+      tcp.resume();
+    } else setTimeout(resumeWhenDrained, 30);
+  };
+  tcp.on("data", (chunk) => {
+    if (ws.readyState !== ws.OPEN) return;
+    ws.send(chunk, { binary: true });
+    if (!paused && ws.bufferedAmount > HIGH_WATER) {
+      paused = true;
+      tcp.pause();
+      setTimeout(resumeWhenDrained, 30);
+    }
+  });
+  tcp.on("close", () => {
+    if (ws.readyState === ws.OPEN) ws.close(4000, "桌面连接已断开");
+    drop(client);
+  });
+  tcp.on("error", () => drop(client));
+  ws.on("pong", () => (client.alive = true));
+  // 页面 → VNC：按键、鼠标都在这里，逐条复查登录态太密了；登录态 / 权限变了由 recheckDesktopClients 统一断开
+  ws.on("message", (data: Buffer) => tcp.write(data));
+  ws.on("close", () => drop(client));
+  ws.on("error", () => drop(client));
+}
+
+/** 退出登录、被踢、权限收回、设置里关了桌面：把还连着的断开 */
+export function recheckDesktopClients(): void {
+  for (const client of [...clients]) stillAllowed(client);
+}
+
+export function pingDesktopClients(): void {
+  for (const client of [...clients]) {
+    if (!stillAllowed(client)) continue;
+    if (!client.alive) {
+      client.ws.terminate();
+      drop(client);
+      continue;
+    }
+    client.alive = false;
+    client.ws.ping();
+  }
+}
+
+export function closeDesktopClients(): void {
+  for (const client of [...clients]) {
+    client.ws.close(1001, "服务重启");
+    drop(client);
+  }
+}
