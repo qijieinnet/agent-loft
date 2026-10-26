@@ -214,14 +214,15 @@ async function startX11vnc(display: string): Promise<Vnc> {
   return v;
 }
 
-export type DesktopTarget = { host: string; port: number; password: string };
+/** username：有就是苹果认证，由服务端登录（见 vnc-ard.ts），页面不用密码 */
+export type DesktopTarget = { host: string; port: number; password: string; username?: string };
 
 /** 要连桌面了：拿到 VNC 服务的地址和密码，必要时先把 x11vnc 起来 */
 export async function desktopTarget(): Promise<DesktopTarget> {
   const status = desktopAvailability();
   if (!status.available) throw new Error(status.reason ?? "这台机器上没有可用的桌面");
   const cfg = config().remote;
-  if (status.source === "vnc") return { host: cfg.vncHost, port: cfg.vncPort, password: cfg.vncPassword };
+  if (status.source === "vnc") return { host: cfg.vncHost, port: cfg.vncPort, password: cfg.vncPassword, ...(cfg.vncUsername ? { username: cfg.vncUsername } : {}) };
   // 换了显示（配置改了）：旧的停掉
   if (vnc && vnc.display !== status.display) stopDesktop();
   const gen = generation;

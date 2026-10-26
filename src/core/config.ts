@@ -87,6 +87,8 @@ export type AppConfig = {
     display: string;
     vncHost: string;
     vncPort: number;
+    /** 填了就用 Mac 的用户名 + 登录密码（vncPassword）走苹果认证，由服务端登录；空着就是普通的 VNC 密码 */
+    vncUsername: string;
     vncPassword: string;
   };
   feishu: {
@@ -125,6 +127,7 @@ export function defaultConfig(): AppConfig {
       display: "",
       vncHost: "127.0.0.1",
       vncPort: 5900,
+      vncUsername: "",
       vncPassword: "",
     },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },

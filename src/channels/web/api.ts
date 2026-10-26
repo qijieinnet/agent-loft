@@ -245,6 +245,7 @@ function applyConfig(input: Partial<AppConfig>): void {
     if (typeof r.vncHost === "string" && r.vncHost.trim()) next.remote.vncHost = r.vncHost.trim();
     const port = Number(r.vncPort);
     if (r.vncPort !== undefined && Number.isInteger(port) && port >= 1 && port <= 65535) next.remote.vncPort = port;
+    if (typeof r.vncUsername === "string") next.remote.vncUsername = r.vncUsername.trim();
     // 回传的是打了码的旧值：不改
     if (typeof r.vncPassword === "string" && !r.vncPassword.startsWith(MASK)) next.remote.vncPassword = r.vncPassword;
   }

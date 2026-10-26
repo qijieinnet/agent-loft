@@ -8,6 +8,7 @@ import type { WebSocket, WebSocketServer } from "ws";
 import { canUseDesktop, desktopAvailability, desktopTarget, desktopViewer } from "../../core/desktop.js";
 import { canUseRemote, isAdmin, type User } from "../../core/users.js";
 import { config } from "../../core/config.js";
+import { ardLogin, ByteReader, serveNoAuth } from "../../core/vnc-ard.js";
 import { sessionUser } from "./auth.js";
 import { HttpError, sendJson } from "./http.js";
 import { terminalStatus } from "./terminal.js";
@@ -46,7 +47,8 @@ export async function handleDesktopApi(req: IncomingMessage, res: ServerResponse
     if (config().remote.desktopSource === "vnc" && !(await reachable(target.host, target.port))) {
       throw new HttpError(503, `连不上 VNC 服务 ${target.host}:${target.port}，先确认它开着（macOS：系统设置 → 通用 → 共享 → 屏幕共享）`);
     }
-    sendJson(res, 200, { password: target.password, source: config().remote.desktopSource });
+    // 苹果认证由服务端登录，Mac 的登录密码不给页面
+    sendJson(res, 200, { password: target.username ? "" : target.password, source: config().remote.desktopSource });
     return true;
   }
   return false;
@@ -112,7 +114,10 @@ export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socke
       tcp.once("connect", () => {
         if (socket.destroyed) return void tcp.destroy();
         socket.off("error", onError);
-        wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, tcp, token));
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          if (!target.username) return bridge(ws, tcp, token);
+          void loginThenBridge(ws, tcp, token, target.username, target.password);
+        });
       });
     },
     (err) => {
@@ -122,7 +127,46 @@ export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socke
   );
 }
 
-function bridge(ws: WebSocket, tcp: net.Socket, token: string): void {
+/** 握手最多等这么久（对方不回话） */
+const LOGIN_TIMEOUT = 15_000;
+
+/** 苹果认证：先由这里和 VNC 服务登录，对页面装成不用认证的，谈完了再原样转发 */
+async function loginThenBridge(ws: WebSocket, tcp: net.Socket, token: string, username: string, password: string): Promise<void> {
+  // 握手前那个「回 502」的已经用不上了（socket 交给 WebSocket 了）
+  tcp.removeAllListeners("error");
+  const fromVnc = new ByteReader();
+  const fromPage = new ByteReader();
+  const onTcp = (d: Buffer) => fromVnc.push(d);
+  const onWs = (d: Buffer) => fromPage.push(d);
+  const onTcpEnd = () => fromVnc.fail(new Error("VNC 服务断开了连接"));
+  const onWsEnd = () => fromPage.fail(new Error("页面断开了"));
+  tcp.on("data", onTcp).on("close", onTcpEnd).on("error", onTcpEnd);
+  ws.on("message", onWs).on("close", onWsEnd);
+  const timer = setTimeout(() => {
+    const err = new Error("VNC 服务没有回应");
+    fromVnc.fail(err);
+    fromPage.fail(err);
+  }, LOGIN_TIMEOUT);
+  try {
+    const login = ardLogin(fromVnc, (b) => tcp.write(b), username, password);
+    await serveNoAuth(fromPage, (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }), login);
+  } catch (err) {
+    console.error("[桌面] 苹果认证失败:", err instanceof Error ? err.message : err);
+    tcp.destroy();
+    // 原因已经按认证失败告诉页面了：等它收到再关
+    if (ws.readyState === ws.OPEN) setTimeout(() => ws.close(4000, "认证失败"), 200);
+    return;
+  } finally {
+    clearTimeout(timer);
+    tcp.off("data", onTcp).off("close", onTcpEnd).off("error", onTcpEnd);
+    ws.off("message", onWs).off("close", onWsEnd);
+  }
+  if (ws.readyState !== ws.OPEN || tcp.destroyed) return void tcp.destroy();
+  bridge(ws, tcp, token, fromVnc.rest(), fromPage.rest());
+}
+
+/** pending：握手时多读进来、还没转发的字节 */
+function bridge(ws: WebSocket, tcp: net.Socket, token: string, pendingVnc?: Buffer, pendingPage?: Buffer): void {
   const client: DesktopClient = { ws, tcp, token, alive: true };
   clients.add(client);
   desktopViewer(1);
@@ -153,6 +197,8 @@ function bridge(ws: WebSocket, tcp: net.Socket, token: string): void {
   ws.on("pong", () => (client.alive = true));
   // 页面 → VNC：按键、鼠标都在这里，逐条复查登录态太密了；登录态 / 权限变了由 recheckDesktopClients 统一断开
   ws.on("message", (data: Buffer) => tcp.write(data));
+  if (pendingVnc?.length) ws.send(pendingVnc, { binary: true });
+  if (pendingPage?.length) tcp.write(pendingPage);
   ws.on("close", () => drop(client));
   ws.on("error", () => drop(client));
 }

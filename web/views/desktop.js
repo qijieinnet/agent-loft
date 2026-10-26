@@ -112,7 +112,16 @@ async function connect() {
   rfb.background = "#111";
   rfb.qualityLevel = 6;
   rfb.compressionLevel = 2;
+  // 握手卡住了（VNC 服务不回话之类）：别一直「正在连接」，断开后按退避重连
+  const stuck = setTimeout(() => {
+    if (D.rfb !== rfb || D.state !== "connecting") return;
+    D.rfb = null;
+    rfb.disconnect();
+    fail("连了 20 秒还没连上桌面，正在重试…", true);
+  }, 20_000);
+  rfb.addEventListener("disconnect", () => clearTimeout(stuck));
   rfb.addEventListener("connect", () => {
+    clearTimeout(stuck);
     D.state = "connected";
     D.backoff = 1000;
     setLive(true);
@@ -145,11 +154,32 @@ async function connect() {
       () => fail("连不上服务器，正在重连…", true),
     );
   });
-  rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password }));
+  // 只给得出密码：要用户名的认证（macOS 屏幕共享没开 VNC 密码时只剩苹果自己的认证）、没填密码却要密码的，
+  // 再交一次也还是缺，noVNC 会一直要下去，页面停在「正在连接桌面…」：直接说清楚
+  rfb.addEventListener("credentialsrequired", (e) => {
+    const types = e.detail?.types ?? ["password"];
+    if (!types.includes("username") && (password || !types.includes("password"))) return rfb.sendCredentials({ password });
+    D.want = false;
+    D.rfb = null;
+    rfb.disconnect();
+    fail(
+      types.includes("username")
+        ? "这个 VNC 服务要用户名登录（macOS 屏幕共享没开 VNC 密码）：在 设置 → 远程控制 里填上 Mac 的用户名和登录密码"
+        : "VNC 服务要密码，但设置里还没填：在 设置 → 远程控制 里填上 VNC 密码",
+      false,
+    );
+  });
   rfb.addEventListener("securityfailure", (e) => {
     D.want = false;
-    const reason = String(e.detail?.reason ?? "").replace(/[\s!！.。]+$/, "");
-    fail(`VNC 认证失败${reason ? `（${reason}）` : ""}。用的是已有的 VNC 服务的话，检查设置里的密码`, false);
+    // noVNC 按单字节读原因：服务端（苹果认证）给的是 UTF-8 的中文，转回来
+    let reason = String(e.detail?.reason ?? "");
+    try {
+      reason = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(reason, (c) => c.charCodeAt(0)));
+    } catch {
+      // 本来就不是 UTF-8：原样用
+    }
+    reason = reason.replace(/[\s!！.。]+$/, "");
+    fail(`VNC 认证失败${reason ? `（${reason}）` : ""}。用的是已有的 VNC 服务的话，检查设置里的用户名和密码`, false);
   });
   rfb.addEventListener("clipboard", (e) => (D.remoteClip = e.detail.text ?? ""));
   rfb.addEventListener("desktopname", (e) => {

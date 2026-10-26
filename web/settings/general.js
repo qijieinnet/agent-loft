@@ -66,7 +66,11 @@ export function remoteTab(cfg, page) {
   const display = h("input", { value: r.display ?? "", placeholder: "留空自动找，如 :0", autocapitalize: "off", spellcheck: "false" });
   const host = h("input", { value: r.vncHost ?? "127.0.0.1", autocapitalize: "off", spellcheck: "false" });
   const port = h("input", { type: "number", min: 1, max: 65535, value: r.vncPort ?? 5900 });
+  const username = h("input", { value: r.vncUsername ?? "", placeholder: "留空用 VNC 密码", autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
   const password = h("input", { type: "password", value: r.vncPassword ?? "", autocomplete: "new-password", placeholder: "VNC 密码" });
+  const syncPassword = () => (password.placeholder = username.value.trim() ? "Mac 的登录密码" : "VNC 密码");
+  username.addEventListener("input", syncPassword);
+  syncPassword();
   const autoBox = h("div", { class: "field-group" }, field("X 显示", display, "一台机器上有好几个桌面（比如登录界面 :0、登录后的桌面 :1）时可以指定"));
   const vncBox = h(
     "div",
@@ -74,9 +78,14 @@ export function remoteTab(cfg, page) {
     field("地址", host),
     field("端口", port),
     field(
+      "Mac 用户名",
+      username,
+      "macOS 屏幕共享没开 VNC 密码时填这里：用 Mac 的用户名和登录密码登录（苹果认证）。由服务端登录，密码不会发到页面",
+    ),
+    field(
       "密码",
       password,
-      "macOS：屏幕共享 →「电脑设置…」里勾选「VNC 显示程序可以使用密码控制屏幕」并设这个密码。开通了远程控制的成员连桌面时，页面会拿到这个密码",
+      "没填用户名时是 VNC 密码：屏幕共享 →「电脑设置…」里勾选「VNC 显示程序可以使用密码控制屏幕」并设这个密码，开通了远程控制的成员连桌面时页面会拿到它。填了用户名时是这个 Mac 用户的登录密码",
     ),
   );
   // 桌面关着时，桌面来源那几项用不上，收起来
@@ -132,6 +141,7 @@ export function remoteTab(cfg, page) {
               display: display.value.trim(),
               vncHost: host.value.trim(),
               vncPort: Number(port.value),
+              vncUsername: username.value.trim(),
               vncPassword: password.value,
             },
           });
