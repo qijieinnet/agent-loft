@@ -7,9 +7,9 @@ import { h, toast } from "./dom.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
-export function renderMarkdown(text) {
+export function renderMarkdown(text, opts) {
   const div = h("div", { class: "md" });
-  patchMarkdown(div, text);
+  patchMarkdown(div, text, opts);
   return div;
 }
 
@@ -17,9 +17,10 @@ export function renderMarkdown(text) {
  * 把 div 里的 markdown 更新成 text，只重画变了的块（段落、列表、代码块…）。
  * 流式输出时前面的块不再变，每帧只需重画最后一两块；选中的文字、代码块的横向滚动也不会被冲掉。
  * live = 还在输出：最后一块随时会变，先不高亮，等它定下来再高亮。
+ * enhance(box)：每块画好后再加工一下（比如把回复里的文件路径变成能点开的）。
  * 按块拼起来和整段解析的结果一样（marked 的 parser 本来就是逐块拼接的）。
  */
-export function patchMarkdown(div, text, { live = false } = {}) {
+export function patchMarkdown(div, text, { live = false, enhance } = {}) {
   const tokens = marked.lexer(text ?? "");
   const links = JSON.stringify(tokens.links ?? {});
   // 引用式链接的定义可能在后面才出现（流式输出时地址还会一点点变长），会影响前面的块：定义变了就整个重画
@@ -52,6 +53,7 @@ export function patchMarkdown(div, text, { live = false } = {}) {
     const box = document.createElement("div");
     box.innerHTML = DOMPurify.sanitize(marked.parser(chunk), { ADD_ATTR: ["target"] });
     decorate(box, final);
+    enhance?.(box);
     const nodes = [...box.childNodes];
     div.append(...nodes);
     blocks.push({ raw: raws[i], final, nodes });

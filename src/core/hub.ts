@@ -403,6 +403,20 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return buf.filter((e) => e.seq > since);
   }
 
+  /**
+   * 缓冲区里 agent 回复的文字（含进行中这一轮已经流出来的）。刚出的回复 agent 的记录里可能还没写进去，
+   * 查回复里提到过哪些文件时和历史一起看
+   */
+  recentReplyText(key: string): string {
+    const parts: string[] = [];
+    let streaming = "";
+    for (const { ev } of this.buffers.get(key) ?? []) {
+      if (ev.type === "delta") streaming += ev.text;
+      else if (ev.type === "text" || ev.type === "result") parts.push(ev.text);
+    }
+    return [...parts, streaming].join("\n");
+  }
+
   /** 正在进行的这一轮（从最后一条用户消息起），给刚打开页面的客户端补画用。 */
   liveTurn(key: string): EventEnvelope[] {
     if (!this.isBusy(key)) return [];

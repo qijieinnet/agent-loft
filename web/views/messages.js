@@ -11,6 +11,7 @@ import { renderChips, setBusy } from "./composer.js";
 import { renderScheduled } from "./schedule.js";
 import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
 import { scheduleNav } from "./msg-nav.js";
+import { linkReplyFiles } from "./file-preview.js";
 
 // ---------- 打开会话 ----------
 
@@ -520,13 +521,13 @@ function patchAi(item) {
     v.bodyKey = bodyKey;
     v.body = silent
       ? body
-        ? h("details", { class: "silent-run" }, h("summary", {}, "🔕 定时任务：这次无需提醒"), renderMarkdown(body))
+        ? h("details", { class: "silent-run" }, h("summary", {}, "🔕 定时任务：这次无需提醒"), renderMarkdown(body, { enhance: linkReplyFiles }))
         : h("div", { class: "silent-run" }, "🔕 定时任务：这次无需提醒")
       : body
         ? h("div", { class: "md" })
         : null;
   }
-  if (bodyKey === "md") patchMarkdown(v.body, body, { live: working });
+  if (bodyKey === "md") patchMarkdown(v.body, body, { live: working, enhance: linkReplyFiles });
 
   // 还在回复：末尾挂上星星动画和实时用时；什么都还没出来时旁边带一句「思考中…」
   if (working) {

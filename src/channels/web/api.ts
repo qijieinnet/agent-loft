@@ -11,6 +11,8 @@ import { approve, listApproved, listPending, revoke } from "../../core/pairing.j
 import { getConversation, listConversations, updateConversation } from "../../core/store.js";
 import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
+import { mentions, replyFileType, resolveReplyFile } from "../../core/reply-files.js";
+import { HTML_CSP, HTML_MAX, htmlDocument } from "../../core/visualize.js";
 import {
   createUser,
   getUser,
@@ -130,6 +132,82 @@ function serveUpload(res: ServerResponse, user: User, requested: string, downloa
     "Content-Security-Policy": "default-src 'none'; img-src 'self'; sandbox",
     "Cache-Control": "private, max-age=3600",
   });
+  fs.createReadStream(file).pipe(res);
+}
+
+// ---------- agent 回复里提到的文件 ----------
+
+/** 每条会话 agent 回复的全文（从 agent 记录里读，比较慢）：缓存一会儿，一屏好几张图不用每张都读一遍 */
+const replyTextCache = new Map<string, { at: number; text: string }>();
+
+async function historyReplyText(key: string): Promise<string> {
+  const messages = await hub.history(key);
+  const text = messages.filter((m) => m.role === "assistant").map((m) => m.text).join("\n");
+  replyTextCache.delete(key);
+  replyTextCache.set(key, { at: Date.now(), text });
+  // 只留最近的几十条会话
+  for (const k of replyTextCache.keys()) {
+    if (replyTextCache.size <= 50) break;
+    replyTextCache.delete(k);
+  }
+  return text;
+}
+
+/** 这条会话的 agent 回复里写没写过这个路径。缓存里没有、缓存又不是刚读的，就重读一次再说 */
+async function replyMentions(key: string, requested: string): Promise<boolean> {
+  if (mentions(hub.recentReplyText(key), requested)) return true;
+  const cached = replyTextCache.get(key);
+  if (cached && mentions(cached.text, requested)) return true;
+  if (cached && Date.now() - cached.at < 3000) return false;
+  return mentions(await historyReplyText(key), requested);
+}
+
+/**
+ * 回复里的文件：stat=1 只回名字和大小；其余返回内容，支持 Range（视频拖进度、iOS 放视频都要它）。
+ * 图片、PDF、音视频按类型 inline，别的一律当下载 —— HTML 之类不能在本站域名下被当网页打开
+ */
+function serveReplyFile(req: IncomingMessage, res: ServerResponse, file: string, opts: { stat: boolean; download: boolean }): void {
+  const st = fs.statSync(file);
+  const name = path.basename(file);
+  if (opts.stat) {
+    sendJson(res, 200, { name, path: file, size: st.size, mtime: st.mtimeMs });
+    return;
+  }
+  const type = replyFileType(file);
+  const inline = !opts.download && !!type;
+  const headers: Record<string, string | number> = {
+    ...SECURITY_HEADERS,
+    "Content-Type": inline ? type! : "application/octet-stream",
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "private, no-cache",
+    "Last-Modified": new Date(st.mtimeMs).toUTCString(),
+  };
+  if (type === "application/pdf") {
+    // 预览窗里用 iframe 嵌 PDF：要允许本站嵌入。Chrome 带 sandbox 的文档不显示 PDF，这里不加
+    // （所有接口的响应事先都带上了 SECURITY_HEADERS，见 server.ts，这里得把那个也去掉）
+    delete headers["X-Frame-Options"];
+    res.removeHeader("X-Frame-Options");
+    headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'self'";
+  } else {
+    headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox";
+  }
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ""));
+  if (range && (range[1] || range[2])) {
+    let start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]));
+    let end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1;
+    if (start >= st.size || start > end) {
+      res.writeHead(416, { ...headers, "Content-Range": `bytes */${st.size}` });
+      res.end();
+      return;
+    }
+    start = Math.max(0, start);
+    end = Math.max(start, end);
+    res.writeHead(206, { ...headers, "Content-Range": `bytes ${start}-${end}/${st.size}`, "Content-Length": end - start + 1 });
+    fs.createReadStream(file, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { ...headers, "Content-Length": st.size });
   fs.createReadStream(file).pipe(res);
 }
 
@@ -759,6 +837,34 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         allowedAgents: allowedAgentsFor(key),
         serverTime: Date.now(),
       });
+      return;
+    }
+    // agent 回复里提到的文件：只认回复里写过的路径，敏感文件（私钥、凭据…）不给
+    if (sub === "file" && method === "GET") {
+      const requested = url.searchParams.get("path") ?? "";
+      const file = resolveReplyFile(requested, conv.cwd);
+      if (!file || !(await replyMentions(key, requested))) throw new HttpError(404, "文件不存在，或者不能查看");
+      serveReplyFile(req, res, file, { stat: url.searchParams.get("stat") === "1", download: url.searchParams.get("download") === "1" });
+      return;
+    }
+    // 回复里的 HTML（Codex visualize 画的图表、agent 写的网页）：套好外壳放进沙箱显示，规矩和上面一样
+    if (sub === "html" && method === "GET") {
+      const requested = url.searchParams.get("path") ?? "";
+      const file = resolveReplyFile(requested, conv.cwd);
+      if (!file || !/\.html?$/i.test(file) || !(await replyMentions(key, requested))) throw new HttpError(404, "文件不存在，或者不能查看");
+      if (fs.statSync(file).size > HTML_MAX) throw new HttpError(413, "文件太大，下载下来看吧");
+      const doc = Buffer.from(htmlDocument(fs.readFileSync(file, "utf8"), path.basename(file)));
+      // 要能嵌进对话里：去掉所有响应默认带的 X-Frame-Options（见 server.ts）
+      res.removeHeader("X-Frame-Options");
+      res.writeHead(200, {
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": HTML_CSP,
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Length": doc.length,
+        "Cache-Control": "private, no-cache",
+      });
+      res.end(doc);
       return;
     }
     if (sub === "upload" && method === "POST") {

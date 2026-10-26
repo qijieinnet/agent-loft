@@ -7,7 +7,7 @@ import path from "node:path";
 import { dataDir } from "../home.js";
 import type { AttachmentInfo, AttachmentKind, SavedAttachment } from "./types.js";
 
-const uploadsRoot = path.join(dataDir, "uploads");
+export const uploadsRoot = path.join(dataDir, "uploads");
 
 export function uploadsDirFor(key: string): string {
   return path.join(uploadsRoot, encodeURIComponent(key));
