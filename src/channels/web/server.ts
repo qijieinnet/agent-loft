@@ -24,7 +24,7 @@ import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
 import { canSeeKey, sessionVisibleTo } from "./access.js";
 import { cookies } from "./http.js";
 import { COOKIE } from "./api.js";
-import { HttpError, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
+import { HttpError, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 import { hasSubscriptions, pushToAll } from "./push.js";
 import { closeListener, listen, listening, rebind } from "./listen.js";
 import { closeTerminalClients, pingTerminalClients, recheckTerminalClients, upgradeTerminal } from "./terminal.js";
@@ -86,11 +86,12 @@ function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: st
     const lastModified = new Date(Math.floor(stat.mtimeMs / 1000) * 1000);
     const since = Date.parse(req.headers["if-modified-since"] ?? "");
     const headers = {
-      ...SECURITY_HEADERS,
+      ...pageHeaders(),
       "Cache-Control": "no-cache",
       "Last-Modified": lastModified.toUTCString(),
     };
-    if (!Number.isNaN(since) && lastModified.getTime() <= since) {
+    // 页面本身不回 304：它的 CSP（允许谁嵌、能嵌谁）跟着设置变，304 带回的新头浏览器不一定换上
+    if (!Number.isNaN(since) && lastModified.getTime() <= since && path.extname(file) !== ".html") {
       res.writeHead(304, headers);
       res.end();
       return;

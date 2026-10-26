@@ -9,6 +9,8 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
 import { legacyOwnerId } from "../../core/users.js";
+import { config, onConfigChange } from "../../core/config.js";
+import { selfName, validServerId } from "../../core/servers.js";
 
 export type PushSubscriptionRecord = {
   endpoint: string;
@@ -19,6 +21,25 @@ export type PushSubscriptionRecord = {
   lastOkAt?: number;
   /** 哪个用户开的（core/users.ts）。升级前的没有：第一次读到时认给迁移出来的那个管理员并记下 */
   userId?: string;
+  /** 多服务器的外壳转来的订阅，见下面的 addRelaySubscription */
+  relay?: RelayInfo;
+};
+
+type VapidKey = { publicKey: string; privateJwk: crypto.JsonWebKey };
+
+/**
+ * 外壳转来的订阅：手机上只有添加到主屏幕的那个地址（外壳）能订阅推送，订阅是对着外壳那台的
+ * VAPID 公钥开的，这台推的时候也得用那把密钥签名，推送服务才认。点开通知回到外壳的页面，
+ * 地址里带上 srv=这台在外壳里的 id，由外壳切过来。
+ */
+export type RelayInfo = {
+  vapid: VapidKey;
+  /** 外壳的地址 */
+  origin: string;
+  /** 这台在外壳列表里的 id */
+  server: string;
+  /** 外壳列表里这台的图标和名字，加在通知标题前面 */
+  label: string;
 };
 
 /** 按订阅的主人筛选：拿到的是订阅里记的 userId（可能没有） */
@@ -34,7 +55,7 @@ export type PushPayload = {
 };
 
 type Store = {
-  vapid?: { publicKey: string; privateJwk: crypto.JsonWebKey };
+  vapid?: VapidKey;
   subscriptions: PushSubscriptionRecord[];
 };
 
@@ -43,6 +64,17 @@ const FILE = () => path.join(dataDir, "push.json");
 const VAPID_SUBJECT = "https://github.com/qijieinnet/agent-loft";
 
 let store: Store | null = null;
+
+/** 取消嵌入授权后，该外壳也不能再通过旧订阅收到通知。 */
+function dropRevokedRelays(s: Store, embedders: string[]): boolean {
+  const before = s.subscriptions.length;
+  s.subscriptions = s.subscriptions.filter((x) => !x.relay || embedders.includes(x.relay.origin));
+  return s.subscriptions.length !== before;
+}
+
+onConfigChange((next) => {
+  if (store && dropRevokedRelays(store, next.servers.embedders)) persist();
+});
 
 function load(): Store {
   if (!store) {
@@ -53,7 +85,8 @@ function load(): Store {
     const owner = legacyOwnerId();
     const legacy = owner ? store.subscriptions.filter((x) => !x.userId) : [];
     for (const x of legacy) x.userId = owner;
-    if (legacy.length > 0) writeJsonAtomic(FILE(), store);
+    const revoked = dropRevokedRelays(store, config().servers.embedders);
+    if (legacy.length > 0 || revoked) writeJsonAtomic(FILE(), store);
   }
   return store;
 }
@@ -91,8 +124,22 @@ export function vapidPublicKey(): string {
   return vapid().publicKey;
 }
 
-export function vapidHeader(endpoint: string): string {
-  const { publicKey, privateKey } = vapid();
+/**
+ * 这台的 VAPID 密钥对，给多服务器的外壳转给嵌着的各台（GET /api/push/relay-key）。
+ * 拿到它也只能推给已经知道订阅地址的设备：订阅地址和加密用的 p256dh / auth 只在开通知的那台浏览器
+ * 和收到订阅的服务端手里，别人的设备推不到
+ */
+export function vapidKeyPair(): VapidKey {
+  vapid();
+  const { publicKey, privateJwk } = load().vapid!;
+  return { publicKey, privateJwk };
+}
+
+/** key：用别的密钥签（外壳转来的订阅），不给就用这台自己的 */
+export function vapidHeader(endpoint: string, key?: VapidKey): string {
+  const { publicKey, privateKey } = key
+    ? { publicKey: key.publicKey, privateKey: crypto.createPrivateKey({ key: key.privateJwk, format: "jwk" }) }
+    : vapid();
   const header = b64url(Buffer.from(JSON.stringify({ typ: "JWT", alg: "ES256" })));
   const claims = b64url(
     Buffer.from(
@@ -162,6 +209,59 @@ export function addSubscription(sub: unknown, userAgent: string, userId?: string
   return record;
 }
 
+function validVapid(v: unknown): v is VapidKey {
+  const key = v as { publicKey?: unknown; privateJwk?: crypto.JsonWebKey };
+  const jwk = key?.privateJwk;
+  if (typeof key?.publicKey !== "string" || !jwk || typeof jwk !== "object") return false;
+  if (jwk.kty !== "EC" || jwk.crv !== "P-256" || typeof jwk.d !== "string" || typeof jwk.x !== "string" || typeof jwk.y !== "string") return false;
+  try {
+    crypto.createPrivateKey({ key: { kty: "EC", crv: "P-256", d: jwk.d, x: jwk.x, y: jwk.y }, format: "jwk" });
+  } catch {
+    return false;
+  }
+  return b64url(rawPublicKey(jwk)) === key.publicKey;
+}
+
+const clip = (v: unknown, max: number) => [...String(v ?? "").trim()].slice(0, max).join("");
+
+/**
+ * 外壳转来的订阅（多服务器）。embedders：这台允许谁嵌，外壳得在里面 —— 订阅只能是嵌着这台的
+ * 外壳转来的，别的地址的不收。同一个订阅地址再转一次就换掉旧的（换了账号登录也是这样归新账号）
+ */
+export function addRelaySubscription(
+  input: { subscription?: unknown; vapid?: unknown; via?: unknown },
+  userAgent: string,
+  userId: string,
+  embedders: string[],
+): PushSubscriptionRecord {
+  const sub = input.subscription;
+  if (!validSubscription(sub)) throw new Error("订阅信息不完整");
+  if (!validVapid(input.vapid)) throw new Error("推送密钥不对");
+  const via = (input.via ?? {}) as { origin?: unknown; server?: unknown; label?: unknown };
+  const origin = String(via.origin ?? "");
+  if (!embedders.includes(origin)) throw new Error(`这台没有允许 ${origin || "这个地址"} 嵌入，收不了它转来的通知订阅`);
+  const server = String(via.server ?? "");
+  if (!validServerId(server)) throw new Error("订阅信息不完整");
+  const { publicKey, privateJwk } = input.vapid;
+  const s = load();
+  const record: PushSubscriptionRecord = {
+    endpoint: sub.endpoint,
+    keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+    label: `${describeUa(userAgent)} · 经 ${new URL(origin).host}`,
+    createdAt: Date.now(),
+    userId,
+    relay: {
+      vapid: { publicKey, privateJwk: { kty: "EC", crv: "P-256", d: privateJwk.d, x: privateJwk.x, y: privateJwk.y } },
+      origin,
+      server,
+      label: clip(via.label, 60),
+    },
+  };
+  s.subscriptions = [...s.subscriptions.filter((x) => x.endpoint !== sub.endpoint), record];
+  persist();
+  return record;
+}
+
 export function removeSubscription(endpoint: string, mine?: OwnerFilter): boolean {
   const s = load();
   const before = s.subscriptions.length;
@@ -187,12 +287,36 @@ export function hasSubscriptions(): boolean {
 
 // ---------- 发送 ----------
 
+const prefixed = (label: string, title: string) => (label ? `${label} · ${title}` : title);
+
+/**
+ * 真正推出去的内容。加了别的服务器（这台是外壳）时标题前面带上这台的名字，好分清是哪台的；
+ * 外壳转来的订阅带上外壳列表里这台的名字，tag 加上这台的 id（各台的会话 key 可能撞上），
+ * 点开的地址带上 srv=这台的 id
+ */
+export function payloadFor(sub: PushSubscriptionRecord, payload: PushPayload): PushPayload {
+  const relay = sub.relay;
+  if (!relay) {
+    const servers = config().servers;
+    if (!servers.list.length) return payload;
+    return { ...payload, title: prefixed(`${servers.selfIcon} ${selfName(servers)}`.trim(), payload.title) };
+  }
+  const url = new URL(payload.url ?? "/", "http://relay");
+  url.searchParams.set("srv", relay.server);
+  return {
+    ...payload,
+    title: prefixed(relay.label, payload.title),
+    ...(payload.tag ? { tag: `srv:${relay.server}:${payload.tag}` } : {}),
+    url: `${url.pathname}${url.search}${url.hash}`,
+  };
+}
+
 async function sendOne(sub: PushSubscriptionRecord, payload: PushPayload): Promise<boolean> {
-  const body = encryptPayload(Buffer.from(JSON.stringify(payload)), sub.keys.p256dh, sub.keys.auth);
+  const body = encryptPayload(Buffer.from(JSON.stringify(payloadFor(sub, payload))), sub.keys.p256dh, sub.keys.auth);
   const res = await fetch(sub.endpoint, {
     method: "POST",
     headers: {
-      Authorization: vapidHeader(sub.endpoint),
+      Authorization: vapidHeader(sub.endpoint, sub.relay?.vapid),
       "Content-Encoding": "aes128gcm",
       "Content-Type": "application/octet-stream",
       TTL: String(24 * 3600),

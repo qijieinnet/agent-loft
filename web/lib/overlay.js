@@ -12,7 +12,7 @@ export function showMenu(anchor, items) {
         : h(
             "button",
             {
-              class: it.danger ? "danger" : "",
+              class: [it.danger ? "danger" : "", it.class ?? ""].join(" ").trim(),
               onclick: () => {
                 closeMenu();
                 it.onclick();

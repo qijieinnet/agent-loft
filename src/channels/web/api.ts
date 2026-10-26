@@ -13,6 +13,7 @@ import { addScheduled, clearScheduled, removeScheduled } from "../../core/schedu
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import { mentions, replyFileType, resolveReplyFile } from "../../core/reply-files.js";
 import { HTML_CSP, HTML_MAX, htmlDocument } from "../../core/visualize.js";
+import { cleanServers, ownFrameAncestors, shellInfo } from "../../core/servers.js";
 import {
   createUser,
   getUser,
@@ -72,7 +73,16 @@ import { handleTasksApi } from "./tasks-api.js";
 import { handleSkillsApi } from "./skills-api.js";
 import { handleTerminalApi } from "./terminal.js";
 import { handleDesktopApi, remoteStatus } from "./desktop.js";
-import { addSubscription, listSubscriptions, pushToAll, removeSubscription, removeSubscriptionsOf, vapidPublicKey } from "./push.js";
+import {
+  addRelaySubscription,
+  addSubscription,
+  listSubscriptions,
+  pushToAll,
+  removeSubscription,
+  removeSubscriptionsOf,
+  vapidKeyPair,
+  vapidPublicKey,
+} from "./push.js";
 
 export const COOKIE = "aim_session";
 const startedAt = Date.now();
@@ -188,7 +198,7 @@ function serveReplyFile(req: IncomingMessage, res: ServerResponse, file: string,
     // （所有接口的响应事先都带上了 SECURITY_HEADERS，见 server.ts，这里得把那个也去掉）
     delete headers["X-Frame-Options"];
     res.removeHeader("X-Frame-Options");
-    headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'self'";
+    headers["Content-Security-Policy"] = `default-src 'none'; frame-ancestors ${ownFrameAncestors(config().servers)}`;
   } else {
     headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox";
   }
@@ -280,9 +290,17 @@ function publicConfig(): unknown {
   };
 }
 
-function applyConfig(input: Partial<AppConfig>): void {
+/** selfOrigin：发起保存的页面的地址（多服务器列表里不能加自己） */
+function applyConfig(input: Partial<AppConfig>, selfOrigin?: string): void {
   const current = config();
   const next = structuredClone(current);
+  if (input.servers !== undefined) {
+    try {
+      next.servers = cleanServers(input.servers, current.servers, selfOrigin);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+  }
   if (typeof input.workspaceRoot === "string" && input.workspaceRoot.trim()) next.workspaceRoot = input.workspaceRoot.trim();
   if (typeof input.approvalTimeoutMs === "number") next.approvalTimeoutMs = Math.max(60_000, input.approvalTimeoutMs);
   if (typeof input.sessionTtlMs === "number") next.sessionTtlMs = Math.max(0, input.sessionTtlMs);
@@ -643,6 +661,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       pending,
       user: publicMe(user),
       remote: remoteStatus(user),
+      // 左上角切换服务器：没加别的服务器是 null
+      servers: shellInfo(config().servers),
       serverTime: Date.now(),
     });
     return;
@@ -665,6 +685,23 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const body = await readJsonBody<{ subscription?: unknown }>(req);
     try {
       const record = addSubscription(body.subscription, String(req.headers["user-agent"] ?? ""), user.id);
+      sendJson(res, 200, { ok: true, label: record.label });
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    return;
+  }
+  // 多服务器（core/servers.ts）：外壳把这个浏览器的订阅连同签名密钥转给嵌着的各台（web/lib/shell.js），
+  // 各台直接推到手机上，不经过外壳。密钥只在加了别的服务器时给
+  if (p === "/api/push/relay-key" && method === "GET") {
+    if (!config().servers.list.length) throw new HttpError(404, "没有加别的服务器");
+    sendJson(res, 200, vapidKeyPair());
+    return;
+  }
+  if (p === "/api/push/relay" && method === "POST") {
+    const body = await readJsonBody<{ subscription?: unknown; vapid?: unknown; via?: unknown }>(req);
+    try {
+      const record = addRelaySubscription(body, String(req.headers["user-agent"] ?? ""), user.id, config().servers.embedders);
       sendJson(res, 200, { ok: true, label: record.label });
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
@@ -859,7 +896,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       res.writeHead(200, {
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
-        "Content-Security-Policy": HTML_CSP,
+        "Content-Security-Policy": HTML_CSP.replace("frame-ancestors 'self'", `frame-ancestors ${ownFrameAncestors(config().servers)}`),
         "Content-Type": "text/html; charset=utf-8",
         "Content-Length": doc.length,
         "Cache-Control": "private, no-cache",
@@ -974,7 +1011,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p === "/api/config" && method === "PUT") {
     const input = await readJsonBody<Partial<AppConfig>>(req);
     await applyListen(req, input.web);
-    applyConfig(input);
+    applyConfig(input, typeof req.headers.origin === "string" ? req.headers.origin : undefined);
     sendJson(res, 200, { ...(publicConfig() as object), network: networkInfo(req) });
     return;
   }

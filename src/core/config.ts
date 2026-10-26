@@ -7,6 +7,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { configPath, ensureDirs, readJson, writeJsonAtomic } from "../home.js";
 import { cleanCustomCommands, type CommandPrefs } from "./command-catalog.js";
+import { normalizeOrigin, validServerId } from "./servers.js";
 
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -96,6 +97,16 @@ export type AppConfig = {
     watchdogMs: number;
     bots: FeishuBotConfig[];
   };
+  /** 多服务器：网页左上角切换到别的 agent-loft（见 core/servers.ts） */
+  servers: {
+    /** 切换列表里这台叫什么（空着用主机名）、用什么图标（emoji） */
+    selfName: string;
+    selfIcon: string;
+    /** 左上角能切到的其他服务器，按这个顺序。url 是 origin */
+    list: { id: string; name: string; icon: string; url: string }[];
+    /** 允许把这台的页面嵌进去的地址（origin）：别的 agent-loft 要切到这台，得先在这里 */
+    embedders: string[];
+  };
 };
 
 export const AGENT_IDS = ["claude", "codex"] as const;
@@ -131,6 +142,7 @@ export function defaultConfig(): AppConfig {
       vncPassword: "",
     },
     feishu: { watchdogMs: 10 * 60 * 1000, bots: [] },
+    servers: { selfName: "", selfIcon: "", list: [], embedders: [] },
   };
 }
 
@@ -164,6 +176,27 @@ function normalizeBot(raw: Partial<FeishuBotConfig>): FeishuBotConfig {
   };
 }
 
+/** 多服务器的地址可能是手改的：规范成 origin，坏的、重复的丢掉 */
+function normalizeServers(cfg: AppConfig): void {
+  const origin = (v: unknown) => {
+    try {
+      return normalizeOrigin(v);
+    } catch {
+      return null;
+    }
+  };
+  const seen = new Set<string>();
+  const ids = new Set<string>();
+  cfg.servers.list = cfg.servers.list.flatMap((s) => {
+    const url = origin(s?.url);
+    if (!url || seen.has(url) || !validServerId(s.id) || ids.has(s.id)) return [];
+    seen.add(url);
+    ids.add(s.id);
+    return [{ id: s.id, name: String(s.name ?? ""), icon: String(s.icon ?? ""), url }];
+  });
+  cfg.servers.embedders = [...new Set(cfg.servers.embedders.map(origin).filter((o): o is string => !!o))];
+}
+
 /** 自定义命令可能是手改进配置文件的：不合规的丢掉，别让一条坏数据把命令列表搞崩 */
 function normalizeCommands(cfg: AppConfig): void {
   for (const id of AGENT_IDS) cfg.commands[id].custom = cleanCustomCommands(cfg.commands[id].custom);
@@ -180,6 +213,7 @@ export function loadConfig(): AppConfig {
   merged.workspaceRoot = path.resolve(merged.workspaceRoot);
   merged.feishu.bots = merged.feishu.bots.map(normalizeBot);
   normalizeCommands(merged);
+  normalizeServers(merged);
   current = merged;
   if (!raw) writeJsonAtomic(configPath, merged);
   watchExternalEdits();
@@ -206,6 +240,7 @@ function watchExternalEdits(): void {
         next.workspaceRoot = path.resolve(next.workspaceRoot);
         next.feishu.bots = next.feishu.bots.map(normalizeBot);
         normalizeCommands(next);
+        normalizeServers(next);
         if (JSON.stringify(next) === JSON.stringify(current)) return;
         const prev = current;
         current = next;
@@ -234,6 +269,7 @@ export function saveConfig(next: AppConfig): AppConfig {
   const normalized = mergeDefaults(defaultConfig(), next);
   normalized.workspaceRoot = path.resolve(normalized.workspaceRoot);
   normalized.feishu.bots = normalized.feishu.bots.map(normalizeBot);
+  normalizeServers(normalized);
   writeJsonAtomic(configPath, normalized);
   current = normalized;
   for (const listener of listeners) {

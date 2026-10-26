@@ -1,6 +1,7 @@
 // HTTP 小工具：不引框架，几十行就够用。
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../../core/config.js";
+import { pageCsp } from "../../core/servers.js";
 
 export class HttpError extends Error {
   constructor(
@@ -116,3 +117,14 @@ export const SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy":
     "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 };
+
+/**
+ * 页面（静态文件）的安全头：CSP 的 frame-src / frame-ancestors 跟着多服务器的设置走（core/servers.ts）。
+ * 允许被别的地址嵌时去掉 X-Frame-Options：它只有 DENY / SAMEORIGIN，说不了「这几个地址可以」
+ */
+export function pageHeaders(): Record<string, string> {
+  const servers = config().servers;
+  const headers: Record<string, string> = { ...SECURITY_HEADERS, "Content-Security-Policy": pageCsp(servers) };
+  if (servers.embedders.length) delete headers["X-Frame-Options"];
+  return headers;
+}

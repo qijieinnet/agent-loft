@@ -8,6 +8,7 @@ import { renderTopbar } from "../views/topbar.js";
 import { applyEvent, openConversation } from "../views/messages.js";
 import { upsertInteraction } from "../views/interaction.js";
 import { setBusy } from "../views/composer.js";
+import { shownHere } from "./shell.js";
 import { renderScheduled } from "../views/schedule.js";
 
 // ---------- WebSocket ----------
@@ -97,7 +98,8 @@ export const WS = {
    * 窗口开着人走开了（电脑上停在这条会话、人在用手机），照样推
    */
   presence() {
-    const visible = document.visibilityState === "visible" && document.hasFocus() && Date.now() - lastInput < IDLE_MS;
+    // 多服务器：外壳切到了别的服务器、或者这台被嵌着但没在显示，也算没在看
+    const visible = document.visibilityState === "visible" && document.hasFocus() && Date.now() - lastInput < IDLE_MS && shownHere();
     // 在定时任务、远程控制页上：没在看哪条对话（远程控制页不清 S.current，回来时对话还在）
     this.raw({ t: "presence", visible, key: S.view ? "" : (S.current ?? "") });
   },
@@ -105,6 +107,10 @@ export const WS = {
 
 // 切回窗口本身就算动了一下
 window.addEventListener("focus", () => (markActive(), WS.presence()));
+document.addEventListener("aim:shell-active", () => {
+  if (shownHere()) markActive();
+  WS.presence();
+});
 window.addEventListener("blur", () => WS.presence());
 
 // ---------- 有没有人在动页面 ----------

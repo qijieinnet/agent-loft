@@ -1,6 +1,6 @@
 import { $app, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop, desktopMenu, desktopQuota, desktopSettings, remoteTabs, S, ui } from "../state.js";
+import { desktop, desktopMenu, desktopQuota, desktopSettings, framed, remoteTabs, S, ui } from "../state.js";
 import { clearAppBadge, WS } from "../lib/ws.js";
 import { showAuth } from "./auth.js";
 import {
@@ -20,7 +20,8 @@ import {
 } from "./sidebar.js";
 import { applyDesktopQuota, loadQuota, renderQuota } from "./quota.js";
 import { openBotConversations, openConvContextMenu, runDesktopMenu, usableAgents } from "./topbar.js";
-import { showMenu } from "../lib/overlay.js";
+import { confirmDialog, showMenu } from "../lib/overlay.js";
+import { applyShellInfo, handleAllowEmbed, HOME, mountSwitcher, refreshShellPush, routeToServer, shellBooted, switchServer } from "../lib/shell.js";
 import { bindScrollWatch, newDraft, openConversation, scrollToBottom } from "./messages.js";
 import { renderComposer } from "./composer.js";
 import { createNav } from "./msg-nav.js";
@@ -91,6 +92,23 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// 多服务器（lib/shell.js）：外壳让打开某条对话（点了这台的通知）、点了「管理服务器…」、切到别的服务器
+document.addEventListener("aim:shell-open", (e) => {
+  if (e.detail && e.detail !== S.current) void openConversation(e.detail);
+});
+document.addEventListener("aim:open-settings", (e) => openSettings(e.detail));
+document.addEventListener("aim:server-leave", () => closeSide());
+
+/**
+ * 通知点开的地址：别的服务器的带着 srv=那台的 id（服务端 push.ts 的 relay），交给外壳切过去。
+ * 返回 true 表示已经交出去了
+ */
+function routeNotice(url) {
+  const srv = url.searchParams.get("srv");
+  if (!srv || srv === HOME) return false;
+  return routeToServer(srv, decodeURIComponent(url.hash.slice(1)));
+}
+
 /** 定时任务页：第一次打开时才加载 */
 export function openTasksView() {
   import("./tasks.js").then(
@@ -113,6 +131,14 @@ export async function boot() {
   S.quotaRefreshMin = data.quotaRefreshMin ?? 10;
   S.quotaEnabled = data.quotaEnabled !== false;
   S.remote = data.remote ?? null;
+  // 通知优先；刷新保留当前历史记录里的服务器；新打开的本机会话链接显示本机。
+  const landing = new URL(location.href);
+  const srv = landing.searchParams.get("srv");
+  if (srv) {
+    landing.searchParams.delete("srv");
+    history.replaceState(history.state, "", `${landing.pathname}${landing.search}${srv === HOME ? landing.hash : ""}`);
+  }
+  applyShellInfo(data.servers, srv || history.state?.loftServer || (location.hash.length > 1 ? HOME : undefined));
   applyBootstrap(data);
   S.pending = new Map(data.pending.map((i) => [i.id, i]));
   const enabled = usableAgents().map((a) => a.id);
@@ -122,6 +148,7 @@ export async function boot() {
   WS.connect();
   if (desktopQuota) desktop.onQuota(applyDesktopQuota);
   else void loadQuota();
+  if (srv && srv !== HOME) routeToServer(srv, decodeURIComponent(landing.hash.slice(1)));
   const fromHash = decodeURIComponent(location.hash.slice(1));
   // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
   const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
@@ -150,17 +177,26 @@ export async function boot() {
       if (!document.querySelector(".overlay .settings")) void openSettings();
     });
   }
-  if ("serviceWorker" in navigator) {
+  // 被嵌在别的服务器的页面里时，通知、角标都归外壳管
+  if ("serviceWorker" in navigator && !framed) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
     clearAppBadge();
-    void releaseForeignPushSub().catch(() => {});
+    void releaseForeignPushSub()
+      .catch(() => {})
+      .then(() => refreshShellPush());
     // 点了系统通知、页面本来就开着：跳到通知对应的会话
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data?.type !== "open") return;
-      const key = decodeURIComponent(new URL(e.data.url, location.origin).hash.slice(1));
+      const url = new URL(e.data.url, location.origin);
+      if (routeNotice(url)) return;
+      // 这台自己的通知：外壳正显示着别的服务器的话切回来
+      switchServer(HOME);
+      const key = decodeURIComponent(url.hash.slice(1));
       if (key && key !== S.current) void openConversation(key);
     });
   }
+  shellBooted();
+  void handleAllowEmbed(confirmDialog, toast);
 }
 
 function renderLayout() {
@@ -219,6 +255,8 @@ function renderLayout() {
   ui.sidebar = h(
     "aside",
     { class: "sidebar" },
+    // 左上角切换服务器（lib/shell.js），没有别的服务器时藏着
+    mountSwitcher("sidebar", h("div", { class: "side-switch", hidden: true })),
     h(
       "div",
       { class: "side-top" },

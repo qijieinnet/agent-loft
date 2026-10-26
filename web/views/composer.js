@@ -225,7 +225,7 @@ export async function ensureConversation() {
   S.current = info.key;
   S.allowedAgents = S.agents.filter((a) => a.enabled).map((a) => a.id);
   S.seq.set(info.key, 0);
-  history.replaceState(null, "", `#${encodeURIComponent(info.key)}`);
+  history.replaceState(history.state, "", `#${encodeURIComponent(info.key)}`);
   WS.presence();
   fill(ui.msgInner, );
   WS.subscribe(info.key, 0);

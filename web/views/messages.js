@@ -37,7 +37,7 @@ export function newDraft() {
   ui.follow = true;
   setBusy(false);
   renderScheduled();
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(history.state, "", location.pathname);
   WS.presence();
   renderTopbar();
   renderEmpty();
@@ -83,7 +83,7 @@ export async function openConversation(key) {
   ui.follow = true;
   renderChips();
   renderScheduled();
-  history.replaceState(null, "", `#${encodeURIComponent(key)}`);
+  history.replaceState(history.state, "", `#${encodeURIComponent(key)}`);
   WS.presence();
   renderTopbar();
   renderSidebar();

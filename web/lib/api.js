@@ -4,6 +4,7 @@ export async function api(path, opts = {}) {
   const res = await fetch(path, {
     method: opts.method ?? "GET",
     credentials: "same-origin",
+    keepalive: opts.keepalive ?? false,
     headers: opts.body !== undefined && !(opts.body instanceof Blob) ? { "Content-Type": "application/json" } : opts.headers,
     body: opts.body === undefined ? undefined : opts.body instanceof Blob ? opts.body : JSON.stringify(opts.body),
   });

@@ -2,6 +2,7 @@ import { $app, fill, h } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { WS } from "../lib/ws.js";
 import { boot } from "./layout.js";
+import { mountSwitcher } from "../lib/shell.js";
 
 // ---------- 登录 ----------
 
@@ -56,6 +57,7 @@ export async function showAuth() {
     btn,
     err,
   );
-  fill($app, h("div", { class: "auth" }, form));
+  // 被嵌在别的服务器的页面里（多服务器）：左上角照样能切回去，不然手机上就困在登录页了
+  fill($app, h("div", { class: "auth" }, mountSwitcher("auth", h("div", { class: "auth-switch", hidden: true })), form));
   (me.needsSetup ? token : askName ? name : pw).focus();
 }

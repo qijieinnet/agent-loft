@@ -2,6 +2,7 @@ import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { currentPushSub, enablePush, pushSupport } from "../lib/push.js";
+import { refreshShellPush } from "../lib/shell.js";
 
 export async function notifyTab(panel) {
   const support = pushSupport();
@@ -25,6 +26,8 @@ export async function notifyTab(panel) {
         toast(err.message);
       }
       btn.disabled = false;
+      // 多服务器的外壳：开关通知后，转给各台的订阅跟着变
+      void refreshShellPush();
       await render();
     };
     const onBtn = h("button", { class: "btn primary" }, "在此设备开启通知");
@@ -49,9 +52,11 @@ export async function notifyTab(panel) {
       h("div", { class: "muted" }, "Web 对话里 agent 回复完成、出错、需要授权或向你提问时，推送到开启了通知的设备。正在前台看着那条对话的时候不推。飞书对话由飞书自己提醒。"),
       support.ok
         ? h("div", { class: "row" }, here ? offBtn : onBtn, data.subscriptions.length ? testBtn : null)
-        : h("div", { class: "error-text" }, support.why),
+        : support.framed
+          ? [h("div", { class: "muted" }, support.why), data.subscriptions.length ? h("div", { class: "row" }, testBtn) : null]
+          : h("div", { class: "error-text" }, support.why),
       // 推送用不了（比如不是 HTTPS）：至少让页面开着、切到别的窗口时能弹提醒
-      !support.ok && "Notification" in window && Notification.permission === "default"
+      !support.ok && !support.framed && "Notification" in window && Notification.permission === "default"
         ? h(
             "div",
             { class: "row" },

@@ -4,6 +4,7 @@ import { S } from "../state.js";
 import { renderSidebar } from "../views/sidebar.js";
 import { loadQuota, scheduleIdleQuota } from "../views/quota.js";
 import { catalogCache, catalogDefaults, catalogLoaded, renderContext, renderTopbar } from "../views/topbar.js";
+import { applyShellInfo } from "../lib/shell.js";
 
 export async function saveConfig(cfg, patch) {
   try {
@@ -18,6 +19,8 @@ export async function saveConfig(cfg, patch) {
     S.agents = boot2.agents;
     S.bots = boot2.bots;
     S.workspaceRoot = boot2.workspaceRoot;
+    // 左上角切换的服务器可能改了
+    applyShellInfo(boot2.servers);
     const quotaOn = boot2.quotaEnabled !== false;
     if (boot2.quotaRefreshMin !== S.quotaRefreshMin || quotaOn !== S.quotaEnabled) {
       const turnedOn = quotaOn && !S.quotaEnabled;

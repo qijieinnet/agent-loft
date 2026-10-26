@@ -12,9 +12,14 @@ export async function accountTab(page) {
   logout.onclick = async () => {
     logout.disabled = true;
     // 退出了就别再收这个账号的通知：换个人在这台设备上登录，不能收到上一个人的
-    await dropPushSub().catch(() => {});
-    await api("/api/logout", { method: "POST" });
-    location.reload();
+    try {
+      await dropPushSub();
+      await api("/api/logout", { method: "POST" });
+      location.reload();
+    } catch (err) {
+      toast(err.message);
+      logout.disabled = false;
+    }
   };
   const old = h("input", { type: "password", autocomplete: "current-password" });
   const pw = h("input", { type: "password", autocomplete: "new-password" });

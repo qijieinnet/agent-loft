@@ -45,6 +45,8 @@ export const ui = {};
  * 桌面端收不到 Web Push，系统通知、Dock 角标、菜单栏的待处理数都交给它。
  */
 export const desktop = window.agentLoftDesktop ?? null;
+/** 被别的 agent-loft 嵌在 iframe 里（多服务器，见 lib/shell.js）。只有服务端允许了的地址嵌得进来 */
+export const framed = !desktop && window.parent !== window;
 /** 新版桌面端：额度由它统一查好推过来，页面自己不查（老版本桌面端没有 onQuota，照旧自己查） */
 export const desktopQuota = typeof desktop?.onQuota === "function";
 // 桌面端里：顶栏、侧栏顶部可以按住拖动窗口（样式见 css/topbar.css 的 .in-desktop）

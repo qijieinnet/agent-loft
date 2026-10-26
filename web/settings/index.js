@@ -11,6 +11,7 @@ import { accountTab } from "./security.js";
 import { memoryTab } from "./memory.js";
 import { skillsTab } from "./skills.js";
 import { usageTab } from "./usage.js";
+import { serversTab } from "./servers.js";
 import { systemTab, usersTab } from "./users.js";
 import { hasDirty, markDirty } from "./common.js";
 
@@ -50,6 +51,7 @@ function groupsFor(cfg) {
       tabs: [
         ["飞书", (p) => feishuTab(cfg, p)],
         ["远程控制", (p) => remoteTab(cfg, p)],
+        ["服务器", (p) => serversTab(cfg, p)],
       ],
     },
     {

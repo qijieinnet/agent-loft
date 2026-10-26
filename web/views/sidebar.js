@@ -4,6 +4,7 @@ import { desktop, remoteTabs, S, ui } from "../state.js";
 import { baseName } from "./topbar.js";
 import { newDraft, openConversation } from "./messages.js";
 import { leaveRemote } from "./remote.js";
+import { reportShellState } from "../lib/shell.js";
 
 // ---------- 侧栏标题跑马灯：名字被省略时，hover 来回滚动显示全名 ----------
 
@@ -388,11 +389,12 @@ function moreButton(st, count, limit, load) {
 
 /** 待处理的授权 / 提问和正在跑的会话，报给桌面端显示在菜单栏里 */
 export function reportDesktop() {
-  if (!desktop) return;
-  const pending = [...S.pending.values()]
-    .filter((i) => !i.settled)
-    .map((i) => ({ id: i.id, key: i.convKey, title: i.spec.title, conv: convTitle(S.convs.get(i.convKey)) }));
+  const open = [...S.pending.values()].filter((i) => !i.settled);
   const busy = [...S.convs.values()].filter((c) => c.busy).length;
+  // 多服务器：左上角切换列表里这台的角标
+  reportShellState(open.length, busy);
+  if (!desktop) return;
+  const pending = open.map((i) => ({ id: i.id, key: i.convKey, title: i.spec.title, conv: convTitle(S.convs.get(i.convKey)) }));
   desktop.setState({ pending, busy });
 }
 

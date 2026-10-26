@@ -87,7 +87,7 @@ export async function openTasks() {
   S.view = "tasks";
   S.items = [];
   S.turnAi = null;
-  history.replaceState(null, "", "#tasks");
+  history.replaceState(history.state, "", "#tasks");
   WS.presence();
   ui.spacer.style.height = "0px";
   // 对话页的「贴底跟随」在这里不要：内容一变它就会滚到最底下

@@ -73,7 +73,7 @@ export async function openRemote(tab) {
 async function select(tab) {
   R.tab = tab;
   localStorage.setItem("aim.remoteTab", tab);
-  history.replaceState(null, "", `#remote/${tab}`);
+  history.replaceState(history.state, "", `#remote/${tab}`);
   renderSwitch();
   ui.remoteDesk.hidden = tab !== "desktop";
   ui.remoteTerm.hidden = tab !== "terminal";
@@ -97,7 +97,7 @@ export function leaveRemote() {
   const before = R.before;
   R.before = null;
   if (before === "tasks") return openTasksView();
-  history.replaceState(null, "", S.current ? `#${encodeURIComponent(S.current)}` : location.pathname);
+  history.replaceState(history.state, "", S.current ? `#${encodeURIComponent(S.current)}` : location.pathname);
   // 对话区藏着的时候滚动位置没了：放回原处
   ui.messages.scrollTop = R.scroll ?? ui.messages.scrollTop;
   renderTopbar();
