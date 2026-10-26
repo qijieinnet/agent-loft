@@ -1,6 +1,6 @@
 {
   "name": "agent-loft",
-  "version": "0.2.42",
+  "version": "0.2.43",
   "type": "module",
   "description": "多个 agent 的工作台：把本机 Claude Code / Codex 放到一处统一管理，用飞书和 Web 页面随时驱动——会话、审批、模型切换都共用",
   "keywords": [
@@ -53,6 +53,7 @@
     "dompurify": "^3.2.0",
     "marked": "^16.0.0",
     "qrcode": "^1.5.4",
+    "sharp": "^0.35.5",
     "tsx": "^4.20.6",
     "ws": "^8.18.0"
   },

@@ -12,9 +12,20 @@ import { createTouch } from "./desktop-touch.js";
 // 进来时不自动连，点了「连接」才连（Linux 上会起 x11vnc）。
 // 离开远程控制页时连接不断，画面在后台照常更新；断线了自己重连，点了「断开」才不连。
 // 手机上：触摸事件由 desktop-touch.js 接管（触控板 / 触摸两种模式、双指本地放大），下面多一排按键。
+// 画质：除了「原画」，服务端都会把画面缩小、压成 JPEG 再发过来（vnc-transcode.ts），换画质要重连。
+
+/** 画质档位：和服务端 DESKTOP_QUALITIES 对应，original 是原样转发 */
+const QUALITIES = [
+  ["smooth", "流畅", "长边 1280，最省流量"],
+  ["standard", "标准", "长边 1920"],
+  ["high", "高清", "长边 2560"],
+  ["original", "原画", "不缩放、无损，很费流量，只适合局域网"],
+];
+const savedQuality = localStorage.getItem("aim.deskQuality");
 
 const D = {
   rfb: null,
+  quality: QUALITIES.some(([id]) => id === savedQuality) ? savedQuality : "standard",
   /** idle / connecting / connected / error */
   state: "idle",
   message: "",
@@ -100,7 +111,7 @@ async function connect() {
   // 等密码的这会儿里点了断开，或者又发起了一次连接（切回前台、点了重连）：这次作罢
   if (!D.want || D.rfb) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const rfb = new RFB(D.screen, `${proto}://${location.host}/ws/desktop`, { credentials: { password }, shared: true, wsProtocols: [] });
+  const rfb = new RFB(D.screen, `${proto}://${location.host}/ws/desktop?q=${D.quality}`, { credentials: { password }, shared: true, wsProtocols: [] });
   D.rfb = rfb;
   rfb.scaleViewport = D.fit;
   // 不裁剪：原始大小时 noVNC 的画面容器自己出滚动条
@@ -293,6 +304,7 @@ function renderTools() {
     tool("剪贴板", "clipboard", openClipboard, { disabled: !on }),
     tool("发送按键", "command", (e) => openKeysMenu(e.currentTarget), { disabled: !on || D.viewOnly }),
     tool(D.viewOnly ? "只看（点一下恢复控制）" : "只看不控制", "eye", toggleViewOnly, { on: D.viewOnly }),
+    tool(`画质：${QUALITIES.find(([id]) => id === D.quality)[1]}`, "gauge", (e) => openQualityMenu(e.currentTarget)),
     // 手机上靠双指放大，不切原始大小
     isTouch ? null : tool(D.fit ? "原始大小" : "缩放到窗口", D.fit ? "maximize" : "restore", toggleFit),
     tool("全屏", "expand", () => setFull(true)),
@@ -346,6 +358,25 @@ function toggleViewOnly() {
   if (D.rfb) D.rfb.viewOnly = D.viewOnly;
   toast(D.viewOnly ? "只看：鼠标键盘不会发给桌面" : "已恢复控制");
   renderTools();
+}
+
+/** 选画质：存下来，连着的话马上按新画质重连 */
+function openQualityMenu(anchor) {
+  const r = anchor.getBoundingClientRect();
+  showMenu(
+    { x: r.right - 240, y: r.bottom + 4 },
+    QUALITIES.map(([id, name, hint]) => ({
+      label: `${id === D.quality ? "✓ " : "　 "}${name} · ${hint}`,
+      onclick: () => {
+        if (id === D.quality) return;
+        D.quality = id;
+        localStorage.setItem("aim.deskQuality", id);
+        renderTools();
+        toast(`画质：${name}`);
+        if (D.want) reconnect();
+      },
+    })),
+  );
 }
 
 function toggleFit() {

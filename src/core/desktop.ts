@@ -214,7 +214,7 @@ async function startX11vnc(display: string): Promise<Vnc> {
   return v;
 }
 
-/** username：有就是苹果认证，由服务端登录（见 vnc-ard.ts），页面不用密码 */
+/** username：有就是苹果认证，由服务端登录（见 vnc-auth.ts），页面不用密码 */
 export type DesktopTarget = { host: string; port: number; password: string; username?: string };
 
 /** 要连桌面了：拿到 VNC 服务的地址和密码，必要时先把 x11vnc 起来 */

@@ -489,7 +489,7 @@ export async function startWeb(): Promise<void> {
       }
       const token = cookies(req)[COOKIE] ?? "";
       if (url.pathname === "/ws/term") return upgradeTerminal(wss!, req, socket, head, user, token, url);
-      if (url.pathname === "/ws/desktop") return upgradeDesktop(wss!, req, socket, head, user, token);
+      if (url.pathname === "/ws/desktop") return upgradeDesktop(wss!, req, socket, head, user, token, url);
       wss!.handleUpgrade(req, socket, head, (ws) => {
         const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null, seen: Date.now() };
         clients.add(client);

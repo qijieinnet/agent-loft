@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { ardLogin, ByteReader, serveNoAuth, VncAuthError } from "../src/core/vnc-ard.js";
+import { vncLogin, ByteReader, serveNoAuth, VncAuthError } from "../src/core/vnc-auth.js";
 
 /** 装成 macOS 屏幕共享：只给苹果认证，解开凭据核对用户名密码 */
 async function fakeMac(r: ByteReader, write: (b: Buffer) => void, user: string, pass: string): Promise<void> {
@@ -38,7 +38,7 @@ test("苹果认证：用户名密码对了能登录，不对报认证失败", as
   for (const [pass, ok] of [["密码 pass", true], ["wrong", false]] as const) {
     const p = pipe();
     const mac = fakeMac(p.toServer, p.sendToClient, "qijie", "密码 pass");
-    const login = ardLogin(p.toClient, p.sendToServer, "qijie", pass);
+    const login = vncLogin(p.toClient, p.sendToServer, { username: "qijie", password: pass });
     await mac;
     if (ok) await login;
     else await assert.rejects(login, (e) => e instanceof VncAuthError && /用户名或密码不对/.test(e.message));
@@ -71,10 +71,22 @@ test("苹果认证：服务不支持时说清楚，连接断了读的那头报�
   const p = pipe();
   p.sendToClient(Buffer.from("RFB 003.008\n", "latin1"));
   p.sendToClient(Buffer.from([1, 2]));
-  await assert.rejects(ardLogin(p.toClient, p.sendToServer, "u", "p"), /不支持用 Mac 用户名登录/);
+  await assert.rejects(vncLogin(p.toClient, p.sendToServer, { username: "u", password: "p" }), /不支持用 Mac 用户名登录/);
 
   const r = new ByteReader();
   const pending = r.read(4);
   r.fail(new Error("断了"));
   await assert.rejects(pending, /断了/);
+});
+
+test("VNC 密码认证：DES 加密服务端给的 16 字节，和 OpenSSL（钥匙按位反转）算的一样", async () => {
+  const p = pipe();
+  p.sendToClient(Buffer.from("RFB 003.008\n", "latin1"));
+  p.sendToClient(Buffer.from([2, 1, 2]));
+  p.sendToClient(Buffer.from("00112233445566778899aabbccddeeff", "hex"));
+  p.sendToClient(Buffer.from([0, 0, 0, 0]));
+  await vncLogin(p.toClient, p.sendToServer, { password: "secret12" });
+  assert.equal((await p.toServer.read(12)).toString("latin1"), "RFB 003.008\n");
+  assert.equal((await p.toServer.read(1))[0], 2);
+  assert.equal((await p.toServer.read(16)).toString("hex"), "817402416b165d7ade9c46b5faa42370");
 });

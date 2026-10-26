@@ -5,10 +5,11 @@ import net from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { WebSocket, WebSocketServer } from "ws";
-import { canUseDesktop, desktopAvailability, desktopTarget, desktopViewer } from "../../core/desktop.js";
+import { canUseDesktop, desktopAvailability, desktopTarget, desktopViewer, type DesktopTarget } from "../../core/desktop.js";
 import { canUseRemote, isAdmin, type User } from "../../core/users.js";
 import { config } from "../../core/config.js";
-import { ardLogin, ByteReader, serveNoAuth } from "../../core/vnc-ard.js";
+import { ByteReader, serveNoAuth, vncLogin } from "../../core/vnc-auth.js";
+import { isDesktopQuality, loadSharp, transcode, type DesktopQuality } from "../../core/vnc-transcode.js";
 import { sessionUser } from "./auth.js";
 import { HttpError, sendJson } from "./http.js";
 import { terminalStatus } from "./terminal.js";
@@ -97,8 +98,11 @@ function reject(socket: Duplex, status: string): void {
   socket.destroy();
 }
 
-/** /ws/desktop 的握手：user 已经由调用方核对过登录和 Origin */
-export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socket: Duplex, head: Buffer, user: User, token: string): void {
+/**
+ * /ws/desktop 的握手：user 已经由调用方核对过登录和 Origin。
+ * ?q= 是画质：smooth / standard / high 由服务端缩小、压成 JPEG 再发（vnc-transcode.ts）；original 或不带是原样转发
+ */
+export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socket: Duplex, head: Buffer, user: User, token: string, url: URL): void {
   if (!canUseDesktop(user)) return reject(socket, "403 Forbidden");
   if (clients.size >= MAX_CLIENTS) return reject(socket, "429 Too Many Requests");
   // 下面要等 x11vnc 起来（最多 10 秒）：这期间浏览器断开的话，socket 上没人接 error 会把进程带崩
@@ -114,7 +118,9 @@ export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socke
       tcp.once("connect", () => {
         if (socket.destroyed) return void tcp.destroy();
         socket.off("error", onError);
+        const q = url.searchParams.get("q");
         wss.handleUpgrade(req, socket, head, (ws) => {
+          if (isDesktopQuality(q)) return void transcodeSession(ws, tcp, token, target, q);
           if (!target.username) return bridge(ws, tcp, token);
           void loginThenBridge(ws, tcp, token, target.username, target.password);
         });
@@ -148,7 +154,7 @@ async function loginThenBridge(ws: WebSocket, tcp: net.Socket, token: string, us
     fromPage.fail(err);
   }, LOGIN_TIMEOUT);
   try {
-    const login = ardLogin(fromVnc, (b) => tcp.write(b), username, password);
+    const login = vncLogin(fromVnc, (b) => tcp.write(b), { username, password });
     await serveNoAuth(fromPage, (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }), login);
   } catch (err) {
     console.error("[桌面] 苹果认证失败:", err instanceof Error ? err.message : err);
@@ -163,6 +169,63 @@ async function loginThenBridge(ws: WebSocket, tcp: net.Socket, token: string, us
   }
   if (ws.readyState !== ws.OPEN || tcp.destroyed) return void tcp.destroy();
   bridge(ws, tcp, token, fromVnc.rest(), fromPage.rest());
+}
+
+function isLoopback(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "localhost" || h === "::1" || /^127\./.test(h);
+}
+
+/** 转码：服务端连 VNC、缩小画面压成 JPEG 发给页面 */
+async function transcodeSession(ws: WebSocket, tcp: net.Socket, token: string, target: DesktopTarget, quality: DesktopQuality): Promise<void> {
+  // 握手前那个「回 502」的已经用不上了（socket 交给 WebSocket 了）
+  tcp.removeAllListeners("error");
+  tcp.on("error", () => tcp.destroy());
+  // 压 JPEG 的 sharp 在这台机器上装不上：退回原样转发（原画），别让页面一直重连
+  try {
+    await loadSharp();
+  } catch (err) {
+    console.error("[桌面] 加载 sharp 失败，画质设置不起作用，按原画转发:", err instanceof Error ? err.message : err);
+    if (!target.username) return bridge(ws, tcp, token);
+    return loginThenBridge(ws, tcp, token, target.username, target.password);
+  }
+  tcp.removeAllListeners("error");
+  tcp.setNoDelay(true);
+  const client: DesktopClient = { ws, tcp, token, alive: true };
+  clients.add(client);
+  desktopViewer(1);
+  const fromVnc = new ByteReader();
+  const fromPage = new ByteReader();
+  tcp.on("data", (d: Buffer) => fromVnc.push(d));
+  tcp.on("close", () => fromVnc.fail(new Error("VNC 服务断开了连接")));
+  tcp.on("error", () => fromVnc.fail(new Error("VNC 服务断开了连接")));
+  ws.on("message", (d: Buffer) => fromPage.push(d));
+  ws.on("close", () => fromPage.fail(new Error("页面断开了")));
+  ws.on("error", () => fromPage.fail(new Error("页面断开了")));
+  ws.on("pong", () => (client.alive = true));
+  const timer = setTimeout(() => {
+    const err = new Error("VNC 服务没有回应");
+    fromVnc.fail(err);
+    fromPage.fail(err);
+  }, LOGIN_TIMEOUT);
+  try {
+    await transcode({
+      vnc: { reader: fromVnc, write: (b) => void (tcp.destroyed || tcp.write(b)) },
+      page: { reader: fromPage, write: (b) => void (ws.readyState === ws.OPEN && ws.send(b, { binary: true })), backlog: () => ws.bufferedAmount },
+      creds: { username: target.username, password: target.password },
+      quality,
+      local: isLoopback(target.host),
+      onReady: () => clearTimeout(timer),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/页面断开了/.test(msg)) console.error("[桌面] 转码会话结束:", msg);
+    // 认证失败的原因已经告诉页面了：等它收到再关
+    if (ws.readyState === ws.OPEN) setTimeout(() => ws.close(4000, "桌面连接已断开"), 200);
+  } finally {
+    clearTimeout(timer);
+    drop(client);
+  }
 }
 
 /** pending：握手时多读进来、还没转发的字节 */
