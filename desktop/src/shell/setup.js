@@ -295,6 +295,8 @@ function renderLocalCard(el) {
   const L = state.system.local;
   const busy = state.system.localBusy;
   const localServer = state.servers.find((s) => s.id === state.localId);
+  const withDesktop = state.prefs.localWithDesktop;
+  const autoText = withDesktop ? "随桌面端运行" : "开机自动运行";
   let title;
   let sub;
   let dot;
@@ -318,13 +320,13 @@ function renderLocalCard(el) {
   } else if (L.running) {
     // Windows 上看不到服务端是怎么跑的（多半在 WSL 里），不下结论
     title =
-      busy === "restart" ? "正在重启…" : busy === "stop" ? "正在停止…" : busy === "uninstall" ? "正在卸载…" : state.system.localUnsupported ? "运行中" : L.service ? "运行中 · 开机自动运行" : "运行中（手动启动的，没有开机自启）";
+      busy === "restart" ? "正在重启…" : busy === "stop" ? "正在停止…" : busy === "uninstall" ? "正在卸载…" : state.system.localUnsupported ? "运行中" : L.service ? `运行中 · ${autoText}` : "运行中（手动启动的，没有开机自启）";
     sub = L.url;
     dot = "online";
     if (L.service) actions = [more];
   } else if (L.service) {
-    // 手动停的，或者起不来（那就看日志）；开机自启还在
-    title = busy === "restart" ? "正在启动…" : busy === "uninstall" ? "正在卸载…" : "已停止 · 开机自动运行";
+    // 手动停的，或者起不来（那就看日志）；开机自启（或随桌面端运行）还在
+    title = busy === "restart" ? "正在启动…" : busy === "uninstall" ? "正在卸载…" : `已停止 · ${autoText}`;
     [sub, dot] = [`${L.url} · 不是自己停的话，看一下日志里的报错`, "offline"];
     actions = [more];
   } else if (state.system.localUnsupported) {
@@ -339,6 +341,28 @@ function renderLocalCard(el) {
   const rows = [
     h("div", { class: "row" }, h("span", { class: `dot ${dot}` }), h("div", { class: "grow" }, h("div", { class: "name" }, title), h("div", { class: "sub wrap" }, sub)), h("div", { class: "actions" }, actions)),
   ];
+  if (L?.service) {
+    rows.push(
+      h(
+        "div",
+        { class: "row switch-row" },
+        h(
+          "label",
+          { for: "p-localWithDesktop" },
+          h("div", {}, "只在桌面端运行时运行"),
+          h("div", { class: "sub" }, withDesktop ? "不开机自启：打开桌面端时启动，退出桌面端时停止。退出后手机、飞书、其他电脑都连不上它。" : "关着时开机自动运行，退出桌面端也不影响，手机、飞书、其他电脑照常能连。"),
+        ),
+        h("input", {
+          id: "p-localWithDesktop",
+          type: "checkbox",
+          class: "switch",
+          checked: withDesktop,
+          disabled: !!busy,
+          onchange: (e) => call("setPref", "localWithDesktop", e.target.checked),
+        }),
+      ),
+    );
+  }
   if (state.system.localError) rows.push(h("div", { class: "row error-text" }, state.system.localError));
   fill(el, ...rows);
 }

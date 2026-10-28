@@ -433,7 +433,9 @@ async function confirmStopLocal() {
   const { response } = await dialog.showMessageBox(win, {
     type: "warning",
     message: "停止本机服务端？",
-    detail: `停掉${THIS_PC}上的 agent-loft，停了以后手机、飞书、其他电脑都连不上它。开机自启不取消，下次开机会自动运行；点「运行」可以马上恢复。配置和会话都不动。`,
+    detail: `停掉${THIS_PC}上的 agent-loft，停了以后手机、飞书、其他电脑都连不上它。${
+      store.prefs().localWithDesktop ? "下次打开桌面端会自动运行" : "开机自启不取消，下次开机会自动运行"
+    }；点「运行」可以马上恢复。配置和会话都不动。`,
     buttons: ["停止", "取消"],
     defaultId: 1,
     cancelId: 1,
@@ -734,6 +736,8 @@ const calls = {
   usage: (from, to) => usageOfAll(from, to),
 
   setPref: (key, value) => {
+    // 要同时改服务端的开机自启，失败时设置不变，错误显示在本机服务端卡片上
+    if (key === "localWithDesktop") return void local.setWithDesktop(!!value);
     store.setPref(key, value);
     if (key === "openAtLogin") setOpenAtLogin(!!value);
     if (key === "quotaRefreshMin") scheduleQuota();
@@ -831,6 +835,8 @@ function quit() {
 app.on("before-quit", () => {
   quitting = true;
 });
+// 「只在桌面端运行时运行」：桌面端退出（包括关机、注销、更新后重启）时停掉本机服务端
+app.on("will-quit", () => local.stopWithDesktop());
 app.on("second-instance", showMain);
 app.on("activate", showMain);
 // 窗口全关了也不退出：菜单栏 / 托盘图标还在
@@ -840,7 +846,7 @@ app.whenReady().then(() => {
   app.setName("Agent Loft");
   loadStore();
   syncOpenAtLogin(store.prefs().openAtLogin);
-  void refreshLocal();
+  void refreshLocal().then(() => local.startWithDesktop());
   awake = createAwake({
     prefs: () => store.prefs(),
     sessionActive: localSessionActive,

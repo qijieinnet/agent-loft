@@ -3,7 +3,8 @@
 // 安装用 npm --prefix ~/.local install -g agent-loft + ~/.local/bin/agent-loft service install
 // （macOS 是 launchd，Linux 是 systemd 用户服务，开机自启）。Windows 上服务端还没有开机自启，
 // 只能检测、连接已经在跑的（比如 WSL 里的）。
-// 退出桌面端不影响它，手机、飞书照常能用；升级由服务端自己做（设置里「升级」，或桌面端里点）。
+// 默认退出桌面端不影响它，手机、飞书照常能用；设置里开了「只在桌面端运行时运行」的话取消开机自启，
+// 打开桌面端时启动、退出时停止（见 setLocalAutostart）。升级由服务端自己做（设置里「升级」，或桌面端里点）。
 import { execFile, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -72,10 +73,15 @@ async function ping() {
  * @returns {Promise<{ service: boolean, running: boolean, needsSetup: boolean, url: string, logs: string }>}
  *   service：装了开机自启（launchd / systemd）；running：端口上有 agent-loft 在响应
  */
+/** 装了开机自启的服务定义（launchd / systemd） */
+export function localServiceInstalled() {
+  return !localUnsupported() && fs.existsSync(serviceFile);
+}
+
 export async function localStatus() {
   const me = await ping();
   return {
-    service: !localUnsupported() && fs.existsSync(serviceFile),
+    service: localServiceInstalled(),
     running: !!me,
     needsSetup: !!me?.needsSetup,
     url: localUrl(),
@@ -123,12 +129,31 @@ function systemctl(...args) {
   return spawnSync("systemctl", ["--user", ...args], { encoding: "utf8", env: hostEnv() });
 }
 
-/** 重启（没在跑就是启动）。macOS 上停止时把服务卸下了（见 stopLocal），先装回去再拉起来 */
-export function restartLocal() {
+/**
+ * 开不开机自启（服务定义文件不动）。关掉用于「只随桌面端运行」：
+ *   - macOS：launchctl disable，下次登录 launchd 不再加载它；已经加载的不受影响，KeepAlive 照样会把
+ *     退出的进程拉回来（服务端升级完靠这个重启）。disable 是持久的，bootstrap 前要先 enable（见 restartLocal）；
+ *   - Linux：systemctl --user disable，只去掉开机启动，start / stop 照常能用。
+ */
+export function setLocalAutostart(on) {
+  const problem = localUnsupported();
+  if (problem) throw new Error(problem);
+  const r = MAC ? launchctl(on ? "enable" : "disable", `gui/${uid}/${LABEL}`) : systemctl(on ? "enable" : "disable", UNIT);
+  if (r.error) throw new Error(`${on ? "打开" : "取消"}开机自启失败：${r.error.message}`);
+  if (r.status !== 0) throw new Error(`${on ? "打开" : "取消"}开机自启失败：${(r.stderr || r.stdout).trim()}`);
+}
+
+/**
+ * 重启（没在跑就是启动）。macOS 上停止时把服务卸下了（见 stopLocal），先装回去再拉起来；
+ * 被 disable 了（只随桌面端运行）的话 bootstrap 会失败，先 enable，装好后按 autostart 再关回去
+ */
+export function restartLocal({ autostart = true } = {}) {
   const problem = localUnsupported();
   if (problem) throw new Error(problem);
   if (MAC && launchctl("print", `gui/${uid}/${LABEL}`).status !== 0) {
+    launchctl("enable", `gui/${uid}/${LABEL}`);
     const b = launchctl("bootstrap", `gui/${uid}`, serviceFile);
+    if (!autostart) launchctl("disable", `gui/${uid}/${LABEL}`);
     if (b.error) throw new Error(`启动失败：${b.error.message}`);
     if (b.status !== 0) throw new Error(`启动失败：${(b.stderr || b.stdout).trim() || "服务没有装"}`);
   }
@@ -159,6 +184,8 @@ export function uninstallLocal() {
   if (MAC) {
     launchctl("bootout", `gui/${uid}/${LABEL}`);
     fs.rmSync(serviceFile, { force: true });
+    // 只随桌面端运行时留下的 disable 记录也清掉，不然以后执行 agent-loft service install 会 bootstrap 失败
+    launchctl("enable", `gui/${uid}/${LABEL}`);
   } else {
     systemctl("disable", "--now", UNIT);
     fs.rmSync(serviceFile, { force: true });
@@ -334,6 +361,8 @@ export async function waitForInstallResult(resultFile, { timeoutMs = 15 * 60_000
 export async function installLocalInTerminal() {
   const problem = localUnsupported();
   if (problem) throw new Error(problem);
+  // 以前开过「只随桌面端运行」又卸载了的，launchd 里可能还留着 disable，service install 的 bootstrap 会失败
+  if (MAC) launchctl("enable", `gui/${uid}/${LABEL}`);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loft-install-"));
   const resultFile = path.join(dir, "result");
   try {

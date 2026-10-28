@@ -4,7 +4,19 @@ import { app, Notification, shell } from "electron";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { installLocalInTerminal, localStatus, localUnsupported, openLogs, restartLocal, runInTerminal, stopLocal, uninstallLocal, waitUntilUp } from "./local-server.js";
+import {
+  installLocalInTerminal,
+  localServiceInstalled,
+  localStatus,
+  localUnsupported,
+  openLogs,
+  restartLocal,
+  runInTerminal,
+  setLocalAutostart,
+  stopLocal,
+  uninstallLocal,
+  waitUntilUp,
+} from "./local-server.js";
 import { store } from "./store.js";
 import { canSelfUpdate, checkForUpdate, installUpdate } from "./updater.js";
 
@@ -73,16 +85,21 @@ async function busy(action, fn) {
   }
 }
 
+/** 设置里的「只在桌面端运行时运行」：开着时不开机自启，打开桌面端时启动、退出时停止 */
+const withDesktop = () => store.prefs().localWithDesktop && !localUnsupported();
+
 export const local = {
   /** 在终端里一键安装（最多 15 分钟），脚本成功后再等服务启动 */
   install: () =>
     busy("install", async () => {
       await installLocalInTerminal();
       if (!(await waitUntilUp(60_000))) throw new Error("安装已完成，但服务端没有启动，请查看终端输出和服务端日志");
+      // service install 会打开开机自启
+      if (withDesktop()) setLocalAutostart(false);
     }),
   restart: () =>
     busy("restart", async () => {
-      restartLocal();
+      restartLocal({ autostart: !withDesktop() });
       if (!(await waitUntilUp(60_000))) throw new Error("服务端重启后没有响应，看一下日志");
     }),
   stop: () =>
@@ -93,6 +110,39 @@ export const local = {
       while (Date.now() < until && (await localStatus()).running) await new Promise((r) => setTimeout(r, 500));
     }),
   uninstall: () => busy("uninstall", async () => uninstallLocal()),
+  /** 切换「只在桌面端运行时运行」：只改开机自启，现在跑没跑不动。没装服务的，装好时再按设置来 */
+  setWithDesktop(on) {
+    state.localError = null;
+    try {
+      if (localServiceInstalled()) setLocalAutostart(!on);
+      store.setPref("localWithDesktop", on);
+    } catch (err) {
+      state.localError = err instanceof Error ? err.message : String(err);
+    }
+    changed();
+  },
+  /**
+   * 桌面端启动时：开着「只在桌面端运行时运行」就把服务端拉起来。顺手再关一次开机自启：
+   * 可能在终端里重新执行过 agent-loft service install
+   */
+  async startWithDesktop() {
+    if (!withDesktop() || !localServiceInstalled()) return;
+    try {
+      setLocalAutostart(false);
+    } catch (err) {
+      state.localError = err instanceof Error ? err.message : String(err);
+    }
+    if (!(await refreshLocal()).running) await local.restart().catch(() => {});
+  },
+  /** 桌面端退出时停掉服务端。同步做完，不然进程退了命令还没执行 */
+  stopWithDesktop() {
+    if (!withDesktop() || !localServiceInstalled()) return;
+    try {
+      stopLocal();
+    } catch (err) {
+      console.error("[本机服务端] 退出时停止失败:", err);
+    }
+  },
   logs: () => {
     const dir = state.local?.logs;
     if (!dir) return;
