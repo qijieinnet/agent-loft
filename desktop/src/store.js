@@ -64,6 +64,8 @@ let data = {
   /** 定时休眠：每个时段最近一次睡过的那次的开始时间（毫秒），免得同一个时段睡两次 */
   /** @type {Record<string, number>} */
   sleepHandled: {},
+  /** 定时休眠为了睡下去临时关掉了合盖不休眠，醒来要开回去 */
+  lidLifted: false,
 };
 
 const file = () => path.join(app.getPath("userData"), "config.json");
@@ -291,6 +293,12 @@ export const store = {
   sleepHandled: () => data.sleepHandled,
   setSleepHandled(id, due) {
     data.sleepHandled = { ...data.sleepHandled, [id]: due };
+    save();
+  },
+  lidLifted: () => data.lidLifted,
+  setLidLifted(on) {
+    if (data.lidLifted === on) return;
+    data.lidLifted = on;
     save();
   },
 

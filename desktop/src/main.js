@@ -742,6 +742,8 @@ const calls = {
   },
   /** 合盖不休眠：弹系统管理员密码框；取消了状态就不变 */
   setLidGuard: (on) => awake?.setLidGuard(!!on),
+  /** 合盖不休眠已经开着、但还没装免密规则：再授权一次补上，定时休眠才能自己临时关掉它去睡 */
+  authorizeLid: () => awake?.setLidGuard(true, { force: true }),
   refreshLidGuard: () => awake?.refreshLid(),
 
   // ---- 首次启动向导、本机服务端 ----
@@ -844,6 +846,8 @@ app.whenReady().then(() => {
     sessionActive: localSessionActive,
     handled: () => store.sleepHandled(),
     setHandled: (id, due) => store.setSleepHandled(id, due),
+    lidLifted: () => store.lidLifted(),
+    setLidLifted: (on) => store.setLidLifted(on),
     onChange: () => broadcast(),
   });
 

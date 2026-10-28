@@ -5,13 +5,20 @@
 //       always    永不休眠。
 //       scheduled 定时休眠：休眠时段外一直不休眠；进了时段就放开，并且在条件满足时主动让 Mac 睡下去
 //                 （本机没有会话在跑；勾了「锁屏后才休眠」的还要屏幕已锁）。同一个时段只睡一次，
-//                 睡过之后被叫醒不会再睡；出了时段还没睡成就作罢，等下一个时段。只在 macOS 上有。
+//                 睡过之后被叫醒不会再睡；发了指令没睡成隔几分钟再试，出了时段还没睡成就作罢，
+//                 等下一个时段。时段结束不会把 Mac 叫醒。只在 macOS 上有。
 //   - 合盖不休眠：系统级开关 pmset disablesleep，要管理员授权，桌面端退出、重启后都还在，
 //     所以状态一律以系统实际值为准，不存在配置里。只在 macOS 上有。
+//     它开着时整机都不睡：闲置不睡，pmset sleepnow 也被挡掉。所以第一次开关时顺带写一条 sudoers 规则，
+//     只放行 pmset -a disablesleep 0 / 1 这两条命令，之后开关不用再输密码；定时休眠到点时先临时关掉它
+//     再睡，醒来再打开。
 //
 // 拦休眠用 powerSaveBlocker 的 prevent-app-suspension（macOS 上就是 PreventUserIdleSystemSleep），
 // 只拦闲置休眠，屏幕照常可以关；进程退出时系统自动回收，不会残留。
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { powerMonitor, powerSaveBlocker } from "electron";
 
 const isMac = process.platform === "darwin";
@@ -80,6 +87,59 @@ function sleepNow() {
 
 // ---------- 合盖不休眠 ----------
 
+const SUDOERS_FILE = "/etc/sudoers.d/agent-loft-pmset";
+const lidCommand = (on) => ["/usr/bin/pmset", "-a", "disablesleep", on ? "1" : "0"];
+
+/** 不弹密码框改 disablesleep：要先装过 sudoers 规则，没装就是 false */
+function sudoLid(on) {
+  return new Promise((resolve) => {
+    execFile("/usr/bin/sudo", ["-n", ...lidCommand(on)], { timeout: 10_000 }, (err) => resolve(!err));
+  });
+}
+
+/** sudoers 规则装好了没有：sudo -n -l 只查不执行，没装会直接失败，不会弹密码 */
+export function readLidSudo() {
+  if (!isMac) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    execFile("/usr/bin/sudo", ["-n", "-l", ...lidCommand(false)], { timeout: 10_000 }, (err) => resolve(!err));
+  });
+}
+
+/**
+ * 弹管理员密码框：装 sudoers 规则（先用 visudo 检查，坏了就不装），再把 disablesleep 设成 on。
+ * 规则装不上也照样改 disablesleep，只是以后还得输密码。用户点了取消返回 false。
+ */
+async function adminLid(on) {
+  const user = os.userInfo().username;
+  // 用户名会写进 sudoers 和 shell 命令里，不认识的字符一律不装规则
+  const safeUser = /^[a-z_][\w.-]{0,63}$/i.test(user) ? user : null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loft-"));
+  const rule = path.join(dir, "sudoers");
+  const steps = [];
+  if (safeUser) {
+    fs.writeFileSync(rule, `${safeUser} ALL=(root) NOPASSWD: ${lidCommand(false).join(" ")}, ${lidCommand(true).join(" ")}\n`);
+    steps.push(`(/usr/sbin/visudo -cqf '${rule}' && /usr/bin/install -m 0440 -o root -g wheel '${rule}' ${SUDOERS_FILE})`);
+  }
+  steps.push(lidCommand(on).join(" "));
+  const script = `do shell script "${steps.join("; ")}" with administrator privileges`;
+  try {
+    await new Promise((resolve, reject) => {
+      execFile("/usr/bin/osascript", ["-e", script], { timeout: 5 * 60_000 }, (err, _out, stderr) => {
+        if (!err) return resolve(undefined);
+        // -128：用户点了「取消」
+        if (/-128/.test(String(stderr))) return reject(Object.assign(new Error("cancelled"), { cancelled: true }));
+        reject(new Error(String(stderr).trim() || err.message));
+      });
+    });
+    return true;
+  } catch (err) {
+    if (err.cancelled) return false;
+    throw new Error(`设置合盖不休眠失败：${err.message}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** 系统里 disablesleep 开着没有：pmset -g 的 System-wide 段会多一行 SleepDisabled（Tab 分隔） */
 export function readLidGuard() {
   if (!isMac) return Promise.resolve(null);
@@ -92,26 +152,19 @@ export function readLidGuard() {
   });
 }
 
-/** 打开 / 关掉合盖不休眠：弹系统的管理员密码框。用户点了取消返回 false，失败抛错 */
-export async function writeLidGuard(on) {
+/**
+ * 打开 / 关掉合盖不休眠。装过 sudoers 规则就直接改，没装（或 force）就弹管理员密码框顺带装上。
+ * 用户点了取消返回 false，失败抛错
+ */
+export async function writeLidGuard(on, { force = false } = {}) {
   if (!isMac) throw new Error("只有 macOS 支持合盖不休眠");
-  if ((await readLidGuard()) === on) return true;
-  const script = `do shell script "/usr/bin/pmset -a disablesleep ${on ? 1 : 0}" with administrator privileges`;
-  await new Promise((resolve, reject) => {
-    execFile("/usr/bin/osascript", ["-e", script], { timeout: 5 * 60_000 }, (err, _out, stderr) => {
-      if (!err) return resolve(undefined);
-      // -128：用户点了「取消」
-      if (/-128/.test(String(stderr))) return reject(Object.assign(new Error("cancelled"), { cancelled: true }));
-      reject(new Error(String(stderr).trim() || err.message));
-    });
-  }).catch((err) => {
-    if (err.cancelled) return;
-    throw new Error(`设置合盖不休眠失败：${err.message}`);
-  });
+  if (!force) {
+    if ((await readLidGuard()) === on) return true;
+    if ((await sudoLid(on)) && (await readLidGuard()) === on) return true;
+  }
+  if (!(await adminLid(on))) return false;
   // 授权框走完不代表写进去了，回读确认
-  const now = await readLidGuard();
-  if (now === on) return true;
-  return false;
+  return (await readLidGuard()) === on;
 }
 
 // ---------- 主逻辑 ----------
@@ -122,6 +175,8 @@ export async function writeLidGuard(on) {
  *   sessionActive: () => boolean,
  *   handled: () => Record<string, number>,
  *   setHandled: (id: string, due: number) => void,
+ *   lidLifted: () => boolean,
+ *   setLidLifted: (on: boolean) => void,
  *   onChange: () => void,
  * }} deps
  */
@@ -133,6 +188,17 @@ export function createAwake(deps) {
   let waiting = null;
   /** 合盖不休眠的系统实际状态；null 是不知道 / 不支持 */
   let lidGuard = null;
+  /** 装没装 sudoers 规则（合盖不休眠开着时能不能自己临时关掉去睡） */
+  let lidSudo = false;
+  /** 上一次发休眠指令的时间：没睡成的话隔一会儿再试，不是一次就作罢 */
+  let attemptAt = 0;
+  /** 上一次没睡成的原因（给界面看） */
+  let attemptNote = null;
+  let attempting = false;
+  /** 临时关掉合盖不休眠后，迟迟没睡着就恢复 */
+  let liftTimer = null;
+
+  const RETRY_MS = 5 * 60_000;
 
   const pendingWindow = (now) => {
     const handled = deps.handled();
@@ -142,6 +208,51 @@ export function createAwake(deps) {
     }
     return null;
   };
+
+  /** 当前所在的时段都算睡过了：睡下去、或者在时段里醒过来，都不该再睡第二次 */
+  const markSlept = () => {
+    const now = Date.now();
+    for (const w of deps.prefs().sleepWindows) {
+      const due = currentDue(w, now);
+      if (due !== null && due > (deps.handled()[w.id] ?? 0)) deps.setHandled(w.id, due);
+    }
+  };
+
+  /** 定时休眠临时关掉的合盖不休眠，开回去（醒来、没睡成、上次没来得及恢复就退出了） */
+  async function restoreLid() {
+    clearTimeout(liftTimer);
+    liftTimer = null;
+    if (deps.lidLifted() && (await sudoLid(true))) deps.setLidLifted(false);
+    await refreshLid();
+  }
+
+  /** 发休眠指令。合盖不休眠开着的话先临时关掉，不然 sleepnow 会被挡掉 */
+  async function goToSleep() {
+    attempting = true;
+    attemptAt = Date.now();
+    attemptNote = null;
+    try {
+      if ((await readLidGuard()) === true) {
+        if (!(await sudoLid(false))) {
+          // 没装规则关不掉，sleepnow 照发：睡下去了这条提示会在 suspend 里清掉
+          attemptNote = "合盖不休眠开着，系统可能睡不了，到下面点「授权自动休眠」";
+          sleepNow();
+          return;
+        }
+        deps.setLidLifted(true);
+        lidGuard = false;
+        // 一分钟还没睡下去（没收到 suspend），就当没睡成，把合盖不休眠开回去，过一会儿再试
+        liftTimer = setTimeout(() => {
+          attemptNote = "发了休眠指令但系统没睡，稍后再试";
+          void restoreLid();
+        }, 60_000);
+      }
+      sleepNow();
+    } finally {
+      attempting = false;
+      deps.onChange();
+    }
+  }
 
   function evaluate() {
     const p = deps.prefs();
@@ -157,14 +268,13 @@ export function createAwake(deps) {
 
     let nextWaiting = null;
     if (scheduled) {
-      const pending = pendingWindow(now);
-      if (pending) {
+      // 时段算不算睡过，只看真的睡没睡下去（suspend / resume 里记），发了指令不算
+      if (pendingWindow(now)) {
         if (busy) nextWaiting = "等本机会话跑完";
         else if (p.sleepRequireLocked && !screenLocked()) nextWaiting = "等待锁屏";
-        else {
-          deps.setHandled(pending.w.id, pending.due);
-          sleepNow();
-        }
+        else if (attempting || liftTimer || now - attemptAt < 60_000) nextWaiting = "正在休眠";
+        else if (now - attemptAt < RETRY_MS) nextWaiting = attemptNote ?? "发了休眠指令但系统没睡，稍后再试";
+        else void goToSleep();
       }
     }
 
@@ -181,20 +291,21 @@ export function createAwake(deps) {
 
   /** 系统要睡了：当前所在的时段算睡过了，醒来后不再睡第二次 */
   powerMonitor.on("suspend", () => {
-    const now = Date.now();
-    for (const w of deps.prefs().sleepWindows) {
-      const due = currentDue(w, now);
-      if (due !== null && due > (deps.handled()[w.id] ?? 0)) deps.setHandled(w.id, due);
-    }
+    markSlept();
+    // 真睡下去了，合盖不休眠等醒来再开
+    clearTimeout(liftTimer);
+    liftTimer = null;
+    attemptNote = null;
   });
 
-  const refreshLid = async () => {
-    const v = await readLidGuard();
-    if (v !== lidGuard) {
+  async function refreshLid() {
+    const [v, sudo] = await Promise.all([readLidGuard(), readLidSudo()]);
+    if (v !== lidGuard || sudo !== lidSudo) {
       lidGuard = v;
+      lidSudo = sudo;
       deps.onChange();
     }
-  };
+  }
 
   // 时段边界、锁屏都没有可靠的事件可等，定时看一眼
   setInterval(() => {
@@ -202,23 +313,28 @@ export function createAwake(deps) {
   }, 15_000);
   for (const ev of ["lock-screen", "unlock-screen", "resume"]) {
     powerMonitor.on(ev, () => {
+      // 万一没收到 suspend：在时段里醒过来也算这个时段睡过了，免得醒来锁着屏又当场睡回去
+      if (ev === "resume") markSlept();
       if (evaluate()) deps.onChange();
-      if (ev === "resume") void refreshLid();
+      if (ev === "resume") void restoreLid();
     });
   }
-  void refreshLid();
+  // 上次临时关掉合盖不休眠后没来得及开回去就退出了
+  void restoreLid();
 
   return {
     evaluate,
     refreshLid,
-    async setLidGuard(on) {
+    /** force：已经是这个状态也弹一次授权框，用来补装 sudoers 规则 */
+    async setLidGuard(on, { force = false } = {}) {
       try {
-        await writeLidGuard(!!on);
+        // 用户自己动了开关，定时休眠就别再替它开回去了
+        if (await writeLidGuard(!!on, { force })) deps.setLidLifted(false);
       } finally {
         await refreshLid();
         deps.onChange();
       }
     },
-    state: () => ({ keeping: blockerId !== null, reason, waiting, lidGuard }),
+    state: () => ({ keeping: blockerId !== null, reason, waiting, lidGuard, lidSudo }),
   };
 }

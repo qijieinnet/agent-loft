@@ -246,8 +246,10 @@ function awakeModeHint(p) {
     if (!p.sleepWindows.some((w) => w.enabled && w.days.length)) return "还没有可用的休眠时段，先加一个。";
     if (a?.waiting) return `已到休眠时段，${a.waiting}。`;
     if (a?.reason === "休眠时段外") return "现在在休眠时段外，正在阻止系统休眠。";
+    if (a?.lidGuard && !a.lidSudo) return "现在在休眠时段内，但合盖不休眠开着，先到下面授权自动休眠。";
     return "现在在休眠时段内，系统可以正常休眠。";
   }
+  if (a?.lidGuard) return "合盖不休眠开着，系统闲置也不会睡。想到点睡可以用「定时休眠」。";
   return "按系统的节能设置休眠。";
 }
 
@@ -337,7 +339,7 @@ function awakePrefs(p, toggle) {
             { class: "sub wrap" },
             state.awake?.lidGuard === null
               ? "读不到系统的状态。"
-              : "系统级设置（pmset disablesleep），开关都要输管理员密码。打开后退出 Agent Loft、重启也一直有效，合盖放进包里也不会睡，记得用完关掉。",
+              : "系统级设置（pmset disablesleep），开着时闲置、合盖都不会睡，退出 Agent Loft、重启也一直有效。第一次开关要输管理员密码，之后不用；定时休眠到点会临时关掉它去睡，醒来再打开。",
           ),
         ),
         h("input", {
@@ -360,7 +362,32 @@ function awakePrefs(p, toggle) {
         }),
       )
     : null;
-  return [toggle("keepAwake", "本机有会话在跑时不休眠", keepAwakeHint()), mode, windows, locked, lid];
+  // 老版本打开的合盖不休眠没装免密规则：定时休眠关不掉它，就睡不下去
+  const lidAuth =
+    scheduled && state.awake?.lidGuard && !state.awake.lidSudo
+      ? h(
+          "div",
+          { class: "row" },
+          h("div", { class: "grow" }, "授权自动休眠", h("div", { class: "sub wrap" }, "合盖不休眠开着时系统睡不了。授权一次（输管理员密码），到了休眠时段就能临时关掉它让 Mac 睡下去，以后开关也不用再输密码。")),
+          h(
+            "button",
+            {
+              class: "btn",
+              onclick: async (e) => {
+                e.target.disabled = true;
+                try {
+                  await call("authorizeLid");
+                } catch (err) {
+                  alert(errText(err));
+                }
+                renderPrefs();
+              },
+            },
+            "授权",
+          ),
+        )
+      : null;
+  return [toggle("keepAwake", "本机有会话在跑时不休眠", keepAwakeHint()), mode, windows, locked, lid, lidAuth];
 }
 
 /**
