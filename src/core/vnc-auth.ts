@@ -123,9 +123,9 @@ export type VncCreds = { username?: string; password: string };
 /**
  * 作为客户端和 VNC 服务走完版本协商和认证，停在 ClientInit 之前。
  * 填了用户名就用苹果认证；否则有 VNC 密码认证就用它，再不然不用认证的。
- * 失败抛 VncAuthError（认证的问题）或普通 Error（连接断了）
+ * 失败抛 VncAuthError（认证的问题）或普通 Error（连接断了）。返回对方的协议版本（如 "RFB 003.889"，苹果的）
  */
-export async function vncLogin(r: ByteReader, write: (b: Buffer) => void, creds: VncCreds): Promise<void> {
+export async function vncLogin(r: ByteReader, write: (b: Buffer) => void, creds: VncCreds): Promise<string> {
   const version = (await r.read(12)).toString("latin1");
   const m = /^RFB (\d{3})\.(\d{3})\n$/.exec(version);
   if (!m) throw new VncAuthError("对方不是 VNC 服务");
@@ -149,19 +149,19 @@ export async function vncLogin(r: ByteReader, write: (b: Buffer) => void, creds:
     const serverKey = await r.read(keyLength);
     write(ardResponse(generator, prime, serverKey, creds.username, creds.password));
     if ((await r.read(4)).readUInt32BE(0) !== 0) throw new VncAuthError("Mac 的用户名或密码不对");
-    return;
+    return version.trim();
   }
   if (types.includes(TYPE_VNC)) {
     write(Buffer.from([TYPE_VNC]));
     const challenge = await r.read(16);
     write(await vncAuthResponse(creds.password, challenge));
     if ((await r.read(4)).readUInt32BE(0) !== 0) throw new VncAuthError("VNC 密码不对");
-    return;
+    return version.trim();
   }
   if (types.includes(TYPE_NONE)) {
     write(Buffer.from([TYPE_NONE]));
     if ((await r.read(4)).readUInt32BE(0) !== 0) throw new VncAuthError("VNC 服务拒绝连接");
-    return;
+    return version.trim();
   }
   if (types.includes(TYPE_ARD)) {
     throw new VncAuthError("这个 VNC 服务要用户名登录（macOS 屏幕共享没开 VNC 密码）：在 设置 → 远程控制 里填上 Mac 的用户名和登录密码");
@@ -173,7 +173,7 @@ export async function vncLogin(r: ByteReader, write: (b: Buffer) => void, creds:
  * 对页面那头装成不用认证的 VNC 服务（3.8，只给安全类型 None）。
  * login 是和真正的 VNC 服务认证的过程：它失败时把原因当作认证失败告诉页面
  */
-export async function serveNoAuth(r: ByteReader, write: (b: Buffer) => void, login: Promise<void>): Promise<void> {
+export async function serveNoAuth(r: ByteReader, write: (b: Buffer) => void, login: Promise<unknown>): Promise<void> {
   // 页面那头还没谈完 login 就失败了：先接住，下面 await 时再处理（不然算没人接的 rejection，进程会退出）
   login.catch(() => {});
   write(Buffer.from("RFB 003.008\n", "latin1"));

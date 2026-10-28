@@ -4,8 +4,10 @@
 // 隔着公网又卡又费流量，noVNC 的「画质」参数对它也不起作用。这里的做法：
 //   - 和 VNC 服务之间收全分辨率的画面，存成内存里的一份「原画」。VNC 服务在本机时要原始像素（本机不怕大，
 //     macOS 出原始像素比出 ZRLE 快几倍：5K 屏约 1 秒一帧，ZRLE 要 4 秒）；在别的机器上时要 ZRLE；
-//   - macOS 每次都把整屏发过来（哪怕只变了一点）：和原画逐格比，真变了的格子才更新原画、
+//   - macOS 常常把一整块屏重发一遍（哪怕只变了一点）：和原画逐格比，真变了的格子才更新原画、
 //     按面积平均缩到「输出画面」上，并记下输出画面上哪些格子脏了；
+//   - 多块屏时画面是几块屏拼起来的，可以只看其中一块：输出画面只从那块缩出来，也只向 VNC 服务要那一块
+//     （各块屏在哪见 desktop-screens.ts；macOS 的要从它发来的画面里学）；
 //   - 页面要画面（FramebufferUpdateRequest）时，把脏的格子拼成几个矩形，用 sharp 压成 JPEG，按 Tight 编码发过去；
 //   - 页面发来的鼠标坐标按比例放大回原画的坐标，键盘、剪贴板原样转发。
 // 对页面来说就是一个分辨率小一些、只用 Tight JPEG 的 VNC 服务（认证由 vnc-auth.ts 在服务端做完）。
@@ -41,10 +43,18 @@ const MAX_RECT_TILES = 8;
 const FRAME_MS = 40;
 /** 页面收得慢：WebSocket 里积压到这么多就先不发 */
 const HIGH_WATER = 2 * 1024 * 1024;
+/** 学各块屏在哪时，比这小的矩形不算一块屏（macOS 在两块屏交界处会夹带几像素宽的细条） */
+const MIN_SCREEN_W = 320;
+const MIN_SCREEN_H = 240;
+/** 学各块屏在哪最多试这么多次更新，学不出来就算了（看整个画面） */
+const LEARN_TRIES = 8;
 
-type Rect = { x: number; y: number; w: number; h: number };
+export type Rect = { x: number; y: number; w: number; h: number };
 
-/** 原画和缩小后的输出画面（都是每像素 4 字节 R G B X），外加输出画面上的脏格子 */
+/**
+ * 原画和缩小后的输出画面（都是每像素 4 字节 R G B X），外加输出画面上的脏格子。
+ * 原画一直是整个画面；输出画面只从其中的「视野」缩出来（多块屏时只看一块，见 setView）
+ */
 export class Frame {
   srcW = 0;
   srcH = 0;
@@ -52,6 +62,10 @@ export class Frame {
   outH = 0;
   src = Buffer.alloc(0);
   out = new Uint8Array(0);
+  /** 原画上要看的那一块 */
+  view: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  /** 输出画面就是原画（整个画面、不用缩）：不用另外缩一份 */
+  private direct = true;
   /** 每个输出像素对应原画的哪一段：[x0[i], x1[i]) */
   private x0 = new Int32Array(0);
   private x1 = new Int32Array(0);
@@ -70,26 +84,54 @@ export class Frame {
     this.resize(srcW, srcH);
   }
 
+  /** 原画换了大小：视野回到整个画面 */
   resize(srcW: number, srcH: number): void {
-    const k = Math.min(1, this.edge / Math.max(srcW, srcH, 1));
     this.srcW = srcW;
     this.srcH = srcH;
-    this.outW = Math.max(1, Math.round(srcW * k));
-    this.outH = Math.max(1, Math.round(srcH * k));
     this.src = Buffer.alloc(srcW * srcH * 4);
-    // 不用缩：输出画面就是原画
-    this.out = this.scaled ? new Uint8Array(this.outW * this.outH * 4) : this.src;
-    const ranges = (outN: number, srcN: number) => {
+    this.view = { x: 0, y: 0, w: srcW, h: srcH };
+    this.layout();
+  }
+
+  /** 只看原画上的这一块（null 是整个画面），超出原画的部分截掉。视野变了返回 true（输出画面的大小跟着变） */
+  setView(r: Rect | null): boolean {
+    let v = { x: 0, y: 0, w: this.srcW, h: this.srcH };
+    if (r) {
+      const x = Math.max(0, r.x);
+      const y = Math.max(0, r.y);
+      const w = Math.min(this.srcW, r.x + r.w) - x;
+      const h = Math.min(this.srcH, r.y + r.h) - y;
+      if (w > 0 && h > 0) v = { x, y, w, h };
+    }
+    const old = this.view;
+    if (v.x === old.x && v.y === old.y && v.w === old.w && v.h === old.h) return false;
+    this.view = v;
+    this.layout();
+    // 原画里已经有的画面先缩过来（刚换大小时原画全黑，不用）
+    if (!this.direct) this.downscale(0, 0, this.outW, this.outH);
+    return true;
+  }
+
+  /** 按视野算输出画面的大小、对应关系，整个记脏 */
+  private layout(): void {
+    const { x: vx, y: vy, w: vw, h: vh } = this.view;
+    const k = Math.min(1, this.edge / Math.max(vw, vh, 1));
+    this.outW = Math.max(1, Math.round(vw * k));
+    this.outH = Math.max(1, Math.round(vh * k));
+    this.direct = vw === this.srcW && vh === this.srcH && this.outW === vw && this.outH === vh;
+    this.out = this.direct ? this.src : new Uint8Array(this.outW * this.outH * 4);
+    const ranges = (outN: number, start: number, srcN: number) => {
       const lo = new Int32Array(outN);
       const hi = new Int32Array(outN);
       for (let i = 0; i < outN; i++) {
-        lo[i] = Math.floor((i * srcN) / outN);
-        hi[i] = Math.max(lo[i]! + 1, Math.min(srcN, Math.floor(((i + 1) * srcN) / outN)));
+        const a = Math.floor((i * srcN) / outN);
+        lo[i] = start + a;
+        hi[i] = start + Math.max(a + 1, Math.min(srcN, Math.floor(((i + 1) * srcN) / outN)));
       }
       return [lo, hi] as const;
     };
-    [this.x0, this.x1] = ranges(this.outW, srcW);
-    [this.y0, this.y1] = ranges(this.outH, srcH);
+    [this.x0, this.x1] = ranges(this.outW, vx, vw);
+    [this.y0, this.y1] = ranges(this.outH, vy, vh);
     this.tilesX = Math.ceil(this.outW / TILE);
     this.tilesY = Math.ceil(this.outH / TILE);
     this.dirty = new Uint8Array(this.tilesX * this.tilesY);
@@ -97,17 +139,18 @@ export class Frame {
     this.markOut(0, 0, this.outW, this.outH);
   }
 
-  get scaled(): boolean {
-    return this.outW !== this.srcW || this.outH !== this.srcH;
-  }
-
   get hasDirty(): boolean {
     return this.dirtyCount > 0;
   }
 
+  /** 视野不是整个画面 */
+  get cropped(): boolean {
+    return this.view.w !== this.srcW || this.view.h !== this.srcH;
+  }
+
   /** 原画上比较变化用的格子边长：对应输出画面上一个脏格子 */
   private get cell(): number {
-    return Math.max(TILE, Math.ceil((TILE * this.srcW) / this.outW));
+    return Math.max(TILE, Math.ceil((TILE * this.view.w) / this.outW));
   }
 
   /**
@@ -141,14 +184,19 @@ export class Frame {
     return changed;
   }
 
-  /** 原画上这块变了：缩到输出画面上，记脏 */
+  /** 原画上这块变了：视野里的那部分缩到输出画面上，记脏 */
   damage(x: number, y: number, w: number, h: number): void {
-    if (w <= 0 || h <= 0) return;
-    const ox0 = Math.max(0, Math.floor((x * this.outW) / this.srcW));
-    const oy0 = Math.max(0, Math.floor((y * this.outH) / this.srcH));
-    const ox1 = Math.min(this.outW, Math.ceil(((x + w) * this.outW) / this.srcW));
-    const oy1 = Math.min(this.outH, Math.ceil(((y + h) * this.outH) / this.srcH));
-    if (this.scaled) this.downscale(ox0, oy0, ox1, oy1);
+    const v = this.view;
+    const sx0 = Math.max(x, v.x) - v.x;
+    const sy0 = Math.max(y, v.y) - v.y;
+    const sx1 = Math.min(x + w, v.x + v.w) - v.x;
+    const sy1 = Math.min(y + h, v.y + v.h) - v.y;
+    if (sx1 <= sx0 || sy1 <= sy0) return;
+    const ox0 = Math.max(0, Math.floor((sx0 * this.outW) / v.w));
+    const oy0 = Math.max(0, Math.floor((sy0 * this.outH) / v.h));
+    const ox1 = Math.min(this.outW, Math.ceil((sx1 * this.outW) / v.w));
+    const oy1 = Math.min(this.outH, Math.ceil((sy1 * this.outH) / v.h));
+    if (!this.direct) this.downscale(ox0, oy0, ox1, oy1);
     this.markOut(ox0, oy0, ox1 - ox0, oy1 - oy0);
   }
 
@@ -243,11 +291,12 @@ export class Frame {
     return buf;
   }
 
-  /** 输出画面的坐标 → 原画的坐标（鼠标） */
+  /** 输出画面的坐标 → 原画的坐标（鼠标），不出视野 */
   toSrc(x: number, y: number): [number, number] {
-    const sx = Math.floor(((x + 0.5) * this.srcW) / this.outW);
-    const sy = Math.floor(((y + 0.5) * this.srcH) / this.outH);
-    return [Math.min(this.srcW - 1, Math.max(0, sx)), Math.min(this.srcH - 1, Math.max(0, sy))];
+    const v = this.view;
+    const sx = Math.floor(((x + 0.5) * v.w) / this.outW);
+    const sy = Math.floor(((y + 0.5) * v.h) / this.outH);
+    return [v.x + Math.min(v.w - 1, Math.max(0, sx)), v.y + Math.min(v.h - 1, Math.max(0, sy))];
   }
 }
 
@@ -389,6 +438,18 @@ export function decodeZrle(d: Buffer, fb: Uint8Array, w: number, h: number): voi
 // ---------- 会话 ----------
 
 export type Endpoint = { reader: ByteReader; write: (b: Buffer) => void };
+
+/** 多块屏各在画面的哪里（desktop-screens.ts） */
+export type ScreenSource = {
+  /** 已经知道的各块屏（按从左到右排）；画面是 w×h 时还不知道就是 null */
+  get(w: number, h: number): Rect[] | null;
+  /**
+   * macOS 屏幕共享：不增量地要整个画面时，它一次发来一整块屏。把这样一次更新里的大矩形交给它学，
+   * 学全了返回 true（之后 get 就有了）
+   */
+  learn(w: number, h: number, rects: Rect[]): boolean;
+};
+
 export type TranscodeOptions = {
   vnc: Endpoint;
   /** backlog：已经交给页面、还没发出去的字节数（WebSocket 的 bufferedAmount） */
@@ -397,6 +458,9 @@ export type TranscodeOptions = {
   quality: DesktopQuality;
   /** VNC 服务在本机：要原始像素（见文件开头） */
   local: boolean;
+  /** 只看第几块屏（从 1 数，按 screens 的顺序）；0、没这块屏或者还不知道各块屏在哪时看整个画面 */
+  screen?: number;
+  screens?: ScreenSource;
   /** 两头都握手完了（之后就是正常收发画面） */
   onReady?: () => void;
 };
@@ -504,12 +568,13 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
 
   // 先和 VNC 服务登录、拿到画面大小；同时对页面走完不用认证的握手
   const login = (async () => {
-    await vncLogin(vnc.reader, vnc.write, creds);
+    const version = await vncLogin(vnc.reader, vnc.write, creds);
     // ClientInit：共享（别把别人踢下线）
     vnc.write(Buffer.from([1]));
     const init = await vnc.reader.read(24);
     const name = await vnc.reader.read(init.readUInt32BE(20));
-    return { w: init.readUInt16BE(0), h: init.readUInt16BE(2), name };
+    // 苹果的屏幕共享：多块屏的位置要自己学（见 ScreenSource）
+    return { w: init.readUInt16BE(0), h: init.readUInt16BE(2), name, apple: version === "RFB 003.889" };
   })();
   login.catch(() => {});
   await serveNoAuth(
@@ -519,6 +584,18 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
   );
   const server = await login;
   const frame = new Frame(server.w, server.h, preset.edge);
+
+  // 多块屏：知道各块屏在哪就只看选的那块；macOS 的还不知道时先学（这期间看整个画面）
+  /** 正在学各块屏在哪：要整个画面、不增量 */
+  let learning = false;
+  let learnTries = 0;
+  /** 按选的屏定视野，视野变了返回 true */
+  const pickView = (): boolean => {
+    const list = opts.screens?.get(frame.srcW, frame.srcH) ?? null;
+    learning = !list && server.apple && !!opts.screens && learnTries < LEARN_TRIES;
+    return frame.setView((opts.screen && list?.[opts.screen - 1]) || null);
+  };
+  pickView();
 
   // 我们这头要的格式和编码
   const bpp = opts.local && opts.quality === "smooth" ? 2 : 4;
@@ -556,6 +633,8 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
   let cursorChanged = false;
   /** VNC 服务的第一帧到了：之前原画还是全黑，别发 */
   let gotFirst = false;
+  /** 下一次向 VNC 服务要整个视野（不增量）：只看一块屏时挪进来的内容可能是从视野外拷的，那边没要过，不一定是新的 */
+  let refresh = false;
 
   const pump = (): void => {
     if (closed || !wanted || sending) return;
@@ -576,7 +655,7 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
     }
     sizeChanged = false;
     if (sendCursor) {
-      const c = scaleCursor(cursor!, frame.outW / frame.srcW);
+      const c = scaleCursor(cursor!, frame.outW / frame.view.w);
       parts.push(rectHeader(c.hotX, c.hotY, c.w, c.h, ENC_CURSOR), c.pixels, c.mask);
       count++;
     }
@@ -615,12 +694,17 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
   const requestVnc = (incremental: boolean): void => {
     if (closed) return;
     lastRequest = Date.now();
+    // 学各块屏在哪时要整个画面；只看一块屏时只要那一块
+    const r = learning ? { x: 0, y: 0, w: frame.srcW, h: frame.srcH } : frame.view;
     const b = Buffer.alloc(10);
     b[0] = 3;
-    b[1] = incremental ? 1 : 0;
-    b.writeUInt16BE(frame.srcW, 6);
-    b.writeUInt16BE(frame.srcH, 8);
+    b[1] = incremental && !learning && !refresh ? 1 : 0;
+    b.writeUInt16BE(r.x, 2);
+    b.writeUInt16BE(r.y, 4);
+    b.writeUInt16BE(r.w, 6);
+    b.writeUInt16BE(r.h, 8);
     vnc.write(b);
+    refresh = false;
   };
 
   let failure: ((err: unknown) => void) | null = null;
@@ -648,6 +732,8 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
         const type = (await vnc.reader.read(1))[0];
         if (type === 0) {
           const n = (await vnc.reader.read(3)).readUInt16BE(1);
+          /** 这次更新里够大的矩形（学各块屏在哪用） */
+          const big: Rect[] = [];
           for (let i = 0; i < n; i++) {
             const hd = await vnc.reader.read(12);
             const x = hd.readUInt16BE(0);
@@ -656,7 +742,10 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
             const h = hd.readUInt16BE(6);
             const enc = hd.readInt32BE(8);
             if (enc === ENC_DESKTOP_SIZE) {
+              // 分辨率、屏幕的摆法变了：各块屏在哪重新来
               frame.resize(w, h);
+              learnTries = 0;
+              pickView();
               sizeChanged = true;
               continue;
             }
@@ -668,6 +757,7 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
               continue;
             }
             if (x + w > frame.srcW || y + h > frame.srcH) throw new Error("VNC 服务发来的矩形超出了画面");
+            if (enc !== ENC_COPYRECT && w >= MIN_SCREEN_W && h >= MIN_SCREEN_H) big.push({ x, y, w, h });
             if (enc === ENC_ZRLE) {
               const len = (await vnc.reader.read(4)).readUInt32BE(0);
               const px = scratchOf(w * h * 4);
@@ -693,7 +783,17 @@ export async function transcode(opts: TranscodeOptions): Promise<void> {
                 frame.src.copyWithin((y + row) * stride + x * 4, from, from + w * 4);
               }
               frame.damage(x, y, w, h);
+              const v = frame.view;
+              if (frame.cropped && (sx < v.x || sy < v.y || sx + w > v.x + v.w || sy + h > v.y + v.h)) refresh = true;
             } else throw new Error(`VNC 服务用了不认识的编码 ${enc}`);
+          }
+          if (learning) {
+            learnTries++;
+            if (opts.screens!.learn(frame.srcW, frame.srcH, big) || learnTries >= LEARN_TRIES) {
+              learning = false;
+              // 学全了：换到选的那块屏。页面不认 DesktopSize（改不了画面大小）时只能接着看整个画面
+              if (pageEnc.desktopSize && pickView()) sizeChanged = true;
+            }
           }
           gotFirst = true;
           pump();

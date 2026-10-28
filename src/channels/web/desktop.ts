@@ -1,11 +1,13 @@
 // 远程控制的接口：GET /api/remote 告诉页面终端、桌面各自能不能用；
 // POST /api/desktop/session 准备好桌面（必要时起 x11vnc），把这次的 VNC 密码给页面；
+// GET /api/desktop/screens 有哪几块屏（页面选只看哪块）；
 // /ws/desktop 把页面（noVNC）的 WebSocket 原样转到 VNC 服务的 TCP 端口，和 websockify 一样。
 import net from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { WebSocket, WebSocketServer } from "ws";
 import { canUseDesktop, desktopAvailability, desktopTarget, desktopViewer, type DesktopTarget } from "../../core/desktop.js";
+import { desktopScreens, screenSource } from "../../core/desktop-screens.js";
 import { canUseRemote, isAdmin, type User } from "../../core/users.js";
 import { config } from "../../core/config.js";
 import { ByteReader, serveNoAuth, vncLogin } from "../../core/vnc-auth.js";
@@ -50,6 +52,11 @@ export async function handleDesktopApi(req: IncomingMessage, res: ServerResponse
     }
     // 苹果认证由服务端登录，Mac 的登录密码不给页面
     sendJson(res, 200, { password: target.username ? "" : target.password, source: config().remote.desktopSource });
+    return true;
+  }
+  if (p === "/api/desktop/screens" && method === "GET") {
+    if (!canUseDesktop(user)) throw new HttpError(403, "你没有使用远程桌面的权限");
+    sendJson(res, 200, desktopScreens());
     return true;
   }
   return false;
@@ -100,7 +107,8 @@ function reject(socket: Duplex, status: string): void {
 
 /**
  * /ws/desktop 的握手：user 已经由调用方核对过登录和 Origin。
- * ?q= 是画质：smooth / standard / high 由服务端缩小、压成 JPEG 再发（vnc-transcode.ts）；original 或不带是原样转发
+ * ?q= 是画质：smooth / standard / high 由服务端缩小、压成 JPEG 再发（vnc-transcode.ts）；original 或不带是原样转发。
+ * ?screen= 只看第几块屏（从 1 数，按 /api/desktop/screens 的顺序），只在转码时管用
  */
 export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socket: Duplex, head: Buffer, user: User, token: string, url: URL): void {
   if (!canUseDesktop(user)) return reject(socket, "403 Forbidden");
@@ -119,8 +127,9 @@ export function upgradeDesktop(wss: WebSocketServer, req: IncomingMessage, socke
         if (socket.destroyed) return void tcp.destroy();
         socket.off("error", onError);
         const q = url.searchParams.get("q");
+        const screen = Math.max(0, Math.floor(Number(url.searchParams.get("screen")) || 0));
         wss.handleUpgrade(req, socket, head, (ws) => {
-          if (isDesktopQuality(q)) return void transcodeSession(ws, tcp, token, target, q);
+          if (isDesktopQuality(q)) return void transcodeSession(ws, tcp, token, target, q, screen);
           if (!target.username) return bridge(ws, tcp, token);
           void loginThenBridge(ws, tcp, token, target.username, target.password);
         });
@@ -177,7 +186,7 @@ function isLoopback(host: string): boolean {
 }
 
 /** 转码：服务端连 VNC、缩小画面压成 JPEG 发给页面 */
-async function transcodeSession(ws: WebSocket, tcp: net.Socket, token: string, target: DesktopTarget, quality: DesktopQuality): Promise<void> {
+async function transcodeSession(ws: WebSocket, tcp: net.Socket, token: string, target: DesktopTarget, quality: DesktopQuality, screen: number): Promise<void> {
   // 握手前那个「回 502」的已经用不上了（socket 交给 WebSocket 了）
   tcp.removeAllListeners("error");
   tcp.on("error", () => tcp.destroy());
@@ -194,6 +203,9 @@ async function transcodeSession(ws: WebSocket, tcp: net.Socket, token: string, t
   const client: DesktopClient = { ws, tcp, token, alive: true };
   clients.add(client);
   desktopViewer(1);
+  const local = isLoopback(target.host);
+  // 读系统里的屏幕要一会儿（osascript）：先接住两头的数据，别丢
+  const screens = screenSource(`${target.host}:${target.port}`, { local, display: config().remote.desktopSource === "auto" ? desktopAvailability().display : undefined });
   const fromVnc = new ByteReader();
   const fromPage = new ByteReader();
   tcp.on("data", (d: Buffer) => fromVnc.push(d));
@@ -214,7 +226,9 @@ async function transcodeSession(ws: WebSocket, tcp: net.Socket, token: string, t
       page: { reader: fromPage, write: (b) => void (ws.readyState === ws.OPEN && ws.send(b, { binary: true })), backlog: () => ws.bufferedAmount },
       creds: { username: target.username, password: target.password },
       quality,
-      local: isLoopback(target.host),
+      local,
+      screen,
+      screens: await screens,
       onReady: () => clearTimeout(timer),
     });
   } catch (err) {
