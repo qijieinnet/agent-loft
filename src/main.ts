@@ -10,6 +10,8 @@ import { startFeishu, stopFeishu } from "./channels/feishu/index.js";
 import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
 import { startMemoryCurator } from "./core/memory-curator.js";
+import { migrateMemoryDefault } from "./core/memory.js";
+import { listUsers } from "./core/users.js";
 import { startScheduler, stopScheduler } from "./core/scheduled.js";
 import { startTaskRunner, stopTaskRunner } from "./core/task-runner.js";
 import { startTasksBridge, stopTasksBridge } from "./core/tasks-bridge.js";
@@ -44,6 +46,7 @@ async function main(): Promise<void> {
   });
 
   // 聊天记录索引和聊完后的记忆整理
+  migrateMemoryDefault(listUsers().map((u) => u.id));
   startMemoryCurator();
 
   startFeishu();

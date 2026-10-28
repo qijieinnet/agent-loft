@@ -25,6 +25,29 @@ const admin = users.createUser({ name: "boss", password: "password-1", role: "ad
 const alice = users.createUser({ name: "alice", password: "password-2" });
 const bob = users.createUser({ name: "bob", password: "password-3" });
 
+test("记忆：默认关着，打开后整理默认每天凌晨 2 点", () => {
+  const erin = users.createUser({ name: "erin", password: "password-6" });
+  const m = memory.readMemory(erin.id);
+  assert.equal(m.enabled, false);
+  assert.equal(m.curate.dailyHour, 2);
+  // 存过的文件里写着 enabled，老用户不受默认值影响
+  fs.writeFileSync(path.join(home, "data", "memory", "u_old.json"), JSON.stringify({ enabled: true, items: [] }));
+  assert.equal(memory.readMemory("u_old").enabled, true);
+});
+
+test("升级迁移：已有用户没写过记忆文件的补成开着，只跑一次；之后新加的用户默认关", () => {
+  const fred = users.createUser({ name: "fred", password: "password-7" });
+  memory.migrateMemoryDefault([fred.id, "u_old"]);
+  assert.equal(memory.readMemory(fred.id).enabled, true);
+  assert.equal(memory.readMemory("u_old").enabled, true, "已有文件的不动");
+  const gina = users.createUser({ name: "gina", password: "password-8" });
+  memory.migrateMemoryDefault([fred.id, gina.id]);
+  assert.equal(memory.readMemory(gina.id).enabled, false, "跑过一次就不再补");
+});
+
+// 下面的用例都在记忆打开的前提下
+for (const u of [admin, alice, bob]) memory.setMemoryOptions(u.id, { enabled: true });
+
 test("记忆：加、去重、改、删、清空", () => {
   const a = memory.addMemoryItem(alice.id, "喜欢喝美式咖啡", "agent");
   const again = memory.addMemoryItem(alice.id, "  喜欢喝美式咖啡 ", "agent");
@@ -293,6 +316,8 @@ hub.registerDriver({
 });
 
 test("录入：有主人的对话说的话进主人的索引；群聊（没主人）不进；关了记忆不进", async () => {
+  // 前面 purgeUserData 删过 bob 的记忆文件，回到了默认的关着
+  memory.setMemoryOptions(bob.id, { enabled: true });
   history.purgeHistory(bob.id);
   history.writeMeta(bob.id, { backfilled: true, extracted: {} });
   curator.startHistoryCapture();
@@ -518,7 +543,7 @@ test("现在整理：记忆关着或设成不整理时不调用模型", async ()
   hub.ensure({ key: "web:carol1", channel: "web", channelId: "web", defaultAgent: "claude", owner: carol.id });
   history.appendRecords(carol.id, [{ k: "web:carol1", a: "claude", r: "u", t: "一段足够长的、值得整理的话，关于我的工作", ts: Date.now() - 3600_000 }]);
   completions.length = 0;
-  memory.setMemoryOptions(carol.id, { curate: { when: "off" } });
+  memory.setMemoryOptions(carol.id, { enabled: true, curate: { when: "off" } });
   assert.match((await curator.curateNow(carol.id)).error ?? "", /整理已关闭/);
   memory.setMemoryOptions(carol.id, { enabled: false, curate: { when: "manual" } });
   assert.match((await curator.curateNow(carol.id)).error ?? "", /记忆已关闭/);
@@ -527,7 +552,7 @@ test("现在整理：记忆关着或设成不整理时不调用模型", async ()
 
 test("回填不会把还没整理的实时录入标成整理过", async () => {
   const dave = users.createUser({ name: "dave", password: "password-5" });
-  memory.setMemoryOptions(dave.id, { chatHistory: false, curate: { when: "manual" } });
+  memory.setMemoryOptions(dave.id, { enabled: true, chatHistory: false, curate: { when: "manual" } });
   hub.ensure({ key: "web:dave1", channel: "web", channelId: "web", defaultAgent: "claude", owner: dave.id });
   hub.conversation("web:dave1")!.perAgent.claude = { sessionId: "s-dave" };
   // 实时录入了一句（还没整理）。假 agent 的历史里是一天前的两句

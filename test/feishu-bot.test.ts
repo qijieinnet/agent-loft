@@ -347,7 +347,7 @@ test("/bind：私聊归绑定的人、用他的记忆、/web 只列他的；群�
   const links = await import("../src/core/feishu-links.js");
   users.createUser({ name: "boss", password: "password-1", role: "admin" });
   const alice = users.createUser({ name: "alice", password: "password-2" });
-  memory.setMemoryOptions(alice.id, { about: "alice 的自我介绍" });
+  memory.setMemoryOptions(alice.id, { enabled: true, about: "alice 的自我介绍" });
   const p2p = "feishu:b1:oc_alice";
 
   // 先没绑定：私聊没主人，不用记忆

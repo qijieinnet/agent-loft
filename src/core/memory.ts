@@ -58,7 +58,7 @@ export type CurateSettings = {
   model: string;
 };
 
-export const DEFAULT_CURATE: CurateSettings = { when: "daily", scope: "all", idleMinutes: 30, dailyHour: 4, agent: "auto", model: "" };
+export const DEFAULT_CURATE: CurateSettings = { when: "daily", scope: "all", idleMinutes: 30, dailyHour: 2, agent: "auto", model: "" };
 
 function cleanCurate(raw: Partial<CurateSettings> | undefined, base: CurateSettings): CurateSettings {
   const r = raw ?? {};
@@ -96,7 +96,25 @@ function fileOf(userId: string): string {
 }
 
 function empty(): UserMemory {
-  return { enabled: true, about: "", items: [], curate: { ...DEFAULT_CURATE }, chatHistory: true };
+  return { enabled: false, about: "", items: [], curate: { ...DEFAULT_CURATE }, chatHistory: true };
+}
+
+/**
+ * 记忆从默认开改成默认关（0.2.46）：升级前就有、但还没写过记忆文件的用户，补一份开着的，
+ * 让老实例里的人保持原样。只跑一次，跑过留个标记；新装的第一次启动时还没有用户，什么都不补。
+ */
+export function migrateMemoryDefault(userIds: string[]): void {
+  const marker = path.join(memoryDir, ".default-off-migrated");
+  if (fs.existsSync(marker)) return;
+  fs.mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
+  let n = 0;
+  for (const id of userIds) {
+    if (fs.existsSync(fileOf(id))) continue;
+    write(id, { ...empty(), enabled: true });
+    n++;
+  }
+  fs.writeFileSync(marker, String(Date.now()), { mode: 0o600 });
+  if (n) console.log(`[记忆] 默认改成关闭：升级前的 ${n} 个用户保持开启`);
 }
 
 export function readMemory(userId: string): UserMemory {
@@ -105,7 +123,8 @@ export function readMemory(userId: string): UserMemory {
     ? raw.items.filter((i): i is MemoryItem => !!i && typeof i.id === "string" && typeof i.text === "string")
     : [];
   return {
-    enabled: raw.enabled !== false,
+    // 默认关：后台整理会占订阅额度，夜里还会单独开一个 5 小时窗口。写过的文件都存着 enabled，老用户不受影响
+    enabled: raw.enabled === true,
     // 早先的版本只有一个「自动整理」开关：关着的就是不整理
     curate: cleanCurate(raw.curate, raw.autoExtract === false ? { ...DEFAULT_CURATE, when: "off" } : DEFAULT_CURATE),
     chatHistory: raw.chatHistory !== false,
