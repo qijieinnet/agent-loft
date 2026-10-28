@@ -4,6 +4,8 @@ import { purgeHistory } from "./chat-history.js";
 import { unlinkUser } from "./feishu-links.js";
 import { deleteUserTasks } from "./tasks.js";
 import { purgeUserSkills } from "./skills.js";
+import { purgeUserExperts } from "./experts.js";
+import { purgeUserMcp } from "./mcp.js";
 import type { Conversation } from "./store.js";
 import { getUser, legacyOwnerId } from "./users.js";
 import { deleteUiPrefs } from "./ui-prefs.js";
@@ -39,12 +41,14 @@ export function sessionMemory(
   };
 }
 
-/** 删用户时一起删掉的个人数据：记忆、聊天记录索引、飞书绑定、定时任务和技能（他建的技能，装了的人也就没了） */
+/** 删用户时一起删掉的个人数据：记忆、聊天记录索引、飞书绑定、定时任务、技能（他建的技能，装了的人也就没了）、专家和 MCP */
 export function purgeUserData(userId: string): void {
   deleteMemory(userId);
   purgeHistory(userId);
   unlinkUser(userId);
   deleteUserTasks(userId);
   purgeUserSkills(userId);
+  purgeUserExperts(userId);
+  purgeUserMcp(userId);
   deleteUiPrefs(userId);
 }

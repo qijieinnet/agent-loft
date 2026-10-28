@@ -13,7 +13,7 @@ import { agentEnvironment } from "../../core/agent-env.js";
 import os from "node:os";
 import type { AgentCommand } from "../../core/command-catalog.js";
 import { splitAttachmentNote } from "../../core/uploads.js";
-import { stripContext } from "../../core/chat-mode.js";
+import { stripContext } from "../../core/expert-prompt.js";
 import { config } from "../../core/config.js";
 import type {
   AgentDriver,

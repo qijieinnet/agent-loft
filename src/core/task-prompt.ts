@@ -3,7 +3,7 @@
 // 「只在需要时提醒」靠一个暗号：agent 判断这次没什么要说的，就在回复第一行只写 SILENT_MARK，
 // hub 看到它就把这一轮标成 silent，推送和飞书都不发。没写暗号一律当成要提醒 —— 宁可多提醒一次，
 // 也不能漏掉。
-import { wrapContext } from "./chat-mode.js";
+import { wrapContext } from "./expert-prompt.js";
 import { formatDateTime, serverTimeZone } from "./task-schedule.js";
 
 export const SILENT_MARK = "[[静默]]";

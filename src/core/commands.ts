@@ -18,9 +18,7 @@ export type ParsedCommand =
   | { kind: "status" }
   | { kind: "pwd" }
   | { kind: "autoedit"; on?: boolean }
-  | { kind: "mode"; mode: "chat" | "work" }
   | { kind: "help" }
-  | { kind: "skills" }
   /** 只发了一个「/」：列出可用命令 */
   | { kind: "commands" }
   | { kind: "approve"; requestId: string; decision: ApprovalDecision }
@@ -50,9 +48,11 @@ export function parseCommand(raw: string): ParsedCommand {
       return { kind: "model", ...(arg ? { model: arg } : {}) };
     case "effort":
       return { kind: "effort", ...(arg ? { effort: arg } : {}) };
+    // 换专家（会开新会话）。/agent 是以前的叫法，照样认
+    case "expert":
     case "agent":
-      return { kind: "agent", ...(arg ? { agent: arg.toLowerCase() } : {}) };
-    // 快捷切换
+      return { kind: "agent", ...(arg ? { agent: arg } : {}) };
+    // 快捷切换到内置专家
     case "claude":
     case "codex":
       return arg ? { kind: "chat", text } : { kind: "agent", agent: head.toLowerCase() };
@@ -71,13 +71,8 @@ export function parseCommand(raw: string): ParsedCommand {
       if (["off", "关", "0", "false"].includes(v)) return { kind: "autoedit", on: false };
       return { kind: "chat", text };
     }
-    case "chat":
-    case "work":
-      return arg ? { kind: "chat", text } : { kind: "mode", mode: head.toLowerCase() as "chat" | "work" };
     case "help":
       return { kind: "help" };
-    case "skills":
-      return arg ? { kind: "chat", text } : { kind: "skills" };
     case "approve": {
       const [requestId, decision] = rest;
       if (!requestId || !decision) return { kind: "chat", text };
@@ -104,8 +99,8 @@ export function helpText(agents: string[], channel?: string): string {
       .filter((c) => !c.feishuOnly || channel === "feishu")
       .filter((c) => !["claude", "codex"].includes(c.name))
       .map((c) =>
-        c.name === "agent"
-          ? `\`${usageOf(c)}\` ${c.description}（可选：${agents.join("、")}），也可以直接发 ${agents.map((a) => `\`/${a}\``).join(" ")}`
+        c.name === "expert"
+          ? `\`${usageOf(c)}\` ${c.description}${multi ? `，也可以直接发 ${agents.map((a) => `\`/${a}\``).join(" ")}` : ""}`
           : `\`${usageOf(c)}\` ${c.description}`,
       ),
   ].join("\n");

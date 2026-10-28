@@ -2,6 +2,7 @@ import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { agentCatalog } from "../views/topbar.js";
+import { expertChoices } from "../views/experts.js";
 import { confirmDialog } from "../lib/overlay.js";
 import { field, saveButton } from "./common.js";
 
@@ -156,7 +157,7 @@ export async function memoryTab(panel) {
     h(
       "div",
       { class: "section" },
-      h("div", { class: "muted" }, "注意：和多用户一样，这不是安全隔离 —— 工作模式下 agent 能读到这台机器上的文件，也包括记忆文件。"),
+      h("div", { class: "muted" }, "注意：和多用户一样，这不是安全隔离 —— 能读文件的专家（包括内置的 Claude Code / Codex）能读到这台机器上的文件，也包括记忆文件。"),
       h("div", { class: "row" }, clearBtn),
     ),
   );
@@ -197,11 +198,26 @@ function curateSection(mem, reload) {
       c.scope,
       [
         ["all", "全部对话"],
-        ["chat", "只整理聊天模式的对话"],
-        ["work", "只整理工作模式的对话"],
+        ["experts", "只整理选中专家的对话"],
       ],
-      (v) => save({ scope: v }).then(reload),
+      (v) => save({ scope: v, experts: c.experts ?? [] }).then(reload),
     );
+    // 选哪些专家：内置的（Claude Code / Codex）和自己的
+    const expertPicks =
+      c.scope === "experts"
+        ? h(
+            "div",
+            { class: "check-list" },
+            expertChoices().map((e) => {
+              const box = h("input", { type: "checkbox", checked: (c.experts ?? []).includes(e.id) });
+              box.onchange = () => {
+                const next = box.checked ? [...new Set([...(c.experts ?? []), e.id])] : (c.experts ?? []).filter((x) => x !== e.id);
+                void save({ experts: next }).then(reload);
+              };
+              return h("label", { class: "check-item" }, box, h("span", {}, `${e.icon ? `${e.icon} ` : ""}${e.name}`));
+            }),
+          )
+        : null;
     const timing =
       c.when === "idle"
         ? field("停下来多久算聊完", select(c.idleMinutes, [10, 30, 60, 120, 240].map((m) => [m, m < 60 ? `${m} 分钟` : `${m / 60} 小时`]), (v) => save({ idleMinutes: Number(v) })))
@@ -279,7 +295,7 @@ function curateSection(mem, reload) {
         }[c.when],
       ),
       timing,
-      c.when === "off" ? null : field("整理哪些对话", scope, "按整理时对话所在的模式算；不在范围里的对话直接跳过，之后改回来也不会补整理"),
+      c.when === "off" ? null : field("整理哪些对话", h("div", {}, scope, expertPicks), "按对话用的专家算；不在范围里的对话直接跳过，之后改回来也不会补整理"),
       c.when === "off" ? null : field("用哪个 agent", agent),
       c.when === "off" ? null : model,
       h("div", { class: "row", style: { alignItems: "center", gap: "10px" } }, nowBtn, h("span", { class: "muted" }, `${mem.pending ? `有 ${mem.pending} 段对话等着整理。` : ""}${lastText}`)),

@@ -329,8 +329,9 @@ button.conv-group:hover {
   display: none;
 }
 
-.conv-item .chat-mark {
-  color: var(--fg-soft);
+.conv-item .expert-mark {
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* ---- 侧栏底部的额度 ---- */

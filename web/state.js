@@ -6,9 +6,12 @@ export const S = {
   convs: new Map(),
   pending: new Map(),
   current: null,
+  /** 新对话的引擎（claude / codex），跟着选的专家走 */
   draftAgent: localStorage.getItem("aim.agent") || null,
-  /** 新对话用聊天模式还是工作模式，记住上次的选择 */
-  draftMode: localStorage.getItem("aim.mode") === "chat" ? "chat" : "work",
+  /** 新对话选的专家：内置的就是 claude / codex，自定义的是专家 id。记住上次的选择 */
+  draftExpert: localStorage.getItem("aim.expert") || null,
+  /** 自己的专家（bootstrap 里给，设置里改了重新拉） */
+  experts: [],
   /** 新对话（还没发消息）选的工作目录，null 表示工作区根目录。开新对话时沿用上次选的 */
   draftCwd: null,
   items: [],

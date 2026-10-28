@@ -9,9 +9,7 @@ import { renderScheduled } from "./schedule.js";
 import { renderTodos } from "./todos.js";
 import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
-import { attachMention } from "./mention.js";
 import { doAction, openModelPicker, openSessions } from "./conv-actions.js";
-import { openSettings } from "./layout.js";
 
 // ---------- 输入框 ----------
 
@@ -26,23 +24,21 @@ export function hideKeyboardForMenu() {
   ui.input.blur();
 }
 document.addEventListener("pointerdown", (e) => {
-  if (!keepMenus || [ui.input, ui.slashMenu, ui.mentionMenu].some((el) => el?.contains(e.target))) return;
+  if (!keepMenus || [ui.input, ui.slashMenu].some((el) => el?.contains(e.target))) return;
   keepMenus = false;
   closeSlashMenu();
-  ui.mention?.close();
 });
 
 export function renderComposer() {
   cancelVoice();
   ui.input = h("textarea", {
     rows: 1,
-    placeholder: "随心输入，@ 选技能",
+    placeholder: "随心输入",
     oninput: () => {
       // 识别过程中用户自己动了输入框，以用户为准，停掉识别
       cancelVoice();
       autosize();
       void updateSlashMenu();
-      void ui.mention.update();
     },
     onfocus: () => (keepMenus = false),
     onblur: () =>
@@ -50,10 +46,9 @@ export function renderComposer() {
         // 为了让出地方收起的键盘（见 hideKeyboardForMenu）：菜单留着；点回输入框也不关
         if (keepMenus || document.activeElement === ui.input) return;
         closeSlashMenu();
-        ui.mention.close();
       }, 150),
     onkeydown: (e) => {
-      if (slashKeydown(e) || ui.mention.keydown(e)) {
+      if (slashKeydown(e)) {
         e.preventDefault();
         return;
       }
@@ -91,11 +86,6 @@ export function renderComposer() {
   ui.schedBar = h("div", { class: "sched-bar", hidden: true });
   ui.todoBar = h("div", { class: "todo-bar", hidden: true });
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
-  ui.mentionMenu = h("div", { class: "slash-menu", hidden: true });
-  ui.mention = attachMention(ui.input, ui.mentionMenu, {
-    onEmpty: () => openSettings("技能"),
-    onShown: hideKeyboardForMenu,
-  });
   ui.composer = h(
     "div",
     {
@@ -112,7 +102,6 @@ export function renderComposer() {
       },
     },
     ui.slashMenu,
-    ui.mentionMenu,
     ui.chips,
     ui.input,
     h(
@@ -204,7 +193,7 @@ export async function ensureConversation() {
   try {
     info = await api("/api/conversations", {
       method: "POST",
-      body: { agent: S.draftAgent, cwd: S.draftCwd ?? undefined, mode: S.draftMode },
+      body: { expert: S.draftExpert ?? S.draftAgent, cwd: S.draftCwd ?? undefined },
     });
   } catch (err) {
     // 选的目录没了（被删、或工作区改了）：退回根目录，让用户重新确认
@@ -290,7 +279,6 @@ export async function sendMessage() {
     return;
   }
   closeSlashMenu();
-  ui.mention.close();
   let key;
   let res;
   setSending(true);

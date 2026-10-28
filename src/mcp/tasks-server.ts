@@ -64,9 +64,8 @@ const TOOLS = [
         reply_to: {
           type: "string",
           enum: ["this_conversation", "dedicated"],
-          description: "this_conversation：结果回到当前对话（默认）；dedicated：给任务单独开一条对话（可以指定 mode）",
+          description: "this_conversation：结果回到当前对话（默认）；dedicated：给任务单独开一条对话（和当前对话用同一个专家）",
         },
-        mode: { type: "string", enum: ["chat", "work"], description: "dedicated 时用：chat 只能联网搜索、开销小（默认）；work 能执行命令、读写本机文件" },
       },
       required: ["prompt", "schedule"],
       additionalProperties: false,

@@ -16,6 +16,7 @@ import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
   agentBinding,
   ensureConversation,
+  expertIdOf,
   getConversation,
   isExpired,
   listConversations,
@@ -34,7 +35,6 @@ import type {
   AttachmentInfo,
   AgentSession,
   ContextUsage,
-  ConversationMode,
   ApprovalDecision,
   HistoryMessage,
   InteractionSpec,
@@ -48,8 +48,10 @@ import type {
 import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
 import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
-import { stripContext, wrapContext } from "./chat-mode.js";
-import { isMachineCommand, mentionContext, sessionSkills, skillsText } from "./skill-runtime.js";
+import { expertSystemPrompt, searchLabel, stripContext } from "./expert-prompt.js";
+import { expertEvents, expertRuntime, getExpert, isBuiltin, listExperts, type ExpertRuntime } from "./experts.js";
+import { mcpEvents } from "./mcp.js";
+import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
 import { skillEvents } from "./skills.js";
 import { isSilentReply } from "./task-prompt.js";
 
@@ -133,6 +135,7 @@ export type CommandReply =
       currentEffort?: string;
       effortSupported: boolean;
     }
+  /** 能换成哪些专家（飞书：换专家 = 开新会话） */
   | { type: "agents"; agents: { id: string; label: string }[]; current: string }
   /** 只发了「/」：可用命令（已按用户配置排序、去掉隐藏的） */
   | { type: "commands"; agent: string; commands: CommandEntry[] }
@@ -163,14 +166,29 @@ export type ConversationInfo = {
   forkOf?: string;
   /** 当前 agent 能不能从某条回复处分叉成新对话 */
   canFork?: boolean;
-  /** 聊天模式还是工作模式 */
-  mode: ConversationMode;
+  /** 这条对话的专家 */
+  expert: ExpertBadge;
   /** 这条对话有主人、会用上主人的记忆（主人自己关了记忆的话实际不会注入，见 personal.ts） */
   personal?: boolean;
   /** 排着的定时消息（见 core/scheduled.ts），按发送时间先后 */
   scheduled?: { id: string; text: string; at: number }[];
   /** 定时任务的专用对话 */
   taskId?: string;
+};
+
+/** 顶栏、列表里显示的专家 */
+export type ExpertBadge = {
+  id: string;
+  name: string;
+  icon?: string;
+  color?: string;
+  builtin?: true;
+  /** 自定义专家的权限（只能联网的不显示工作目录） */
+  access?: string;
+  /** 专家被删了：对话还能看，不能再发消息 */
+  missing?: true;
+  welcome?: string;
+  quickPrompts?: { title: string; prompt: string }[];
 };
 
 /** 普通成员点了会落盘的「总是允许」 */
@@ -254,6 +272,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     interactions.on("created", (i) => this.emitEvent(i.convKey, { type: "ix", id: i.id }));
     // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
     skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
+    // 专家、MCP 改了：用着自定义专家的会话空闲下来换上新的（内置专家不受影响）
+    expertEvents.on("changed", (owner) => this.personalChanged(new Set([owner]), true));
+    mcpEvents.on("changed", (owner) => this.personalChanged(new Set([owner]), true));
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
     onConfigChange((next, prev) => {
       // 默认模型可能改了，缓存作废，下次显示时重新读
@@ -346,7 +367,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const peek = live && live.agent === conv.agent ? (live.session.peekRuntime?.() ?? {}) : {};
     const last = this.lastRuntime.get(conv.key);
     const lastRt = last && last.agent === conv.agent ? last.runtime : {};
-    const defaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[conv.agent];
+    const defaults = this.defaultsOf(conv);
     const fallback = this.defaultsCache.get(conv.agent);
     if (!fallback) this.loadDefaults(conv.agent);
     const model = peek.model ?? binding.model ?? lastRt.model ?? (defaults?.defaultModel || undefined) ?? fallback?.model;
@@ -354,8 +375,60 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
 
+  /** 设置里的默认模型 / 思考程度：自定义专家配了就用专家的，没配的项用 agent 的 */
+  private defaultsOf(conv: Pick<Conversation, "agent" | "expert">): { defaultModel?: string; defaultEffort?: string } {
+    const agent = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[conv.agent];
+    const expert = conv.expert ? getExpert(conv.expert) : undefined;
+    const model = expert?.model || agent?.defaultModel;
+    const effort = expert?.effort || agent?.defaultEffort;
+    return { ...(model ? { defaultModel: model } : {}), ...(effort ? { defaultEffort: effort } : {}) };
+  }
+
   driver(id: string): AgentDriver | undefined {
     return this.drivers.get(id);
+  }
+
+  // ---------- 专家 ----------
+
+  /** 对话的专家，给顶栏和列表看 */
+  expertBadge(conv: Pick<Conversation, "agent" | "expert" | "owner" | "channel">): ExpertBadge {
+    if (!conv.expert) return { id: conv.agent, name: this.label(conv.agent), builtin: true };
+    const e = getExpert(conv.expert);
+    if (!e || e.owner !== memoryOwnerOf(conv)) return { id: conv.expert, name: "（已删除的专家）", missing: true };
+    return {
+      id: e.id,
+      name: e.name,
+      access: e.access,
+      ...(e.icon ? { icon: e.icon } : {}),
+      ...(e.color ? { color: e.color } : {}),
+      ...(e.welcome ? { welcome: e.welcome } : {}),
+      ...(e.quickPrompts.length ? { quickPrompts: e.quickPrompts } : {}),
+    };
+  }
+
+  /**
+   * 拉起会话时交给 driver 的专家。内置专家返回 undefined（agent 原装的样子）。
+   * 专家被删了、不是对话主人的、引擎对不上：抛错 —— 不能悄悄换成别的专家接着聊。
+   */
+  private expertFor(conv: Conversation): ExpertRuntime | undefined {
+    if (!conv.expert) return undefined;
+    const e = getExpert(conv.expert);
+    if (!e || e.owner !== memoryOwnerOf(conv)) throw new Error("这条对话用的专家已经删除了。新开一个对话，换个专家吧。");
+    if (e.engine !== conv.agent) throw new Error(`专家「${e.name}」的引擎和这条对话的对不上，新开一个对话吧。`);
+    return expertRuntime(e, (sub, access) =>
+      expertSystemPrompt({ name: sub.name, prompt: sub.prompt, access, webSearch: sub.webSearch, webFetch: sub.webFetch }, searchLabel("claude", sub), conv.cwd),
+    );
+  }
+
+  /**
+   * 这个人在某个渠道能选的专家：允许的内置专家（agent 启用着的），加上他自己的、引擎可用的专家。
+   * 没有主人的对话（飞书群聊等）只有内置专家。
+   */
+  expertChoices(owner: string | undefined, allowedAgents: string[]): { id: string; label: string; engine: string }[] {
+    const usable = new Set(this.enabledAgents().map((d) => d.id).filter((a) => allowedAgents.includes(a)));
+    const builtin = [...usable].map((a) => ({ id: a, label: this.label(a), engine: a }));
+    const own = owner ? listExperts(owner).filter((e) => usable.has(e.engine)) : [];
+    return [...builtin, ...own.map((e) => ({ id: e.id, label: `${e.icon ? `${e.icon} ` : ""}${e.name}`, engine: e.engine }))];
   }
 
   /** 已注册且在配置里启用的 agent */
@@ -458,6 +531,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     channel: string;
     channelId: string;
     defaultAgent: string;
+    /** 自定义专家的 id（新建时才用）。不给就是内置专家 defaultAgent */
+    expert?: string;
+    /** 新建时的工作目录。不给就是工作区根目录 */
+    cwd?: string;
     title?: string;
     /** 谁的对话（用户 id）。只有 Web 上新建的有 */
     owner?: string;
@@ -467,6 +544,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       channel: params.channel,
       channelId: params.channelId,
       agent: params.defaultAgent,
+      ...(params.expert && !isBuiltin(params.expert) ? { expert: params.expert } : {}),
+      ...(params.cwd ? { cwd: params.cwd } : {}),
       ...(params.title ? { title: params.title } : {}),
       ...(params.owner ? { owner: params.owner } : {}),
     });
@@ -508,7 +587,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       ...(conv.hidden ? { hidden: true } : {}),
       ...(conv.forkOf ? { forkOf: conv.forkOf } : {}),
       ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
-      mode: conv.mode ?? "work",
+      expert: this.expertBadge(conv),
       ...(memoryOwnerOf(conv) ? { personal: true } : {}),
       ...(conv.taskId ? { taskId: conv.taskId } : {}),
       ...(() => {
@@ -545,11 +624,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
 
     const binding = agentBinding(conv);
 
-    const agentDefaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[
-      conv.agent
-    ];
-    const model = binding.model || agentDefaults?.defaultModel || undefined;
-    const effort = binding.effort || agentDefaults?.defaultEffort || undefined;
+    const defaults = this.defaultsOf(conv);
+    const model = binding.model || defaults.defaultModel || undefined;
+    const effort = binding.effort || defaults.defaultEffort || undefined;
     // 有待分叉的记录：从它分叉（见 AgentBinding.forkFrom）
     const pendingFork = !opts.resumeId && binding.forkFrom ? binding.forkFrom : undefined;
     const resumeId = opts.resumeId ?? pendingFork ?? (opts.fork ? undefined : binding.sessionId);
@@ -560,23 +637,16 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const holder: { session?: AgentSession } = {};
     const alive = () => this.live.get(key)?.session === holder.session;
 
+    // 专家：自定义的按它的配置来；被删了就在这里抛错，这条对话不能再用
+    const expert = this.expertFor(conv);
     // 记忆在拉起会话这一刻读一次：会话里 agent 自己记下的，上下文里本来就有；
-    // 用户在设置里改了，memoryChanged() 会让空闲的会话下次说话时带着新的重新拉起
-    const memory = sessionMemory(conv);
+    // 用户在设置里改了，memoryChanged() 会让空闲的会话下次说话时带着新的重新拉起。专家可以不带记忆
+    const memory = expert && !expert.memory ? undefined : sessionMemory(conv);
     // 定时任务工具：和记忆一样只给有主人的对话（飞书群聊里谁都能让机器人建任务，算不清是谁的）
     const taskOwner = memoryOwnerOf(conv);
-    // 技能也跟着主人走：他启用的技能、填的变量；成员看不到机器上原有的技能（见 skill-runtime.ts）
-    const skills = sessionSkills(taskOwner);
-    const mode = conv.mode ?? "work";
-    // 续着的会话上次被告知的模式和现在不一样（新会话没有历史，算原装的工作模式）
-    const announceMode = (resumeId ? (binding.announcedMode ?? "work") : "work") !== mode;
-    // 真开始一轮了才算告诉过它（/status 之类也会拉起会话，但什么都没发过去）
-    let announced = false;
-    const markAnnounced = () => {
-      if (announced) return;
-      announced = true;
-      updateAgentBinding(key, agent, { announcedMode: mode === "work" ? undefined : mode });
-    };
+    // 技能也跟着主人走：他启用的技能、填的变量；成员看不到机器上原有的技能（见 skill-runtime.ts）。
+    // 自定义专家只给它选中的
+    const skills = sessionSkills(taskOwner, expert?.skills);
     const session = driver.createSession(
       {
         cwd: conv.cwd,
@@ -586,16 +656,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         ...(resumeId ? { resumeId } : {}),
         ...(fork ? { fork: true } : {}),
         ...(conv.autoEdit ? { autoEdit: true } : {}),
-        ...(conv.mode === "chat" ? { mode: "chat" as const } : {}),
+        ...(expert ? { expert } : {}),
         ...(memory ? { memory } : {}),
-        ...(announceMode ? { announceMode: true } : {}),
         ...(taskOwner ? { tasks: { userId: taskOwner, convKey: key } } : {}),
         ...(skills ? { skills } : {}),
       },
       {
         onTurnStart: () => {
           if (!alive()) return;
-          markAnnounced();
           this.emitEvent(key, { type: "turn_start" });
         },
         onStep: (kind, text) => alive() && this.emitEvent(key, { type: "step", kind, text }),
@@ -956,22 +1024,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
           this.emitEvent(key, { type: "notice", text: blocked });
           return gone(blocked);
         }
-        this.sendNow(key, this.withMentions(key, input), task ?? null, { id: shown.id, queued: shown.queued });
+        this.sendNow(key, input, task ?? null, { id: shown.id, queued: shown.queued });
       } finally {
         this.waitingSends.set(key, Math.max(0, (this.waitingSends.get(key) ?? 1) - 1));
       }
     });
-  }
-
-  /**
-   * 消息里 @ 了技能：附一段背景告诉 agent 用哪个、怎么用（用户看不到，见 skill-runtime.ts 的 mentionContext）。
-   * 按发出去这一刻对话的 agent 和模式拼：排队期间可能刚切过。
-   */
-  private withMentions(key: string, input: UserInput): UserInput {
-    const conv = getConversation(key);
-    if (!conv) return input;
-    const lines = mentionContext(stripContext(input.text), { owner: memoryOwnerOf(conv), agent: conv.agent, mode: conv.mode ?? "work" });
-    return lines ? { ...input, text: `${input.text}\n\n${wrapContext(lines)}` } : input;
   }
 
   /** 成员直接发「/机器上的技能」：Claude 会绕过技能白名单把它展开，这里先拦下。返回拦下的原因 */
@@ -979,7 +1036,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const m = /^[/／](\S+)/.exec(text.trim());
     if (!m) return null;
     const conv = getConversation(key);
-    if (!conv || conv.agent !== "claude" || conv.mode === "chat") return null;
+    // 只有内置的 Claude Code 专家读机器上的技能；自定义专家的技能白名单里只有它选的
+    if (!conv || conv.agent !== "claude" || conv.expert) return null;
     const owner = memoryOwnerOf(conv);
     if (!owner || getUser(owner)?.role === "admin") return null;
     const driver = this.enabledAgents().find((d) => d.id === conv.agent);
@@ -1071,9 +1129,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     } catch (err) {
       console.error("[会话] 读取模型信息失败:", err);
     }
-    const defaults = (config().agents as Record<string, { defaultModel?: string; defaultEffort?: string }>)[
-      conv.agent
-    ];
+    const defaults = this.defaultsOf(conv);
     const fallback =
       runtime.model && runtime.effort
         ? {}
@@ -1214,35 +1270,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return this.serial(key, () => this.setAutoEditNow(key, on));
   }
 
-  // ---------- 聊天 / 工作模式 ----------
-
-  /**
-   * /chat、/work。同一条对话、同一个 agent 会话接着聊：丢掉活着的进程，下一条消息带着新模式的
-   * 系统提示和工具 resume 回来（Claude、Codex 都实测过能接上上下文）。正在回复时不切：
-   * 丢进程会把这一轮打断。
-   */
-  private async setModeNow(key: string, mode: ConversationMode): Promise<string> {
-    const conv = getConversation(key)!;
-    if ((conv.mode ?? "work") === mode) {
-      return mode === "chat" ? "已经是💬 聊天模式了。发 /work 切到工作模式。" : "已经是🛠 工作模式了。发 /chat 切到聊天模式。";
-    }
-    if (this.isBusy(key)) return "正在回复，等这一轮结束（或者先 /stop）再切换模式。";
-    // 聊过的聊天对话切到工作模式：之后再回聊天模式就省不了了（Web 上点按钮时会先问，命令直接切，提醒一句）
-    const hadChat = mode === "work" && !!agentBinding(conv).sessionId;
-    await this.drop(key, "已切换模式");
-    updateConversation(key, { mode: mode === "chat" ? "chat" : undefined });
-    this.emitEvent(key, { type: "meta" });
-    return mode === "chat"
-      ? "已切到💬 聊天模式：精简的系统提示，只能联网搜索，不执行命令、不读写文件，每轮的开销小很多。上下文接着之前的。要动手干活时发 /work。"
-      : `已切到🛠 工作模式：${this.label(conv.agent)} 原装的全部能力（执行命令、改文件、技能、MCP）。上下文接着之前的。发 /chat 切回聊天模式。${
-          hadChat ? "\n\n提示：工作模式会在这条会话里留下一大段背景，之后再切回聊天模式就省不了多少了。干完活想回到省 token 的聊天，发 /new 开个新会话再发 /chat。" : ""
-        }`;
-  }
-
-  setMode(key: string, mode: ConversationMode): Promise<string> {
-    return this.serial(key, () => this.setModeNow(key, mode));
-  }
-
   // ---------- 记忆变了 / 主人变了 ----------
 
   /** 记忆过期了的会话进程（Live.id）：空闲下来就丢掉，下次说话带着新记忆重新拉起 */
@@ -1260,7 +1287,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         this.staleLive.add(live.id);
         return;
       }
-      await this.drop(key, "记忆或技能已更新");
+      await this.drop(key, "记忆、技能或专家已更新");
     });
   }
 
@@ -1272,12 +1299,15 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     this.personalChanged(new Set([userId]));
   }
 
-  /** 这些人的记忆或技能变了：他们名下活着的会话空闲下来就重新拉起 */
-  private personalChanged(users: Set<string>): void {
+  /**
+   * 这些人的记忆、技能、专家或 MCP 变了：他们名下活着的会话空闲下来就重新拉起。
+   * onlyExperts：只管用自定义专家的会话（专家、MCP 变了不影响内置专家）
+   */
+  private personalChanged(users: Set<string>, onlyExperts = false): void {
     for (const [key, live] of this.live) {
       const conv = getConversation(key);
       const owner = conv ? memoryOwnerOf(conv) : undefined;
-      if (!owner || !users.has(owner)) continue;
+      if (!owner || !users.has(owner) || (onlyExperts && !conv?.expert)) continue;
       this.staleLive.add(live.id);
       this.dropIfStale(key);
     }
@@ -1305,20 +1335,27 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return true;
   }
 
-  /** 切 agent：各 agent 的会话各自保留，切回来接着聊。 */
-  private async setAgentNow(key: string, agent: string, allowed: string[], op: SwitchOp): Promise<string> {
+  /**
+   * 换专家（飞书里的 /agent、/claude、/codex）：对话中途不能换专家，所以换了就开新会话。
+   * target 可以是专家 id，也可以是名字。allowed：这个渠道允许的内置 agent。
+   */
+  private async setExpertNow(key: string, target: string, allowed: string[], op: SwitchOp): Promise<string> {
     const conv = getConversation(key)!;
-    if (!allowed.includes(agent)) {
-      return `这里不能用「${agent}」。可选：${allowed.join("、")}`;
-    }
-    this.requireDriver(agent);
-    if (conv.agent === agent) return `当前已经是 ${this.label(agent)}。`;
-    await this.drop(key, `已切换到 ${this.label(agent)}`);
+    // 网页上的对话（包括飞书 /web 接上的）从头到尾一个专家：要换就新建对话
+    if (conv.channel === "web") return "网页上的对话中途不能换专家。在网页上新建一个对话，选好专家再聊。";
+    const choices = this.expertChoices(memoryOwnerOf(conv), allowed);
+    const want = target.trim().toLowerCase();
+    const hit = choices.find((c) => c.id.toLowerCase() === want) ?? choices.find((c) => c.label.toLowerCase().includes(want));
+    if (!hit) return `这里没有「${target}」这个专家。可选：${choices.map((c) => c.label).join("、")}`;
+    this.requireDriver(hit.engine);
+    if (expertIdOf(conv) === hit.id) return `当前已经是 ${hit.label}。`;
+    await this.drop(key, `已换成 ${hit.label}`);
     this.markSwitched(key, op.seq);
-    updateConversation(key, { agent });
+    // 新会话：所有 agent 的旧会话都不接着用（专家换了，上下文里的人设、权限都不对了）
+    updateConversation(key, { agent: hit.engine, expert: isBuiltin(hit.id) ? undefined : hit.id, perAgent: {} });
+    this.clearOldUploads(key, op.at);
     this.emitEvent(key, { type: "meta" });
-    const resumed = agentBinding(getConversation(key)!, agent).sessionId;
-    return `已切换到 ${this.label(agent)}${resumed ? "，接着它上次的会话" : ""}。`;
+    return `已换成专家「${hit.label}」，开了新会话。`;
   }
 
   async stop(key: string): Promise<string> {
@@ -1405,7 +1442,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         ? `记忆：开（${getUser(memoryOwner)?.name ?? memoryOwner} 的）`
         : "记忆：主人关掉了";
     return [
-      `模式：${conv.mode === "chat" ? "💬 聊天（/work 切到工作模式）" : "🛠 工作（/chat 切到聊天模式）"}`,
+      `专家：${this.expertBadge(conv).name}`,
       memoryLine,
       `Agent：${driver.label}`,
       `会话：${agentBinding(conv).sessionId ?? "(尚未建立)"}`,
@@ -1470,7 +1507,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       cwd: conv.cwd,
       ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
       ...(conv.autoEdit ? { autoEdit: true } : {}),
-      ...(conv.mode ? { mode: conv.mode } : {}),
+      ...(conv.expert ? { expert: conv.expert } : {}),
       forkOf: key,
       perAgent: {
         [conv.agent]: {
@@ -1500,8 +1537,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return this.serial(key, () => this.setEffortNow(key, effort));
   }
 
-  setAgent(key: string, agent: string, allowed: string[]): Promise<string> {
-    return this.switchOp(key, (op) => this.setAgentNow(key, agent, allowed, op));
+  setExpert(key: string, target: string, allowed: string[]): Promise<string> {
+    return this.switchOp(key, (op) => this.setExpertNow(key, target, allowed, op));
   }
 
   cd(key: string, dir: string): Promise<string> {
@@ -1538,8 +1575,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     switch (cmd.kind) {
       case "help":
         return text(helpText(ctx.allowedAgents, channel));
-      case "skills":
-        return text(skillsText(memoryOwnerOf(getConversation(key)!)));
       case "commands": {
         const conv = getConversation(key)!;
         const owner = memoryOwnerOf(conv);
@@ -1555,8 +1590,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         return text(getConversation(key)!.cwd);
       case "autoedit":
         return text(await this.setAutoEdit(key, cmd.on));
-      case "mode":
-        return text(await this.setMode(key, cmd.mode));
       case "status":
         return text(await this.status(key));
       case "cd":
@@ -1581,15 +1614,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         return text(await this.setEffort(key, cmd.effort));
       case "agent": {
         if (!cmd.agent) {
+          const conv = getConversation(key)!;
           return {
             type: "agents",
-            agents: ctx.allowedAgents
-              .filter((a) => this.drivers.has(a))
-              .map((id) => ({ id, label: this.label(id) })),
-            current: getConversation(key)!.agent,
+            agents: this.expertChoices(memoryOwnerOf(conv), ctx.allowedAgents).map(({ id, label }) => ({ id, label })),
+            current: expertIdOf(conv),
           };
         }
-        return text(await this.setAgent(key, cmd.agent, ctx.allowedAgents));
+        return text(await this.setExpert(key, cmd.agent, ctx.allowedAgents));
       }
       case "stop":
         return text(await this.stop(key));

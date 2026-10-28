@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { machineSkills, mentionTargets } from "../../core/skill-runtime.js";
+import { machineSkills } from "../../core/skill-runtime.js";
 import {
   canDelete,
   canSee,
@@ -116,12 +116,6 @@ export async function handleSkillsApi(req: IncomingMessage, res: ServerResponse,
       ...(isAdmin(user) ? { machine: machineSkills().map((m) => ({ name: m.name, description: m.description, dir: m.dir, agents: m.agents })) } : {}),
       limits: SKILL_LIMITS,
     });
-    return true;
-  }
-
-  // 输入框 @ 的补全：自己能用的（管理员加上机器上原有的）
-  if (p === "/api/skills/mention" && method === "GET") {
-    sendJson(res, 200, { skills: mentionTargets(user.id).map((t) => ({ name: t.name, description: t.description, kind: t.kind })) });
     return true;
   }
 

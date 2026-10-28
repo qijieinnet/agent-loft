@@ -10,12 +10,12 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { describeSchedule, nextRun, normalizeSchedule, type TaskSchedule } from "./task-schedule.js";
-import type { ConversationMode } from "./types.js";
+import { canUseExpert, getExpert, isBuiltin } from "./experts.js";
 
 /**
  * 结果回到哪：
- *   conv：一条已有的对话（agent 在对话里帮你建的，默认回到那条对话），模式 / agent / 目录都跟着那条对话；
- *   dedicated：任务自己的对话，第一次运行时新建（key 记下来，之后续用），模式等按任务里的设置。
+ *   conv：一条已有的对话（agent 在对话里帮你建的，默认回到那条对话），专家 / 目录都跟着那条对话；
+ *   dedicated：任务自己的对话，第一次运行时新建（key 记下来，之后续用），专家等按任务里的设置。
  */
 export type TaskTarget = { kind: "conv"; key: string } | { kind: "dedicated"; key?: string };
 
@@ -42,10 +42,10 @@ export type Task = {
   /** smart：只在需要时提醒（agent 判断）；always：每次都提醒 */
   notify: "smart" | "always";
   target: TaskTarget;
-  /** 专用对话的设置（target 是 conv 时不用，以那条对话为准） */
+  /** 专用对话的设置（target 是 conv 时不用，以那条对话为准）。agent 是引擎；expert 是自定义专家的 id，没有就是内置专家 agent */
   agent: string;
+  expert?: string;
   cwd?: string;
-  mode: ConversationMode;
   model?: string;
   effort?: string;
   enabled: boolean;
@@ -70,8 +70,30 @@ const storePath = path.join(dataDir, "tasks.json");
 let cache: Task[] | null = null;
 
 function load(): Task[] {
-  cache ??= readJson<Task[]>(storePath, []).filter((t) => t && typeof t.id === "string" && typeof t.owner === "string" && t.schedule);
+  if (cache) return cache;
+  cache = readJson<Task[]>(storePath, []).filter((t) => t && typeof t.id === "string" && typeof t.owner === "string" && t.schedule);
+  // 聊天模式取消了（换成了专家）：以前聊天模式的专用对话已经丢掉，任务先暂停，等用户选个专家再启用 ——
+  // 不能悄悄换成内置专家去跑（那是能执行命令的）
+  let changed = false;
+  for (const t of cache) {
+    const legacy = t as Task & { mode?: string };
+    if (legacy.mode === undefined) continue;
+    if (legacy.mode === "chat" && t.target.kind === "dedicated") {
+      t.enabled = false;
+      delete t.nextRunAt;
+      t.target = { kind: "dedicated" };
+      t.runs.unshift({ id: `r_${crypto.randomBytes(4).toString("hex")}`, at: Date.now(), endedAt: Date.now(), status: "skipped", note: "聊天模式已取消：编辑任务选一个专家，再启用" });
+    }
+    delete legacy.mode;
+    changed = true;
+  }
+  if (changed) writeJsonAtomic(storePath, cache);
   return cache;
+}
+
+/** 任务的专家 id：自定义专家的 id，或者内置专家（就是 agent 本身） */
+export function taskExpertId(t: Pick<Task, "agent" | "expert">): string {
+  return t.expert ?? t.agent;
 }
 
 function save(owner?: string): void {
@@ -112,9 +134,10 @@ export type TaskInput = {
   schedule?: unknown;
   notify?: unknown;
   target?: unknown;
+  /** 专家 id（内置的 claude / codex，或者自定义专家）。agent 是以前的叫法，照样认 */
+  expert?: unknown;
   agent?: unknown;
   cwd?: unknown;
-  mode?: unknown;
   model?: unknown;
   effort?: unknown;
   enabled?: unknown;
@@ -134,6 +157,14 @@ function cleanPrompt(v: unknown): string {
   return p;
 }
 
+/** 选的专家 → 引擎 + 自定义专家 id。只能选内置的或自己的 */
+function cleanExpert(owner: string, v: unknown): { agent: string; expert?: string } {
+  const id = str(v) || "claude";
+  if (!canUseExpert(owner, id)) throw new Error("这个专家不存在");
+  if (isBuiltin(id)) return { agent: id };
+  return { agent: getExpert(id)!.engine, expert: id };
+}
+
 function cleanTarget(v: unknown, prev?: TaskTarget): TaskTarget {
   const r = (v ?? {}) as Record<string, unknown>;
   if (r.kind === "conv" && typeof r.key === "string" && r.key) return { kind: "conv", key: r.key };
@@ -145,7 +176,7 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
   if (listTasks(owner).length >= TASKS_PER_USER) throw new Error(`每人最多 ${TASKS_PER_USER} 个定时任务，先删掉几个不用的`);
   const prompt = cleanPrompt(input.prompt);
   const schedule = normalizeSchedule(input.schedule, now);
-  const agent = str(input.agent) || "claude";
+  const picked = cleanExpert(owner, input.expert ?? input.agent);
   const task: Task = {
     id: `t_${crypto.randomBytes(5).toString("hex")}`,
     owner,
@@ -154,9 +185,8 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
     schedule,
     notify: input.notify === "always" ? "always" : "smart",
     target: cleanTarget(input.target),
-    agent,
+    ...picked,
     ...(str(input.cwd) ? { cwd: str(input.cwd) } : {}),
-    mode: input.mode === "work" ? "work" : "chat",
     ...(str(input.model) ? { model: str(input.model) } : {}),
     ...(str(input.effort) ? { effort: str(input.effort) } : {}),
     enabled: input.enabled !== false,
@@ -181,23 +211,28 @@ export function updateTask(owner: string, id: string, patch: TaskInput, now = Da
   if (patch.schedule !== undefined) next.schedule = normalizeSchedule(patch.schedule, now);
   if (patch.notify !== undefined) next.notify = patch.notify === "always" ? "always" : "smart";
   if (patch.target !== undefined) next.target = cleanTarget(patch.target, task.target);
-  if (patch.agent !== undefined && str(patch.agent)) next.agent = str(patch.agent);
+  const pick = patch.expert ?? patch.agent;
+  if (pick !== undefined && str(pick)) {
+    const picked = cleanExpert(owner, pick);
+    next.agent = picked.agent;
+    if (picked.expert) next.expert = picked.expert;
+    else delete next.expert;
+  }
   if (patch.cwd !== undefined) {
     if (str(patch.cwd)) next.cwd = str(patch.cwd);
     else delete next.cwd;
   }
-  if (patch.mode !== undefined) next.mode = patch.mode === "work" ? "work" : "chat";
   for (const k of ["model", "effort"] as const) {
     if (patch[k] === undefined) continue;
     if (str(patch[k])) next[k] = str(patch[k]);
     else delete next[k];
   }
   if (patch.enabled !== undefined) next.enabled = patch.enabled !== false;
-  // 专用对话的 agent / 目录 / 模式变了：旧的那条对话对不上了，下次新开一条
+  // 专用对话的专家 / 目录变了：旧的那条对话对不上了（对话中途不能换专家），下次新开一条
   if (
     next.target.kind === "dedicated" &&
     next.target.key &&
-    (next.agent !== task.agent || next.cwd !== task.cwd || next.mode !== task.mode)
+    (next.agent !== task.agent || next.expert !== task.expert || next.cwd !== task.cwd)
   ) {
     next.target = { kind: "dedicated" };
   }

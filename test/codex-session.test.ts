@@ -11,7 +11,8 @@ after(() => clearInterval(keepAlive));
 
 const { appServer } = await import("../src/agents/codex/app-server.js");
 const { CodexSession } = await import("../src/agents/codex/session.js");
-import type { AgentEvents } from "../src/core/types.js";
+import type { AgentEvents, InteractionSpec, SessionOptions, Settlement } from "../src/core/types.js";
+import type { ExpertRuntime } from "../src/core/experts.js";
 
 type Call = { method: string; params: any; resolve: (v: unknown) => void; reject: (e: Error) => void };
 const calls: Call[] = [];
@@ -30,7 +31,7 @@ const take = (method: string) => {
   return calls.splice(i, 1)[0]!;
 };
 
-function makeSession() {
+function makeSession(opts: Partial<SessionOptions> = {}, host = async (_spec: InteractionSpec) => ({ settlement: "deny" as Settlement, answers: {} })) {
   const log: string[] = [];
   const events: AgentEvents = {
     onDropped: (n) => log.push(`dropped:${n}`),
@@ -41,9 +42,82 @@ function makeSession() {
     onError: (e) => log.push(`error:${e instanceof Error ? e.message : e}`),
     onSessionId: () => {},
   };
-  const session = new CodexSession({ cwd: "/tmp", uploadsDir: "/tmp" }, events, async () => ({ settlement: "deny", answers: {} }));
+  const session = new CodexSession({ cwd: "/tmp", uploadsDir: "/tmp", ...opts }, events, host);
   return { session, log };
 }
+
+function expert(): ExpertRuntime {
+  return { id: "e_test", rev: 1, name: "测试专家", prompt: "", basePrompt: "lean", access: "web", webSearch: false, webFetch: false, skills: [], mcp: { remote: { type: "http", url: "https://mcp.example.com", headers: {} } }, askMcp: ["remote"], machineMcp: [], subagents: [], memory: false };
+}
+
+test("自定义专家：MCP 配置读取失败时不启动 thread，下一条消息可以重试", async () => {
+  calls.length = 0;
+  const { session, log } = makeSession({ expert: expert() });
+  session.send({ text: "一", attachments: [] });
+  await tick();
+  take("config/read").reject(new Error("config unavailable"));
+  await tick();
+  assert.deepEqual(calls, [], "读不到机器上的 MCP 就不能启动未受限制的 thread");
+  assert.ok(log.some((line) => line.includes("无法应用专家的 MCP 限制")));
+  session.send({ text: "二", attachments: [] });
+  await tick();
+  take("config/read").resolve({ config: { mcp_servers: { machine: {}, remote: {} } } });
+  await tick();
+  const start = take("thread/start");
+  assert.equal(start.params.config["mcp_servers.machine.enabled"], false);
+  assert.equal(start.params.config["mcp_servers.remote"].default_tools_approval_mode, "prompt");
+  await session.dispose();
+  start.reject(new Error("disposed"));
+  await tick();
+});
+
+test("自定义专家：start / resume / fork 失败不会去掉限制重试，再发消息仍带完整配置", async () => {
+  for (const kind of ["start", "resume", "fork"] as const) {
+    calls.length = 0;
+    const { session, log } = makeSession({ expert: expert(), ...(kind === "start" ? {} : { resumeId: `expert-${kind}` }), ...(kind === "fork" ? { fork: true } : {}) });
+    session.send({ text: "一", attachments: [] });
+    await tick();
+    const first = take(`thread/${kind}`);
+    assert.equal(first.params.config["features.shell_tool"], false);
+    assert.equal(first.params.config.web_search, "disabled");
+    assert.equal(first.params.config["mcp_servers.machine.enabled"], false);
+    first.reject(new Error("expert config rejected"));
+    await tick();
+    assert.deepEqual(calls, [], "不能自动退回不带专家限制的配置");
+    assert.ok(log.some((line) => line.includes("expert config rejected")));
+    session.send({ text: "再试", attachments: [] });
+    await tick();
+    const retry = take(`thread/${kind}`);
+    assert.deepEqual(retry.params.config, first.params.config, "用户重试仍然带同一份完整限制");
+    await session.dispose();
+    retry.reject(new Error("disposed"));
+    await tick();
+  }
+});
+
+test("MCP 调用审批：允许、拒绝、取消和超时按协议返回；每次询问不沿用命令授权", async () => {
+  const seen: InteractionSpec[] = [];
+  const decisions: Settlement[] = ["allow-once", "deny", "cancelled", "timeout"];
+  const { session } = makeSession({ expert: expert() }, async (spec) => {
+    seen.push(spec);
+    return { settlement: decisions.shift()!, answers: {} };
+  });
+  (session as any).allowAll = true;
+  const request = { serverName: "remote", mode: "form", message: "Allow remote to run lookup?", _meta: { codex_approval_kind: "mcp_tool_call", tool_params: { symbol: "AAPL" } }, requestedSchema: { type: "object", properties: {} } };
+  for (const action of ["accept", "decline", "cancel", "decline"]) {
+    assert.deepEqual(await session.handleServerRequest("mcpServer/elicitation/request", request), { action, content: null, _meta: null });
+  }
+  assert.equal(seen.length, 4);
+  assert.ok(seen.every((spec) => spec.kind === "approval" && !spec.allowSession && !spec.alwaysLabel));
+  assert.equal(seen[0]!.kind, "approval");
+  if (seen[0]!.kind === "approval") assert.match(seen[0]!.detail, /AAPL/);
+  for (const invalid of [{ ...request, _meta: {} }, { ...request, mode: "url" }, { ...request, serverName: "not-selected" }]) {
+    assert.deepEqual(await session.handleServerRequest("mcpServer/elicitation/request", invalid), { action: "decline", content: null, _meta: null });
+  }
+  assert.equal(seen.length, 4, "未支持的表单不应该弹工具授权卡");
+  const builtin = makeSession();
+  assert.deepEqual(await builtin.session.handleServerRequest("mcpServer/elicitation/request", request), { action: "decline", content: null, _meta: null });
+});
 
 let threadN = 0;
 async function startTurn(threadId?: string): Promise<{ threadId: string; turnId: string }> {

@@ -13,7 +13,7 @@ import { config } from "./config.js";
 import { hub } from "./hub.js";
 import { interactions } from "./interactions.js";
 import { memoryOwnerOf } from "./personal.js";
-import { getConversation } from "./store.js";
+import { expertIdOf, getConversation } from "./store.js";
 import { forgetTask } from "./task-runner.js";
 import { describeSchedule, formatDateTime, nextRun, normalizeSchedule, parseLocalDateTime, serverTimeZone, type TaskSchedule } from "./task-schedule.js";
 import { TASK_TOOL_TIMEOUT_SEC, tasksSocketPath, verifyTaskCaller } from "./tasks-mcp.js";
@@ -66,7 +66,7 @@ async function confirm(convKey: string, title: string, detail: string): Promise<
   return outcome.settlement === "allow-once" || outcome.settlement === "allow-always" || outcome.settlement === "allow-session";
 }
 
-function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string; mode?: string; prompt?: string; enabled?: boolean }, now: number): string {
+function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string; expert?: string; prompt?: string; enabled?: boolean }, now: number): string {
   const lines: string[] = [];
   if (fields.schedule) {
     const next = nextRun(fields.schedule, now);
@@ -75,7 +75,7 @@ function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string
   }
   if (fields.notify) lines.push(`**提醒**：${fields.notify === "always" ? "每次都提醒" : "有需要才提醒（由 agent 判断）"}`);
   if (fields.where) lines.push(`**结果发到**：${fields.where}`);
-  if (fields.mode) lines.push(`**模式**：${fields.mode === "work" ? "工作模式（能执行命令、读写文件）" : "聊天模式（只能联网搜索）"}`);
+  if (fields.expert) lines.push(`**专家**：${fields.expert}`);
   if (fields.enabled !== undefined) lines.push(`**状态**：${fields.enabled ? "恢复运行" : "暂停"}`);
   if (fields.prompt) lines.push("", "**到点要做的事**：", "", ...fields.prompt.split("\n").map((l) => `> ${l}`));
   return lines.join("\n");
@@ -111,22 +111,22 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
     const prompt = String(args.prompt ?? "").trim();
     if (!prompt) return fail("prompt 不能为空。");
     const dedicated = args.reply_to === "dedicated";
-    const mode = dedicated ? (args.mode === "work" ? "work" : "chat") : (conv.mode ?? "work");
+    // 专用对话也用这条对话的专家
+    const expertName = hub.expertBadge(conv).name;
     const input: TaskInput = {
       title: args.title,
       prompt,
       schedule,
       notify: args.notify === "always" ? "always" : "smart",
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: convKey },
-      agent: conv.agent,
+      expert: expertIdOf(conv),
       cwd: conv.cwd,
-      mode,
     };
     const title = String(args.title ?? "").trim() || prompt.replace(/\s+/g, " ").slice(0, 60);
     const ok = await confirm(
       convKey,
       `新建定时任务「${title}」`,
-      card({ schedule, notify: String(input.notify), where: dedicated ? "单独开一条对话" : "这条对话", ...(dedicated ? { mode } : {}), prompt }, now),
+      card({ schedule, notify: String(input.notify), where: dedicated ? "单独开一条对话" : "这条对话", ...(dedicated ? { expert: expertName } : {}), prompt }, now),
     );
     if (!ok) return fail("用户没有同意，任务没有建。");
     try {

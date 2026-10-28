@@ -155,14 +155,14 @@
   gap: 6px;
 }
 
-.top-title .conv-mode-icon {
+.top-title .conv-expert-icon {
   display: inline-grid;
   flex-shrink: 0;
   margin-left: 4px;
   color: var(--fg-soft);
 }
 
-.top-title .conv-mode-icon svg {
+.top-title .conv-expert-icon svg {
   width: 16px;
   height: 16px;
 }

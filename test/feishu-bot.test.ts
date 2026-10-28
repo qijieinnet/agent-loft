@@ -137,18 +137,22 @@ test("主人说话：默认 agent 回复，以卡片发出", async () => {
   assert.equal(hub.conversation("feishu:b1:oc_chat")?.perAgent.codex?.sessionId, "codex-session");
 });
 
-test("/agent 弹选择卡，/claude 切过去，各自的会话保留", async () => {
+test("/expert 弹选择卡，/claude 换过去开新会话，换回来也是新会话", async () => {
   sent.length = 0;
-  await message("ou_owner", "/agent");
+  await message("ou_owner", "/expert");
   await tick();
-  assert.ok(cardText(sent.at(-1)!.body).includes("切换 Agent"));
+  assert.ok(cardText(sent.at(-1)!.body).includes("换专家"));
   await message("ou_owner", "/claude");
   await tick();
-  assert.ok(cardText(sent.at(-1)!.body).includes("已切换到 Claude Code"));
+  assert.ok(cardText(sent.at(-1)!.body).includes("已换成专家「Claude Code」"));
   assert.equal(hub.conversation("feishu:b1:oc_chat")?.agent, "claude");
+  await message("ou_owner", "/claude");
+  await tick();
+  assert.ok(cardText(sent.at(-1)!.body).includes("当前已经是"));
   await message("ou_owner", "/codex");
   await tick();
-  assert.ok(cardText(sent.at(-1)!.body).includes("接着它上次的会话"));
+  assert.ok(cardText(sent.at(-1)!.body).includes("开了新会话"));
+  assert.equal(hub.conversation("feishu:b1:oc_chat")?.perAgent.codex?.sessionId, undefined);
 });
 
 test("飞书上点授权卡：agent 收到允许，卡片换成结果卡", async () => {
@@ -385,13 +389,21 @@ test("/bind：私聊归绑定的人、用他的记忆、/web 只列他的；群�
   assert.equal(hub.conversation("feishu:b1:oc_group")?.owner, undefined);
   assert.equal(created.at(-1)?.memory, undefined);
 
-  // /chat：这条对话切到聊天模式，下次拉起的会话带着
-  await message("ou_owner", "/chat", "oc_alice");
+  // /expert：换成 alice 自己的专家 = 开新会话，下次拉起的会话按专家来
+  const experts = await import("../src/core/experts.js");
+  const helper = experts.createExpert(alice.id, { name: "查资料助手", engine: "codex", access: "web", prompt: "只查资料" });
+  await message("ou_owner", "/expert 查资料", "oc_alice");
   await tick();
-  assert.equal(hub.conversation(p2p)?.mode, "chat");
-  await message("ou_owner", "聊天模式里说话", "oc_alice");
+  assert.equal(hub.conversation(p2p)?.expert, helper.id);
+  assert.equal(hub.conversation(p2p)?.perAgent.codex?.sessionId, undefined, "换专家开新会话");
+  await message("ou_owner", "专家在吗", "oc_alice");
   await tick(100);
-  assert.equal(created.at(-1)?.mode, "chat");
+  assert.equal(created.at(-1)?.expert?.name, "查资料助手");
+  assert.equal(created.at(-1)?.expert?.access, "web");
+  // 换回内置专家
+  await message("ou_owner", "/codex", "oc_alice");
+  await tick();
+  assert.equal(hub.conversation(p2p)?.expert, undefined);
 
   // /web：只列 alice 自己的 Web 会话
   hub.ensure({ key: "web:alice1", channel: "web", channelId: "web", defaultAgent: "codex", owner: alice.id, title: "alice 的会话" });

@@ -137,18 +137,20 @@ test("飞书绑定：停用的用户不算绑定", () => {
   assert.equal(links.linkedUser("bot_a", "ou_bob2")?.id, bob.id);
 });
 
-test("命令：/chat /work；带参数的当普通聊天；命令表里有，/bind 只在飞书", () => {
-  assert.deepEqual(parseCommand("/chat"), { kind: "mode", mode: "chat" });
-  assert.deepEqual(parseCommand("/WORK"), { kind: "mode", mode: "work" });
-  assert.equal(parseCommand("/chat 你好").kind, "chat");
-  const web = buildCatalog({ allowedAgents: ["claude"], native: [], prefs: undefined, channel: "web" }).map((c) => c.name);
-  assert.ok(web.includes("chat") && web.includes("work"));
+test("命令：/expert /claude 只在飞书（网页上的对话不能换专家）；/chat /work 没有了；/bind 只在飞书", () => {
+  assert.deepEqual(parseCommand("/expert 查资料"), { kind: "agent", agent: "查资料" });
+  assert.deepEqual(parseCommand("/agent"), { kind: "agent" });
+  assert.equal(parseCommand("/chat").kind, "chat", "当普通消息交给 agent");
+  const web = buildCatalog({ allowedAgents: ["claude", "codex"], native: [], prefs: undefined, channel: "web" }).map((c) => c.name);
+  assert.ok(!web.includes("chat") && !web.includes("work") && !web.includes("skills"));
+  assert.ok(!web.includes("expert") && !web.includes("claude"));
   assert.ok(!web.includes("bind"));
-  const feishu = buildCatalog({ allowedAgents: ["claude"], native: [], prefs: undefined, channel: "feishu" });
+  const feishu = buildCatalog({ allowedAgents: ["claude", "codex"], native: [], prefs: undefined, channel: "feishu" });
+  assert.ok(feishu.some((c) => c.name === "expert") && feishu.some((c) => c.name === "codex"));
   assert.equal(feishu.find((c) => c.name === "bind")?.runnable, false, "要带绑定码，不能一键执行");
 });
 
-test("聊天模式的附件：文本文件内容直接放进消息，二进制的说明读不了", () => {
+test("只能联网的专家的附件：文本文件内容直接放进消息，二进制的说明读不了", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aim-att-"));
   const txt = path.join(dir, "notes.md");
   fs.writeFileSync(txt, "# 标题\n内容");
@@ -166,7 +168,7 @@ test("聊天模式的附件：文本文件内容直接放进消息，二进制�
   assert.match(blocks, /附件「notes\.md」的内容/);
   assert.doesNotMatch(blocks, /a\.docx/);
   const note = uploads.describeAttachments([att(txt), att(doc)], (a) => a.name === "notes.md", true);
-  assert.match(note, /聊天模式下读不了这个文件/);
+  assert.match(note, /你读不了这个文件/);
   // 历史里照样能把附件清单从正文里切出去
   const split = uploads.splitAttachmentNote(`你好\n\n${note}\n\n${blocks}`);
   assert.equal(split.text, "你好");
@@ -249,7 +251,7 @@ test("聊完了的对话才算待整理；整理过的不再算", () => {
 test("整理设置：默认每天一次；不合规的值收拢；自动选 agent 时不能指定模型；老版本关掉的「自动整理」= 不整理", () => {
   assert.equal(memory.readMemory(alice.id).curate.when, "daily");
   const c = memory.setMemoryOptions(alice.id, { curate: { when: "bogus" as never, idleMinutes: 1, dailyHour: 30, agent: "auto", model: "opus" } }).curate;
-  assert.deepEqual(c, { when: "daily", scope: "all", idleMinutes: 5, dailyHour: 23, agent: "auto", model: "" });
+  assert.deepEqual(c, { when: "daily", scope: "all", experts: [], idleMinutes: 5, dailyHour: 23, agent: "auto", model: "" });
   assert.equal(memory.setMemoryOptions(alice.id, { curate: { agent: "codex", model: "gpt-x" } }).curate.model, "gpt-x");
   memory.setMemoryOptions(alice.id, { curate: { agent: "auto" } });
   fs.writeFileSync(path.join(home, "data", "memory", "u_legacy.json"), JSON.stringify({ enabled: true, autoExtract: false, items: [] }));
@@ -434,33 +436,36 @@ test("不整理：聊过的不攒着，之后再打开也不补整理", async ()
   assert.equal(completions.length, 0);
 });
 
-test("整理范围：只整理聊天模式 / 工作模式的对话，范围外的直接跳过、改回来也不补", async () => {
-  hub.ensure({ key: "web:bob3", channel: "web", channelId: "web", defaultAgent: "claude", owner: bob.id });
-  hub.conversation("web:bob3")!.mode = "chat";
+test("整理范围：只整理选中专家的对话，范围外的直接跳过、改回来也不补", async () => {
+  const experts = await import("../src/core/experts.js");
+  const chatty = experts.createExpert(bob.id, { name: "闲聊", engine: "claude", access: "web" });
+  hub.ensure({ key: "web:bob3", channel: "web", channelId: "web", defaultAgent: "claude", expert: chatty.id, owner: bob.id });
   const sayIn = (key: string, text: string) =>
     hub.emitEvent(key, { type: "user", text, attachments: [], origin: { channel: "web", channelId: "web" } });
-  memory.setMemoryOptions(bob.id, { curate: { when: "manual", scope: "chat" } });
-  assert.equal(memory.readMemory(bob.id).curate.scope, "chat");
-  sayIn("web:bob1", "工作模式里说的一段比较长的话，关于部署脚本");
-  sayIn("web:bob3", "聊天模式里说的一段比较长的话，关于周末看电影");
-  assert.equal(curator.pendingCount(bob.id), 1, "只数聊天模式的");
+  memory.setMemoryOptions(bob.id, { curate: { when: "manual", scope: "experts", experts: [chatty.id] } });
+  assert.deepEqual(memory.readMemory(bob.id).curate.experts, [chatty.id]);
+  sayIn("web:bob1", "内置专家那里说的一段比较长的话，关于部署脚本");
+  sayIn("web:bob3", "闲聊专家那里说的一段比较长的话，关于周末看电影");
+  assert.equal(curator.pendingCount(bob.id), 1, "只数选中专家的");
   completions.length = 0;
   let log = await curator.curateNow(bob.id);
   assert.equal(log.conversations, 1);
   assert.ok(completions[0]!.includes("看电影") && !completions[0]!.includes("部署脚本"));
   memory.setMemoryOptions(bob.id, { curate: { scope: "all" } });
-  assert.equal(curator.pendingCount(bob.id), 0, "工作模式那段已经跳过了，不补");
+  assert.equal(curator.pendingCount(bob.id), 0, "范围外那段已经跳过了，不补");
 
-  memory.setMemoryOptions(bob.id, { curate: { scope: "work" } });
-  sayIn("web:bob1", "工作模式里又说了一段比较长的话，关于 CI 配置");
-  sayIn("web:bob3", "聊天模式里又说了一段比较长的话，关于做饭");
+  // 内置专家按 agent 选
+  memory.setMemoryOptions(bob.id, { curate: { scope: "experts", experts: ["claude"] } });
+  sayIn("web:bob1", "内置专家那里又说了一段比较长的话，关于 CI 配置");
+  sayIn("web:bob3", "闲聊专家那里又说了一段比较长的话，关于做饭");
   completions.length = 0;
   log = await curator.curateNow(bob.id);
   assert.equal(log.conversations, 1);
   assert.ok(completions[0]!.includes("CI 配置") && !completions[0]!.includes("做饭"));
   memory.setMemoryOptions(bob.id, { curate: { scope: "bogus" as never } });
-  assert.equal(memory.readMemory(bob.id).curate.scope, "work", "不认识的值不改");
-  memory.setMemoryOptions(bob.id, { curate: { scope: "all" } });
+  assert.equal(memory.readMemory(bob.id).curate.scope, "experts", "不认识的值不改");
+  memory.setMemoryOptions(bob.id, { curate: { scope: "chat" as never } });
+  assert.equal(memory.readMemory(bob.id).curate.scope, "all", "以前的聊天 / 工作模式范围回到全部");
 });
 
 test("记忆 MCP 服务：开了「参考以前的聊天」才有搜索工具；搜的是指定用户的、跳过当前对话", async () => {
@@ -564,13 +569,37 @@ test("回填不会把还没整理的实时录入标成整理过", async () => {
   assert.ok(!pending.some((p) => p.records.some((r) => r.t.includes("威联通"))), "回填的旧对话不整理");
 });
 
-test("Claude 的系统提示一律不固定（snapshot: false），切模式、改记忆才生效", async () => {
-  const { modeOptions } = await import("../src/agents/claude/session.js");
+test("Claude 的系统提示一律不固定（snapshot: false），改专家、改记忆才生效", async () => {
+  const { expertOptions } = await import("../src/agents/claude/session.js");
   const base = { cwd: "/tmp", uploadsDir: "/tmp" };
-  const chat = modeOptions({ ...base, mode: "chat" }).systemPrompt as { type: string; snapshot?: boolean };
-  const work = modeOptions(base).systemPrompt as { type: string; snapshot?: boolean; append?: string };
-  const withMemory = modeOptions({ ...base, memory: { userId: alice.id, prompt: "记忆内容" } }).systemPrompt as { append?: string; snapshot?: boolean };
-  assert.deepEqual([chat.type, chat.snapshot], ["custom", false]);
+  const expert = {
+    id: "e_1",
+    rev: 1,
+    name: "聊天助手",
+    prompt: "说人话",
+    basePrompt: "lean" as const,
+    access: "web" as const,
+    webSearch: true,
+    webFetch: false,
+    skills: [],
+    mcp: {},
+    askMcp: [],
+    machineMcp: [],
+    subagents: [],
+    memory: true,
+  };
+  const lean = expertOptions({ ...base, expert, memory: { userId: alice.id, prompt: "记忆内容" } });
+  const sp = lean.systemPrompt as { type: string; snapshot?: boolean; prompt: string };
+  assert.deepEqual([sp.type, sp.snapshot], ["custom", false]);
+  assert.match(sp.prompt, /你是「聊天助手」/);
+  assert.match(sp.prompt, /说人话/);
+  assert.match(sp.prompt, /记忆内容/);
+  assert.deepEqual(lean.tools, ["WebSearch"], "只给打开的联网工具");
+  assert.deepEqual(lean.settingSources, []);
+  assert.equal(lean.strictMcpConfig, true);
+  assert.deepEqual(lean.skills, []);
+  const work = expertOptions(base).systemPrompt as { type: string; snapshot?: boolean; append?: string };
+  const withMemory = expertOptions({ ...base, memory: { userId: alice.id, prompt: "记忆内容" } }).systemPrompt as { append?: string; snapshot?: boolean };
   assert.deepEqual([work.type, work.snapshot, work.append], ["preset", false, undefined]);
   assert.deepEqual([withMemory.append, withMemory.snapshot], ["记忆内容", false]);
 });

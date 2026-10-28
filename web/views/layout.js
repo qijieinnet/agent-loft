@@ -19,7 +19,8 @@ import {
   stopMarquee,
 } from "./sidebar.js";
 import { applyDesktopQuota, loadQuota, renderQuota } from "./quota.js";
-import { openBotConversations, openConvContextMenu, runDesktopMenu, usableAgents } from "./topbar.js";
+import { openBotConversations, openConvContextMenu, runDesktopMenu } from "./topbar.js";
+import { syncDraftExpert } from "./experts.js";
 import { confirmDialog, showMenu } from "../lib/overlay.js";
 import { applyShellInfo, handleAllowEmbed, HOME, mountSwitcher, refreshShellPush, routeToServer, shellBooted, switchServer } from "../lib/shell.js";
 import { bindScrollWatch, newDraft, openConversation, scrollToBottom } from "./messages.js";
@@ -141,8 +142,8 @@ export async function boot() {
   applyShellInfo(data.servers, srv || history.state?.loftServer || (location.hash.length > 1 ? HOME : undefined));
   applyBootstrap(data);
   S.pending = new Map(data.pending.map((i) => [i.id, i]));
-  const enabled = usableAgents().map((a) => a.id);
-  if (!S.draftAgent || !enabled.includes(S.draftAgent)) S.draftAgent = enabled[0] ?? null;
+  S.experts = data.experts ?? [];
+  syncDraftExpert();
   renderLayout();
   reportDesktop();
   WS.connect();

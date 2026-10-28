@@ -44,12 +44,13 @@ export type UserMemory = {
  */
 export type CurateWhen = "idle" | "daily" | "manual" | "off";
 
-/** 整理哪些对话：全部 / 只整理聊天模式的 / 只整理工作模式的（按整理那一刻对话的模式算） */
-export type CurateScope = "all" | "chat" | "work";
+/** 整理哪些对话：全部 / 只整理选中专家的（experts 里的专家 id，内置的就是 claude、codex） */
+export type CurateScope = "all" | "experts";
 
 export type CurateSettings = {
   when: CurateWhen;
   scope: CurateScope;
+  experts: string[];
   idleMinutes: number;
   dailyHour: number;
   /** auto：Claude 能用就用 Claude，否则 Codex */
@@ -58,12 +59,17 @@ export type CurateSettings = {
   model: string;
 };
 
-export const DEFAULT_CURATE: CurateSettings = { when: "daily", scope: "all", idleMinutes: 30, dailyHour: 2, agent: "auto", model: "" };
+export const DEFAULT_CURATE: CurateSettings = { when: "daily", scope: "all", experts: [], idleMinutes: 30, dailyHour: 2, agent: "auto", model: "" };
 
 function cleanCurate(raw: Partial<CurateSettings> | undefined, base: CurateSettings): CurateSettings {
   const r = raw ?? {};
   const when = (["idle", "daily", "manual", "off"] as const).find((w) => w === r.when) ?? base.when;
-  const scope = (["all", "chat", "work"] as const).find((s) => s === r.scope) ?? base.scope;
+  // 以前的「只整理聊天 / 工作模式的」没有了（聊天模式换成了专家），一律回到全部
+  const legacy = (r.scope as string) === "chat" || (r.scope as string) === "work";
+  const scope = legacy ? "all" : ((["all", "experts"] as const).find((s) => s === r.scope) ?? base.scope);
+  const experts = Array.isArray(r.experts)
+    ? [...new Set(r.experts.filter((x): x is string => typeof x === "string" && /^[\w-]{1,64}$/.test(x)))].slice(0, 100)
+    : base.experts;
   const idle = Math.round(Number(r.idleMinutes ?? base.idleMinutes));
   const hour = Math.round(Number(r.dailyHour ?? base.dailyHour));
   const agent = (["auto", "claude", "codex"] as const).find((a) => a === r.agent) ?? base.agent;
@@ -71,6 +77,7 @@ function cleanCurate(raw: Partial<CurateSettings> | undefined, base: CurateSetti
   return {
     when,
     scope,
+    experts,
     idleMinutes: Number.isFinite(idle) ? Math.max(5, Math.min(24 * 60, idle)) : base.idleMinutes,
     dailyHour: Number.isFinite(hour) ? Math.max(0, Math.min(23, hour)) : base.dailyHour,
     agent,

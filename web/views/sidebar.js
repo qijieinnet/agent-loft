@@ -439,8 +439,8 @@ export function renderSidebar() {
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
       // 定时任务的专用对话
       c.taskId ? h("span", { class: "brand-icon lead task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
-      // 聊天模式的对话
-      c.mode === "chat" ? h("span", { class: "brand-icon lead chat-mark", title: "聊天模式", html: ICON.chat }) : null,
+      // 自定义专家的对话：前面挂专家的 emoji
+      c.expert?.icon && !c.expert.builtin ? h("span", { class: "brand-icon lead expert-mark", title: `专家：${c.expert.name}` }, c.expert.icon) : null,
       h("span", { class: "title" }, convTitle(c)),
       status([c.key]),
     );

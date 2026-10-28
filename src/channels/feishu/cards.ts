@@ -290,7 +290,7 @@ export function agentPickerCard(params: {
 }) {
   return card(
     [
-      { tag: "markdown", content: "每个 agent 的会话各自保留，切回来能接着聊。" },
+      { tag: "markdown", content: "换专家会开一条新会话，之前的对话不接着聊。自己的专家在网页「设置 → 专家」里建。" },
       buttonRow(
         params.agents.map((a) =>
           button(
@@ -302,7 +302,7 @@ export function agentPickerCard(params: {
         ),
       ),
     ],
-    { title: "切换 Agent", template: "blue" },
+    { title: "换专家", template: "blue" },
   );
 }
 

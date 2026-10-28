@@ -1,6 +1,7 @@
 // 核心类型：渠道（飞书 / Web / 以后的 Telegram）与 agent（Claude / Codex / 以后的 ACP）
 // 之间只通过这里的类型说话。渠道不认识 Claude，agent 不认识飞书。
 import type { AgentCommand } from "./command-catalog.js";
+import type { ExpertRuntime } from "./experts.js";
 
 // ---------- 用户输入 ----------
 
@@ -196,10 +197,10 @@ export type SessionOptions = {
   /** 工作目录内改文件不再询问（/autoedit）。Bash 等照常询问 */
   autoEdit?: boolean;
   /**
-   * chat：聊天模式 —— 换成精简的系统提示，只留联网搜索，不加载技能 / MCP / 插件，不能执行命令、
-   * 不能读写本地文件，每轮的固定开销小得多。不给就是 work（agent 原装的样子）。
+   * 自定义专家（core/experts.ts）：提示词、权限、技能、MCP、子智能体都按它来。
+   * 不给就是内置专家 —— agent 原装的样子（原装提示词、机器上的技能和 MCP、所有工具）。
    */
-  mode?: ConversationMode;
+  expert?: ExpertRuntime;
   /** 这条对话主人的记忆：prompt 拼进系统提示，userId 交给记忆工具（记给谁由这里定死） */
   memory?: {
     userId: string;
@@ -209,8 +210,6 @@ export type SessionOptions = {
     /** 当前对话，搜索时跳过 */
     convKey?: string;
   };
-  /** 模式换过、这个 agent 会话还不知道：换不了系统提示的 agent（Codex）要在第一条消息里说一声 */
-  announceMode?: boolean;
   /**
    * 给 agent 定时任务工具（core/tasks-mcp.ts）：替谁、在哪条对话里管理。只有有主人的对话才给。
    * 技能工具（让 agent 帮用户建、改技能）也跟着它一起给。
@@ -233,8 +232,6 @@ export type SessionSkills = {
   /** 变量配没配好的说明，拼进系统提示 / 背景 */
   prompt?: string;
 };
-
-export type ConversationMode = "chat" | "work";
 
 /**
  * 中断的方式。默认（停止）：这一轮和排着队的都不要了。

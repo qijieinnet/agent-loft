@@ -6,7 +6,9 @@
 import fs from "node:fs";
 import {
   query,
+  type AgentDefinition,
   type McpServerConfig,
+  type McpServerConfigForProcessTransport,
   type ModelUsage,
   type Options,
   type PermissionResult,
@@ -15,7 +17,8 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { agentEnvironment } from "../../core/agent-env.js";
-import { chatSystemPrompt } from "../../core/chat-mode.js";
+import { expertAppend, expertSystemPrompt, searchLabel } from "../../core/expert-prompt.js";
+import { ACCESS_LEVELS, type ExpertAccess } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import { PLUGIN_NAME, projectCommandNames } from "../../core/skill-runtime.js";
@@ -110,14 +113,14 @@ function canInline(a: SavedAttachment): boolean {
 
 /**
  * 文字 + 附件清单，后面跟着能直接看的图片和 PDF。没有附件时就是原样的文字。
- * chat：聊天模式没有读文件的工具，文本附件的内容也直接放进来。
+ * inlineText：专家没有读文件的工具（只能联网），文本附件的内容也直接放进来。
  */
-function buildContent(input: UserInput, chat: boolean): string | ContentBlock[] {
+function buildContent(input: UserInput, inlineText: boolean): string | ContentBlock[] {
   if (input.attachments.length === 0) return input.text;
-  const texts = chat ? readTextAttachments(input.attachments) : new Map<string, string>();
+  const texts = inlineText ? readTextAttachments(input.attachments) : new Map<string, string>();
   const inlined = (a: SavedAttachment) => canInline(a) || texts.has(a.path);
-  const note = describeAttachments(input.attachments, inlined, chat);
-  const head = [input.text, note, chat ? inlineTextBlocks(input.attachments, texts) : ""].filter(Boolean).join("\n\n");
+  const note = describeAttachments(input.attachments, inlined, inlineText);
+  const head = [input.text, note, inlineText ? inlineTextBlocks(input.attachments, texts) : ""].filter(Boolean).join("\n\n");
   const blocks: ContentBlock[] = [{ type: "text", text: head }];
   for (const a of input.attachments) {
     if (!canInline(a)) continue;
@@ -142,25 +145,45 @@ const SKILL_TOOLS = new Set(["list_skills", "get_skill", "create_skill", "update
  * 成员会话的技能白名单要带上它们；还没读到过就先不带（只少了 /simplify 这类自带技能）。
  */
 export const claudeBuiltins = new Set<string>();
-/** 聊天模式的全部工具：只能联网，碰不到本机 */
-const CHAT_TOOLS = ["WebSearch", "WebFetch"];
+/** 各级权限能用的 Claude Code 工具（自定义专家）。能跑命令的不限工具，见 expertTools */
+const READ_TOOLS = ["Read", "Glob", "Grep"];
+const EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
+/** 任务清单和提问：能读文件的专家才给（只能联网的专家省下这些工具说明的 token） */
+const WORK_TOOLS = ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TodoWrite", "AskUserQuestion"];
+
+type ToolPlan = { tools?: string[]; disallowedTools?: string[] };
 
 /**
- * 按模式拼 query 的选项。
- *
- * 聊天模式：自己的短系统提示、只给联网的两个工具、不读本地设置（技能、插件、CLAUDE.md、MCP 都不加载）。
- * 实测一句话的输入从约 1.6 万 token 降到约 2 千。
- * 工作模式：Claude Code 原装，有记忆就追加在它的系统提示后面。
- * 两种模式下记忆工具都以 MCP 子进程的方式挂上（strictMcpConfig 只认这里给的）。
- *
- * 系统提示一律 snapshot: false。SDK 默认会把会话第一次请求时的系统提示记进记录，之后 resume 时传的
- * 新提示一概忽略（实测：先用聊天提示开的会话，换成工作模式的提示后还是按聊天提示回答）——
- * 那样切模式、改了记忆都不生效。snapshot: false 每次现渲染，已经记录过的老会话也能换过来（实测）。
- * 代价只是 Claude Code 升级后提示变了会让缓存失效一次。
+ * 自定义专家（或它的子智能体）能用哪些工具。
+ * 能跑命令：Claude Code 的全部工具（跑命令就等于能改任何文件，再细分没有意义），只按开关去掉联网工具。
+ * 其余：白名单。技能、子智能体、MCP 多的时候用的 Skill / Agent / ToolSearch 按需加。
  */
-export function modeOptions(opts: SessionOptions): Partial<Options> {
+function expertTools(
+  e: { access: ExpertAccess; webSearch: boolean; webFetch: boolean },
+  extra: { skill: boolean; agent: boolean; mcp: boolean },
+): ToolPlan {
+  const web = [...(e.webSearch ? ["WebSearch"] : []), ...(e.webFetch ? ["WebFetch"] : [])];
+  if (e.access === "exec") {
+    const off = [...(e.webSearch ? [] : ["WebSearch"]), ...(e.webFetch ? [] : ["WebFetch"]), ...(extra.agent ? [] : ["Agent"])];
+    return off.length ? { disallowedTools: off } : {};
+  }
+  const rank = ACCESS_LEVELS.indexOf(e.access);
+  return {
+    tools: [
+      ...web,
+      ...(rank >= 1 ? [...READ_TOOLS, ...WORK_TOOLS] : []),
+      ...(rank >= 2 ? EDIT_TOOLS : []),
+      ...(extra.skill ? ["Skill"] : []),
+      ...(extra.agent ? ["Agent"] : []),
+      ...(extra.mcp ? ["ToolSearch"] : []),
+    ],
+  };
+}
+
+/** agent-loft 自己的 MCP（记忆、定时任务、技能管理）：内置和自定义专家都挂 */
+function loftMcp(opts: SessionOptions): Record<string, McpServerConfig> {
   const memory = opts.memory;
-  const mcpServers: Record<string, McpServerConfig> = {
+  return {
     ...(memory
       ? { [MEMORY_MCP_NAME]: { type: "stdio", ...memoryMcpSpawn(memory.userId, "claude", { search: !!memory.search, ...(memory.convKey ? { convKey: memory.convKey } : {}) }) } }
       : {}),
@@ -171,27 +194,82 @@ export function modeOptions(opts: SessionOptions): Partial<Options> {
         }
       : {}),
   };
-  if (opts.mode === "chat") {
+}
+
+/**
+ * 按专家拼 query 的选项。
+ *
+ * 内置的 Claude Code 专家：原装的样子，有记忆就追加在它的系统提示后面。
+ * 自定义专家：
+ *   - 提示词：默认只用专家自己的（expertSystemPrompt，一句话约 2 千 token，和以前的聊天模式一样）；
+ *     选了「Claude Code 原装」就追加在原装提示后面；
+ *   - 工具按权限给（expertTools），不读本地设置（技能、插件、CLAUDE.md、机器上的 MCP 都不加载），
+ *     原装提示的专家读项目设置（为了 CLAUDE.md）；
+ *   - 技能只给它选中的（白名单），MCP 只认这里给的（strictMcpConfig），子智能体转成 agents。
+ * 实测（SDK 0.3.302）：自定义提示词下技能白名单照样生效，没选的技能调用会报错；子智能体能用，
+ * 而且拿不到主专家没有的工具。
+ *
+ * 系统提示一律 snapshot: false。SDK 默认会把会话第一次请求时的系统提示记进记录，之后 resume 时传的
+ * 新提示一概忽略 —— 那样改了专家、改了记忆都不生效。snapshot: false 每次现渲染（实测）。
+ * 代价只是 Claude Code 升级后提示变了会让缓存失效一次。
+ */
+export function expertOptions(opts: SessionOptions): Partial<Options> {
+  const memory = opts.memory;
+  const skills = opts.skills;
+  const expert = opts.expert;
+  if (!expert) {
+    const mcpServers = loftMcp(opts);
+    const append = [memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n");
     return {
-      systemPrompt: { type: "custom", prompt: chatSystemPrompt("WebSearch（搜索）和 WebFetch（读网页）", memory?.prompt), snapshot: false },
-      tools: CHAT_TOOLS,
-      settingSources: [],
-      strictMcpConfig: true,
-      skills: [],
-      mcpServers,
+      systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false },
+      ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+      ...(skills?.pluginDir ? { plugins: [{ type: "local" as const, path: skills.pluginDir, skipMcpDiscovery: true }] } : {}),
+      ...(skills && !skills.admin ? { skills: memberSkillAllowlist(skills, opts.cwd) } : {}),
     };
   }
-  // 刚从聊天模式切回来：说一声，不然它会以为之前「不能执行命令」是自己说错了
-  const switched = opts.announceMode
-    ? "这条对话刚从「聊天模式」切到「工作模式」：之前聊天模式下不能执行命令、不能读写文件的限制已经解除，现在可以正常干活。不用为之前说做不到而道歉。"
-    : "";
-  const skills = opts.skills;
-  const append = [memory?.prompt, skills?.prompt, switched].filter(Boolean).join("\n\n");
+
+  const search = searchLabel("claude", expert);
+  const skillNames = (skills?.list ?? []).map((s) => `${PLUGIN_NAME}:${s.name}`);
+  const mcpServers: Record<string, McpServerConfig> = { ...(expert.mcp as Record<string, McpServerConfig>), ...loftMcp(opts) };
+  const subagents = expert.subagents;
+  const needsSkills = skillNames.length > 0 || subagents.some((sub) => sub.skills.length > 0);
+  const plan = expertTools(expert, { skill: needsSkills, agent: subagents.length > 0, mcp: Object.keys(expert.mcp).length > 0 });
+  const prompt = { ...expert, subagents };
+  const systemPrompt: Options["systemPrompt"] =
+    expert.basePrompt === "claude_code"
+      ? {
+          type: "preset",
+          preset: "claude_code",
+          append: [expertAppend(prompt, search, opts.cwd), memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n"),
+          snapshot: false,
+        }
+      : { type: "custom", prompt: expertSystemPrompt(prompt, search, opts.cwd, [memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n") || undefined), snapshot: false };
   return {
-    systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false },
-    ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
-    ...(skills?.pluginDir ? { plugins: [{ type: "local" as const, path: skills.pluginDir, skipMcpDiscovery: true }] } : {}),
-    ...(skills && !skills.admin ? { skills: memberSkillAllowlist(skills, opts.cwd) } : {}),
+    systemPrompt,
+    ...plan,
+    settingSources: expert.basePrompt === "claude_code" ? ["project"] : [],
+    strictMcpConfig: true,
+    mcpServers,
+    skills: skillNames,
+    ...(needsSkills && skills?.pluginDir ? { plugins: [{ type: "local" as const, path: skills.pluginDir, skipMcpDiscovery: true }] } : {}),
+    ...(subagents.length
+      ? {
+          agents: Object.fromEntries(
+            subagents.map((sub) => {
+              const subPlan = expertTools(sub, { skill: sub.skills.length > 0, agent: false, mcp: Object.keys(sub.mcp).length > 0 });
+              const def: AgentDefinition = {
+                description: sub.description,
+                prompt: sub.prompt,
+                ...subPlan,
+                ...(sub.model ? { model: sub.model } : {}),
+                ...(sub.skills.length ? { skills: sub.skills.map((n) => `${PLUGIN_NAME}:${n}`) } : {}),
+                ...(Object.keys(sub.mcp).length ? { mcpServers: [sub.mcp as Record<string, McpServerConfigForProcessTransport>] } : {}),
+              };
+              return [sub.key, def];
+            }),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -268,12 +346,13 @@ export class ClaudeSession implements AgentSession {
       prompt: input.stream(),
       options: {
         cwd: this.opts.cwd,
-        // 技能变量只在工作模式注入：聊天模式没有执行命令的工具，用不上。
+        // 技能变量只给能跑命令的专家：别的用不上。
         // 任务清单工具（TaskCreate / TaskUpdate）在 SDK 里对新模型默认是关的（Claude 桌面端是打开的），
-        // 不开的话 Claude 不会列任务，页面上也就没有进度可看
+        // 不开的话 Claude 不会列任务，页面上也就没有进度可看。只能联网的专家不要
         env: {
           ...agentEnvironment(),
-          ...(this.opts.mode === "chat" ? {} : { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1", ...(this.opts.skills?.env ?? {}) }),
+          ...(this.access === "web" ? {} : { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }),
+          ...(this.access === "exec" ? (this.opts.skills?.env ?? {}) : {}),
         },
         // 只能是 default 或 acceptEdits：bypassPermissions 会让 canUseTool 变成死代码。
         // acceptEdits 只放行工作目录（含附件目录）内的改文件，其它照样走 canUseTool
@@ -282,9 +361,9 @@ export class ClaudeSession implements AgentSession {
         includePartialMessages: true,
         ...(this.opts.model ? { model: this.opts.model } : {}),
         ...(this.opts.effort ? { effort: this.opts.effort as never } : {}),
-        // 聊天模式不读本地文件，附件内容由 buildContent 直接放进消息
-        additionalDirectories: this.opts.mode === "chat" ? [] : [this.opts.uploadsDir],
-        ...modeOptions(this.opts),
+        // 只能联网的专家不读本地文件，附件内容由 buildContent 直接放进消息
+        additionalDirectories: this.access === "web" ? [] : [this.opts.uploadsDir],
+        ...expertOptions(this.opts),
         ...(resume ? { resume } : {}),
         ...(fork ? { forkSession: true } : {}),
         canUseTool: async (toolName, input) => this.canUseTool(toolName, input as Record<string, unknown>),
@@ -440,11 +519,11 @@ export class ClaudeSession implements AgentSession {
    * 对同一 request_id 必须幂等 —— reinitialize 之后 SDK 会重投同一个请求。
    */
   private async canUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
-    // 自家的记忆工具，以及聊天模式下的联网工具：不问。
+    // 自家的记忆工具，以及自定义专家配好的联网工具、MCP（没标「调用前询问」的）：不问。
     // 不用 allowedTools 放行 —— SDK 会对每个会话打一条「canUseTool 被绕过」的警告
     if (MEMORY_TOOLS.has(toolName) && this.opts.memory) return { behavior: "allow", updatedInput: input };
     if ((TASK_TOOLS.has(toolName) || SKILL_TOOLS.has(toolName)) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
-    if (this.opts.mode === "chat" && CHAT_TOOLS.includes(toolName)) return { behavior: "allow", updatedInput: input };
+    if (this.expertPreApproved(toolName)) return { behavior: "allow", updatedInput: input };
 
     // 提问不是授权：它问的是「你选哪个」
     if (toolName === "AskUserQuestion") {
@@ -481,6 +560,20 @@ export class ClaudeSession implements AgentSession {
           ? "授权请求已被取消（用户中断了这一轮或切换了会话）"
           : "用户拒绝了此操作";
     return { behavior: "deny", message: why };
+  }
+
+  /** 自定义专家：它配了的联网工具、MCP 工具（没标「调用前询问」的）是用户自己给的，不再逐次问 */
+  private expertPreApproved(toolName: string): boolean {
+    const e = this.opts.expert;
+    if (!e) return false;
+    if ((toolName === "WebSearch" && e.webSearch) || (toolName === "WebFetch" && e.webFetch)) return true;
+    const m = /^mcp__(.+?)__/.exec(toolName);
+    return !!m && m[1]! in e.mcp && !e.askMcp.includes(m[1]!);
+  }
+
+  /** 内置专家算能跑命令 */
+  private get access(): ExpertAccess {
+    return this.opts.expert?.access ?? "exec";
   }
 
   /**
@@ -527,7 +620,7 @@ export class ClaudeSession implements AgentSession {
     // 这条要明确报错并让会话恢复可用，而不是挂在一个永远等不到结果的「忙」上
     let content: string | ContentBlock[];
     try {
-      content = buildContent(input, this.opts.mode === "chat");
+      content = buildContent(input, this.access === "web");
     } catch (err) {
       const why = (err as NodeJS.ErrnoException).code === "ENOENT" ? "附件文件已不存在，请重新上传" : String(err);
       this.events.onError(new Error(`这条消息没能发出：${why}`));

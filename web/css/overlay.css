@@ -435,3 +435,15 @@ button.list-item:hover {
   max-width: 90vw;
   white-space: pre-wrap;
 }
+
+/* 选专家：说明不要太长 */
+.popover.expert-pop {
+  max-width: 340px;
+}
+
+.popover.expert-pop .pop-item .s {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

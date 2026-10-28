@@ -8,7 +8,7 @@ import { CHAT_CONFIG, CodexSession, summarize, userMcpServers } from "./session.
 import os from "node:os";
 import { config, onConfigChange } from "../../core/config.js";
 import { splitAttachmentNote } from "../../core/uploads.js";
-import { stripContext } from "../../core/chat-mode.js";
+import { stripContext } from "../../core/expert-prompt.js";
 import type {
   AgentDriver,
   AgentEvents,

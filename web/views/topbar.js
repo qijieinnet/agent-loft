@@ -1,10 +1,11 @@
-import { agentIcon, fill, h, icon, ICON, toast } from "../lib/dom.js";
+import { fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { desktop, desktopMenu, desktopSettings, S, ui } from "../state.js";
 import { agentLabel, convTitle, openSide } from "./sidebar.js";
-import { closeMenu, confirmDialog, modal, placePopover, showMenu, showPopover } from "../lib/overlay.js";
-import { newDraft, openConversation } from "./messages.js";
+import { convExpert, expertChoices, expertIcon, findExpert } from "./experts.js";
+import { closeMenu, modal, placePopover, showMenu, showPopover } from "../lib/overlay.js";
+import { openConversation } from "./messages.js";
 import { openSettings } from "./layout.js";
 import { openSchedule } from "./schedule.js";
 import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, renameConv, switchAgent } from "./conv-actions.js";
@@ -24,8 +25,8 @@ export function renderTopbar() {
         ? h("span", { class: "conv-name" }, tasks ? "定时任务" : "远程控制")
         : c
           ? [
-              // 聊天模式的对话：标题前面挂个聊天图标
-              c.mode === "chat" ? h("span", { class: "conv-mode-icon", title: "聊天模式", html: ICON.chat }) : null,
+              // 自定义专家的对话：标题前面挂上专家的图标
+              c.expert && !c.expert.builtin ? h("span", { class: "conv-expert-icon", title: `专家：${c.expert.name}` }, expertIcon(convExpert(c))) : null,
               h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)),
             ]
           : null,
@@ -38,15 +39,12 @@ export function renderTopbar() {
 }
 
 /**
- * 右上角「更多」里的项。对话页（含新对话）有聊天模式、定时发送；设置哪个页面都有，
+ * 右上角「更多」里的项。对话页（含新对话）有定时发送；设置哪个页面都有，
  * 桌面端自己的「更多」里已经有每台服务器的设置时不放
  */
 function topMenuItems() {
   const items = [];
   if (!S.view) {
-    const c = S.current ? S.convs.get(S.current) : null;
-    const chat = (c ? (c.mode ?? "work") : S.draftMode) === "chat";
-    items.push({ id: "mode", label: "聊天模式", icon: "chat", checked: chat, onclick: () => void toggleMode() });
     items.push({ id: "schedule", label: "定时发送", icon: "clock", onclick: () => openSchedule() });
   }
   if (!desktopSettings) {
@@ -197,31 +195,38 @@ export function usableAgents() {
   return usable.length ? usable : enabled;
 }
 
-function pickAgentMenu(anchor) {
-  const allowed = usableAgents().map((a) => a.id);
-  if (allowed.length < 2) return;
-  if (ui.menu?.dataset.for === "agent") return closeMenu();
+/** 新对话里选专家：内置的在前，再是自己的；最下面去设置里管理 */
+function pickExpertMenu(anchor) {
+  if (ui.menu?.dataset.for === "expert") return closeMenu();
   const pop = showPopover(anchor, { align: "left" });
-  pop.dataset.for = "agent";
+  pop.dataset.for = "expert";
+  pop.classList.add("expert-pop");
+  const choices = expertChoices();
+  const item = (e) =>
+    h(
+      "button",
+      { class: `pop-item${e.id === S.draftExpert ? " on" : ""}`, title: e.description || "", onclick: () => (closeMenu(), switchAgent(e.id)) },
+      expertIcon(e),
+      h("span", { class: "grow" }, h("span", { class: "t" }, e.name), e.description ? h("span", { class: "s" }, e.description) : null),
+      e.id === S.draftExpert ? h("span", { class: "check" }, "✓") : null,
+    );
+  const builtin = choices.filter((e) => e.builtin);
+  const own = choices.filter((e) => !e.builtin);
   fill(
     pop,
-    allowed.map((id) =>
-      h(
-        "button",
-        { class: `pop-item${id === S.draftAgent ? " on" : ""}`, onclick: () => (closeMenu(), switchAgent(id)) },
-        agentIcon(id),
-        h("span", { class: "grow" }, agentLabel(id)),
-        id === S.draftAgent ? h("span", { class: "check" }, "✓") : null,
-      ),
-    ),
+    builtin.map(item),
+    own.length ? [h("div", { class: "sep" }), h("div", { class: "pop-head" }, "我的专家"), own.map(item)] : null,
+    h("div", { class: "sep" }),
+    h("button", { class: "pop-item", onclick: () => (closeMenu(), openSettings("专家")) }, icon("gear"), h("span", { class: "grow" }, own.length ? "管理专家…" : "新建专家…")),
   );
   placePopover(pop, anchor);
 }
 
 /** 新对话里选的模型 / 思考程度，按 agent 分开记，创建会话时带过去 */
 S.draftPick = JSON.parse(localStorage.getItem("aim.draftPick") || "{}");
-export function draftPick(agent = S.draftAgent) {
-  return (S.draftPick[agent] ??= {});
+/** 新对话里选的模型 / 思考程度，按专家分开记（内置专家就是 claude / codex，和以前按 agent 记的对得上） */
+export function draftPick(expert = S.draftExpert ?? S.draftAgent) {
+  return (S.draftPick[expert] ??= {});
 }
 export function saveDraftPick() {
   localStorage.setItem("aim.draftPick", JSON.stringify(S.draftPick));
@@ -289,21 +294,21 @@ export function renderContext() {
   if (!ui.ctxBar) return;
   const c = S.current ? S.convs.get(S.current) : null;
   const cwd = currentCwd();
-  const multi = usableAgents().length > 1;
-  // 会话里不能换 agent（两个 agent 的会话互不相通），只显示；新对话里可以选
-  const agentId = c ? c.agent : S.draftAgent;
-  const agentEl = c || !multi
-    ? h("span", { class: "ctx-item static" }, agentIcon(agentId), h("span", { class: "label" }, agentLabel(agentId ?? "") || "无可用 agent"))
+  // 对话从头到尾一个专家：进了对话只显示；新对话里可以选
+  const expert = c ? convExpert(c) : findExpert(S.draftExpert);
+  const agentEl = c
+    ? h("span", { class: "ctx-item static", title: `专家：${expert.name}${expert.missing ? "（已删除）" : ""}` }, expertIcon(expert), h("span", { class: "label" }, expert.name))
     : h(
         "button",
-        { class: "ctx-item", title: "选择 agent", onclick: (e) => pickAgentMenu(e.currentTarget) },
-        agentIcon(agentId),
-        h("span", { class: "label" }, agentLabel(agentId ?? "")),
+        { class: "ctx-item", title: "选择专家", onclick: (e) => pickExpertMenu(e.currentTarget) },
+        expert ? expertIcon(expert) : null,
+        h("span", { class: "label" }, expert?.name ?? "无可用 agent"),
         h("span", { class: "chev", html: ICON.down }),
       );
   fill(
     ui.ctxBar,
-    h("button", { class: "ctx-item", title: `工作目录：${cwd}\n点击切换`, onclick: () => changeCwd() }, icon("folder"), h("span", { class: "label" }, baseName(cwd) || "选择目录")),
+    // 只能联网的专家不碰文件，不显示工作目录
+    expert?.access === "web" ? null : h("button", { class: "ctx-item", title: `工作目录：${cwd}\n点击切换`, onclick: () => changeCwd() }, icon("folder"), h("span", { class: "label" }, baseName(cwd) || "选择目录")),
     agentEl,
   );
   updateCtxVisibility();
@@ -316,9 +321,11 @@ export function renderContext() {
     ensureCatalog(modelAgent);
     const defaults = catalogDefaults.get(modelAgent) ?? {};
     const pick = c ? null : draftPick();
-    const id = c ? (c.runtimeModel ?? c.model) : pick.model;
+    // 新对话：没选过就是专家配的默认模型
+    const draft = c ? null : findExpert(S.draftExpert);
+    const id = c ? (c.runtimeModel ?? c.model) : (pick.model ?? (draft?.model || undefined));
     model = modelName(modelAgent, id) ?? (catalogLoaded.has(modelAgent) ? "选择模型" : "…");
-    effort = (c ? (c.runtimeEffort ?? c.effort) : pick.effort) ?? defaults.effort;
+    effort = (c ? (c.runtimeEffort ?? c.effort) : (pick.effort ?? (draft?.effort || undefined))) ?? defaults.effort;
   }
   renderCtxRing();
   fill(
@@ -333,44 +340,6 @@ export function renderContext() {
         )
       : null,
   );
-}
-
-/**
- * 「更多」里的聊天模式开关。聊天模式：精简的系统提示，只能联网搜索，不执行命令、不读写文件，每轮开销小很多；
- * 工作模式：agent 原装的全部能力。会话里切换走服务端（同一条对话接着聊），新对话里只是记下选择
- */
-async function toggleMode() {
-  const c = S.current ? S.convs.get(S.current) : null;
-  const next = (c ? (c.mode ?? "work") : S.draftMode) === "chat" ? "work" : "chat";
-  if (!c) {
-    S.draftMode = next;
-    localStorage.setItem("aim.mode", next);
-    renderTopbar();
-    toast(next === "chat" ? "新对话用聊天模式：更省、更快，只能联网搜索，不执行命令、不读写文件" : "新对话用工作模式");
-    return;
-  }
-  // 聊过的聊天对话切到工作模式：工作模式会在对话里留下一大段 Claude Code / Codex 的背景，
-  // 之后再切回聊天模式每轮还得带着它，就省不了了。先问一句，建议另开一条工作对话
-  if (next === "work" && S.items.length > 0) {
-    const choice = await confirmDialog({
-      title: "在这条对话里切到工作模式？",
-      message:
-        "切过去以后，这条对话里会留下工作模式的一大段背景（约 1.7 万 token），之后再切回聊天模式每轮也得带着，就省不了了。切换后的第一轮也会稍贵一些。\n\n要干活的话，建议新开一条工作对话（目录和 agent 跟这条一样），这条留着继续聊天。",
-      confirmText: "新开工作对话",
-      altText: "就在这里切",
-    });
-    if (choice === "alt") await doAction("mode", "work");
-    else if (choice === true) {
-      S.draftAgent = c.agent;
-      S.draftCwd = c.cwd;
-      S.draftMode = "work";
-      localStorage.setItem("aim.mode", "work");
-      newDraft();
-      toast("已新开工作对话，目录和 agent 跟原来那条一样");
-    }
-    return;
-  }
-  await doAction("mode", next);
 }
 
 /** 84321 → 84k，1234567 → 1.2M */

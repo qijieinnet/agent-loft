@@ -28,12 +28,11 @@ import {
   readMemory,
   removeMemoryItem,
   updateMemoryItem,
-  type CurateScope,
   type CurateSettings,
   type UserMemory,
 } from "./memory.js";
 import { memoryOwnerOf } from "./personal.js";
-import { listConversations } from "./store.js";
+import { expertIdOf, listConversations, type Conversation } from "./store.js";
 import { activeUsers } from "./users.js";
 import type { AgentDriver } from "./types.js";
 import { agentAvailability } from "../agents/health.js";
@@ -363,18 +362,18 @@ export async function curateBatch(
   return log;
 }
 
-/** 这段对话在不在用户选的整理范围里（按现在的模式算，中途切过模式的整段归现在的） */
-function inScope(conv: { mode?: "chat" }, scope: CurateScope): boolean {
-  return scope === "all" || (scope === "chat") === (conv.mode === "chat");
+/** 这段对话在不在用户选的整理范围里（按对话的专家算） */
+function inScope(conv: Pick<Conversation, "agent" | "expert">, curate: Pick<CurateSettings, "scope" | "experts">): boolean {
+  return curate.scope === "all" || curate.experts.includes(expertIdOf(conv));
 }
 
 /** 某个用户等着整理的对话。删掉的、不在整理范围里的直接记成整理过（之后改范围也不补整理）；正在回复的这次先不碰 */
 function collect(userId: string, settleMs: number, now?: number): Pending[] {
-  const scope = readMemory(userId).curate.scope;
+  const curate = readMemory(userId).curate;
   const out: Pending[] = [];
   for (const p of pendingConversations(userId, settleMs, now)) {
     const conv = hub.conversation(p.key);
-    if (!conv || conv.hidden || !inScope(conv, scope)) {
+    if (!conv || conv.hidden || !inScope(conv, curate)) {
       markExtracted(userId, p.key, p.last);
       continue;
     }
@@ -434,10 +433,10 @@ export function curateNow(userId: string, opts: { now?: number } = {}): Promise<
 
 /** 还没整理的对话有几段（设置页显示「有 N 段对话等着整理」） */
 export function pendingCount(userId: string): number {
-  const scope = readMemory(userId).curate.scope;
+  const curate = readMemory(userId).curate;
   return pendingConversations(userId, 0).filter((p) => {
     const conv = hub.conversation(p.key);
-    return conv && !conv.hidden && inScope(conv, scope);
+    return conv && !conv.hidden && inScope(conv, curate);
   }).length;
 }
 

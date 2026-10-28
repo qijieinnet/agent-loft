@@ -1,6 +1,7 @@
 // 定时任务页面的接口：/api/tasks。每个人只看得到、改得了自己的任务（别人的一律当不存在）。
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { config, resolveWorkspacePath } from "../../core/config.js";
+import { canUseExpert, getExpert, isBuiltin } from "../../core/experts.js";
 import { hub } from "../../core/hub.js";
 import { memoryOwnerOf } from "../../core/personal.js";
 import { getConversation } from "../../core/store.js";
@@ -21,11 +22,14 @@ function view(task: Task) {
   };
 }
 
-/** 表单 / 请求里的字段先在这里核一遍：agent 要启用着、目录要在工作区里、对话要是自己的 */
+/** 表单 / 请求里的字段先在这里核一遍：专家要是自己能用的、引擎要启用着，目录要在工作区里，对话要是自己的 */
 function checkInput(user: User, body: TaskInput): TaskInput {
   const out: TaskInput = { ...body };
-  if (body.agent !== undefined) {
-    const agent = String(body.agent);
+  const pick = body.expert ?? body.agent;
+  if (pick !== undefined) {
+    const id = String(pick);
+    if (!canUseExpert(user.id, id)) throw new HttpError(400, "这个专家不存在");
+    const agent = isBuiltin(id) ? id : getExpert(id)!.engine;
     if (!hub.enabledAgents().some((d) => d.id === agent)) throw new HttpError(400, `${hub.label(agent)} 没有启用`);
   }
   if (typeof body.cwd === "string" && body.cwd.trim()) {
@@ -52,8 +56,8 @@ export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, 
   }
   if (p === "/api/tasks" && method === "POST") {
     const body = await readJsonBody<TaskInput>(req);
-    // 没选 agent（只启用了一个时表单里不显示）：用第一个启用着的，不能默认成一个可能没启用的
-    if (body.agent === undefined || body.agent === "") body.agent = hub.enabledAgents()[0]?.id;
+    // 没选专家：用第一个启用着的内置专家，不能默认成一个可能没启用的
+    if (!body.expert && !body.agent) body.expert = hub.enabledAgents()[0]?.id;
     let task: Task;
     try {
       task = createTask(user.id, checkInput(user, body), "user");

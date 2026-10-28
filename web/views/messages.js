@@ -1,4 +1,4 @@
-import { agentIcon, fill, h, icon, starsLoader } from "../lib/dom.js";
+import { fill, h, icon, starsLoader } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { clockTime, liveDuration, serverNow, setServerTime, tidyFooter } from "../lib/time.js";
 import { copyText, patchMarkdown, renderMarkdown } from "../lib/markdown.js";
@@ -13,6 +13,7 @@ import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
 import { scheduleNav } from "./msg-nav.js";
 import { linkReplyFiles } from "./file-preview.js";
 import { setTodos } from "./todos.js";
+import { expertIcon, findExpert } from "./experts.js";
 
 // ---------- 打开会话 ----------
 
@@ -52,24 +53,56 @@ export function newDraft() {
 export function renderEmpty() {
   const enabled = usableAgents();
   const cwd = S.draftCwd ?? S.workspaceRoot ?? "";
+  const expert = findExpert(S.draftExpert);
+  // 自定义专家：有欢迎语就用它；只能联网的专家不碰目录，不问「在哪个目录里」
+  const custom = expert && !expert.builtin;
+  const dirTitle = h(
+    "h2",
+    {},
+    "你想让我们在 ",
+    h("button", { class: "hero-dir", title: `${cwd}\n点击切换工作目录`, onclick: () => changeCwd() }, baseName(cwd) || "工作区"),
+    " 中构建什么？",
+  );
+  const fillPrompt = (text) => {
+    if (!ui.input) return;
+    ui.input.value = text;
+    ui.input.dispatchEvent(new Event("input"));
+    ui.input.focus();
+    // 填空题（___）：把光标放到空上
+    const blank = text.indexOf("___");
+    if (blank >= 0) ui.input.setSelectionRange(blank, blank + 3);
+  };
   fill(ui.msgInner,
     h(
       "div",
       { class: "empty hero" },
-      agentIcon(S.draftAgent, "hero-logo"),
-      enabled.length
-        ? h(
-            "h2",
-            {},
-            "你想让我们在 ",
-            h("button", { class: "hero-dir", title: `${cwd}\n点击切换工作目录`, onclick: () => changeCwd() }, baseName(cwd) || "工作区"),
-            " 中构建什么？",
-          )
-        : [h("h2", {}, "有什么可以帮你？"), h("div", {}, "还没有启用任何 agent，先去设置里启用。")],
+      expertIcon(expert ?? { id: S.draftAgent }, "hero-logo"),
+      !enabled.length
+        ? [h("h2", {}, "有什么可以帮你？"), h("div", {}, "还没有启用任何 agent，先去设置里启用。")]
+        : custom
+          ? [
+              expert.welcome ? h("h2", {}, expert.welcome) : expert.access === "web" ? h("h2", {}, `我是${expert.name}，有什么可以帮你？`) : dirTitle,
+              expert.welcome && expert.access !== "web" ? h("div", { class: "hero-sub" }, "工作目录：", h("button", { class: "hero-dir", title: `${cwd}\n点击切换工作目录`, onclick: () => changeCwd() }, baseName(cwd) || "工作区")) : null,
+              expert.quickPrompts?.length
+                ? h(
+                    "div",
+                    { class: "hero-prompts" },
+                    expert.quickPrompts.map((q) => h("button", { class: "hero-prompt", title: q.prompt, onclick: () => fillPrompt(q.prompt) }, q.title)),
+                  )
+                : null,
+            ]
+          : dirTitle,
     ),
   );
   renderContext();
 }
+
+// 设置里改了专家：新对话页上的专家、欢迎语跟着变
+document.addEventListener("aim:experts", () => {
+  if (S.current || S.view) return;
+  renderTopbar();
+  renderEmpty();
+});
 
 export async function openConversation(key) {
   leaveTasksView();

@@ -353,7 +353,7 @@ test("Web 上传：同名文件每次存到不同路径，重置后旧 id 撞不
   assert.equal(fs.readFileSync(b.path, "utf8"), "B");
 });
 
-test("/fork 只记意图并落盘：切走再切回、或重建会话，下一条消息仍然分叉", async () => {
+test("/fork 只记意图并落盘：中间做了别的操作、或重建会话，下一条消息仍然分叉", async () => {
   const { hub } = await import("../src/core/hub.js");
   const { getConversation } = await import("../src/core/store.js");
   const created: { resumeId?: string; fork?: boolean }[] = [];
@@ -393,9 +393,8 @@ test("/fork 只记意图并落盘：切走再切回、或重建会话，下一�
   assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "claude-orig");
   await hub.fork(key);
   assert.equal(getConversation(key)!.perAgent.claude!.forkFrom, "claude-orig");
-  // 切到 codex 再切回 claude，然后才说话
-  await hub.setAgent(key, "codex", ["claude", "codex"]);
-  await hub.setAgent(key, "claude", ["claude", "codex"]);
+  // 中间做点不影响会话的事（网页上的对话不能换专家，这个操作被拒绝），然后才说话
+  await hub.setExpert(key, "codex", ["claude", "codex"]);
   created.length = 0;
   hub.send(key, { text: "2", attachments: [] }, origin);
   await new Promise((r) => setTimeout(r, 20));
@@ -619,7 +618,7 @@ test("排队中的消息也核对生命周期代次；连续两次切换不会�
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(sent.includes("下载期间被切换"), false);
 
-  // 没有实际效果的操作（切到当前 agent）：挂着的提问照样能用文字作答
+  // 没有实际效果的操作（被拒绝的换专家）：挂着的提问照样能用文字作答
   hub.send(key, { text: "建立新进程", attachments: [] }, origin);
   await new Promise((r) => setTimeout(r, 20));
   const q = interactions.create(key, {
@@ -627,7 +626,7 @@ test("排队中的消息也核对生命周期代次；连续两次切换不会�
     title: "t",
     questions: [{ id: "q", header: "Q", question: "?", options: [{ label: "a" }], multiSelect: false, allowOther: true }],
   }, 60_000, hub.liveSessionId(key));
-  await hub.setAgent(key, "claude", ["claude"]);
+  await hub.setExpert(key, "claude", ["claude"]);
   hub.send(key, { text: "我的答案", attachments: [] }, origin);
   assert.deepEqual((await q).answers, { q: ["我的答案"] });
 });

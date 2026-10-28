@@ -1,5 +1,5 @@
-// 技能怎么交到 agent 手上：开会话时挂哪些、注入哪些变量；消息里 @ 了技能时附上什么；
-// 机器上原有的技能（~/.claude/skills、~/.agents/skills 这些）只给管理员。
+// 技能怎么交到 agent 手上：开会话时挂哪些、注入哪些变量；自定义专家只给它选中的；
+// 机器上原有的技能（~/.claude/skills、~/.agents/skills 这些）只给管理员（内置专家才加载）。
 //
 // 两个 agent 的做法不一样（都实测过）：
 //   - Claude：每个用户一个插件目录（data/skills/plugins/<用户>），里面链接着他启用的技能，开会话时用
@@ -186,19 +186,24 @@ function varsPrompt(skills: Skill[], env: Record<string, string>, userId: string
 /**
  * 开会话时给 agent 的技能（SessionOptions.skills）。owner 是这条对话的主人（personal.ts 的 memoryOwnerOf）；
  * 没有主人的对话（飞书群聊等，只有管理员能配）照旧：机器上的技能都在，没有 agent-loft 的技能。
+ * only：自定义专家选中的技能 id，只给这些（变量的说明也只说这些的）。插件目录照样是这个人启用的全部 ——
+ * 正在用这个目录的其他会话不受影响，Claude 那边再用白名单只放选中的。
  */
-export function sessionSkills(owner: string | undefined): SessionSkills | undefined {
+export function sessionSkills(owner: string | undefined, only?: string[]): SessionSkills | undefined {
   if (!owner) return undefined;
   const user = getUser(owner);
   if (!user) return undefined;
   const admin = user.role === "admin";
-  const skills = activeSkills(owner);
+  const all = activeSkills(owner);
+  const keep = only ? new Set(only) : undefined;
+  const skills = keep ? all.filter((s) => keep.has(s.id)) : all;
   const env = skillEnv(owner, skills);
   const prompt = varsPrompt(skills, env, owner);
   let pluginDir: string | undefined;
-  if (skills.length) {
+  // 子智能体可能选了主专家没有的技能，插件资源要准备完整；各自的白名单由 driver 限定。
+  if (all.length) {
     try {
-      pluginDir = syncPluginDir(owner, skills);
+      pluginDir = syncPluginDir(owner, all);
     } catch (err) {
       console.error("[技能] 整理插件目录失败:", err instanceof Error ? err.message : err);
     }
@@ -229,97 +234,6 @@ export function codexSkillLines(skills: SessionSkills | undefined): string[] {
   return lines;
 }
 
-// ---------- @ 技能 ----------
-
-export type MentionTarget = { name: string; description: string; kind: "loft" | "machine"; skillMd: string; agents?: ("claude" | "codex")[] };
-
-/** 这个人能 @ 的技能：启用着的 agent-loft 技能；管理员再加上机器上原有的（同名时 agent-loft 的优先） */
-export function mentionTargets(owner: string | undefined): MentionTarget[] {
-  if (!owner) return [];
-  const user = getUser(owner);
-  if (!user) return [];
-  const out: MentionTarget[] = activeSkills(owner).map((s) => ({
-    name: s.name,
-    description: s.description,
-    kind: "loft",
-    skillMd: path.join(skillDir(s.id), "SKILL.md"),
-  }));
-  if (user.role === "admin") {
-    const taken = new Set(out.map((t) => t.name));
-    for (const m of machineSkills()) {
-      if (taken.has(m.name)) continue;
-      taken.add(m.name);
-      out.push({ name: m.name, description: m.description, kind: "machine", skillMd: path.join(m.dir, "SKILL.md"), agents: m.agents });
-    }
-  }
-  return out;
-}
-
-/** 消息里 @ 到的技能名（前面是开头、空白或标点，不是邮箱里的 @），按出现顺序去重 */
-export function parseMentions(text: string): string[] {
-  const out: string[] = [];
-  for (const m of text.matchAll(/(?:^|[^\w.@/-])@([a-z0-9][a-z0-9_-]*)/gi)) {
-    const name = m[1]!.toLowerCase();
-    if (!out.includes(name)) out.push(name);
-  }
-  return out;
-}
-
-const INLINE_MAX = 30_000;
-
-/**
- * 消息里 @ 了技能：附给 agent 的说明（包进 wrapContext 之前的那几行）。没 @ 到能用的就是 null。
- * 聊天模式没有工具，直接把 SKILL.md 的内容放进来。
- */
-export function mentionContext(
-  text: string,
-  opts: { owner: string | undefined; agent: string; mode: "chat" | "work" },
-): string[] | null {
-  const names = parseMentions(text);
-  if (!names.length) return null;
-  const targets = mentionTargets(opts.owner);
-  const hits = names.map((n) => targets.find((t) => t.name === n)).filter((t): t is MentionTarget => !!t);
-  if (!hits.length) return null;
-  if (opts.mode === "chat") {
-    const lines = [
-      `用户在这条消息里点名要用技能：${hits.map((t) => t.name).join("、")}。下面是技能的说明。现在是聊天模式，不能执行命令、读写文件：说明里能直接做的照着做，需要执行命令、读文件的步骤告诉用户发 /work 切到工作模式再来。`,
-    ];
-    let budget = INLINE_MAX;
-    for (const t of hits) {
-      let md = "";
-      try {
-        md = fs.readFileSync(t.skillMd, "utf8");
-      } catch {
-        md = "（读不到这个技能的 SKILL.md）";
-      }
-      if (md.length > budget) md = `${md.slice(0, Math.max(0, budget))}\n…（太长，后面省略）`;
-      budget -= md.length;
-      lines.push("", `### 技能 ${t.name}`, "", md.trim());
-    }
-    // 受保护的密钥走 skill_request（MCP 工具聊天模式下也有），调接口的技能在聊天模式也能用
-    const mentioned = activeSkills(opts.owner!).filter((sk) => hits.some((t) => t.kind === "loft" && t.name === sk.name));
-    const guarded = protectedLines(mentioned, opts.owner!);
-    if (guarded.length) lines.push("", ...guarded);
-    return lines;
-  }
-  if (opts.agent === "claude") {
-    // Claude 认得的：agent-loft 的（插件里）和它自己目录里的；只在 Codex 目录里的它不认得，让它去读文件
-    const known = hits.filter((t) => t.kind === "loft" || t.agents?.includes("claude"));
-    const other = hits.filter((t) => !known.includes(t));
-    const lines = [`用户在这条消息里点名要用技能：${hits.map((t) => t.name).join("、")}。`];
-    if (known.length) {
-      const refs = known.map((t) => (t.kind === "loft" ? `${PLUGIN_NAME}:${t.name}` : t.name));
-      lines.push(`先用 Skill 工具调用 ${refs.join("、")}，再按技能的说明完成用户的要求。`);
-    }
-    if (other.length) lines.push("这些先完整读一遍 SKILL.md 再照着做（相对路径以 SKILL.md 所在目录为准）：", ...other.map((t) => `- ${t.name}：${t.skillMd}`));
-    return lines;
-  }
-  return [
-    `用户在这条消息里点名要用技能：${hits.map((t) => t.name).join("、")}。先完整读一遍对应的 SKILL.md，再照着做（相对路径以 SKILL.md 所在目录为准）：`,
-    ...hits.map((t) => `- ${t.name}：${t.skillMd}`),
-  ];
-}
-
 /**
  * 成员在 Claude 会话里直接发「/机器上的技能」：CLI 会绕过白名单直接展开，这里先拦下。
  * native 是 Claude 报上来的命令表；读不到（超时、出错）时还按扫出来的机器技能名拦，不能因此放行。
@@ -333,23 +247,6 @@ export function isMachineCommand(name: string, native: { name: string; builtin?:
   if (projectCommandNames(cwd).some((p) => p.toLowerCase() === n)) return false;
   if (hit) return true;
   return machineSkills().some((m) => m.name.toLowerCase() === bare);
-}
-
-/** /skills 的回复：这条对话里能 @ 的技能 */
-export function skillsText(owner: string | undefined): string {
-  if (!owner) return "这条对话没有绑定 agent-loft 用户，用不了 agent-loft 的技能。飞书私聊里发 /bind 绑定账号后就能用。";
-  const targets = mentionTargets(owner);
-  const loft = targets.filter((t) => t.kind === "loft");
-  const machine = targets.filter((t) => t.kind === "machine");
-  const lines: string[] = [];
-  if (loft.length) {
-    lines.push(`**能用的技能（${loft.length} 个）**`, "", ...loft.map((t) => `- \`@${t.name}\` ${t.description}`));
-  } else {
-    lines.push("还没有启用任何技能。可以在网页「设置 → 技能」里新建、上传；也可以直接让 agent「把刚才的做法存成技能」。");
-  }
-  if (machine.length) lines.push("", `**本机技能（只有管理员能用，${machine.length} 个）**：${machine.map((t) => `\`@${t.name}\``).join(" ")}`);
-  lines.push("", "在消息里写 @名字 点名使用；工作模式下 agent 也会自己挑合适的用。");
-  return lines.join("\n");
 }
 
 /** 测试用 */

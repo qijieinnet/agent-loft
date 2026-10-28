@@ -5,7 +5,8 @@
 import { appServer } from "./app-server.js";
 import { refusalFor, UnsupportedRequest } from "./refusals.js";
 import { config } from "../../core/config.js";
-import { contextBlock } from "../../core/chat-mode.js";
+import { contextBlock } from "../../core/expert-prompt.js";
+import { ACCESS_LEVELS, type ExpertAccess, type ExpertRuntime } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import { SKILLS_MCP_NAME, skillsMcpSpawn, TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import { codexSkillLines } from "../../core/skill-runtime.js";
@@ -85,13 +86,13 @@ function sandboxPolicyFor(mode: string, cwd: string): unknown {
   };
 }
 
-// ---------- 聊天模式 ----------
+// ---------- 自定义专家 ----------
 
 /**
- * 聊天模式要关掉的东西（thread/start / resume 的 config 覆盖）。实测一句话的输入从约 2 万 token
- * 降到约 1.1 万，大头是技能清单（约 2.5 万字符）和权限说明（约 1.1 万字符）。剩下的是 Codex 自己的基础指令
- * （改不得，见 modeParams）和关不掉的工具定义。
- * 不认识的 feature 名 Codex 会忽略；万一哪天哪个键让 thread 起不来，openOnce 会退回不带这些覆盖再试一次。
+ * 只能联网的专家要关掉的东西（thread/start / resume 的 config 覆盖），也是别的权限的底子（expertConfig 再按权限打开）。
+ * 实测一句话的输入从约 2 万 token 降到约 1.1 万，大头是技能清单（约 2.5 万字符）和权限说明（约 1.1 万字符）。
+ * 剩下的是 Codex 自己的基础指令（改不得，见 modeParams）和关不掉的工具定义。
+ * 不认识的 feature 名 Codex 会忽略；配置被拒绝时直接报错，不能丢掉专家限制后重试。
  */
 export const CHAT_CONFIG: Record<string, unknown> = {
   web_search: "live",
@@ -126,6 +127,35 @@ export const CHAT_CONFIG: Record<string, unknown> = {
   ),
 };
 
+/**
+ * 按权限在 CHAT_CONFIG 上打开的东西。能读文件就要 shell（Codex 读文件也是跑命令，沙箱只读管着它改不了）；
+ * 能改文件再给 apply_patch。
+ */
+export function expertConfig(e: ExpertRuntime): Record<string, unknown> {
+  const rank = ACCESS_LEVELS.indexOf(e.access);
+  return {
+    ...CHAT_CONFIG,
+    web_search: e.webSearch ? "live" : "disabled",
+    ...(rank >= 1
+      ? { include_permissions_instructions: true, "features.shell_tool": true, "features.unified_exec": true, "features.view_image": true }
+      : {}),
+    ...(rank >= 2 ? { include_apply_patch_tool: true } : {}),
+  };
+}
+
+/** 专家选的 MCP 写成 Codex 的 mcp_servers 配置 */
+export function codexMcp(mcp: ExpertRuntime["mcp"], ask: readonly string[] = []): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, spec] of Object.entries(mcp)) {
+    const policy = { enabled: true, default_tools_approval_mode: ask.includes(name) ? "prompt" : "approve" };
+    if (spec.type === "stdio") out[`mcp_servers.${name}`] = { command: spec.command, args: spec.args, env: spec.env, ...policy };
+    else if (spec.type === "http") out[`mcp_servers.${name}`] = { url: spec.url, ...(Object.keys(spec.headers).length ? { http_headers: spec.headers } : {}), ...policy };
+  }
+  return out;
+}
+
+const SANDBOX_RANK = ["read-only", "workspace-write", "danger-full-access"];
+
 /** 用户自己配的 MCP 服务（config.toml 里的 mcp_servers）。名字因人而异，只能读出来再逐个关 */
 let userMcpCache: { names: string[]; at: number } | null = null;
 
@@ -137,8 +167,7 @@ export async function userMcpServers(): Promise<string[]> {
     userMcpCache = { names, at: Date.now() };
     return names;
   } catch (err) {
-    console.warn("[codex] 读取 MCP 配置失败，聊天模式下可能仍会加载用户的 MCP:", err instanceof Error ? err.message : err);
-    return [];
+    throw new Error("读取 Codex MCP 配置失败，无法应用专家的 MCP 限制", { cause: err });
   }
 }
 
@@ -231,13 +260,6 @@ function parseQuestions(raw: unknown): ParsedQuestion[] | null {
 
 /** 会话已被丢弃，迟到的异步结果直接作废 */
 class DisposedError extends Error {}
-
-/** 聊天模式带着全套配置覆盖开 thread 失败了（见 openOnce 的退路） */
-class ChatConfigRejected extends Error {
-  constructor(readonly cause: unknown) {
-    super("聊天模式的配置覆盖被拒绝");
-  }
-}
 
 export class CodexSession implements AgentSession {
   private threadId: string | undefined;
@@ -361,24 +383,30 @@ export class CodexSession implements AgentSession {
     return this.opening;
   }
 
-  private get chat(): boolean {
-    return this.opts.mode === "chat";
-  }
-
-  /** 沙箱：聊天模式一律只读（它本来就没有执行命令的工具，这是第二道保险） */
-  private get sandboxMode(): string {
-    return this.chat ? "read-only" : config().agents.codex.sandbox;
+  /** 内置专家算能跑命令 */
+  private get access(): ExpertAccess {
+    return this.opts.expert?.access ?? "exec";
   }
 
   /**
-   * 按模式给 thread 的配置覆盖。thread/start、resume、fork 三条路都带上：配置是每次 resume 现给的，
-   * 换模式时旧会话先退订（dispose），再 resume 回来就换上了（实测）。
-   *
-   * 不动 baseInstructions / developerInstructions：Codex 把它们钉在 thread 上，切回工作模式时还原不了
-   * （见 core/chat-mode.ts）。模式和记忆走 contextBlock，附在第一条消息后面。
-   * minimal：上一次带全套覆盖没能起来，退回只挂记忆工具。
+   * 沙箱：只能联网、能读文件的专家一律只读（只能联网的本来就没有执行命令的工具，这是第二道保险）；
+   * 能改文件的最多到 workspace-write；能跑命令的和内置专家一样按设置里的。设置里本来更严就按设置的
    */
-  private async modeParams(minimal = false): Promise<Record<string, unknown>> {
+  private get sandboxMode(): string {
+    const configured = config().agents.codex.sandbox;
+    const cap = this.access === "exec" ? configured : this.access === "edit" ? "workspace-write" : "read-only";
+    return SANDBOX_RANK.indexOf(cap) < SANDBOX_RANK.indexOf(configured) ? cap : configured;
+  }
+
+  /**
+   * 按专家给 thread 的配置覆盖。thread/start、resume、fork 三条路都带上：配置是每次 resume 现给的，
+   * 专家改了以后旧会话先退订（dispose），再 resume 回来就换上了（实测）。
+   *
+   * 不动 baseInstructions / developerInstructions：Codex 把它们钉在 thread 上，改了专家也还原不了
+   * （见 core/expert-prompt.ts）。专家和记忆走 contextBlock，附在第一条消息后面。
+   * 自定义专家：机器上的 MCP 除了它选的都关掉，再挂上它选的 agent-loft 管的 MCP。
+   */
+  private async modeParams(): Promise<Record<string, unknown>> {
     const memory = this.opts.memory;
     const tasks = this.opts.tasks;
     const mcp = {
@@ -391,57 +419,48 @@ export class CodexSession implements AgentSession {
           }
         : {}),
     };
-    if (this.chat && !minimal) {
-      const off = Object.fromEntries((await userMcpServers()).map((n) => [`mcp_servers.${n}.enabled`, false]));
-      return { config: { ...CHAT_CONFIG, ...off, ...mcp } };
+    const expert = this.opts.expert;
+    if (expert) {
+      const keep = new Set([...expert.machineMcp, ...Object.keys(expert.mcp)]);
+      const off = Object.fromEntries((await userMcpServers()).filter((n) => !keep.has(n)).map((n) => [`mcp_servers.${n}.enabled`, false]));
+      return { config: { ...expertConfig(expert), ...off, ...codexMcp(expert.mcp, expert.askMcp), ...mcp, ...this.skillConfig() } };
     }
-    const work = { ...mcp, ...(minimal ? {} : this.skillConfig()) };
+    const work = { ...mcp, ...this.skillConfig() };
     return Object.keys(work).length ? { config: work } : {};
   }
 
   /**
-   * 工作模式的技能设置：变量逐个写进 shell_environment_policy.set（只作用于这个 thread 里跑的命令，
-   * 一个个键写不会冲掉用户 config.toml 里本来设的）；成员关掉 Codex 自己的技能清单 ——
-   * 那里面是机器上装的技能，只给管理员。成员的技能走 contextBlock 里的清单。
+   * 技能设置：变量逐个写进 shell_environment_policy.set（只作用于这个 thread 里跑的命令，
+   * 一个个键写不会冲掉用户 config.toml 里本来设的），只给能跑命令的专家；成员和自定义专家关掉 Codex 自己的
+   * 技能清单 —— 那里面是机器上装的技能，只给管理员。agent-loft 的技能走 contextBlock 里的清单。
    */
   private skillConfig(): Record<string, unknown> {
     const skills = this.opts.skills;
     if (!skills) return {};
     return {
-      ...Object.fromEntries(Object.entries(skills.env).map(([k, v]) => [`shell_environment_policy.set.${k}`, v])),
-      ...(skills.admin ? {} : { "skills.include_instructions": false, "features.skill_search": false }),
+      ...(this.access === "exec" ? Object.fromEntries(Object.entries(skills.env).map(([k, v]) => [`shell_environment_policy.set.${k}`, v])) : {}),
+      ...(skills.admin && !this.opts.expert ? {} : { "skills.include_instructions": false, "features.skill_search": false }),
     };
   }
 
   /**
-   * 这个会话进程还没告诉过 Codex 当前的模式和记忆：第一条消息后面附上 contextBlock。
-   * 进程一换（切模式、记忆改了、服务重启）就是新的 CodexSession，会再附一次最新的。
-   * 工作模式、没有记忆、模式也没换过：什么都不附，和原来一模一样。
+   * 这个会话进程还没告诉过 Codex 专家和记忆：第一条消息后面附上 contextBlock。
+   * 进程一换（专家改了、记忆改了、服务重启）就是新的 CodexSession，会再附一次最新的。
+   * 内置专家、没有记忆和技能：什么都不附，和原装的一模一样。
    */
   private contextSent = false;
 
   private get contextPending(): boolean {
-    return !this.contextSent && (this.chat || !!this.opts.memory || !!this.opts.announceMode || codexSkillLines(this.opts.skills).length > 0);
+    return !this.contextSent && (!!this.opts.expert || !!this.opts.memory || codexSkillLines(this.opts.skills).length > 0);
   }
 
   private async openOnce(): Promise<string> {
-    try {
-      return await this.openWith(false);
-    } catch (err) {
-      // 聊天模式的那串配置覆盖是按当前版本的 Codex 测出来的：万一哪个键不认导致起不来，退回最小覆盖
-      if (!(err instanceof ChatConfigRejected) || this.disposed) throw err;
-      console.warn("[codex] 聊天模式的配置覆盖没能生效，退回只换系统提示:", err.cause instanceof Error ? err.cause.message : err.cause);
-      return this.openWith(true);
-    }
-  }
-
-  private async openWith(minimal: boolean): Promise<string> {
     const shared = {
       cwd: this.opts.cwd,
       approvalPolicy: "on-request",
       sandbox: this.sandboxMode,
       ...(this.opts.model ? { model: this.opts.model } : {}),
-      ...(await this.modeParams(minimal)),
+      ...(await this.modeParams()),
     };
     if (this.disposed) throw new DisposedError();
     const resumeId = this.threadId ?? this.opts.resumeId;
@@ -463,8 +482,6 @@ export class CodexSession implements AgentSession {
       } else {
         res = await appServer.call<ThreadResponse>("thread/start", shared);
       }
-    } catch (err) {
-      throw this.chat && !minimal ? new ChatConfigRejected(err) : err;
     } finally {
       opening.delete(this);
     }
@@ -532,14 +549,17 @@ export class CodexSession implements AgentSession {
     this.turnId = undefined;
     this.stopRequested = false;
     const token = ++this.turnSeq;
-    // 聊天模式没有执行命令的工具，读不了文件：文本附件的内容直接放进消息
-    const chat = this.chat;
-    const textMap = chat ? readTextAttachments(input.attachments) : new Map<string, string>();
+    // 只能联网的专家没有执行命令的工具，读不了文件：文本附件的内容直接放进消息
+    const noRead = this.access === "web";
+    const textMap = noRead ? readTextAttachments(input.attachments) : new Map<string, string>();
     const inlined = (a: SavedAttachment) => a.kind === "image" || textMap.has(a.path);
-    const note = input.attachments.length ? describeAttachments(input.attachments, inlined, chat) : "";
-    const texts = chat ? inlineTextBlocks(input.attachments, textMap) : "";
+    const note = input.attachments.length ? describeAttachments(input.attachments, inlined, noRead) : "";
+    const texts = noRead ? inlineTextBlocks(input.attachments, textMap) : "";
     // 放在最后：Codex 拿第一条消息的开头当会话预览，不能被这段背景占掉
-    const context = this.contextPending ? contextBlock(chat ? "chat" : "work", this.opts.memory?.prompt, "联网搜索", codexSkillLines(this.opts.skills)) : "";
+    const expert = this.opts.expert;
+    const context = this.contextPending
+      ? contextBlock(expert ? { prompt: expert, cwd: this.opts.cwd } : undefined, this.opts.memory?.prompt, codexSkillLines(this.opts.skills))
+      : "";
     const text = [input.text, note, texts, context].filter(Boolean).join("\n\n");
     const images = input.attachments.filter((a) => a.kind === "image").map((a) => a.path);
     let startedOn: string | undefined;
@@ -673,6 +693,18 @@ export class CodexSession implements AgentSession {
    */
   async handleServerRequest(method: string, params: unknown): Promise<unknown> {
     switch (method) {
+      case "mcpServer/elicitation/request": {
+        const req = params as { serverName: string; mode?: string; message?: string; _meta?: Record<string, unknown> };
+        // Codex 用 elicitation 传工具审批；普通 MCP 表单仍按未支持处理，不能把表单当授权。
+        if (req.mode !== "form" || req._meta?.codex_approval_kind !== "mcp_tool_call" || !this.opts.expert?.mcp[req.serverName]) {
+          return refusalFor(method);
+        }
+        const detail = [req.message, req._meta.tool_params === undefined ? "" : `\`\`\`json\n${JSON.stringify(req._meta.tool_params, null, 2)}\n\`\`\``].filter(Boolean).join("\n\n");
+        // 每次都问，不沿用命令的「本会话全部允许」，也不把授权写回机器配置。
+        const outcome = await this.host({ kind: "approval", title: `需要授权：调用 MCP「${req.serverName}」`, detail: detail || "Codex 想调用这个 MCP 的工具。" });
+        return { action: allowed(outcome.settlement) ? "accept" : outcome.settlement === "cancelled" ? "cancel" : "decline", content: null, _meta: null };
+      }
+
       case "item/commandExecution/requestApproval": {
         const req = params as CommandExecutionApprovalParams;
         if (this.allowAll) return { decision: "acceptForSession" };

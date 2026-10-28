@@ -71,7 +71,7 @@ function render() {
       h(
         "p",
         { class: "skill-note" },
-        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。工作模式下 agent 遇到对得上的事会自己用；在输入框或定时任务里输入 @ 可以点名用哪个。",
+        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。内置的 Claude Code / Codex 专家能用你启用的全部技能，自定义专家只用它选中的（设置 → 专家）；agent 遇到对得上的事会自己用。",
       ),
       h(
         "div",
@@ -379,7 +379,7 @@ function openVars(s) {
       h(
         "p",
         { class: "skill-note" },
-        "只给你自己的会话用。普通变量在工作模式下作为环境变量注入，agent 能读到值；标了「受保护」的密钥 agent 看不到，只能让 agent-loft 代发到指定地址。几个技能用同一个变量名时共用一个值。",
+        "只给你自己的会话用。普通变量作为环境变量注入能跑命令的专家的会话，agent 能读到值；标了「受保护」的密钥 agent 看不到，只能让 agent-loft 代发到指定地址。几个技能用同一个变量名时共用一个值。",
       ),
       rows.map((r) => r.el),
     ),
@@ -506,7 +506,7 @@ async function openEditor(s) {
     body: h(
       "div",
       { class: "modal-body task-form" },
-      field("名字", name, d ? "建好后不能改。输入框里用 @名字 点名使用。" : "全站唯一，建好后不能改。输入框里用 @名字 点名使用。"),
+      field("名字", name, d ? "建好后不能改。" : "全站唯一，建好后不能改。"),
       field("说明", desc),
       field("正文（SKILL.md）", body, d?.files?.length ? `另有 ${d.files.length} 个附带文件，要改的话用「用文件替换」上传整个包。` : "可以引用同目录下的脚本、资料（上传技能包时一起带上）。"),
       field(

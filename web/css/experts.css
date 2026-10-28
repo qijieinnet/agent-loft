@@ -1,0 +1,103 @@
+/* ---- 专家 / MCP 设置页（列表沿用技能页的卡片样式） ---- */
+
+/* 一行放几个短字段：名字 + 图标，引擎 + 模型 + 思考程度 */
+.expert-form .row-fields {
+  display: flex;
+  gap: 12px;
+}
+
+.expert-form .row-fields > .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.expert-form .row-fields > .field:has(input.narrow) {
+  flex: 0 0 120px;
+}
+
+/* 勾选列表：技能、MCP、子智能体、记忆整理选专家 */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.check-list.inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 16px;
+  max-height: none;
+  border: none;
+  padding: 0;
+}
+
+.check-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.check-item small {
+  color: var(--fg-faint);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* MCP 的环境变量 / 请求头：名字、值、密钥、删除排一行 */
+.pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.pair-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field .pair-row input:not([type="checkbox"]) {
+  flex: 1;
+  min-width: 0;
+}
+
+.field .pair-row input:first-child {
+  flex: 0 0 34%;
+}
+
+.task-meta .mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+@media (max-width: 640px) {
+  .expert-form .row-fields {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .expert-form .row-fields > .field:has(input.narrow) {
+    flex: 1;
+  }
+}
+
+/* 按类型切换的一组字段：和别的字段一样排（间距由 .task-form 给） */
+.field-group {
+  display: contents;
+}

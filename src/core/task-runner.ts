@@ -6,7 +6,8 @@
 //   - 对话没在忙、也没挂着授权 / 提问：忙的话等它（最多 WAIT_MAX_MS），不能插进别人正在进行的那一轮，
 //     更不能被当成对挂着的提问的回答。
 import crypto from "node:crypto";
-import { config, resolveWorkspacePath } from "./config.js";
+import { resolveWorkspacePath } from "./config.js";
+import { getExpert } from "./experts.js";
 import { hub, type TaskTurnEnd } from "./hub.js";
 import { interactions } from "./interactions.js";
 import { memoryOwnerOf } from "./personal.js";
@@ -49,31 +50,43 @@ type Resolved = { key: string } | { pause: string } | { error: string };
 
 /** 这次该发到哪条对话；专用对话还没有（或者被删了）就新建一条 */
 function resolveConv(task: Task): Resolved {
+  const missingExpert = (id: string | undefined) => !!id && getExpert(id)?.owner !== task.owner;
+  const deletedExpert = { pause: "任务用的专家已经删除了，任务已暂停。编辑任务换一个专家再启用。" };
   if (task.target.kind === "conv") {
     const conv = getConversation(task.target.key);
     if (!conv || conv.hidden) return { pause: "回复的那条对话已经被删除，任务已暂停。可以改成「专用对话」后再启用。" };
     if (ownerOf(conv) !== task.owner) return { pause: "回复的那条对话已经不属于你了，任务已暂停。" };
+    if (missingExpert(conv.expert)) return deletedExpert;
     return { key: conv.key };
   }
+  // 复用专用对话前也要检查，不能等到新建对话时才发现专家已删除。
+  if (missingExpert(task.expert)) return deletedExpert;
   const existing = task.target.key ? getConversation(task.target.key) : undefined;
-  if (existing && !existing.hidden && existing.taskId === task.id && ownerOf(existing) === task.owner) return { key: existing.key };
+  if (existing && !existing.hidden && existing.taskId === task.id && ownerOf(existing) === task.owner) return missingExpert(existing.expert) ? deletedExpert : { key: existing.key };
 
+  // 专家被删了：不能换成别的专家去跑（权限可能大得多），暂停等用户改
+  const expert = task.expert ? getExpert(task.expert) : undefined;
   const enabled = hub.enabledAgents().map((d) => d.id);
   if (!enabled.includes(task.agent)) return { error: `${hub.label(task.agent)} 没有启用` };
   let cwd: string | null = null;
-  if (task.cwd) {
-    cwd = resolveWorkspacePath(task.cwd);
-    if (!cwd) return { error: `工作目录 ${task.cwd} 不存在了（或者不在工作区里），改一下任务的目录` };
+  const wantCwd = task.cwd || expert?.cwd;
+  if (wantCwd) {
+    cwd = resolveWorkspacePath(wantCwd);
+    if (!cwd) return { error: `工作目录 ${wantCwd} 不存在了（或者不在工作区里），改一下任务的目录` };
   }
   const key = `web:${crypto.randomBytes(6).toString("hex")}`;
   // 侧栏里专用对话前面有时钟图标（taskId），标题不用再加
-  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: task.agent, owner: task.owner, title: task.title.slice(0, 80) });
-  updateConversation(key, {
-    titleAuto: false,
-    taskId: task.id,
-    ...(task.mode === "chat" ? { mode: "chat" as const } : {}),
-    ...(cwd && cwd !== config().workspaceRoot ? { cwd, cwdExplicit: true } : {}),
+  hub.ensure({
+    key,
+    channel: "web",
+    channelId: "web",
+    defaultAgent: task.agent,
+    ...(task.expert ? { expert: task.expert } : {}),
+    ...(cwd ? { cwd } : {}),
+    owner: task.owner,
+    title: task.title.slice(0, 80),
   });
+  updateConversation(key, { titleAuto: false, taskId: task.id });
   if (task.model || task.effort) {
     updateAgentBinding(key, task.agent, { ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}) });
   }

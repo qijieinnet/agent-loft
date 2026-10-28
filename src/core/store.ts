@@ -1,8 +1,8 @@
 // 会话（conversation）的持久化。
 //
 // 一个 conversation 是「一个聊天上下文」：飞书的一个私聊 / 群 / 话题，或者 Web 上
-// 的一条对话。它记着当前用哪个 agent、在哪个目录，以及**每个 agent 各自**的会话 id
-// 和模型 —— 在同一个群里从 Claude 切到 Codex 再切回来，Claude 那条会话还在。
+// 的一条对话。它记着用哪个专家（core/experts.ts）和它的引擎（agent）、在哪个目录，以及 agent 的会话 id
+// 和模型。专家定了就不换：飞书里换专家等于开新会话（见 hub.setExpert）。
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { config } from "./config.js";
@@ -19,11 +19,6 @@ export type AgentBinding = {
    * 拿到不同于它的新会话 id 后清掉。
    */
   forkFrom?: string;
-  /**
-   * 上次告诉这个 agent 会话的是哪种模式（没有 = 工作模式，agent 原装的样子）。和对话现在的模式不一样，
-   * 就要在下一条消息里说一声（Codex 换不了系统提示，见 core/chat-mode.ts）。
-   */
-  announcedMode?: "chat" | "work";
 };
 
 export type Conversation = {
@@ -38,7 +33,10 @@ export type Conversation = {
    * 用户手动改过名就清掉，之后不再动它。
    */
   titleAuto?: boolean;
+  /** 引擎：claude / codex。按它找 driver、存会话 id */
   agent: string;
+  /** 自定义专家的 id。没有就是内置专家，也就是 agent 本身 */
+  expert?: string;
   cwd: string;
   /** cwd 是否用户显式指定。没指定过的跟随 workspaceRoot 变化 */
   cwdExplicit?: boolean;
@@ -57,8 +55,6 @@ export type Conversation = {
    * 账号时记下（见 core/feishu-links.ts）。飞书群聊、没绑定的私聊和升级前就有的 Web 会话没有，归管理员。
    */
   owner?: string;
-  /** chat：聊天模式（/chat）。没有就是工作模式。属于对话，跨 /new 和切 agent 保留 */
-  mode?: "chat";
   /** 定时任务的专用对话：是哪个任务的（见 core/tasks.ts）。任务删了就清掉 */
   taskId?: string;
 };
@@ -70,8 +66,27 @@ let cache: StoreShape | null = null;
 let persistTimer: NodeJS.Timeout | null = null;
 
 function load(): StoreShape {
-  cache ??= readJson<StoreShape>(storePath, {});
+  if (cache) return cache;
+  cache = readJson<StoreShape>(storePath, {});
+  // 聊天模式取消了（换成了专家）：以前聊天模式的对话直接丢掉，不迁移
+  let dropped = 0;
+  for (const [key, conv] of Object.entries(cache)) {
+    if ((conv as { mode?: string }).mode === "chat") {
+      delete cache[key];
+      dropped++;
+    }
+    for (const b of Object.values(conv.perAgent ?? {})) delete (b as { announcedMode?: string }).announcedMode;
+  }
+  if (dropped) {
+    console.log(`[store] 聊天模式已取消，丢掉了 ${dropped} 条聊天模式的对话`);
+    writeJsonAtomic(storePath, cache);
+  }
   return cache;
+}
+
+/** 这条对话的专家 id：自定义专家的 id，或者内置专家（就是 agent 本身） */
+export function expertIdOf(conv: Pick<Conversation, "agent" | "expert">): string {
+  return conv.expert ?? conv.agent;
 }
 
 /** 合并写盘：一轮对话里会频繁 touch，没必要每次都落盘。 */
@@ -125,8 +140,10 @@ export function ensureConversation(params: {
   channel: string;
   channelId: string;
   agent: string;
+  expert?: string;
   title?: string;
   owner?: string;
+  cwd?: string;
 }): Conversation {
   const existing = getConversation(params.key);
   if (existing) return existing;
@@ -136,7 +153,9 @@ export function ensureConversation(params: {
     channel: params.channel,
     channelId: params.channelId,
     agent: params.agent,
-    cwd: config().workspaceRoot,
+    ...(params.expert ? { expert: params.expert } : {}),
+    cwd: params.cwd ?? config().workspaceRoot,
+    ...(params.cwd && params.cwd !== config().workspaceRoot ? { cwdExplicit: true } : {}),
     perAgent: {},
     activeAt: now,
     createdAt: now,

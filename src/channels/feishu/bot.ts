@@ -917,9 +917,7 @@ export class FeishuBot {
       case "effort":
         return this.background(envelope.k, chatId, `思考程度设为 ${envelope.f}`, () => hub.setEffort(envelope.k, envelope.f));
       case "agent":
-        return this.background(envelope.k, chatId, `正在切换到 ${hub.label(envelope.g)}`, () =>
-          hub.setAgent(envelope.k, envelope.g, this.allowedFor(envelope.k)),
-        );
+        return this.background(envelope.k, chatId, "正在换专家…", () => hub.setExpert(envelope.k, envelope.g, this.allowedFor(envelope.k)));
       case "cmd":
         return this.runCardCommand(envelope.k, chatId, operatorOpenId, `/${envelope.c}`);
       case "attach": {

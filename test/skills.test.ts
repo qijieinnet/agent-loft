@@ -123,25 +123,11 @@ test("会话：插件目录链接到技能本体；成员看不到机器上的�
   assert.equal(fs.existsSync(link), false);
   skills.setSkillEnabled(alice.id, s.id, true);
 
-  assert.deepEqual(runtime.mentionTargets(alice.id).map((t) => t.name), ["notes"]);
-  const adminTargets = runtime.mentionTargets(admin.id).map((t) => `${t.kind}:${t.name}`);
-  assert.deepEqual(adminTargets, ["machine:nas-tool"]);
+  // 自定义专家只给它选中的技能；插件目录照样是启用的全部（别的会话还在用）
+  assert.deepEqual(runtime.sessionSkills(alice.id, [])!.list, []);
+  assert.deepEqual(runtime.sessionSkills(alice.id, [s.id])!.list.map((x) => x.name), ["notes"]);
+  assert.ok(fs.existsSync(link));
   assert.equal(runtime.sessionSkills(undefined), undefined);
-});
-
-test("@ 技能：只认能用的；按 agent 和模式给不同的说明", () => {
-  assert.deepEqual(runtime.parseMentions("@notes 帮我记一下，邮件 a@b.com、@Notes 再来"), ["notes"]);
-  assert.deepEqual(runtime.parseMentions("看看 x@notes"), []);
-  assert.equal(runtime.mentionContext("@nas-tool 看看", { owner: alice.id, agent: "claude", mode: "work" }), null);
-  const claude = runtime.mentionContext("用 @notes 记一下", { owner: alice.id, agent: "claude", mode: "work" })!;
-  assert.match(claude.join("\n"), /loft:notes/);
-  const codex = runtime.mentionContext("用 @notes 记一下", { owner: alice.id, agent: "codex", mode: "work" })!;
-  assert.match(codex.join("\n"), /SKILL\.md/);
-  const chat = runtime.mentionContext("用 @notes 记一下", { owner: alice.id, agent: "claude", mode: "chat" })!;
-  assert.match(chat.join("\n"), /写到 notes\.md/);
-  const machine = runtime.mentionContext("@nas-tool 看看", { owner: admin.id, agent: "claude", mode: "work" })!;
-  assert.match(machine.join("\n"), /Skill 工具调用 nas-tool/);
-  assert.doesNotMatch(machine.join("\n"), /loft:/);
 });
 
 test("成员发 /机器上的技能 要拦；自带的、agent-loft 的、项目里的放行", () => {

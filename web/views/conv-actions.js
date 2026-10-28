@@ -6,6 +6,7 @@ import { agentLabel, convTitle, renderSidebar } from "./sidebar.js";
 import { agentCatalog, baseName, catalogDefaults, draftPick, modelName, renderContext, renderTopbar, saveDraftPick, visibleModels } from "./topbar.js";
 import { closeMenu, confirmDialog, modal, placePopover, showPopover } from "../lib/overlay.js";
 import { newDraft, openConversation, renderEmpty } from "./messages.js";
+import { setDraftExpert } from "./experts.js";
 
 // ---------- 会话操作 ----------
 
@@ -42,15 +43,12 @@ export async function forkConversation(anchor, key = S.current) {
   }
 }
 
-export async function switchAgent(id) {
-  if (!S.current) {
-    S.draftAgent = id;
-    localStorage.setItem("aim.agent", id);
-    renderTopbar();
-    renderEmpty();
-    return;
-  }
-  await doAction("agent", id);
+/** 新对话里选专家（进了对话就不能换了：要换专家新建对话） */
+export function switchAgent(id) {
+  if (S.current) return;
+  setDraftExpert(id);
+  renderTopbar();
+  renderEmpty();
 }
 
 /** 模型 / 思考程度选择：已有会话直接切，新对话先记下，发第一条消息时带过去 */

@@ -10,6 +10,7 @@ import { feishuTab } from "./feishu.js";
 import { accountTab } from "./security.js";
 import { memoryTab } from "./memory.js";
 import { skillsTab } from "./skills.js";
+import { expertsTab, mcpTab } from "./experts.js";
 import { usageTab } from "./usage.js";
 import { serversTab } from "./servers.js";
 import { systemTab, usersTab } from "./users.js";
@@ -31,7 +32,9 @@ function groupsFor(cfg) {
       ["账号", (p) => accountTab(p)],
       ["通知", (p) => notifyTab(p)],
       ["记忆", (p) => memoryTab(p)],
+      ["专家", (p) => expertsTab(p)],
       ["技能", (p) => skillsTab(p)],
+      ["MCP", (p) => mcpTab(p)],
       ["用量", (p) => usageTab(p)],
     ],
   };

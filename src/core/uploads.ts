@@ -244,12 +244,12 @@ export function uploadKeyOf(file: string): string | undefined {
 
 /**
  * 附件清单的文字说明，两个 agent 都用它告诉模型文件在哪。
- * chat：聊天模式，agent 没有读文件的工具 —— 没能放进消息里的附件要说清楚读不了。
+ * noRead：专家只能联网、没有读文件的工具 —— 没能放进消息里的附件要说清楚读不了。
  */
 export function describeAttachments(
   saved: SavedAttachment[],
   inlined: (a: SavedAttachment) => boolean,
-  chat = false,
+  noRead = false,
 ): string {
   const counters: Partial<Record<AttachmentKind, number>> = {};
   const lines = saved.map((a) => {
@@ -257,19 +257,19 @@ export function describeAttachments(
     const details = [
       formatSize(a.size),
       ...(a.durationMs ? [`时长 ${Math.round(a.durationMs / 1000)} 秒`] : []),
-      ...(inlined(a) ? ["内容已附在本消息中"] : chat ? ["聊天模式下读不了这个文件"] : []),
+      ...(inlined(a) ? ["内容已附在本消息中"] : noRead ? ["你读不了这个文件"] : []),
     ];
     return `- ${KIND_LABEL[a.kind]}${n}：${a.path}（${details.join("，")}）`;
   });
-  const head = chat
-    ? "[用户发来了以下附件。现在是聊天模式，没有读文件的工具：读不了的附件请告诉用户发 /work 切到工作模式再处理]"
+  const head = noRead
+    ? "[用户发来了以下附件。你没有读文件的工具：读不了的附件请告诉用户换一个能读文件的专家（新开对话时选）再处理]"
     : "[用户发来了以下附件，已保存到本地，需要时可以直接读取或处理这些文件]";
   return [head, ...lines].join("\n");
 }
 
-// ---------- 聊天模式：文本附件直接放进消息 ----------
+// ---------- 只能联网的专家：文本附件直接放进消息 ----------
 //
-// 聊天模式不给 agent 读本地文件的工具（它能联网，能读文件就能被网页里的提示注入骗着把文件内容带出去），
+// 只能联网的专家没有读本地文件的工具（它能联网，能读文件就能被网页里的提示注入骗着把文件内容带出去），
 // 所以文本类的附件由我们读出来，跟着消息一起发过去。
 
 const TEXT_EXT =

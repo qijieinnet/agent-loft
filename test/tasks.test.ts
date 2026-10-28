@@ -13,7 +13,7 @@ after(() => clearInterval(keepAlive));
 const sched = await import("../src/core/task-schedule.js");
 const tasks = await import("../src/core/tasks.js");
 const { isSilentReply, stripSilentMark, taskMessage } = await import("../src/core/task-prompt.js");
-const { stripContext } = await import("../src/core/chat-mode.js");
+const { stripContext } = await import("../src/core/expert-prompt.js");
 
 const at = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime();
 
@@ -66,7 +66,9 @@ test("任务按人隔离：别人的任务看不到、改不了、删不掉", ()
   assert.throws(() => tasks.updateTask("u_b", a.id, { enabled: false }), /不存在/);
   assert.equal(tasks.deleteTask("u_b", a.id), undefined);
   assert.equal(tasks.getTask("u_a", a.id)?.enabled, true);
-  assert.equal(a.mode, "chat", "默认聊天模式");
+  assert.equal(a.agent, "claude", "默认内置的 Claude Code 专家");
+  assert.equal(a.expert, undefined);
+  assert.throws(() => tasks.createTask("u_a", { prompt: "p", schedule: { kind: "daily", time: "08:00" }, expert: "e_nope" }, "user"), /专家不存在/);
   assert.equal(a.title, "每天看新闻", "没给名称就用提示词");
   assert.ok(a.nextRunAt && a.nextRunAt > Date.now());
 
@@ -74,10 +76,12 @@ test("任务按人隔离：别人的任务看不到、改不了、删不掉", ()
   assert.equal(tasks.updateTask("u_a", a.id, { enabled: false }).nextRunAt, undefined);
   assert.ok(tasks.updateTask("u_a", a.id, { enabled: true }).nextRunAt);
 
-  // 专用对话的模式变了：旧对话对不上了，下次新开
+  // 专用对话的专家变了：旧对话对不上了（对话中途不能换专家），下次新开
   const t = tasks.getTask("u_a", a.id)!;
   t.target = { kind: "dedicated", key: "web:old" };
-  assert.deepEqual(tasks.updateTask("u_a", a.id, { mode: "work" }).target, { kind: "dedicated" });
+  const switched = tasks.updateTask("u_a", a.id, { expert: "codex" });
+  assert.deepEqual(switched.target, { kind: "dedicated" });
+  assert.equal(switched.agent, "codex");
 
   // 清空目录 / 模型：字段真的去掉，不是留着旧值
   tasks.updateTask("u_a", a.id, { cwd: "/tmp/x", model: "m1" });
@@ -155,7 +159,7 @@ test("运行：发到专用对话，agent 判断不用提醒时标成 silent，�
     const conv = getConversation(key)!;
     assert.equal(conv.owner, owner.id);
     assert.equal(conv.taskId, task.id);
-    assert.equal(conv.mode, "chat");
+    assert.equal(conv.expert, undefined, "内置专家");
     assert.match(received[0]!, /^看看有没有新版本\n\n<agent-loft-context>/);
     assert.equal(results[0]?.silent, true);
     assert.equal(tasks.getTask(owner.id, task.id)!.runs[0]!.status, "silent");
@@ -173,6 +177,35 @@ test("运行：发到专用对话，agent 判断不用提醒时标成 silent，�
     hub.send(key, { text: "谢谢", attachments: [] }, { channel: "web", channelId: "web" });
     await new Promise((r) => setTimeout(r, 60));
     assert.equal(results[2]?.task, undefined);
+
+    // 专家被删：已有专用对话、尚未开对话、发回原对话三条路都暂停，不能继续送进 hub。
+    const experts = await import("../src/core/experts.js");
+    const helper = experts.createExpert(owner.id, { name: "任务助手", engine: "claude", access: "web" });
+    const dedicated = tasks.createTask(owner.id, { prompt: "专家任务", expert: helper.id, schedule: { kind: "daily", time: "08:00" } }, "user");
+    assert.equal(runner.runTaskNow(dedicated), undefined);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(getConversation(dedicated.target.key!)?.expert, helper.id);
+    const unopened = tasks.createTask(owner.id, { prompt: "还没开对话", expert: helper.id, schedule: { kind: "daily", time: "08:00" } }, "user");
+    const original = tasks.createTask(owner.id, { prompt: "发回原对话", target: { kind: "conv", key: dedicated.target.key! }, schedule: { kind: "daily", time: "08:00" } }, "user");
+    experts.deleteExpert(owner.id, helper.id);
+    const before = received.length;
+    for (const dead of [dedicated, unopened, original]) {
+      assert.match(runner.runTaskNow(dead) ?? "", /专家已经删除/);
+      assert.equal(dead.enabled, false);
+      assert.equal(dead.nextRunAt, undefined);
+      assert.equal(dead.runs[0]!.status, "skipped");
+      assert.match(dead.runs[0]!.note!, /专家已经删除/);
+      assert.equal(runner.isTaskRunning(dead.id), false);
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(received.length, before, "暂停前不能先把消息发出去");
+    // 选个可用专家后恢复：丢掉原专用对话，下次正常开新对话。
+    tasks.updateTask(owner.id, dedicated.id, { expert: "claude", enabled: true });
+    assert.equal(dedicated.target.key, undefined);
+    assert.equal(runner.runTaskNow(dedicated), undefined);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(received.length, before + 1);
+    assert.equal(dedicated.runs[0]!.status, "notified");
 
     // 对话换了主人：任务暂停，不再往里发
     task.target = { kind: "conv", key };

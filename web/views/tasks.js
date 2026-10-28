@@ -5,10 +5,10 @@ import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 import { S, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { agentLabel, closeSide, renderSidebar } from "./sidebar.js";
-import { baseName, renderTopbar, usableAgents } from "./topbar.js";
+import { baseName, renderTopbar } from "./topbar.js";
 import { openConversation } from "./messages.js";
 import { changeCwd } from "./conv-actions.js";
-import { attachMention } from "./mention.js";
+import { expertChoices, findExpert } from "./experts.js";
 
 // ---------- 定时任务页 ----------
 // 到点让 agent 按提示词干活，结果回到一条对话里；「有需要才提醒」时由 agent 判断这次要不要打扰你。
@@ -41,21 +41,20 @@ const EXAMPLES = [
     prompt: "查一下 npm 上 agent-loft 的最新版本（https://www.npmjs.com/package/agent-loft），和当前服务端版本比较。有新版本就告诉我新版本号和主要更新内容。",
     schedule: { kind: "daily", time: "09:00" },
     notify: "smart",
-    mode: "chat",
   },
   {
     title: "科技新闻早报",
     prompt: "搜一下过去 24 小时最重要的科技新闻，挑 5 条，每条用一两句话说明为什么值得关注，附上链接。",
     schedule: { kind: "daily", time: "08:30" },
     notify: "always",
-    mode: "chat",
   },
   {
     title: "下班前看看改了什么",
     prompt: "用 git status 和 git log --since=midnight 看看这个目录今天改了什么，帮我列一个简短的日报草稿。今天没有任何改动的话就不用提醒我。",
     schedule: { kind: "weekdays", time: "18:00" },
     notify: "smart",
-    mode: "work",
+    // 要跑 git 命令：用能执行命令的内置专家
+    expert: "claude",
   },
 ];
 
@@ -199,7 +198,7 @@ function taskCard(t) {
   const where =
     t.target.kind === "conv"
       ? `发到「${t.convTitle || "对话"}」`
-      : `${agentLabel(t.agent)} · ${t.mode === "work" ? "工作模式" : "聊天模式"}${t.mode === "work" && t.cwd ? ` · ${baseName(t.cwd)}` : ""}`;
+      : `${findExpert(t.expert ?? t.agent)?.name ?? (t.expert ? "（已删除的专家）" : agentLabel(t.agent))}${t.cwd ? ` · ${baseName(t.cwd)}` : ""}`;
   const toggle = h("input", { type: "checkbox", checked: t.enabled, title: t.enabled ? "暂停" : "启用" });
   toggle.onchange = async () => {
     try {
@@ -282,18 +281,10 @@ const WEEK_NAME = ["日", "一", "二", "三", "四", "五", "六"];
 /** task：编辑这个；preset：新建时预填（例子） */
 export function openTaskForm(task, preset) {
   const src = task ?? preset ?? {};
-  const agents = usableAgents();
+  const experts = expertChoices();
   const title = h("input", { value: src.title ?? "", maxlength: "60", placeholder: "比如：检查 agent-loft 更新" });
-  const prompt = h("textarea", { rows: 5, maxlength: "4000", placeholder: "到点让 agent 做什么。写成完整的指令：那时你多半不在，它没法再问你。可以用 @ 指定技能。" });
+  const prompt = h("textarea", { rows: 5, maxlength: "4000", placeholder: "到点让 agent 做什么。写成完整的指令：那时你多半不在，它没法再问你。" });
   prompt.value = src.prompt ?? "";
-  // @ 技能：和输入框一样，到点时服务端认提示词里的 @name
-  const mentionMenu = h("div", { class: "slash-menu below", hidden: true });
-  const mention = attachMention(prompt, mentionMenu);
-  prompt.addEventListener("input", () => void mention.update());
-  prompt.addEventListener("blur", () => setTimeout(mention.close, 150));
-  prompt.addEventListener("keydown", (e) => {
-    if (mention.keydown(e)) e.preventDefault();
-  });
 
   // ---- 频率 ----
   const sch = { kind: "daily", time: "09:00", days: [1], day: 1, every: 2, minute: 0, expr: "0 9 * * *", at: Date.now() + 3600_000, ...(src.schedule ?? {}) };
@@ -369,16 +360,14 @@ export function openTaskForm(task, preset) {
         h("option", { value: "dedicated" }, "专用对话（单独开一条）"),
       )
     : null;
-  const agent = h(
+  const picked = src.expert ?? src.agent ?? S.draftExpert;
+  // 任务用的专家被删了：列表里没有它，留一项占位，免得一打开就悄悄换成别的
+  const missing = task && !experts.some((e) => e.id === picked);
+  const expert = h(
     "select",
     {},
-    agents.map((a) => h("option", { value: a.id, selected: a.id === (src.agent ?? S.draftAgent) }, a.label)),
-  );
-  const mode = h(
-    "select",
-    {},
-    h("option", { value: "chat", selected: (src.mode ?? "chat") === "chat" }, "聊天模式：只能联网搜索，开销小，不需要授权"),
-    h("option", { value: "work", selected: src.mode === "work" }, "工作模式：能执行命令、读写本机文件"),
+    missing ? h("option", { value: "", selected: true, disabled: true }, "（专家已删除，选一个）") : null,
+    experts.map((e) => h("option", { value: e.id, selected: !missing && e.id === picked }, `${e.icon ? `${e.icon} ` : ""}${e.name}`)),
   );
   let cwd = src.cwd || "";
   const cwdBtn = h("button", { type: "button", class: "btn task-cwd" });
@@ -395,20 +384,15 @@ export function openTaskForm(task, preset) {
         showCwd();
       },
     });
-  const cwdField = field("工作目录", cwdBtn, "工作模式下 agent 在这个目录里干活。需要授权时会推送给你，没人处理就按拒绝。");
-  const dedicatedBox = h(
-    "div",
-    { class: "task-dedicated" },
-    agents.length > 1 ? field("Agent", agent) : null,
-    field("模式", mode),
-    cwdField,
-  );
+  const cwdField = field("工作目录", cwdBtn, "专家在这个目录里干活。需要授权时会推送给你，没人处理就按拒绝。没选就用专家默认的目录。");
+  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField);
   const syncVisibility = () => {
     const dedicated = !target || target.value === "dedicated";
     dedicatedBox.hidden = !dedicated;
-    cwdField.hidden = mode.value !== "work";
+    // 只能联网的专家不碰目录
+    cwdField.hidden = findExpert(expert.value)?.access === "web";
   };
-  mode.onchange = syncVisibility;
+  expert.onchange = syncVisibility;
   if (target) target.onchange = syncVisibility;
   syncVisibility();
 
@@ -416,7 +400,7 @@ export function openTaskForm(task, preset) {
     "div",
     { class: "modal-body task-form" },
     field("名称", title),
-    field("要做的事", h("div", { class: "mention-wrap" }, prompt, mentionMenu), "需要对比的写清楚怎么判断，比如「和上次的结果比」「版本号比当前的新才算更新」。输入 @ 可以指定这次要用的技能。"),
+    field("要做的事", prompt, "需要对比的写清楚怎么判断，比如「和上次的结果比」「版本号比当前的新才算更新」。"),
     field("频率", h("div", { class: "task-freq-row" }, freq, freqBox), freqHint),
     field("提醒", notify),
     target ? field("结果发到", target) : field("结果发到", h("div", { class: "task-static" }, task?.convKey ? `专用对话「${task.convTitle || "对话"}」` : "专用对话（第一次运行时新建，之后都发到这条）")),
@@ -442,13 +426,14 @@ export function openTaskForm(task, preset) {
                 : { kind: "cron", expr: sch.expr };
     if (schedule.kind === "once" && !(schedule.at > Date.now())) return toast("运行时间要在现在之后");
     const dedicated = !target || target.value === "dedicated";
+    if (dedicated && !expert.value) return toast("选一个专家");
     const payload = {
       title: title.value,
       prompt: prompt.value,
       schedule,
       notify: notify.value,
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: task.target.key },
-      ...(dedicated ? { agent: agent.value || agents[0]?.id, mode: mode.value, cwd: mode.value === "work" ? cwd : "" } : {}),
+      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd } : {}),
     };
     save.disabled = true;
     try {

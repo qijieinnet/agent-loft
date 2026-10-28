@@ -71,6 +71,9 @@ import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor } from "./conv
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleSkillsApi } from "./skills-api.js";
+import { handleExpertsApi } from "./experts-api.js";
+import { canUseExpert, getExpert, isBuiltin, listExperts } from "../../core/experts.js";
+import { expertBrief } from "./experts-api.js";
 import { handleTerminalApi } from "./terminal.js";
 import { handleDesktopApi, remoteStatus } from "./desktop.js";
 import {
@@ -647,6 +650,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       }),
       // 飞书机器人是管理员配的，飞书会话也只给管理员看
       bots: admin ? config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })) : [],
+      // 自己的专家（新对话、定时任务里选）。内置的 Claude Code / Codex 就是上面的 agents
+      experts: listExperts(user.id).map(expertBrief),
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
       quotaEnabled: config().web.quotaEnabled,
@@ -726,6 +731,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   // ----- 定时任务 -----
   if (p.startsWith("/api/tasks") && (await handleTasksApi(req, res, p, user))) return;
   if (p.startsWith("/api/skills") && (await handleSkillsApi(req, res, url, user))) return;
+  if ((p.startsWith("/api/experts") || p.startsWith("/api/mcp")) && (await handleExpertsApi(req, res, p, user))) return;
   if (p.startsWith("/api/terminals") && (await handleTerminalApi(req, res, p, user))) return;
   if ((p === "/api/remote" || p.startsWith("/api/desktop/")) && (await handleDesktopApi(req, res, p, user))) return;
 
@@ -758,21 +764,25 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/conversations" && method === "POST") {
-    const body = await readJsonBody<{ agent?: string; cwd?: string; mode?: string }>(req);
+    // expert：新对话页上选的专家（内置的 claude / codex，或者自己的专家 id）。agent 是以前的叫法
+    const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string }>(req);
     const enabled = hub.enabledAgents().map((d) => d.id);
-    const agent = body.agent && enabled.includes(body.agent) ? body.agent : enabled[0];
-    if (!agent) throw new HttpError(400, "没有可用的 agent");
-    // 新对话发第一条消息前在页面上选的工作目录；和 /cd 一样只能在工作区之内
-    let cwd: string | null = null;
-    if (typeof body.cwd === "string" && body.cwd.trim()) {
-      cwd = resolveWorkspacePath(body.cwd.trim());
-      if (!cwd) throw new HttpError(400, `目录必须存在，且在 ${config().workspaceRoot} 之内`);
+    const wanted = body.expert ?? body.agent;
+    let expertId = wanted && canUseExpert(user.id, wanted) ? wanted : enabled[0];
+    if (!expertId) throw new HttpError(400, "没有可用的 agent");
+    const custom = isBuiltin(expertId) ? undefined : getExpert(expertId);
+    const agent = custom ? custom.engine : expertId;
+    if (!enabled.includes(agent)) throw new HttpError(400, `${hub.label(agent)} 没有启用，用不了这个专家`);
+    // 新对话发第一条消息前在页面上选的工作目录；和 /cd 一样只能在工作区之内。没选就用专家默认的
+    let cwd: string | undefined;
+    const rawCwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : custom?.cwd;
+    if (rawCwd) {
+      const resolved = resolveWorkspacePath(rawCwd);
+      if (!resolved) throw new HttpError(400, `目录必须存在，且在 ${config().workspaceRoot} 之内`);
+      cwd = resolved;
     }
     const key = `web:${crypto.randomBytes(6).toString("hex")}`;
-    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent, owner: user.id });
-    if (cwd && cwd !== config().workspaceRoot) updateConversation(key, { cwd, cwdExplicit: true });
-    // 新对话页上选的模式
-    if (body.mode === "chat") updateConversation(key, { mode: "chat" });
+    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent, ...(custom ? { expert: custom.id } : {}), ...(cwd ? { cwd } : {}), owner: user.id });
     sendJson(res, 200, hub.info(key));
     return;
   }
@@ -976,8 +986,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         case "effort":
           text = await hub.setEffort(key, value);
           break;
+        // 换专家（开新会话）：只有飞书的对话能换，网页上的 hub 会拒绝
         case "agent":
-          text = await hub.setAgent(key, value, allowedAgentsFor(key));
+          text = await hub.setExpert(key, value, allowedAgentsFor(key));
           break;
         case "stop":
           text = await hub.stop(key);
@@ -988,10 +999,6 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           break;
         case "cd":
           text = await hub.cd(key, value);
-          break;
-        case "mode":
-          if (value !== "chat" && value !== "work") throw new HttpError(400, "模式只能是 chat 或 work");
-          text = await hub.setMode(key, value);
           break;
         default:
           throw new HttpError(400, "未知操作");

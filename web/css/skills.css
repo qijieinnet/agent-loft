@@ -337,17 +337,6 @@
   margin-top: 14px;
 }
 
-/* @ 补全：在弹窗里的输入框下面弹出 */
-.mention-wrap {
-  position: relative;
-}
-
-.slash-menu.below {
-  top: calc(100% + 4px);
-  bottom: auto;
-  max-height: 240px;
-}
-
 @media (max-width: 640px) {
   .skills-page .tasks-head {
     flex-direction: column;
