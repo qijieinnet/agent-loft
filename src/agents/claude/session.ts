@@ -42,6 +42,7 @@ import {
   rememberAlways,
   signatureOf,
 } from "./permissions.js";
+import { feedTodos, readTodos, TodoTracker } from "./todos.js";
 
 export function toModelInfo(models: Awaited<ReturnType<Query["supportedModels"]>>): ModelInfo[] {
   return models.map((m) => ({
@@ -234,6 +235,8 @@ export class ClaudeSession implements AgentSession {
    * 恢复 / 分叉来的会话第一轮不知道之前累计了多少，这一轮先不报费用
    */
   private costSoFar: number | undefined;
+  /** 任务清单（见 todos.ts）。只记主线的，子 agent 自己列的不算 */
+  private todos = new TodoTracker();
 
   constructor(
     private readonly opts: SessionOptions,
@@ -241,6 +244,9 @@ export class ClaudeSession implements AgentSession {
     private readonly host: InteractionHost,
   ) {
     this.costSoFar = opts.resumeId ? undefined : 0;
+    // 接着老会话说：之前列的任务后面可能接着改（TaskUpdate 只给编号），先读回来。
+    // 读一个本地文件，比模型第一次调工具快得多
+    if (opts.resumeId) void readTodos(opts.resumeId, opts.cwd).then((items) => this.todos.seed(items));
   }
 
   get sessionId(): string | undefined {
@@ -262,8 +268,13 @@ export class ClaudeSession implements AgentSession {
       prompt: input.stream(),
       options: {
         cwd: this.opts.cwd,
-        // 技能变量只在工作模式注入：聊天模式没有执行命令的工具，用不上
-        env: { ...agentEnvironment(), ...(this.opts.mode === "chat" ? {} : (this.opts.skills?.env ?? {})) },
+        // 技能变量只在工作模式注入：聊天模式没有执行命令的工具，用不上。
+        // 任务清单工具（TaskCreate / TaskUpdate）在 SDK 里对新模型默认是关的（Claude 桌面端是打开的），
+        // 不开的话 Claude 不会列任务，页面上也就没有进度可看
+        env: {
+          ...agentEnvironment(),
+          ...(this.opts.mode === "chat" ? {} : { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1", ...(this.opts.skills?.env ?? {}) }),
+        },
         // 只能是 default 或 acceptEdits：bypassPermissions 会让 canUseTool 变成死代码。
         // acceptEdits 只放行工作目录（含附件目录）内的改文件，其它照样走 canUseTool
         permissionMode: this.opts.autoEdit ? "acceptEdits" : "default",
@@ -337,11 +348,23 @@ export class ClaudeSession implements AgentSession {
           const thought = summarize(block.thinking);
           if (thought) this.events.onStep("thinking", `💭 ${thought}`);
         } else if (block.type === "tool_use") {
+          const todo = sub ? null : this.todos.use(block.name, block.input, block.id);
+          if (todo) {
+            this.events.onStep("tool", todo.step);
+            if (todo.changed) this.events.onTodos?.(this.todos.list);
+            continue;
+          }
           this.events.onStep("tool", `${sub ? "  ↳ " : ""}🔧 ${describeToolUse(block.name, block.input)}`);
         } else if (block.type === "text" && block.text.trim() && !sub) {
           this.events.onText(block.text);
         }
       }
+      return;
+    }
+
+    // 工具结果：新建任务的编号在这里
+    if (message.type === "user") {
+      if (!message.parent_tool_use_id && feedTodos(this.todos, message)) this.events.onTodos?.(this.todos.list);
       return;
     }
 

@@ -42,6 +42,7 @@ import type {
   RuntimeInfo,
   SessionSummary,
   StepKind,
+  TodoItem,
   UserInput,
 } from "./types.js";
 import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
@@ -77,6 +78,8 @@ export type ConvEvent =
   | { type: "ix"; id: string }
   | { type: "turn_start" }
   | { type: "step"; kind: StepKind; text: string }
+  /** agent 的任务清单变了（改完之后的整份） */
+  | { type: "todos"; todos: TodoItem[] }
   | { type: "delta"; text: string }
   | { type: "text"; text: string }
   /**
@@ -596,6 +599,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
           this.emitEvent(key, { type: "turn_start" });
         },
         onStep: (kind, text) => alive() && this.emitEvent(key, { type: "step", kind, text }),
+        onTodos: (todos) => alive() && this.emitEvent(key, { type: "todos", todos }),
         onTextDelta: (text) => alive() && this.emitEvent(key, { type: "delta", text }),
         onText: (text) => alive() && this.emitEvent(key, { type: "text", text }),
         onResult: (result) => {

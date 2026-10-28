@@ -12,6 +12,7 @@ import { renderScheduled } from "./schedule.js";
 import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
 import { scheduleNav } from "./msg-nav.js";
 import { linkReplyFiles } from "./file-preview.js";
+import { setTodos } from "./todos.js";
 
 // ---------- 打开会话 ----------
 
@@ -35,6 +36,7 @@ export function newDraft() {
   S.pinNext = false;
   ui.pinEl = null;
   ui.follow = true;
+  setTodos(null);
   setBusy(false);
   renderScheduled();
   history.replaceState(history.state, "", location.pathname);
@@ -81,6 +83,7 @@ export async function openConversation(key) {
   S.pinNext = false;
   ui.pinEl = null;
   ui.follow = true;
+  setTodos(null);
   renderChips();
   renderScheduled();
   history.replaceState(history.state, "", `#${encodeURIComponent(key)}`);
@@ -128,6 +131,8 @@ export async function openConversation(key) {
       else if (m.role === "question") addItem({ type: "ix", id: m.question.id, ix: historyQuestion(key, m) });
       else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor, segment: m.segment });
     }
+    // 任务清单：最后改过的那一份（进行中这一轮又改了的话，下面重放 todos 事件时换成新的）
+    setTodos(data.messages.findLast((m) => m.todos)?.todos ?? null);
     S.seq.set(key, 0);
     // 进行中这一轮弹过的卡（含已处理的）：重放到 ix 事件时放回原位
     replayCards = new Map((data.interactions ?? []).map((ix) => [ix.id, ix]));
@@ -645,6 +650,9 @@ export function applyEvent(env) {
       updateItem(ai);
       return;
     }
+    case "todos":
+      setTodos(ev.todos);
+      return;
     case "delta": {
       const ai = currentAi(env.ts);
       ai.partial += ev.text;

@@ -580,11 +580,6 @@ a.att-file:hover {
   gap: 10px;
 }
 
-.ix-card.ask {
-  border-color: var(--ask-border);
-  background: var(--ask-bg);
-}
-
 .ix-card.settled {
   background: var(--bg-soft);
   border-color: var(--border);
@@ -615,42 +610,178 @@ a.att-file:hover {
   color: var(--fg-faint);
 }
 
+/* 提问卡：白底细边框，选项是一排按钮，主按钮黑色（和 Claude 桌面端一样） */
+.ix-card.ask {
+  position: relative;
+  border-color: var(--border);
+  background: var(--bg);
+  border-radius: 16px;
+  padding: 18px 20px;
+  gap: 16px;
+}
+
+.ix-card.ask.settled {
+  opacity: 0.85;
+}
+
+.ix-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  color: var(--fg-soft);
+}
+
+.ix-close svg {
+  width: 18px;
+  height: 18px;
+}
+
 .ix-q {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
 
-.ix-q .q-head {
-  font-size: 14px;
+/* 给关闭按钮让出位置 */
+.ix-q:first-of-type {
+  padding-right: 32px;
 }
 
-.ix-q .q-head b {
-  margin-right: 6px;
+.ix-q .q-header {
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+.ix-q .q-text {
+  font-size: 15px;
+  margin-top: -4px;
+}
+
+.ix-q .q-header + .q-text {
+  margin-top: -8px;
+}
+
+.ix-q .q-hint {
+  color: var(--fg-faint);
+}
+
+.q-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.q-opts.stack {
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .opt {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   text-align: left;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  border: none;
+  background: #f3f3f4;
+  color: var(--fg);
   border-radius: 10px;
-  padding: 8px 12px;
-  font-size: 14px;
+  padding: 9px 16px;
+  font-size: 15px;
+  font-weight: 500;
 }
 
-.opt:hover {
-  border-color: var(--fg-faint);
+.opt:hover:not(:disabled) {
+  background: #e8e8ea;
 }
 
-.opt.on {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+.opt-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .opt small {
   display: block;
   color: var(--fg-soft);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+/* 主按钮（推荐的那个 / 提交）和选中的：主题黑 */
+.opt.primary,
+.opt.on {
+  background: #1f1f1f;
+  color: #fff;
+}
+
+.opt.primary:hover:not(:disabled),
+.opt.on:hover:not(:disabled) {
+  background: #3a3a3a;
+}
+
+.opt.primary small,
+.opt.on small {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.opt:disabled {
+  cursor: default;
+}
+
+.ix-card.settled .opt:not(.on) {
+  opacity: 0.55;
+}
+
+.kbd-hint {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.kbd-hint kbd {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  font-family: var(--font);
   font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.ix-card.ask .ix-buttons {
+  align-items: center;
+  gap: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .opt {
+    background: var(--bg-soft);
+  }
+  .opt:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+  .opt.primary,
+  .opt.on {
+    background: var(--fg);
+    color: var(--bg);
+  }
+  .opt.primary:hover:not(:disabled),
+  .opt.on:hover:not(:disabled) {
+    background: #d0d0d0;
+  }
+  .opt.primary small,
+  .opt.on small {
+    color: rgba(0, 0, 0, 0.6);
+  }
+  .kbd-hint kbd {
+    border-color: rgba(0, 0, 0, 0.3);
+  }
 }
 
 /* ---------- 图片附件：缩略图 + 点开看大图 ---------- */

@@ -34,6 +34,7 @@ import { cachedProbe, withProbe } from "./probe.js";
 import { diagnose } from "./errors.js";
 import { claudeBuiltins, ClaudeSession, describeToolUse, summarize, toModelInfo } from "./session.js";
 import { parseQuestions } from "./permissions.js";
+import { resultText, TodoTracker } from "./todos.js";
 
 /** 模型列表几乎不变，缓存 10 分钟；读失败抛给设置页，让它退回手填 */
 const readCatalog = cachedProbe(10 * 60_000, "模型列表", () => withProbe(async (q) => toModelInfo(await q.supportedModels())));
@@ -92,13 +93,6 @@ type Block = {
   content?: unknown;
   is_error?: boolean;
 };
-
-/** tool_result 的内容：字符串，或者一组 text 块 */
-function resultText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((b) => (typeof b?.text === "string" ? b.text : "")).join("");
-}
 
 /**
  * 从 AskUserQuestion 的工具结果里取回答。Claude Code 写的是
@@ -199,6 +193,8 @@ export class ClaudeDriver implements AgentDriver {
     };
     /** 问了、还没对上回答的：tool_use id → 那条 question */
     const asked = new Map<string, HistoryMessage>();
+    /** 任务清单：哪条回复里改过，就在那条上挂一份改完的（页面取最后一份显示进度） */
+    const todos = new TodoTracker();
     for (const msg of raw) {
       if (msg.parent_tool_use_id) continue;
       const blocks = blocksOf(msg.message);
@@ -206,6 +202,10 @@ export class ClaudeDriver implements AgentDriver {
       const ts = Date.parse((msg as { timestamp?: string }).timestamp ?? "");
       if (msg.type === "user") {
         for (const b of blocks) {
+          if (b.type === "tool_result" && b.tool_use_id) {
+            const structured = (msg as { tool_use_result?: unknown }).tool_use_result;
+            if (todos.result(b.tool_use_id, resultText(b.content), structured, !!b.is_error) && assistant) assistant.todos = todos.list;
+          }
           const q = b.type === "tool_result" && b.tool_use_id ? asked.get(b.tool_use_id) : undefined;
           if (!q?.question) continue;
           asked.delete(b.tool_use_id!);
@@ -262,7 +262,9 @@ export class ClaudeDriver implements AgentDriver {
             out.push(q);
             assistant = { role: "assistant", text: "", steps: [] };
           } else if (b.type === "tool_use" && b.name) {
-            assistant.steps!.push(`🔧 ${describeToolUse(b.name, b.input)}`);
+            const todo = todos.use(b.name, b.input, b.id);
+            if (todo?.changed) assistant.todos = todos.list;
+            assistant.steps!.push(todo ? todo.step : `🔧 ${describeToolUse(b.name, b.input)}`);
           } else if (b.type === "thinking" && b.thinking) {
             const t = summarize(b.thinking);
             if (t) assistant.steps!.push(`💭 ${t}`);

@@ -1,0 +1,144 @@
+/* ---------- 任务清单：输入框上方的进度 ---------- */
+
+.todo-bar {
+  margin: 0 14px 8px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+.todo-bar[hidden] {
+  display: none;
+}
+
+.todo-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 4px;
+}
+
+.todo-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  text-align: left;
+}
+
+.todo-toggle:hover {
+  background: var(--bg-soft);
+}
+
+.todo-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.todo-count {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-toggle .chev {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+  transition: transform 0.15s;
+}
+
+.todo-toggle .chev.open {
+  transform: rotate(90deg);
+}
+
+.todo-close {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  color: var(--fg-faint);
+}
+
+.todo-close svg {
+  width: 15px;
+  height: 15px;
+}
+
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 14px 10px;
+  max-height: 30vh;
+  overflow: auto;
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 4px 0;
+  line-height: 1.5;
+}
+
+.todo-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 圆圈：没开始是空心，正在做是带点的，做完了是实心打勾 */
+.todo-mark {
+  position: relative;
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin-top: 3px;
+  border-radius: 50%;
+  border: 1.5px solid var(--fg-faint);
+}
+
+.todo-item.in_progress .todo-mark {
+  border-color: var(--fg);
+}
+
+.todo-item.in_progress .todo-mark::after {
+  content: "";
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 50%;
+  background: var(--fg);
+}
+
+.todo-item.in_progress .todo-text {
+  font-weight: 500;
+}
+
+.todo-item.completed .todo-mark {
+  border-color: var(--fg);
+  background: var(--fg);
+}
+
+.todo-item.completed .todo-mark::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1.5px;
+  width: 3.5px;
+  height: 7px;
+  border: solid var(--bg);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.todo-item.completed .todo-text {
+  color: var(--fg-faint);
+  text-decoration: line-through;
+}

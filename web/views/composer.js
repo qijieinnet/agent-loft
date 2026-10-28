@@ -6,6 +6,7 @@ import { agentLabel, renderSidebar } from "./sidebar.js";
 import { draftPick, renderContext, renderTopbar, sentKeys, updateCtxVisibility } from "./topbar.js";
 import { addItem, openConversation, openLightbox, renderEmpty, scrollToBottom } from "./messages.js";
 import { renderScheduled } from "./schedule.js";
+import { renderTodos } from "./todos.js";
 import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
 import { attachMention } from "./mention.js";
@@ -88,6 +89,7 @@ export function renderComposer() {
   ui.ctxRing = h("span", { class: "ctx-ring-slot" });
   ui.chips = h("div", { class: "chips" });
   ui.schedBar = h("div", { class: "sched-bar", hidden: true });
+  ui.todoBar = h("div", { class: "todo-bar", hidden: true });
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
   ui.mentionMenu = h("div", { class: "slash-menu", hidden: true });
   ui.mention = attachMention(ui.input, ui.mentionMenu, {
@@ -127,12 +129,13 @@ export function renderComposer() {
   );
   fill(ui.composerWrap,
     ui.toBottom,
-    h("div", { class: "composer-box" }, ui.schedBar, ui.ctxBar, ui.composer),
+    h("div", { class: "composer-box" }, ui.todoBar, ui.schedBar, ui.ctxBar, ui.composer),
   );
   ui.input.addEventListener("input", updateSendBtn);
   updateSendBtn();
   renderContext();
   renderScheduled();
+  renderTodos();
 }
 
 export function autosize() {
@@ -162,6 +165,7 @@ export function updateSendBtn() {
 export function setBusy(busy) {
   S.busy = !!busy;
   updateSendBtn();
+  renderTodos();
 }
 
 export function renderChips() {

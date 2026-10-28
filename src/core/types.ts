@@ -74,6 +74,9 @@ export type InteractionHost = (spec: InteractionSpec) => Promise<InteractionOutc
 
 export type StepKind = "thinking" | "tool" | "note" | "warning";
 
+/** agent 自己列的任务清单里的一项（Claude 的 TodoWrite / TaskCreate，Codex 的计划）。activeForm：进行中时显示的说法 */
+export type TodoItem = { content: string; status: "pending" | "in_progress" | "completed"; activeForm?: string };
+
 export type TurnResult = {
   text: string;
   durationMs: number;
@@ -100,6 +103,8 @@ export type AgentEvents = {
   onDropped?: (n: number) => void;
   /** 上下文窗口占用更新了（一般在每轮结束后） */
   onContext?: (ctx: ContextUsage) => void;
+  /** 任务清单变了，给的是改完之后的整份 */
+  onTodos?: (todos: TodoItem[]) => void;
   /**
    * token 用量更新了。cumulative = 报的是这个会话到目前的累计值（Claude，每轮结束报一次）；
    * 否则是新增的量（Codex，每次模型请求报一次），由核心累加
@@ -168,6 +173,8 @@ export type HistoryMessage = {
   question?: { id: string; title: string; questions: QuestionSpec[]; selections: number[][]; freeText: Record<number, string>; skipped?: boolean };
   /** 助手这一条之前的过程摘要 */
   steps?: string[];
+  /** 助手消息：这一条里改过任务清单的话，改完之后的整份 */
+  todos?: TodoItem[];
   /** 毫秒时间戳；助手消息是这一轮结束的时间 */
   ts?: number;
   /** 助手消息：从这条回复处分叉用的位置（见 AgentDriver.forkAt） */

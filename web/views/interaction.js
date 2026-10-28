@@ -1,4 +1,4 @@
-import { h, toast } from "../lib/dom.js";
+import { h, icon, isTouch, toast } from "../lib/dom.js";
 import { renderMarkdown } from "../lib/markdown.js";
 import { desktop, isAdmin, S } from "../state.js";
 import { WS } from "../lib/ws.js";
@@ -106,32 +106,43 @@ export function renderInteraction(item) {
           ),
     );
   }
-  // 提问
+  // 提问：选项是一排按钮，第一个（Claude 会把推荐的放第一个）是黑色主按钮，⌘↵ 直接选它
   const needsSubmit = spec.questions.some((q) => q.multiSelect);
+  const shortcut = settled ? null : primaryAction(ix);
   return h(
     "div",
     { class: `ix-card ask${settled ? " settled" : ""}` },
-    h("div", { class: "ix-title" }, settled ? "" : "❓", spec.title),
+    settled
+      ? null
+      : h("button", { class: "icon-btn ix-close", title: "跳过，让 Claude 按它的判断继续", onclick: () => ixOp(ix.id, "skip") }, icon("x")),
     spec.questions.map((q, qi) => {
       const picked = ix.selections[qi] ?? [];
       const free = ix.freeText?.[qi];
+      // 单选还没答：第一个是主按钮；答过了就只有选中的那个是黑的
+      const lead = !settled && !q.multiSelect && picked.length === 0 && !free ? 0 : -1;
       return h(
         "div",
         { class: "ix-q" },
-        h("div", { class: "q-head" }, h("b", {}, q.header), q.question, q.multiSelect ? "（可多选）" : ""),
-        q.options.map((opt, oi) => {
-          const on = picked.includes(oi);
-          return h(
-            "button",
-            {
-              class: `opt${on ? " on" : ""}`,
-              disabled: !!settled,
-              onclick: () => ixOp(ix.id, "select", { q: qi, o: oi, v: q.multiSelect ? !on : true }),
-            },
-            `${on ? "✓ " : ""}${opt.label}`,
-            opt.description ? h("small", {}, opt.description) : null,
-          );
-        }),
+        q.header ? h("div", { class: "q-header" }, q.header) : null,
+        h("div", { class: "q-text" }, q.question, q.multiSelect ? h("span", { class: "q-hint" }, "（可多选）") : null),
+        h(
+          "div",
+          // 带说明的选项竖着排，一行一个，说明才放得下
+          { class: `q-opts${q.options.some((o) => o.description) ? " stack" : ""}` },
+          q.options.map((opt, oi) => {
+            const on = picked.includes(oi);
+            return h(
+              "button",
+              {
+                class: `opt${on ? " on" : oi === lead ? " primary" : ""}`,
+                disabled: !!settled,
+                onclick: () => ixOp(ix.id, "select", { q: qi, o: oi, v: q.multiSelect ? !on : true }),
+              },
+              h("span", { class: "opt-label" }, q.multiSelect && on ? "✓ " : "", opt.label, shortcut?.q === qi && shortcut.o === oi ? kbdHint() : null),
+              opt.description ? h("small", {}, opt.description) : null,
+            );
+          }),
+        ),
         free ? h("div", { class: "ix-meta" }, `→ ${free}`) : null,
       );
     }),
@@ -140,9 +151,44 @@ export function renderInteraction(item) {
       : h(
           "div",
           { class: "ix-buttons" },
-          needsSubmit ? h("button", { class: "btn accent", onclick: () => ixOp(ix.id, "submit") }, "提交") : null,
-          h("button", { class: "btn", onclick: () => ixOp(ix.id, "skip") }, "跳过"),
+          needsSubmit ? h("button", { class: "opt primary", onclick: () => ixOp(ix.id, "submit") }, h("span", { class: "opt-label" }, "提交", shortcut?.submit ? kbdHint() : null)) : null,
           h("span", { class: "ix-meta" }, "都不合适？直接在下面输入框里回答"),
         ),
   );
 }
+
+// ---------- ⌘↵ / Ctrl+↵：选主按钮 ----------
+
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+
+function kbdHint() {
+  if (isTouch) return null;
+  return h("span", { class: "kbd-hint" }, h("kbd", {}, isMac ? "⌘" : "Ctrl"), h("kbd", {}, "↵"));
+}
+
+/** 这张卡按 ⌘↵ 做什么：有多选就是提交，否则选第一个还没答的问题的第一个选项 */
+function primaryAction(ix) {
+  const qs = ix.spec.questions;
+  if (qs.some((q) => q.multiSelect)) return { submit: true };
+  const qi = qs.findIndex((_, i) => !(ix.selections[i]?.length) && !ix.freeText?.[i]);
+  return qi < 0 ? null : { q: qi, o: 0 };
+}
+
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.isComposing) return;
+    // 正在输入框里打字：那是要发消息（直接在输入框里回答也算作答），不抢
+    const el = document.activeElement;
+    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable) && el.value?.trim()) return;
+    // 当前对话里最新的一张没处理的提问卡
+    const item = S.items.findLast((i) => i.type === "ix" && i.ix.spec.kind === "question" && !i.ix.settled);
+    const act = item && primaryAction(item.ix);
+    if (!act) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (act.submit) void ixOp(item.ix.id, "submit");
+    else void ixOp(item.ix.id, "select", { q: act.q, o: act.o, v: true });
+  },
+  true,
+);

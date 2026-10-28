@@ -791,6 +791,20 @@ export class CodexSession implements AgentSession {
         this.onItem((params as ItemNotification).item, "completed");
         return;
 
+      case "turn/plan/updated": {
+        // Codex 的计划（update_plan）：每次给整份，状态叫法和 Claude 不一样
+        const plan = (params as { plan?: { step?: unknown; status?: unknown }[] }).plan;
+        if (!this.turnSeen || !Array.isArray(plan)) return;
+        const todos = plan.flatMap((p) =>
+          typeof p.step === "string"
+            ? [{ content: p.step, status: p.status === "completed" ? ("completed" as const) : p.status === "inProgress" ? ("in_progress" as const) : ("pending" as const) }]
+            : [],
+        );
+        this.events.onStep("note", `📋 更新计划（${todos.filter((t) => t.status === "completed").length}/${todos.length}）`);
+        this.events.onTodos?.(todos);
+        return;
+      }
+
       case "item/agentMessage/delta": {
         const p = params as AgentMessageDeltaNotification;
         if (!this.commentaryItems.has(p.itemId) && p.delta) this.events.onTextDelta(p.delta);
