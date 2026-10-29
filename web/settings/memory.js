@@ -59,7 +59,7 @@ export async function memoryTab(panel) {
   clearHistory.onclick = run(clearHistory, async () => {
     const sure = await confirmDialog({
       title: "清空聊天记录索引？",
-      message: "agent 将搜不到以前的聊天（对话本身不删，侧栏里照样能打开）。之后的聊天还会继续记进来。",
+      message: "侧栏的「搜索」和 agent 都将搜不到以前聊天的内容（按标题还能搜到；对话本身不删，侧栏里照样能打开）。之后的聊天还会继续记进来。",
       confirmText: "清空",
       danger: true,
     });
@@ -142,7 +142,7 @@ export async function memoryTab(panel) {
       h(
         "div",
         { class: "muted" },
-        `agent 遇到「上次说的那个……」时，可以搜你以前的聊天（只有你自己的对话，被删掉的对话不算）。${history ? `现在收录了 ${history.conversations} 段对话、${history.count} 句话。` : ""}`,
+        `agent 遇到「上次说的那个……」时，可以搜你以前的聊天（只有你自己的对话，被删掉的对话不算）。侧栏的「搜索」也用这份聊天记录索引，不开记忆也会记。${history ? `现在收录了 ${history.conversations} 段对话、${history.count} 句话。` : ""}`,
       ),
       h("div", { class: "row" }, clearHistory),
     ),

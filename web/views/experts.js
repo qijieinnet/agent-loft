@@ -44,12 +44,13 @@ export function setDraftExpert(id) {
   localStorage.setItem("aim.expert", id);
   const e = syncDraftExpert();
   if (e) localStorage.setItem("aim.agent", e.engine);
-  // 换了专家：默认工作目录跟着专家走（没设就是工作区根目录）
-  S.draftCwd = e?.cwd || null;
+  // 换了专家：默认工作目录跟着专家走（没设就是工作区根目录）；自己选过目录的就不动
+  if (!S.draftCwdPicked) S.draftCwd = e?.cwd || null;
 }
 
-/** 专家的图标：自定义专家有 emoji 就用 emoji，否则用引擎的图标 */
+/** 专家的图标：自定义专家上传了头像用头像，以前设过 emoji 的用 emoji，否则用引擎的图标 */
 export function expertIcon(e, cls = "agent-icon") {
+  if (e?.avatar) return h("span", { class: `${cls} expert-avatar` }, h("img", { src: e.avatar, alt: "", draggable: "false" }));
   if (e?.icon) return h("span", { class: `${cls} expert-emoji` }, e.icon);
   return agentIcon(e?.engine ?? e?.id, cls);
 }

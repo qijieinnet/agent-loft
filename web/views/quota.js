@@ -83,15 +83,18 @@ document.addEventListener("visibilitychange", () => {
   if (Date.now() - quotaState.at >= quotaInterval()) void loadQuota();
 });
 
-function untilText(ms) {
-  const sec = Math.floor((ms - Date.now()) / 1000);
-  if (sec <= 0) return "即将重置";
-  const d = Math.floor(sec / 86400);
-  const hh = Math.floor((sec % 86400) / 3600);
-  const mm = Math.floor((sec % 3600) / 60);
-  if (d > 0) return `${d} 天 ${hh} 小时后重置`;
-  if (hh > 0) return `${hh} 小时 ${mm} 分后重置`;
-  return `${Math.max(1, mm)} 分钟后重置`;
+/** 什么时候重置（和桌面端一样）：今天的只写时间（13:02 重置），明天的带「明天」，再往后带日期（11月3日 13:02 重置） */
+function resetText(at) {
+  if (at <= Date.now()) return "即将重置";
+  const d = new Date(at);
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - today.getTime()) / 86400_000);
+  if (days <= 0) return `${time} 重置`;
+  if (days === 1) return `明天 ${time} 重置`;
+  const year = d.getFullYear() === today.getFullYear() ? "" : `${d.getFullYear()}年`;
+  return `${year}${d.getMonth() + 1}月${d.getDate()}日 ${time} 重置`;
 }
 
 function quotaLevel(p) {
@@ -133,7 +136,7 @@ export function renderQuota() {
             { class: "qt-row" },
             h("span", { class: "qt-name" }, w.label),
             h("span", { class: `qt-pct ${quotaLevel(w.percent)}` }, `已用 ${Math.round(w.percent)}%`),
-            w.resetsAt ? h("span", { class: "qt-reset" }, untilText(w.resetsAt)) : null,
+            w.resetsAt ? h("span", { class: "qt-reset" }, resetText(w.resetsAt)) : null,
           ),
         ),
         q.extra ? h("div", { class: "qt-extra" }, q.extra) : null,

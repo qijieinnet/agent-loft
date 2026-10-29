@@ -2,7 +2,8 @@
 //
 // 三件事：
 //   1. 录入（startHistoryCapture）：hub 的事件流里，有主人的对话的每句话（用户说的、agent 的最终回复）
-//      记进主人的聊天记录索引（chat-history.ts）。主人关了记忆就不记。
+//      记进主人的聊天记录索引（chat-history.ts）。不管开没开记忆都记：侧栏的「搜索」要搜聊天内容。
+//      没开记忆（或者关了整理）时记进来的话随即标成整理过了，之后再打开记忆也不会一下子整理一大堆旧的。
 //   2. 回填（backfill）：第一次用时，把已有对话从 agent 的记录里读一遍进索引，每人只做一次。
 //      回填进来的只供搜索，不拿去整理 —— 一次整理几百段旧对话太费额度。
 //   3. 整理：把上次整理之后新说的话交给模型（用户在记忆设置里选 agent 和模型，默认最省的），
@@ -51,11 +52,6 @@ const MAX_CHANGES = 5;
 
 let capturing = false;
 
-/** 记不记这个用户的聊天：开着记忆，并且整理和「参考以前的聊天」至少开了一个 */
-function wants(memory: UserMemory): boolean {
-  return memory.enabled && (memory.curate.when !== "off" || memory.chatHistory);
-}
-
 export function startHistoryCapture(): void {
   if (capturing) return;
   capturing = true;
@@ -66,7 +62,7 @@ export function startHistoryCapture(): void {
       const conv = hub.conversation(env.key);
       if (!conv || conv.hidden) return;
       const owner = memoryOwnerOf(conv);
-      if (!owner || !wants(readMemory(owner))) return;
+      if (!owner) return;
       const text =
         ev.type === "user"
           ? [ev.text, ev.attachments.length ? `（附件：${ev.attachments.join("、")}）` : ""].filter(Boolean).join("\n")
@@ -396,11 +392,11 @@ export function sweepOnce(opts: { now?: number } = {}): Promise<void> {
     const now = opts.now ?? Date.now();
     for (const user of activeUsers()) {
       try {
+        // 回填不看记忆开关：侧栏搜索也要搜以前的聊天
+        if (!readMeta(user.id).backfilled) await backfill(user.id);
         const memory = readMemory(user.id);
-        if (!memory.enabled) continue;
-        if (memory.chatHistory && !readMeta(user.id).backfilled) await backfill(user.id);
         const c = memory.curate;
-        if (c.when === "off") {
+        if (!memory.enabled || c.when === "off") {
           // 不整理：聊过的不攒着，之后再打开也不会一下子整理一大堆旧的
           for (const p of pendingConversations(user.id, 0, now)) markExtracted(user.id, p.key, p.last);
         } else if (c.when === "idle") {

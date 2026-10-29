@@ -42,7 +42,7 @@ import {
 } from "../../core/memory.js";
 import { createLinkCode, listLinks, unlink, unlinkUser } from "../../core/feishu-links.js";
 import { purgeUserData } from "../../core/personal.js";
-import { purgeHistory, readMeta, readRecords, writeMeta } from "../../core/chat-history.js";
+import { purgeHistory, readMeta, readRecords, searchHistory, writeMeta } from "../../core/chat-history.js";
 import { curateNow, pendingCount } from "../../core/memory-curator.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
@@ -67,7 +67,7 @@ import {
   takeAttempt,
 } from "./auth.js";
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
-import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor } from "./conv-pages.js";
+import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor, searchConvs } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleSkillsApi } from "./skills-api.js";
@@ -757,6 +757,29 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const list = scope === "recent" ? all.filter(inRecent) : all.filter(inDir(url.searchParams.get("dir") ?? ""));
     const before = parseCursor(url.searchParams.get("at"), url.searchParams.get("key"));
     sendJson(res, 200, pageOf(list, before, clampLimit(url.searchParams.get("limit"), 10)));
+    return;
+  }
+  // 搜索会话（侧栏「搜索」弹窗）：标题、目录名，再搜聊天内容（聊天记录索引，见 chat-history.ts）。
+  // expert：只看这个专家的对话（内置的就是 claude / codex）
+  if (p === "/api/conversations/search" && method === "GET") {
+    const q = (url.searchParams.get("q") ?? "").slice(0, 200);
+    const expert = url.searchParams.get("expert");
+    const all = hub.list(visible).filter((c) => !c.hidden && (!expert || c.expert.id === expert));
+    const keys = new Set(all.map((c) => c.key));
+    let content: { key: string; text: string }[] = [];
+    if (q.trim()) {
+      try {
+        // 一条对话可能命中很多句，多要一些，保证别的对话也排得上
+        content = searchHistory(user.id, q, { limit: 300, skip: (k) => !keys.has(k) }).map((hit) => {
+          const lower = q.trim().toLowerCase();
+          const text = [hit.user, hit.assistant].find((t) => t?.toLowerCase().includes(lower)) ?? hit.user ?? hit.assistant ?? "";
+          return { key: hit.key, text };
+        });
+      } catch {
+        // 没有索引、读不了：只按标题搜
+      }
+    }
+    sendJson(res, 200, { results: searchConvs(all, q, content) });
     return;
   }
   if (p === "/api/conversations" && method === "GET") {

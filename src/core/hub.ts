@@ -49,7 +49,7 @@ import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry
 import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
 import { expertSystemPrompt, searchLabel, stripContext } from "./expert-prompt.js";
-import { expertEvents, expertRuntime, getExpert, isBuiltin, listExperts, type ExpertRuntime } from "./experts.js";
+import { avatarUrl, expertEvents, expertRuntime, getExpert, isBuiltin, listExperts, type ExpertRuntime } from "./experts.js";
 import { mcpEvents } from "./mcp.js";
 import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
 import { skillEvents } from "./skills.js";
@@ -181,6 +181,8 @@ export type ExpertBadge = {
   id: string;
   name: string;
   icon?: string;
+  /** 头像地址（/api/experts/<id>/avatar?v=...） */
+  avatar?: string;
   color?: string;
   builtin?: true;
   /** 自定义专家的权限（只能联网的不显示工作目录） */
@@ -400,6 +402,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       name: e.name,
       access: e.access,
       ...(e.icon ? { icon: e.icon } : {}),
+      ...(e.avatar ? { avatar: avatarUrl(e) } : {}),
       ...(e.color ? { color: e.color } : {}),
       ...(e.welcome ? { welcome: e.welcome } : {}),
       ...(e.quickPrompts.length ? { quickPrompts: e.quickPrompts } : {}),

@@ -155,16 +155,146 @@
   gap: 6px;
 }
 
+/* 标题前的专家头像：点一下 / 鼠标停上去弹出专家信息卡 */
 .top-title .conv-expert-icon {
   display: inline-grid;
+  place-items: center;
   flex-shrink: 0;
-  margin-left: 4px;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border-radius: 50%;
   color: var(--fg-soft);
 }
 
-.top-title .conv-expert-icon svg {
-  width: 16px;
-  height: 16px;
+.top-title .conv-expert-icon:hover {
+  background: var(--bg-hover);
+}
+
+.top-title .conv-expert-icon svg,
+.top-title .conv-expert-icon img {
+  width: 18px;
+  height: 18px;
+}
+
+.top-title .conv-expert-icon .expert-emoji {
+  font-size: 16px;
+  width: auto;
+}
+
+/* ---- 专家信息卡 ---- */
+.popover.expert-card {
+  width: 300px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ec-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+}
+
+.ec-avatar svg {
+  width: 24px;
+  height: 24px;
+}
+
+.ec-avatar img {
+  width: 40px;
+  height: 40px;
+}
+
+.ec-avatar.expert-emoji {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.ec-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ec-name b {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ec-sub {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.ec-desc {
+  font-size: 13px;
+  color: var(--fg-soft);
+  line-height: 1.5;
+}
+
+.ec-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.ec-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.ec-label {
+  flex: 0 0 56px;
+  color: var(--fg-faint);
+}
+
+.ec-value {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ec-cwd {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.ec-link {
+  flex-shrink: 0;
+  padding: 0;
+  line-height: inherit;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.ec-link:hover {
+  text-decoration: underline;
 }
 
 .top-title .conv-name {

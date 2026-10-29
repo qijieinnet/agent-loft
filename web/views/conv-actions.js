@@ -249,6 +249,7 @@ export async function changeCwd(pick) {
     }
     if (draft) {
       S.draftCwd = listing.path === listing.root ? null : listing.path;
+      S.draftCwdPicked = true;
       if (!S.current) renderEmpty();
       return;
     }

@@ -152,7 +152,7 @@ button.conv-group:hover {
 }
 
 .sub-more .conv-more {
-  padding-left: 36px;
+  padding-left: 10px;
 }
 
 .conv-item .lead {
@@ -161,17 +161,43 @@ button.conv-group:hover {
   opacity: 0.85;
 }
 
-.conv-item.sub {
-  padding-left: 36px;
-}
-
 .proj-row {
   position: relative;
   margin-top: 2px;
 }
 
 .conv-item.proj {
-  gap: 10px;
+  color: var(--fg-soft);
+}
+
+.conv-item.proj:hover {
+  color: var(--fg);
+}
+
+/* 标题后面的小三角：朝下 = 展开，朝右 = 折叠 */
+.conv-item .caret {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  /* 点击区域大一点，视觉上不占地方 */
+  padding: 4px;
+  margin: -4px -4px -4px -2px;
+  border-radius: 4px;
+  color: var(--fg-faint);
+  transition: transform 0.15s;
+}
+
+.conv-item .caret svg {
+  width: 10px;
+  height: 10px;
+}
+
+.conv-item .caret.folded {
+  transform: rotate(-90deg);
+}
+
+.conv-item .caret[role="button"]:hover {
+  color: var(--fg);
 }
 
 /* 拖动目录排序：被拖的行变淡，落点处画一条横线 */
@@ -200,17 +226,6 @@ button.conv-group:hover {
   bottom: -2px;
 }
 
-.proj-icon {
-  display: inline-grid;
-  color: var(--fg-soft);
-  flex-shrink: 0;
-}
-
-.proj-icon svg {
-  width: 18px;
-  height: 18px;
-}
-
 /* 目录行 hover 时右侧出现「在此目录开新对话」 */
 .proj-new {
   position: absolute;
@@ -230,8 +245,9 @@ button.conv-group:hover {
   height: 15px;
 }
 
+/* 行本身已经是 hover 底色，加号的再深一点才看得出来 */
 .proj-new:hover {
-  background: var(--bg-soft);
+  background: color-mix(in srgb, var(--fg) 8%, var(--bg-hover));
   color: var(--fg);
 }
 
@@ -239,8 +255,11 @@ button.conv-group:hover {
   display: grid;
 }
 
+/* 鼠标挪到右边的加号上时，整行的 hover 底色还留着 */
 .proj-row:hover .conv-item.proj {
   padding-right: 36px;
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 @media (pointer: coarse) {
@@ -270,15 +289,28 @@ button.conv-group:hover {
 }
 
 .conv-item .title {
-  flex: 1;
+  /* 不撑满：三角紧跟在标题后面，状态点靠右（见下面的 margin-left: auto） */
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 跑马灯滚动时去掉省略号 */
-.conv-item .title.marquee {
-  text-overflow: clip;
+/* 放不下：尾巴淡出，代替省略号（.clip 由 sidebar.js 量过后加） */
+.conv-item .title.clip {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+
+/* 跑马灯滚动时两头都淡出 */
+.conv-item .title.clip.marquee {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+}
+
+.conv-item > .dot,
+.conv-item > .conv-spin {
+  margin-left: auto;
 }
 
 .conv-item .badge {
@@ -529,17 +561,11 @@ button.conv-group:hover {
 }
 
 /*
- * 分叉树：分叉对话缩进挂在主对话下面，虚线连起来。
- * 竖线从主对话标题下方往下走，每个分叉一个拐角；最后一个分叉的竖线只画到它的拐角为止。
+ * 分叉树：分叉对话缩进挂在主对话下面，左边一条细实线，最后一条拐个圆角接过去。
  * 行高约 34px（.conv-item 上下 7px + 一行字），拐角在 17px 处。
  */
 .fork-children {
-  margin-left: 16px;
-}
-
-/* 「项目」里的会话行本身缩进 36px，竖线跟着右移 */
-.fork-children.in-proj {
-  margin-left: 42px;
+  margin-left: 18px;
 }
 
 /* 分叉的分叉：竖线对齐上一层分叉的标题 */
@@ -547,8 +573,7 @@ button.conv-group:hover {
   margin-left: 14px;
 }
 
-.fork-children .conv-item,
-.fork-children .conv-item.sub {
+.fork-children .conv-item {
   padding-left: 8px;
 }
 
@@ -557,38 +582,35 @@ button.conv-group:hover {
   padding-left: 14px;
 }
 
-.fork-node::before,
-.fork-node::after {
+.fork-node::before {
   content: "";
   position: absolute;
   left: 0;
-  border: 0 dashed var(--fg-faint);
-  opacity: 0.7;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid color-mix(in srgb, var(--fg-faint) 45%, transparent);
   pointer-events: none;
 }
 
-.fork-node::before {
-  top: 0;
-  bottom: 0;
-  border-left-width: 1px;
-}
-
-/* 第一个分叉的竖线往上接到主对话那一行 */
-.fork-node:first-child::before {
-  top: -6px;
-}
-
+/* 最后一条：竖线到行中间，圆角拐向标题 */
 .fork-node:last-child::before {
   bottom: auto;
-  height: 17px;
+  height: 15px;
+  width: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg-faint) 45%, transparent);
+  border-bottom-left-radius: 8px;
 }
 
-.fork-node:first-child:last-child::before {
-  height: 23px;
+/* 折叠后的「N 个嵌套会话」 */
+.conv-item.fork-more {
+  color: var(--fg-soft);
 }
 
-.fork-node::after {
-  top: 17px;
-  width: 10px;
-  border-top-width: 1px;
+.conv-item.fork-more:hover {
+  color: var(--fg);
+}
+
+/* 「搜索」和下面的「定时任务」挨着，间距和「新聊天」到它一样 */
+.side-nav.search-nav {
+  margin-bottom: 0;
 }

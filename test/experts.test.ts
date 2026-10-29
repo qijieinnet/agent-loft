@@ -63,6 +63,25 @@ test("专家：校验、改了加版本号、不能换引擎、按人隔离", ()
   assert.equal(experts.createExpert(alice.id, { name: "聊", engine: "claude", access: "web", cwd: "proj" }).cwd, undefined);
 });
 
+test("头像：只收图片 data URL，没传沿用、传空去掉；地址带版本号", () => {
+  const png = `data:image/png;base64,${Buffer.from("fake-png").toString("base64")}`;
+  const e = experts.createExpert(alice.id, { name: "有头像的", engine: "claude", access: "web", avatar: png });
+  assert.equal(e.avatar, png);
+  assert.equal(experts.avatarUrl(e), `/api/experts/${e.id}/avatar?v=1`);
+  assert.deepEqual(experts.avatarImage(e), { type: "image/png", data: Buffer.from("fake-png") });
+  assert.throws(() => experts.createExpert(alice.id, { name: "x", engine: "claude", access: "web", avatar: "data:text/html;base64,PGI+" }), /头像只能是/);
+  assert.throws(() => experts.createExpert(alice.id, { name: "x", engine: "claude", access: "web", avatar: "https://example.com/a.png" }), /头像只能是/);
+  // 改别的不传头像：沿用
+  const renamed = experts.updateExpert(alice.id, e.id, { name: "改了名" });
+  assert.equal(renamed.avatar, png);
+  assert.equal(experts.avatarUrl(renamed), `/api/experts/${e.id}/avatar?v=2`);
+  // 传空：去掉
+  const cleared = experts.updateExpert(alice.id, e.id, { avatar: "" });
+  assert.equal(cleared.avatar, undefined);
+  assert.equal(experts.avatarUrl(cleared), "");
+  experts.deleteExpert(alice.id, e.id);
+});
+
 test("子智能体：只能是自己的 Claude 专家、权限不超过主专家；删掉后从别人的列表里去掉", () => {
   const reader = experts.createExpert(alice.id, { name: "Doc Reader", engine: "claude", access: "read", description: "读文档" });
   const runner = experts.createExpert(alice.id, { name: "跑命令", engine: "claude", access: "exec" });

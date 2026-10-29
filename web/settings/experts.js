@@ -1,20 +1,24 @@
-import { fill, h, icon, toast } from "../lib/dom.js";
+import { agentIcon, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 import { S } from "../state.js";
-import { reloadExperts } from "../views/experts.js";
+import { expertIcon, reloadExperts } from "../views/experts.js";
+import { agentCatalog } from "../views/topbar.js";
 
 // ---------- 专家（设置里的一页） ----------
 // 专家 = 一份配置：引擎、提示词、权限、技能、MCP、子智能体。新建对话、定时任务时选，对话中途不能换。
 // 内置的 Claude Code / Codex 不在这里改（就是 agent 原装的样子）。
 
 const ENGINE_LABEL = { claude: "Claude", codex: "Codex" };
-const ACCESS_HINT = {
-  web: "只能联网搜索、读网页。不碰这台机器上的文件，不弹授权，每轮开销最小（以前的聊天模式就是这样）",
-  read: "能读工作目录里的文件，不能改、不能跑命令",
-  edit: "能读写工作目录里的文件，不能跑命令（Codex 改文件也要跑命令，选这一档时只能改工作目录里的）",
-  exec: "能读写文件、执行命令。跑命令就等于能改任何文件；需要授权时会弹卡",
-};
+/** 权限的几项勾选。读文件 → 改文件 → 跑命令一级包含一级（跑命令就等于能改任何文件） */
+const PERMS = [
+  { id: "webSearch", label: "联网搜索", hint: "用搜索引擎查资料" },
+  { id: "webFetch", label: "读网页", hint: "打开网址读内容", claudeOnly: true },
+  { id: "read", label: "读文件", hint: "读工作目录里的文件，不能改" },
+  { id: "edit", label: "改文件", hint: "读写工作目录里的文件，不能跑命令（Codex 改文件也要跑命令，只能改工作目录里的）" },
+  { id: "exec", label: "跑命令", hint: "执行命令，等于能改任何文件；需要授权时会弹卡" },
+];
+const FILE_LEVELS = ["read", "edit", "exec"];
 
 export async function expertsTab(panel) {
   const box = h("div", { class: "experts-page" }, h("span", { class: "spinner" }));
@@ -34,14 +38,7 @@ export async function expertsTab(panel) {
 }
 
 function render(box, data, reload) {
-  const add = h("button", { class: "btn primary" }, icon("plus"), "新建");
-  add.onclick = () =>
-    data.templates.length
-      ? showMenu(add, [
-          { label: "空白专家", onclick: () => openEditor(data, null, reload) },
-          ...data.templates.map((t) => ({ label: `从模板：${t.label}`, onclick: () => openEditor(data, null, reload, t.expert) })),
-        ])
-      : openEditor(data, null, reload);
+  const add = h("button", { class: "btn primary", onclick: () => openEditor(data, null, reload) }, icon("plus"), "新建");
   fill(
     box,
     h(
@@ -61,13 +58,13 @@ function render(box, data, reload) {
         h(
           "div",
           { class: "task-card skill-card" },
-          h("div", { class: "task-top" }, h("span", { class: "task-title" }, b.name), h("span", { class: "badge" }, "内置")),
+          h("div", { class: "task-top" }, h("span", { class: "task-title" }, agentIcon(b.engine, "expert-card-icon"), b.name), h("span", { class: "badge" }, "内置")),
           h("div", { class: "task-prompt" }, `${b.name} 原装的样子：原装提示词、机器上的技能和 MCP（成员只有自己的技能）、所有工具。`),
         ),
       ),
       data.experts.map((e) => expertCard(data, e, reload)),
     ),
-    data.experts.length ? null : h("div", { class: "tasks-empty" }, h("div", { class: "t" }, "还没有自己的专家"), h("div", { class: "s" }, "点「新建」从空白或模板开始。想要以前聊天模式的效果，选「从模板：聊天助手」。")),
+    data.experts.length ? null : h("div", { class: "tasks-empty" }, h("div", { class: "t" }, "还没有自己的专家"), h("div", { class: "s" }, "点「新建」建一个。")),
   );
 }
 
@@ -93,7 +90,7 @@ function expertCard(data, e, reload) {
     h(
       "div",
       { class: "task-top" },
-      h("button", { class: "task-title skill-name", title: "编辑", onclick: () => openEditor(data, e, reload) }, e.icon ? `${e.icon} ${e.name}` : e.name),
+      h("button", { class: "task-title skill-name", title: "编辑", onclick: () => openEditor(data, e, reload) }, expertIcon(e, "expert-card-icon"), e.name),
       more,
     ),
     h("div", { class: "task-meta" }, h("span", {}, ENGINE_LABEL[e.engine]), h("span", {}, access), e.model ? h("span", {}, e.model) : null, extras.map((x) => h("span", {}, x))),
@@ -139,15 +136,14 @@ function checkList(items, picked, empty) {
 function openEditor(data, e, reload, preset) {
   const src = e ?? preset ?? {};
   const name = h("input", { value: src.name ?? "", maxlength: "40", placeholder: "比如：证券观察员" });
-  const emoji = h("input", { value: src.icon ?? "", maxlength: "8", class: "narrow", placeholder: "🤖" });
+  const avatar = avatarPicker(src, () => engine.value, !e);
   const desc = h("input", { value: src.description ?? "", maxlength: "500", placeholder: "一句话说它是干什么的（选专家时、当子智能体时都看这句）" });
   const engine = h(
     "select",
     { disabled: !!e },
     data.engines.map((id) => h("option", { value: id, selected: id === (src.engine ?? data.engines[0]) }, ENGINE_LABEL[id] ?? id)),
   );
-  const model = h("input", { value: src.model ?? "", placeholder: "留空用默认模型", spellcheck: "false" });
-  const effort = h("input", { value: src.effort ?? "", placeholder: "留空用默认", class: "narrow", spellcheck: "false" });
+  const models = modelPicker(src);
   const prompt = h("textarea", { rows: 10, class: "skill-body-input", maxlength: "20000", placeholder: "人设、规则、输出格式。比如：每个数字都必须来自实时查询，查不到就说查不到……" });
   prompt.value = src.prompt ?? "";
   const basePrompt = h(
@@ -156,11 +152,8 @@ function openEditor(data, e, reload, preset) {
     h("option", { value: "lean", selected: (src.basePrompt ?? "lean") === "lean" }, "只用上面的提示词（省 token，推荐）"),
     h("option", { value: "claude_code", selected: src.basePrompt === "claude_code" }, "追加在 Claude Code 原装提示词后面（写代码、干活更稳，每轮多约 1.6 万 token）"),
   );
-  const access = h("select", {}, data.access.map((a) => h("option", { value: a.id, selected: a.id === (src.access ?? "web") }, a.label)));
-  const accessHint = h("small", {});
+  const perms = permChecks(src);
   const cwd = h("input", { value: src.cwd ?? "", placeholder: `留空就是工作区根目录（${S.workspaceRoot ?? ""}）`, spellcheck: "false" });
-  const webSearch = h("input", { type: "checkbox", checked: src.webSearch !== false });
-  const webFetch = h("input", { type: "checkbox", checked: src.webFetch !== false });
   const memory = h("input", { type: "checkbox", checked: src.memory !== false });
   const welcome = h("input", { value: src.welcome ?? "", maxlength: "500", placeholder: "新对话页上的那句话，比如：想了解哪只股票？" });
   const quick = h("textarea", { rows: 4, placeholder: "一行一个，新对话页上点一下就填进输入框。可以写成「标题｜提示词」，提示词里的 ___ 是要用户填的空" });
@@ -188,37 +181,34 @@ function openEditor(data, e, reload, preset) {
     const keepSubs = subs.value();
     // 子智能体只有 Claude：自己的 Claude 专家，不能是自己
     subs = checkList(
-      data.experts.filter((x) => x.engine === "claude" && x.id !== e?.id).map((x) => ({ id: x.id, label: x.icon ? `${x.icon} ${x.name}` : x.name, hint: x.description })),
+      data.experts.filter((x) => x.engine === "claude" && x.id !== e?.id).map((x) => ({ id: x.id, label: !x.avatar && x.icon ? `${x.icon} ${x.name}` : x.name, hint: x.description })),
       keepSubs,
       "还没有别的 Claude 专家可以当子智能体",
     );
     fill(subBox, subs.el);
     subField.hidden = eng !== "claude";
     baseField.hidden = eng !== "claude";
-    fetchLabel.hidden = eng !== "claude";
+    perms.setEngine(eng);
+    avatar.refresh();
+    void models.load(eng);
   };
-  const sync = () => {
-    accessHint.textContent = ACCESS_HINT[access.value] ?? "";
-    cwdField.hidden = access.value === "web";
-  };
-  const fetchLabel = h("label", { class: "check-item" }, webFetch, h("span", {}, "读网页"));
+  const sync = () => (cwdField.hidden = perms.access() === "web");
   const cwdField = field("默认工作目录", cwd, "新建对话、定时任务时默认在这个目录里（可以再改）。相对路径按工作区根目录算");
   const baseField = field("基础提示词", basePrompt);
   const subField = field("子智能体", subBox, "主专家可以把子任务派给它们（Agent 工具）。子智能体的权限不能超过主专家，只支持 Claude 专家");
   engine.onchange = renderEngineParts;
-  access.onchange = sync;
+  perms.onchange = sync;
 
   const body = h(
     "div",
     { class: "modal-body task-form expert-form" },
-    h("div", { class: "row-fields" }, field("名字", name), field("图标", emoji, "一个 emoji")),
+    h("div", { class: "row-fields avatar-row" }, field("头像", avatar.el), field("名字", name)),
     field("说明", desc),
-    h("div", { class: "row-fields" }, field("引擎", engine, e ? "建好后不能换" : null), field("模型", model), field("思考程度", effort)),
+    h("div", { class: "row-fields" }, field("引擎", engine, e ? "建好后不能换" : null), field("模型", models.model), field("思考程度", models.effort)),
     field("提示词", prompt, "agent-loft 会在后面自动补上：这个专家能做什么、不能做什么，今天的日期，记忆"),
     baseField,
-    field("权限", h("div", {}, access, accessHint)),
+    field("权限", perms.el, "改文件包含读文件，跑命令包含改文件。什么都不勾就是只能聊天"),
     cwdField,
-    field("联网", h("div", { class: "check-list inline" }, h("label", { class: "check-item" }, webSearch, h("span", {}, "搜索")), fetchLabel)),
     field("技能", skills.el, "只给选中的技能；没选就不挂技能（省 token）"),
     field("MCP", mcpBox, "选中的 MCP 的工具直接可用（MCP 设了「调用前询问」的会弹授权）"),
     subField,
@@ -242,17 +232,17 @@ function openEditor(data, e, reload, preset) {
       });
     const payload = {
       name: name.value,
-      icon: emoji.value,
+      ...avatar.payload(),
       description: desc.value,
       engine: engine.value,
-      model: model.value,
-      effort: effort.value,
+      model: models.model.value,
+      effort: models.effort.value,
       prompt: prompt.value,
       basePrompt: basePrompt.value,
-      access: access.value,
+      access: perms.access(),
       cwd: cwd.value,
-      webSearch: webSearch.checked,
-      webFetch: webFetch.checked,
+      webSearch: perms.checked("webSearch"),
+      webFetch: perms.checked("webFetch"),
       skills: skills.value(),
       mcp: mcp.value(),
       subagents: engine.value === "claude" ? subs.value() : [],
@@ -272,6 +262,194 @@ function openEditor(data, e, reload, preset) {
       save.disabled = false;
       toast(err.message);
     }
+  };
+}
+
+/**
+ * 权限勾选：联网搜索、读网页、读文件、改文件、跑命令。
+ * 文件那三项一级包含一级：勾上高的，低的跟着勾上；取消低的，高的跟着取消。读网页只有 Claude 能单独开关
+ */
+function permChecks(src) {
+  const rank = FILE_LEVELS.indexOf(src.access ?? "web");
+  const boxes = new Map();
+  const api = { onchange: null };
+  const items = PERMS.map((p) => {
+    const checked = p.id === "webSearch" || p.id === "webFetch" ? src[p.id] !== false : FILE_LEVELS.indexOf(p.id) <= rank;
+    const box = h("input", { type: "checkbox", checked });
+    boxes.set(p.id, box);
+    box.onchange = () => {
+      const i = FILE_LEVELS.indexOf(p.id);
+      if (i >= 0) {
+        FILE_LEVELS.forEach((id, n) => {
+          if (box.checked && n < i) boxes.get(id).checked = true;
+          if (!box.checked && n > i) boxes.get(id).checked = false;
+        });
+      }
+      api.onchange?.();
+    };
+    const el = h("label", { class: "check-item" }, box, h("span", {}, p.label), h("small", {}, p.hint));
+    return { p, el };
+  });
+  return Object.assign(api, {
+    el: h("div", { class: "check-list perm-list" }, items.map((x) => x.el)),
+    // 藏起来的（Codex 的读网页）照旧按勾选状态存，和以前一样
+    checked: (id) => boxes.get(id).checked,
+    access: () => [...FILE_LEVELS].reverse().find((id) => boxes.get(id).checked) ?? "web",
+    setEngine: (engine) => {
+      for (const x of items) x.el.hidden = !!x.p.claudeOnly && engine !== "claude";
+    },
+  });
+}
+
+/** 头像图片缩成这么大的正方形（显示时最大 56px，留够高清屏的余量） */
+const AVATAR_PX = 128;
+
+/**
+ * 头像：点一下选图片，居中裁成正方形、缩到 128px 再上传。没传就用引擎的图标（以前设过 emoji 的还显示 emoji）。
+ * src.avatar 是已有头像的地址；isNew（复制一份）时把它读成 data URL 一起带上。
+ * payload()：没动过就不带 avatar（服务端沿用），去掉了带空字符串
+ */
+function avatarPicker(src, engineOf, isNew) {
+  let value; // undefined = 没动过；"" = 去掉；data URL = 新的
+  let shown = src.avatar || "";
+  const preview = h("button", { type: "button", class: "avatar-preview", title: "上传头像" });
+  const file = h("input", { type: "file", accept: "image/*", hidden: true });
+  const remove = h("button", { type: "button", class: "btn small" }, "去掉");
+  const refresh = () => {
+    fill(preview, shown ? h("img", { src: shown, alt: "" }) : !value && value !== "" && src.icon ? h("span", { class: "avatar-emoji" }, src.icon) : agentIcon(engineOf()));
+    remove.hidden = !shown;
+  };
+  preview.onclick = () => file.click();
+  file.onchange = async () => {
+    const f = file.files?.[0];
+    file.value = "";
+    if (!f) return;
+    try {
+      value = shown = await squareImage(f, AVATAR_PX);
+      refresh();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  remove.onclick = () => {
+    value = "";
+    shown = "";
+    refresh();
+  };
+  // 复制一份：头像也带过去（新专家还没有自己的头像地址）
+  if (src.avatar && isNew) {
+    void fetch(src.avatar)
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((b) => b && readDataUrl(b))
+      .then((url) => {
+        if (url && value === undefined) value = shown = url;
+        refresh();
+      })
+      .catch(() => {});
+  }
+  return {
+    el: h("div", { class: "avatar-field" }, preview, h("div", { class: "avatar-btns" }, h("button", { type: "button", class: "btn small", onclick: () => file.click() }, "上传"), remove), file),
+    refresh,
+    payload: () => (value === undefined ? {} : { avatar: value }),
+  };
+}
+
+function readDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error("读不了这张图片"));
+    r.readAsDataURL(blob);
+  });
+}
+
+/** 图片居中裁成正方形、缩到 size，转成 data URL（优先 WebP，浏览器不支持就是 PNG） */
+async function squareImage(f, size) {
+  if (!f.type.startsWith("image/")) throw new Error("请选一张图片");
+  const url = URL.createObjectURL(f);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("读不了这张图片"));
+      el.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = Math.min(size, side) || size;
+    canvas.getContext("2d").drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
+    const webp = canvas.toDataURL("image/webp", 0.9);
+    return webp.startsWith("data:image/webp") ? webp : canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * 模型、思考程度：下拉选，选项是引擎的模型列表（和输入框里选模型的一样）。
+ * 第一项「默认」= 不指定；已经存的值不在列表里（模型下线、手写的）也留着一项，不会被悄悄改掉
+ */
+function modelPicker(src) {
+  const model = h("select", {});
+  const effort = h("select", {});
+  let modelVal = src.model ?? "";
+  let effortVal = src.effort ?? "";
+  let list = [];
+  let engineLoaded = null;
+  const opt = (value, label, selected) => h("option", { value, selected }, label);
+  const renderEffort = () => {
+    const picked = list.find((m) => m.id === modelVal) ?? list.find((m) => m.isDefault) ?? list.find((m) => m.efforts?.length);
+    const efforts = picked?.efforts ?? [];
+    const extra = effortVal && !efforts.includes(effortVal) ? effortVal : null;
+    fill(
+      effort,
+      opt("", "默认", !effortVal),
+      efforts.map((x) => opt(x, x, x === effortVal)),
+      extra ? opt(extra, list.length ? `${extra}（不在列表里）` : extra, true) : null,
+    );
+    effort.disabled = !efforts.length && !extra;
+  };
+  const render = () => {
+    const shown = list.filter((m) => m.id !== "default");
+    const def = list.find((m) => m.isDefault) ?? list.find((m) => m.id === "default");
+    const known = !modelVal || shown.some((m) => m.id === modelVal);
+    fill(
+      model,
+      opt("", def ? `默认（${def.label || def.id}）` : "默认", !modelVal),
+      shown.map((m) => opt(m.id, m.label && m.label !== m.id ? `${m.label}（${m.id}）` : m.id, m.id === modelVal)),
+      known ? null : opt(modelVal, `${modelVal}（不在列表里）`, true),
+    );
+    renderEffort();
+  };
+  model.onchange = () => {
+    modelVal = model.value;
+    // 换了模型：原来的思考程度这个模型不支持就回到默认
+    const picked = list.find((m) => m.id === modelVal) ?? list.find((m) => m.isDefault);
+    if (effortVal && !(picked?.efforts ?? []).includes(effortVal)) effortVal = "";
+    renderEffort();
+  };
+  effort.onchange = () => (effortVal = effort.value);
+  return {
+    model,
+    effort,
+    async load(engine) {
+      if (engine === engineLoaded) return;
+      // 换了引擎（只有新建时能换）：原来选的对不上了
+      if (engineLoaded) modelVal = effortVal = "";
+      engineLoaded = engine;
+      list = [];
+      fill(model, opt(modelVal, "加载中…", true));
+      model.disabled = true;
+      renderEffort();
+      try {
+        list = await agentCatalog(engine);
+      } catch {
+        // 拿不到列表：只能选默认（已经存的值也留着）
+      }
+      if (engineLoaded !== engine) return;
+      model.disabled = false;
+      render();
+    },
   };
 }
 

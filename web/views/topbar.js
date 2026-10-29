@@ -25,8 +25,8 @@ export function renderTopbar() {
         ? h("span", { class: "conv-name" }, tasks ? "定时任务" : "远程控制")
         : c
           ? [
-              // 自定义专家的对话：标题前面挂上专家的图标
-              c.expert && !c.expert.builtin ? h("span", { class: "conv-expert-icon", title: `专家：${c.expert.name}` }, expertIcon(convExpert(c))) : null,
+              // 标题前面是专家的头像：点一下或鼠标停上去，看专家的信息和工作目录
+              expertAvatarButton(c),
               h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)),
             ]
           : null,
@@ -36,6 +36,113 @@ export function renderTopbar() {
   );
   renderContext();
   syncDesktopMenu();
+}
+
+// ---------- 顶栏的专家头像和信息卡 ----------
+
+const ACCESS_LABEL = { web: "只能联网", read: "能读文件", edit: "能改文件", exec: "能跑命令" };
+const ENGINE_LABEL = { claude: "Claude", codex: "Codex" };
+/** 鼠标停多久才弹、离开多久才收（从头像挪到卡片上的那一下不能收） */
+const HOVER_OPEN_MS = 250;
+const HOVER_CLOSE_MS = 200;
+const hoverCard = { timer: 0, pinned: false };
+
+function expertAvatarButton(c) {
+  const btn = h(
+    "button",
+    {
+      class: "conv-expert-icon",
+      "aria-label": `专家：${c.expert?.name ?? agentLabel(c.agent)}`,
+      onclick: () => {
+        clearTimeout(hoverCard.timer);
+        // 已经是悬停弹出来的：点一下就钉住，不随鼠标离开收起
+        if (ui.menu?.dataset.for === "expert-info" && !hoverCard.pinned) {
+          hoverCard.pinned = true;
+          return;
+        }
+        if (ui.menu?.dataset.for === "expert-info") return closeMenu();
+        openExpertCard(btn, c.key, true);
+      },
+      onpointerenter: (e) => {
+        if (e.pointerType !== "mouse") return;
+        clearTimeout(hoverCard.timer);
+        if (ui.menu?.dataset.for === "expert-info") return;
+        hoverCard.timer = setTimeout(() => openExpertCard(btn, c.key, false), HOVER_OPEN_MS);
+      },
+      onpointerleave: (e) => {
+        if (e.pointerType === "mouse") scheduleCardClose();
+      },
+    },
+    expertIcon(convExpert(c)),
+  );
+  return btn;
+}
+
+function scheduleCardClose() {
+  clearTimeout(hoverCard.timer);
+  hoverCard.timer = setTimeout(() => {
+    if (!hoverCard.pinned && ui.menu?.dataset.for === "expert-info") closeMenu();
+  }, HOVER_CLOSE_MS);
+}
+
+/** 专家信息卡：头像、名字、说明，引擎、模型、权限，当前工作目录（能读文件的才有） */
+function openExpertCard(anchor, key, pinned) {
+  const c = S.convs.get(key);
+  if (!c || !anchor.isConnected) return;
+  const pop = showPopover(anchor, { place: "below", align: "left" });
+  pop.dataset.for = "expert-info";
+  pop.classList.add("expert-card");
+  hoverCard.pinned = pinned;
+  pop.onpointerenter = () => clearTimeout(hoverCard.timer);
+  pop.onpointerleave = (e) => {
+    if (e.pointerType === "mouse") scheduleCardClose();
+  };
+  const badge = convExpert(c);
+  // 自己的专家：说明、联网这些在 S.experts 里（别人的专家只有徽章上那点）
+  const mine = badge.builtin ? null : S.experts.find((e) => e.id === badge.id);
+  const access = badge.builtin ? null : (mine?.access ?? badge.access);
+  const abilities = badge.builtin
+    ? "原装的样子：所有工具"
+    : [
+        mine?.webSearch !== false ? "联网搜索" : null,
+        mine?.webFetch !== false && c.agent === "claude" ? "读网页" : null,
+        access && access !== "web" ? ACCESS_LABEL[access]?.replace(/^能/, "") : null,
+      ]
+        .filter(Boolean)
+        .join("、") || "只能聊天";
+  const model = modelName(c.agent, c.runtimeModel || c.model);
+  const effort = c.runtimeEffort || c.effort;
+  const row = (label, ...value) => h("div", { class: "ec-row" }, h("span", { class: "ec-label" }, label), h("span", { class: "ec-value" }, ...value));
+  fill(
+    pop,
+    h(
+      "div",
+      { class: "ec-head" },
+      expertIcon(badge, "ec-avatar"),
+      h(
+        "div",
+        { class: "ec-name" },
+        h("b", {}, badge.name),
+        h("span", { class: "ec-sub" }, badge.builtin ? "内置专家" : badge.missing ? "这个专家已经删除了" : `自定义专家 · ${ENGINE_LABEL[c.agent] ?? c.agent}`),
+      ),
+    ),
+    mine?.description ? h("div", { class: "ec-desc" }, mine.description) : null,
+    h(
+      "div",
+      { class: "ec-rows" },
+      row("引擎", agentLabel(c.agent)),
+      row("模型", [model ?? "默认", effort ? ` · ${effort}` : ""].join("")),
+      row("能力", abilities),
+      access === "web"
+        ? null
+        : row(
+            "工作目录",
+            h("span", { class: "ec-cwd", title: c.cwd }, c.cwd),
+            h("button", { class: "ec-link", onclick: () => (closeMenu(), changeCwd()) }, "切换"),
+          ),
+    ),
+  );
+  placePopover(pop, anchor);
 }
 
 /**
@@ -195,7 +302,7 @@ export function usableAgents() {
   return usable.length ? usable : enabled;
 }
 
-/** 新对话里选专家：内置的在前，再是自己的；最下面去设置里管理 */
+/** 新对话里选专家：内置的在前，再是自己的（新建、管理在「设置 → 专家」里） */
 function pickExpertMenu(anchor) {
   if (ui.menu?.dataset.for === "expert") return closeMenu();
   const pop = showPopover(anchor, { align: "left" });
@@ -216,8 +323,6 @@ function pickExpertMenu(anchor) {
     pop,
     builtin.map(item),
     own.length ? [h("div", { class: "sep" }), h("div", { class: "pop-head" }, "我的专家"), own.map(item)] : null,
-    h("div", { class: "sep" }),
-    h("button", { class: "pop-item", onclick: () => (closeMenu(), openSettings("专家")) }, icon("gear"), h("span", { class: "grow" }, own.length ? "管理专家…" : "新建专家…")),
   );
   placePopover(pop, anchor);
 }

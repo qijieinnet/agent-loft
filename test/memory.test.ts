@@ -317,7 +317,7 @@ hub.registerDriver({
   },
 });
 
-test("录入：有主人的对话说的话进主人的索引；群聊（没主人）不进；关了记忆不进", async () => {
+test("录入：有主人的对话说的话进主人的索引；群聊（没主人）不进；关了记忆也进（搜索用），但不拿去整理", async () => {
   // 前面 purgeUserData 删过 bob 的记忆文件，回到了默认的关着
   memory.setMemoryOptions(bob.id, { enabled: true });
   history.purgeHistory(bob.id);
@@ -332,7 +332,10 @@ test("录入：有主人的对话说的话进主人的索引；群聊（没主�
   assert.ok(!history.readRecords(admin.id).some((r) => r.t === "群里的话"));
   memory.setMemoryOptions(bob.id, { enabled: false });
   hub.emitEvent("web:bob1", { type: "user", text: "关了记忆之后说的", attachments: [], origin: { channel: "web", channelId: "web" } });
-  assert.equal(history.readRecords(bob.id).length, 2);
+  assert.equal(history.readRecords(bob.id).length, 3);
+  // 关着记忆时扫一遍：记进来的都标成整理过了，之后打开记忆也不会整理这些
+  await curator.sweepOnce({ now: Date.now() + 60_000 });
+  assert.deepEqual(history.pendingConversations(bob.id, 0, Date.now() + 60_000), []);
   memory.setMemoryOptions(bob.id, { enabled: true });
 });
 

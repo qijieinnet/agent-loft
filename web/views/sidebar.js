@@ -155,21 +155,59 @@ function forkForest(convs) {
   return roots.sort((a, b) => b.at - a.at);
 }
 
-/** 画一棵分叉树：主对话一行，分叉缩进挂在下面，用虚线连起来（样式见 .fork-node） */
-function renderForkNode(node, row, cls = "") {
-  const self = row(node.c, !!node.c.forkOf && !node.parentShown);
-  if (node.kids.length === 0) return self;
+/** 整棵子树里所有分叉的 key（不含自己） */
+function descendantKeys(node) {
+  return node.kids.flatMap((k) => [k.c.key, ...descendantKeys(k)]);
+}
+
+/** 标题后面的小三角：朝下是展开，朝右是折叠。onToggle 给了就自己响应点击（不触发整行的点击） */
+function caret(folded, onToggle) {
+  return h("span", {
+    class: `caret${folded ? " folded" : ""}`,
+    html: ICON.caret,
+    role: onToggle ? "button" : null,
+    title: onToggle ? (folded ? "展开分叉" : "折叠分叉") : null,
+    onclick: onToggle
+      ? (e) => {
+          e.stopPropagation();
+          onToggle();
+        }
+      : null,
+  });
+}
+
+/**
+ * 画一棵分叉树：主对话一行（标题后面带三角），分叉缩进挂在下面，左边一条竖线，最后一条拐个圆角（样式见 .fork-node）。
+ * 折叠了就只留一行「N 个嵌套会话」。row(c, orphan, fold)
+ */
+function renderForkNode(node, row) {
+  const orphan = !!node.c.forkOf && !node.parentShown;
+  if (node.kids.length === 0) return row(node.c, orphan);
+  const key = node.c.key;
+  const folded = sideState.forkFolded.includes(key);
+  const nested = descendantKeys(node);
+  const toggle = () => toggleSide("forkFolded", key);
   return h(
     "div",
     { class: "fork-group" },
-    self,
+    row(node.c, orphan, { folded, keys: [key, ...nested], toggle }),
     h(
       "div",
-      { class: `fork-children${cls}` },
-      node.kids.map((k) => h("div", { class: "fork-node" }, renderForkNode({ ...k, parentShown: true }, row))),
+      { class: "fork-children" },
+      folded
+        ? h("div", { class: "fork-node" }, h("button", { class: "conv-item fork-more", onclick: toggle }, h("span", { class: "title" }, `${nested.length} 个嵌套会话`)))
+        : node.kids.map((k) => h("div", { class: "fork-node" }, renderForkNode({ ...k, parentShown: true }, row))),
     ),
   );
 }
+
+/** 标题放不下的行加 .clip：尾巴淡出（代替省略号）。重绘、侧栏变宽窄时重新量 */
+function markClipped() {
+  for (const el of ui.convList.querySelectorAll(".conv-item .title")) {
+    el.classList.toggle("clip", el.scrollWidth > el.clientWidth + 1);
+  }
+}
+let clipObserver = null;
 
 /** 分叉出来的对话：提示里写上从哪条来的 */
 function forkNote(c) {
@@ -193,8 +231,8 @@ function agentShort(id) {
   return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
 }
 
-/** 侧栏里展开 / 收起的状态：哪些项目目录展开了、哪些分组折叠了、目录的顺序（more 是老版本的，不再用） */
-export const sideState = { open: [], more: [], folded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
+/** 侧栏里展开 / 收起的状态：哪些项目目录展开了、哪些分组折叠了、哪些主对话的分叉折叠了、目录的顺序（more 是老版本的，不再用） */
+export const sideState = { open: [], more: [], folded: [], forkFolded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
 
 /**
  * 「项目」目录的顺序固定按 sideState.order，新消息不会把目录顶到前面。
@@ -426,8 +464,9 @@ export function renderSidebar() {
     // 在远程控制页上点进来之前那条对话：对话没动过，退出远程控制就露出来了
     else if (S.view === "remote") leaveRemote();
   };
-  // 一行会话。orphan：是分叉出来的、但父对话不在这一组里（删了 / 在别的目录），没有连线可画，用图标标一下
-  const convRow = (c, cls, detail, orphan) =>
+  // 一行会话。orphan：是分叉出来的、但父对话不在这一组里（删了 / 在别的目录），没有连线可画，用图标标一下。
+  // fold：有分叉的主对话，标题后面挂三角；折叠着时分叉的状态也显示在这一行
+  const convRow = (c, cls, detail, orphan, fold) =>
     h(
       "button",
       {
@@ -439,17 +478,20 @@ export function renderSidebar() {
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
       // 定时任务的专用对话
       c.taskId ? h("span", { class: "brand-icon lead task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
-      // 自定义专家的对话：前面挂专家的 emoji
-      c.expert?.icon && !c.expert.builtin ? h("span", { class: "brand-icon lead expert-mark", title: `专家：${c.expert.name}` }, c.expert.icon) : null,
+      // 自定义专家的对话：前面挂专家的头像（以前的是 emoji）
+      (c.expert?.avatar || c.expert?.icon) && !c.expert.builtin
+        ? h("span", { class: "brand-icon lead expert-mark", title: `专家：${c.expert.name}` }, c.expert.avatar ? h("img", { src: c.expert.avatar, alt: "" }) : c.expert.icon)
+        : null,
       h("span", { class: "title" }, convTitle(c)),
-      status([c.key]),
+      fold ? caret(fold.folded, fold.toggle) : null,
+      status(fold?.folded ? fold.keys : [c.key]),
     );
 
   // ---- 最近：Web 会话 + 每个飞书机器人一行（点开它最近活跃的聊天），按活跃时间混排 ----
   // 分叉出来的对话挂在主对话下面，整棵树按里面最近活跃的那条排
   const recent = [];
   for (const node of forkForest(visible.filter((c) => c.channel !== "feishu"))) {
-    recent.push({ at: node.at, el: renderForkNode(node, (c, orphan) => convRow(c, "", `${agentLabel(c.agent)} · ${c.cwd}`, orphan)) });
+    recent.push({ at: node.at, el: renderForkNode(node, (c, orphan, fold) => convRow(c, "", `${agentLabel(c.agent)} · ${c.cwd}`, orphan, fold)) });
   }
   for (const bot of S.bots) {
     const convs = visible.filter((c) => c.channel === "feishu" && c.channelId === bot.id);
@@ -564,8 +606,8 @@ export function renderSidebar() {
           h(
             "button",
             { class: "conv-item proj", title: `${dir}\n拖动可调整顺序，右键可置顶`, onclick: () => toggleSide("open", dir) },
-            h("span", { class: "proj-icon", html: expanded ? ICON.folderOpen : ICON.folder }),
             h("span", { class: "title" }, baseName(dir)),
+            caret(!expanded),
             expanded ? null : status(convs.map((c) => c.key)),
           ),
           h(
@@ -575,11 +617,12 @@ export function renderSidebar() {
               title: `在 ${baseName(dir)} 中开新对话`,
               onclick: () => {
                 S.draftCwd = dir === S.workspaceRoot ? null : dir;
+                S.draftCwdPicked = true;
                 newDraft();
                 closeSide();
               },
             },
-            icon("edit"),
+            icon("plus"),
           ),
         ),
       );
@@ -591,22 +634,31 @@ export function renderSidebar() {
       // 「展开显示」按主对话算条数，分叉跟着主对话一起出现
       const forest = loadedPrefix(st, forkForest(convs));
       for (const node of forest.slice(0, st.show)) {
-        nodes.push(renderForkNode(node, (c, orphan) => convRow(c, " sub", agentLabel(c.agent), orphan), " in-proj"));
+        nodes.push(renderForkNode(node, (c, orphan, fold) => convRow(c, " sub", agentLabel(c.agent), orphan, fold)));
       }
       const btn = moreButton(st, forest.length, PROJECT_LIMIT, load);
       if (btn) nodes.push(h("div", { class: "sub-more" }, btn));
     }
   }
+  paintList(nodes, askKeys.size);
+}
+
+/** 把一组节点画进会话列表 */
+function paintList(nodes, asks) {
   // 重绘会换掉 DOM：如果鼠标正停在某个标题上，重绘后接着滚
   const hovered = marquee.el ? marquee.el.textContent : null;
   stopMarquee();
   fill(ui.convList, ...nodes);
+  markClipped();
+  if (!clipObserver) {
+    clipObserver = new ResizeObserver(() => markClipped());
+    clipObserver.observe(ui.convList);
+  }
   if (hovered) {
     requestAnimationFrame(() => {
       const el = ui.convList.querySelector(".conv-item:hover .title");
       if (el?.textContent === hovered) startMarquee(el);
     });
   }
-  const asks = askKeys.size;
   document.title = asks ? `(${asks}) 待处理 · Agent Loft` : "Agent Loft";
 }

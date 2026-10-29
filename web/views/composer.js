@@ -88,19 +88,7 @@ export function renderComposer() {
   ui.slashMenu = h("div", { class: "slash-menu", hidden: true });
   ui.composer = h(
     "div",
-    {
-      class: "composer",
-      ondragover: (e) => {
-        e.preventDefault();
-        ui.composer.classList.add("drag");
-      },
-      ondragleave: () => ui.composer.classList.remove("drag"),
-      ondrop: (e) => {
-        e.preventDefault();
-        ui.composer.classList.remove("drag");
-        void addFiles([...(e.dataTransfer?.files ?? [])]);
-      },
-    },
+    { class: "composer" },
     ui.slashMenu,
     ui.chips,
     ui.input,
@@ -125,6 +113,31 @@ export function renderComposer() {
   renderContext();
   renderScheduled();
   renderTodos();
+}
+
+/**
+ * 文件拖到聊天区域（el，整个 main）任何地方都能上传，输入框框线高亮提示。
+ * 只认拖进来的文件（页面里拖文字之类不管）；定时任务、远程控制页、底部终端上不接
+ */
+export function bindFileDrop(el) {
+  const accepts = (e) =>
+    e.dataTransfer?.types.includes("Files") && !S.view && ui.composer?.isConnected && !ui.termDock?.contains(e.target);
+  const clear = () => ui.composer?.classList.remove("drag");
+  el.addEventListener("dragover", (e) => {
+    if (!accepts(e)) return clear();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    ui.composer.classList.add("drag");
+  });
+  el.addEventListener("dragleave", (e) => {
+    if (!el.contains(e.relatedTarget)) clear();
+  });
+  el.addEventListener("drop", (e) => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    clear();
+    void addFiles([...e.dataTransfer.files]);
+  });
 }
 
 export function autosize() {
@@ -203,6 +216,7 @@ export async function ensureConversation() {
     }
     throw err;
   }
+  S.draftCwdPicked = false;
   // 新对话里选过模型 / 思考程度：建好会话后先切过去再发消息
   const pick = { ...draftPick() };
   for (const [action, value] of [["model", pick.model], ["effort", pick.effort]]) {

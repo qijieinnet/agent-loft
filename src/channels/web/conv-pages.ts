@@ -66,3 +66,40 @@ export const clampLimit = (v: unknown, def: number): number => {
   const n = Math.floor(Number(v));
   return Number.isFinite(n) && n > 0 ? Math.min(n, 200) : def;
 };
+
+export type SearchResult = { conv: ConversationInfo; snippet?: string };
+
+/**
+ * 搜索会话：标题（和工作目录名）里每个词都出现的排前面，整句出现的更靠前，同样的按活跃时间；
+ * 再接上聊天内容里搜到的（contentHits，按相关程度排好的，同一条对话只取第一句）。
+ * 没输入查询：给最近活跃的。
+ */
+export function searchConvs(
+  list: ConversationInfo[],
+  query: string,
+  contentHits: { key: string; text: string }[] = [],
+  limit = 50,
+): SearchResult[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...list].sort((a, b) => b.activeAt - a.activeAt).slice(0, limit).map((conv) => ({ conv }));
+  const words = q.split(/\s+/);
+  const byTitle = list
+    .map((c) => {
+      const title = (c.title ?? "").toLowerCase();
+      const hay = `${title} ${c.cwd.split(/[\\/]/).filter(Boolean).pop() ?? ""}`.toLowerCase();
+      if (!words.every((w) => hay.includes(w))) return null;
+      return { c, rank: title.includes(q) ? 2 : 1 };
+    })
+    .filter((x) => x !== null)
+    .sort((a, b) => b.rank - a.rank || b.c.activeAt - a.c.activeAt);
+  const out: SearchResult[] = byTitle.map((x) => ({ conv: x.c }));
+  const seen = new Set(out.map((r) => r.conv.key));
+  const byKey = new Map(list.map((c) => [c.key, c]));
+  for (const hit of contentHits) {
+    const conv = byKey.get(hit.key);
+    if (!conv || seen.has(hit.key)) continue;
+    seen.add(hit.key);
+    out.push({ conv, snippet: hit.text });
+  }
+  return out.slice(0, limit);
+}

@@ -4,6 +4,8 @@ import { userMcpServers } from "../../agents/codex/session.js";
 import {
   ACCESS_LABEL,
   ACCESS_LEVELS,
+  avatarImage,
+  avatarUrl,
   createExpert,
   deleteExpert,
   EXPERT_LIMITS,
@@ -28,6 +30,7 @@ function expertView(e: Expert) {
     name: e.name,
     description: e.description,
     icon: e.icon,
+    avatar: avatarUrl(e),
     color: e.color,
     welcome: e.welcome,
     quickPrompts: e.quickPrompts,
@@ -55,9 +58,13 @@ export function expertBrief(e: Expert) {
     name: e.name,
     description: e.description,
     icon: e.icon,
+    avatar: avatarUrl(e),
     color: e.color,
     engine: e.engine,
     access: e.access,
+    webSearch: e.webSearch,
+    webFetch: e.webFetch,
+    memory: e.memory,
     cwd: e.cwd ?? "",
     model: e.model ?? "",
     effort: e.effort ?? "",
@@ -100,12 +107,23 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   }
 
   if (p === "/api/experts" && method === "POST") {
-    const body = await readJsonBody<ExpertInput>(req, 256 * 1024);
+    const body = await readJsonBody<ExpertInput>(req, 1024 * 1024);
     try {
       sendJson(res, 200, expertView(createExpert(user.id, body)));
     } catch (err) {
       throw bad(err);
     }
+    return true;
+  }
+
+  // 头像：登录了就能看（管理员看别人的对话时也要显示）。地址带版本号，可以长期缓存
+  const am = /^\/api\/experts\/(e_[a-f0-9]+)\/avatar$/.exec(p);
+  if (am && method === "GET") {
+    const expert = getExpert(am[1]!);
+    const img = expert && avatarImage(expert);
+    if (!img) throw new HttpError(404, "没有头像");
+    res.writeHead(200, { "Content-Type": img.type, "Content-Length": img.data.length, "Cache-Control": "private, max-age=31536000, immutable" });
+    res.end(img.data);
     return true;
   }
 
@@ -118,7 +136,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
       return true;
     }
     if (method === "PATCH") {
-      const body = await readJsonBody<ExpertInput>(req, 256 * 1024);
+      const body = await readJsonBody<ExpertInput>(req, 1024 * 1024);
       try {
         sendJson(res, 200, expertView(updateExpert(user.id, expert.id, body)));
       } catch (err) {

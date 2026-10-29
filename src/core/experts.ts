@@ -35,8 +35,10 @@ export type Expert = {
   owner: string;
   name: string;
   description: string;
-  /** emoji */
+  /** emoji（以前的图标；有头像时用头像） */
   icon: string;
+  /** 头像：用户上传的图片，前端缩成小图后的 data URL（data:image/...;base64,...）。空 = 没有 */
+  avatar?: string;
   color: string;
   welcome: string;
   quickPrompts: QuickPrompt[];
@@ -80,7 +82,18 @@ export const EXPERT_LIMITS = {
   quickPrompts: 8,
   quickTitle: 40,
   quickPrompt: 2000,
+  /** 头像 data URL 的长度（前端缩到 128px，正常几 KB 到几十 KB） */
+  avatar: 300_000,
 };
+
+/** 头像的地址（给前端用；带版本号，换了头像就是新地址） */
+export const avatarUrl = (e: Pick<Expert, "id" | "rev" | "avatar">): string => (e.avatar ? `/api/experts/${e.id}/avatar?v=${e.rev}` : "");
+
+/** 头像 data URL 拆成类型和内容 */
+export function avatarImage(e: Pick<Expert, "avatar">): { type: string; data: Buffer } | undefined {
+  const m = e.avatar ? /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(e.avatar) : null;
+  return m ? { type: m[1]!, data: Buffer.from(m[2]!, "base64") } : undefined;
+}
 
 const storePath = path.join(dataDir, "experts.json");
 
@@ -191,12 +204,21 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
     subagents.push(id);
   }
 
+  // 头像：没传就沿用；传空字符串就是去掉
+  const avatarRaw = pick("avatar");
+  const avatar = typeof avatarRaw === "string" ? avatarRaw.trim() : "";
+  if (avatar) {
+    if (avatar.length > EXPERT_LIMITS.avatar) throw new Error("头像图片太大");
+    if (!avatarImage({ avatar })) throw new Error("头像只能是 PNG、JPEG、WebP 或 GIF 图片");
+  }
+
   const model = text(pick("model"), 100, "模型");
   const effort = text(pick("effort"), 20, "思考程度");
   return {
     name,
     description: text(pick("description"), EXPERT_LIMITS.description, "说明"),
     icon: text(pick("icon"), 16, "图标"),
+    ...(avatar ? { avatar } : {}),
     color,
     welcome: text(pick("welcome"), EXPERT_LIMITS.welcome, "欢迎语"),
     quickPrompts,

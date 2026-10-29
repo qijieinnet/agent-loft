@@ -101,3 +101,125 @@
 .field-group {
   display: contents;
 }
+
+/* ---- 专家头像 ---- */
+
+/* 头像在哪儿都是圆的，默认和引擎图标一样大（18px），各处再按需要调 */
+.expert-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.expert-avatar img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.hero-logo.expert-avatar img {
+  width: 64px;
+  height: 64px;
+}
+
+.ctx-item .expert-avatar img,
+.top-title .expert-avatar img,
+.hit-icon .expert-avatar img {
+  width: 16px;
+  height: 16px;
+}
+
+.search-chip .expert-avatar img,
+.dialog-sub .expert-avatar img {
+  width: 14px;
+  height: 14px;
+}
+
+.conv-item .expert-mark img {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+@media (max-width: 768px) {
+  .hero-logo.expert-avatar img {
+    width: 52px;
+    height: 52px;
+  }
+}
+
+/* 设置页卡片标题前的图标 */
+.expert-card-icon {
+  display: inline-grid;
+  vertical-align: -3px;
+  margin-right: 8px;
+}
+
+.expert-card-icon svg,
+.expert-card-icon img {
+  width: 18px;
+  height: 18px;
+}
+
+.expert-card-icon.expert-emoji {
+  font-size: 15px;
+  width: auto;
+}
+
+/* 编辑器里的头像：圆形预览，点一下上传 */
+.expert-form .avatar-row > .field:first-child {
+  flex: 0 0 auto;
+}
+
+.avatar-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar-preview {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px dashed var(--border);
+  background: var(--bg-soft);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  color: var(--fg-soft);
+}
+
+.avatar-preview:hover {
+  border-color: var(--fg-faint);
+}
+
+.avatar-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-preview svg {
+  width: 28px;
+  height: 28px;
+}
+
+.avatar-emoji {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.avatar-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.avatar-btns .btn[hidden] {
+  display: none;
+}

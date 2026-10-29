@@ -24,7 +24,8 @@ import { syncDraftExpert } from "./experts.js";
 import { confirmDialog, showMenu } from "../lib/overlay.js";
 import { applyShellInfo, handleAllowEmbed, HOME, mountSwitcher, refreshShellPush, routeToServer, shellBooted, switchServer } from "../lib/shell.js";
 import { bindScrollWatch, newDraft, openConversation, scrollToBottom } from "./messages.js";
-import { renderComposer } from "./composer.js";
+import { bindFileDrop, renderComposer } from "./composer.js";
+import { openSearch } from "./conv-search.js";
 import { createNav } from "./msg-nav.js";
 import { renameConv } from "./conv-actions.js";
 import { releaseForeignPushSub } from "../lib/push.js";
@@ -263,6 +264,8 @@ function renderLayout() {
       { class: "side-top" },
       h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("compose"), "新聊天"),
     ),
+    // 搜索：弹窗里搜标题和聊天内容，可以按专家筛
+    h("button", { class: "btn new-chat side-nav search-nav", onclick: () => openSearch() }, icon("search"), "搜索"),
     // 「最近」上面的入口，像 ChatGPT 的 Tasks。当前在任务页时高亮（renderSidebar 里切换）
     (ui.tasksNav = h("button", { class: "btn new-chat side-nav", onclick: () => openTasksView() }, icon("clock"), "定时任务")),
     // 远程控制：这台机器的桌面和终端。后台连着时右边亮个小绿点（renderSidebar 里切换）
@@ -291,6 +294,7 @@ function renderLayout() {
   bindScrollWatch();
   ui.composerWrap = h("div", { class: "composer-wrap" });
   ui.main = h("main", { class: "main" }, ui.topbar, ui.messages, createNav(), ui.composerWrap);
+  bindFileDrop(ui.main);
   ui.layout = h("div", { class: "layout" }, ui.sidebar, h("div", { class: "scrim", onclick: closeSide }), ui.main);
   fill($app, ui.layout, h("div", { class: "edge-strip", "aria-hidden": "true" }));
   renderComposer();

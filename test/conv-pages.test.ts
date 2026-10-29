@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dirsOf, forkTrees, inDir, inRecent, pageOf, parseCursor } from "../src/channels/web/conv-pages.js";
+import { dirsOf, forkTrees, inDir, inRecent, pageOf, parseCursor, searchConvs } from "../src/channels/web/conv-pages.js";
 import type { ConversationInfo } from "../src/core/hub.js";
 
 const conv = (key: string, activeAt: number, extra: Partial<ConversationInfo> = {}): ConversationInfo =>
@@ -53,4 +53,23 @@ test("最近不含飞书；项目按目录；目录按最近活跃排；游标�
   assert.deepEqual(parseCursor("12", "k"), { at: 12, key: "k" });
   assert.equal(parseCursor(null, null), null);
   assert.equal(parseCursor("x", "k"), null);
+});
+
+test("搜索会话：标题里每个词都有的才算，整句在标题里的靠前；再接上聊天内容搜到的，不重复", () => {
+  const list = [
+    conv("a", 10, { title: "接口 401 上报规则" }),
+    conv("b", 30, { title: "401 登录问题" }),
+    conv("c", 20, { title: "登录 接口 401" }),
+    conv("d", 40, { title: "别的", cwd: "/w/tclaw-web" }),
+    conv("e", 50, { title: "无关" }),
+  ];
+  assert.deepEqual(searchConvs(list, "401").map((r) => r.conv.key), ["b", "c", "a"]);
+  assert.deepEqual(searchConvs(list, "接口 401").map((r) => r.conv.key), ["c", "a"]);
+  assert.deepEqual(searchConvs(list, "登录 401").map((r) => r.conv.key), ["b", "c"]);
+  // 目录名也算
+  assert.deepEqual(searchConvs(list, "TCLAW").map((r) => r.conv.key), ["d"]);
+  const hits = searchConvs(list, "401", [{ key: "b", text: "x" }, { key: "e", text: "说到 401" }, { key: "gone", text: "y" }]);
+  assert.deepEqual(hits.map((r) => [r.conv.key, r.snippet]), [["b", undefined], ["c", undefined], ["a", undefined], ["e", "说到 401"]]);
+  // 没输入：最近活跃的
+  assert.deepEqual(searchConvs(list, "  ").map((r) => r.conv.key), ["e", "d", "b", "c", "a"]);
 });

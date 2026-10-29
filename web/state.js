@@ -14,6 +14,8 @@ export const S = {
   experts: [],
   /** 新对话（还没发消息）选的工作目录，null 表示工作区根目录。开新对话时沿用上次选的 */
   draftCwd: null,
+  /** 这个新对话的目录是自己选的：换专家时不再改成专家的默认目录。建好会话后清掉 */
+  draftCwdPicked: false,
   items: [],
   turnAi: null,
   seq: new Map(),
