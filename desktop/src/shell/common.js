@@ -56,17 +56,19 @@ function serverColor(id) {
   return palette[n % palette.length];
 }
 
-/** 还有多久重置，写法和 Web 侧栏的额度一样：x 天 x 小时后重置 */
+/** 什么时候重置：今天的只写时间（13:02 重置），明天的带「明天」，再往后带日期（11月3日 13:02 重置） */
 function resetText(at) {
   if (!at) return "";
-  const sec = Math.floor((at - Date.now()) / 1000);
-  if (sec <= 0) return "即将重置";
-  const d = Math.floor(sec / 86400);
-  const hh = Math.floor((sec % 86400) / 3600);
-  const mm = Math.floor((sec % 3600) / 60);
-  if (d > 0) return `${d} 天 ${hh} 小时后重置`;
-  if (hh > 0) return `${hh} 小时 ${mm} 分后重置`;
-  return `${Math.max(1, mm)} 分钟后重置`;
+  if (at <= Date.now()) return "即将重置";
+  const d = new Date(at);
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - today.getTime()) / 86400_000);
+  if (days <= 0) return `${time} 重置`;
+  if (days === 1) return `明天 ${time} 重置`;
+  const year = d.getFullYear() === today.getFullYear() ? "" : `${d.getFullYear()}年`;
+  return `${year}${d.getMonth() + 1}月${d.getDate()}日 ${time} 重置`;
 }
 
 function agoText(at) {
@@ -79,7 +81,7 @@ function agoText(at) {
 
 /**
  * 一个 agent 的额度：标题一行（名称、套餐），每个额度窗口两行——
- *   5 小时        2 小时 10 分后重置    12%
+ *   5 小时        13:02 重置    12%
  *   ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
  */
 function quotaBlock(q) {

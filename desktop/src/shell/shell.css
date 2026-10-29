@@ -816,7 +816,7 @@ details.advanced .field input {
   padding-left: 42px;
 }
 
-/* ---------- 总量汇总（照着网页设置 →「用量」，见 usage.js） ---------- */
+/* ---------- 用量汇总（照着网页设置 →「用量」，见 usage.js） ---------- */
 
 .usage-stats .us-head {
   display: flex;

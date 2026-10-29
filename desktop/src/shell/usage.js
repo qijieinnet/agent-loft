@@ -1,6 +1,7 @@
-// 总量汇总：所有服务器的 token 和费用加在一起，按日 / 月 / 年看。
-// 数据是每台服务器的 /api/usage（和网页设置 →「用量」同一份账），由主进程挨个去问；
-// 写法、配色照着 web/settings/usage.js，多了「按服务器」。
+// 用量汇总：所有服务器加上这台电脑上直接用的 Claude Code、Codex，token 和费用加在一起，按日 / 月 / 年看。
+// 服务器的数据是各自的 /api/usage（和网页设置 →「用量」同一份账），由主进程挨个去问；本机的是主进程读
+// Claude Code、Codex 自己的会话记录（见 local-usage.js），id 是 "local"，每行多一个 source（desktop / cli / other）。
+// 写法、配色照着 web/settings/usage.js，多了「按来源」。
 
 const usagePanel = (() => {
   /** 各项的顺序和颜色跟网页里的一致 */
@@ -16,6 +17,15 @@ const usagePanel = (() => {
     ["year", "按年"],
   ];
   const AGENT_LABELS = { claude: "Claude Code", codex: "Codex" };
+  const SOURCE_LABELS = { desktop: "桌面端", cli: "CLI", other: "其他" };
+  const LOCAL = "local";
+  /** 服务器上的记成「Claude Code · Agent Loft」，本机直接用的记成「Claude Code 桌面端」这样，免得混在一起 */
+  const agentLabel = (key, hasLocal) => {
+    const [agent, source] = key.split("\n");
+    const name = AGENT_LABELS[agent] ?? agent;
+    if (source) return `${name} ${SOURCE_LABELS[source] ?? source}`;
+    return hasLocal ? `${name} · Agent Loft` : name;
+  };
 
   const pad = (n) => String(n).padStart(2, "0");
   const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -196,8 +206,8 @@ const usagePanel = (() => {
       h("button", { class: "btn", onclick: () => void render() }, "刷新"),
     );
     const head = [
-      h("h1", {}, "总量汇总"),
-      h("p", { class: "muted" }, `已添加的 ${state.servers.length} 台服务器的 Token 和费用合计`),
+      h("h1", {}, "用量汇总"),
+      h("p", { class: "muted" }, `已添加的 ${state.servers.length} 台服务器，加上这台电脑上直接用的 Claude Code 和 Codex，Token 和费用合计`),
       h("div", { class: "us-head" }, seg, nav),
     ];
     fill(box, head, h("div", { class: "us-loading" }, h("div", { class: "spinner-lg" })));
@@ -213,6 +223,7 @@ const usagePanel = (() => {
     if (my !== seq || !box?.isConnected) return;
 
     const nameOf = (id) => {
+      if (id === LOCAL) return "本机直接使用";
       const s = state.servers.find((x) => x.id === id);
       return s ? `${s.icon ? `${s.icon} ` : ""}${s.name}` : "已移除的服务器";
     };
@@ -235,7 +246,8 @@ const usagePanel = (() => {
     const note = h(
       "p",
       { class: "hint" },
-      "金额都是按 API 价格算的参考值，订阅用户实际不按这个扣费：Claude 用它自己报的费用；Codex 不报费用，按模型单价 × Token 估算。各服务器按自己的时区记日期。",
+      "金额都是按 API 价格算的参考值，订阅用户实际不按这个扣费：服务器上的 Claude 用它自己报的费用；Codex 和本机直接用的 Claude Code 不报费用，按模型单价 × Token 估算。各服务器按自己的时区记日期。",
+      " 本机的用量读的是 Claude Code（~/.claude/projects）和 Codex（~/.codex/sessions）自己的会话记录，Agent Loft 跑的会话已经算在服务器里，不重复算。",
       unpriced ? ` 有 ${fmtCount(unpriced)} Token 认不出模型单价，没算进金额。` : "",
     );
     if (!tokens) {
@@ -275,12 +287,16 @@ const usagePanel = (() => {
       ),
     );
 
-    const multi = new Set(rows.map((r) => r.server)).size > 1;
+    const hasLocal = rows.some((r) => r.server === LOCAL);
     const byServer = groupBy(rows, (r) => r.server).map((g) => ({ ...g, label: nameOf(g.key) }));
-    const byAgent = groupBy(rows, (r) => r.agent).map((g) => ({ ...g, label: AGENT_LABELS[g.key] ?? g.key }));
+    const byAgent = groupBy(rows, (r) => (r.server === LOCAL ? `${r.agent}\n${r.source ?? "other"}` : r.agent)).map((g) => ({
+      ...g,
+      label: agentLabel(g.key, hasLocal),
+    }));
     const byModel = groupBy(rows, (r) => r.model ?? "").map((g) => ({ ...g, label: g.key || "未记录模型" }));
     // 用户是各服务器自己的，同名也不一定是同一个人：分开算，多台时名字后面带上服务器
     const users = new Map(ok.filter((r) => r.admin).map((r) => [r.id, r.users]));
+    const multi = new Set(rows.filter((r) => users.has(r.server)).map((r) => r.server)).size > 1;
     const byUser = groupBy(
       rows.filter((r) => users.has(r.server)),
       (r) => `${r.server}\n${r.owner ?? ""}`,
@@ -298,7 +314,7 @@ const usagePanel = (() => {
       tiles,
       period.buckets ? h("div", { class: "card us-card" }, trend(period, rows)) : null,
       section("构成", composition),
-      ok.length > 1 ? section("按服务器", breakdown(byServer, tokens)) : null,
+      byServer.length > 1 ? section("按来源", breakdown(byServer, tokens)) : null,
       section("按 Agent", breakdown(byAgent, tokens)),
       section("按模型", breakdown(byModel, tokens)),
       byUser.length > 1 || (byUser.length === 1 && byUser[0].owner) ? section("按用户", breakdown(byUser, tokens)) : null,

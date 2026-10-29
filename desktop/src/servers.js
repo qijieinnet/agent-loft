@@ -324,6 +324,16 @@ export function reload(id) {
   void view.webContents.loadURL(`${server.url}/`);
 }
 
+/** 刷新页面（双击服务器标签）：停在当前打开的会话；之前没加载成功、或者跑到别的地址去了，就重新打开首页 */
+export function refreshPage(id) {
+  const r = rt(id);
+  const server = store.server(id);
+  if (!server) return;
+  const wc = r.view?.webContents;
+  if (r.loadFailed || r.cert || !wc || wc.isDestroyed() || !wc.getURL().startsWith(server.url)) return reload(id);
+  wc.reload();
+}
+
 /** 地址改了 / 删除服务器：页面销毁，下次用到时重建 */
 export function dispose(id, { clearData = false } = {}) {
   const r = runtimes.get(id);

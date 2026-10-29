@@ -1,4 +1,4 @@
-// 顶栏（服务器标签、更多）+ 下面的面板（服务器管理、总量汇总、连不上、证书确认）。
+// 顶栏（服务器标签、更多）+ 下面的面板（服务器管理、用量汇总、连不上、证书确认）。
 // 当前服务器正常时，面板被服务器自己的页面盖住，看不到。
 
 let state = null;
@@ -37,6 +37,19 @@ function renderBar() {
 }
 
 // 按住标签左右拖：调整服务器顺序
+// 双击服务器标签刷新它的页面。标签每次状态推过来都会重画，原生 dblclick 不一定触发，自己按两次点击的间隔算
+let lastTab = { id: null, at: 0 };
+$servers.addEventListener("click", (e) => {
+  const id = e.target.closest?.(".tab")?.dataset.id;
+  if (!id) return;
+  const now = Date.now();
+  if (lastTab.id === id && now - lastTab.at < 400) {
+    lastTab = { id: null, at: 0 };
+    void call("refreshPage", id);
+    return;
+  }
+  lastTab = { id, at: now };
+});
 sortable($servers, { axis: "x", item: ".tab", onDrop: (id, to) => void call("moveServer", id, to), onEnd: flushRender });
 
 // 更多：弹原生菜单（下面挂着服务器页面，HTML 下拉会被它盖住）
@@ -57,8 +70,8 @@ function renderPanel() {
     return;
   }
   const active = state.servers.find((s) => s.id === state.activeId);
-  // 总量汇总：只在切进来时建一次、拉一次数据，之后状态推过来不重画
-  if (state.managing && state.panel === "usage" && state.servers.length) {
+  // 用量汇总：只在切进来时建一次、拉一次数据，之后状态推过来不重画
+  if (state.managing && state.panel === "usage") {
     if (mode !== "usage") usagePanel.build($panel);
     mode = "usage";
     return;
