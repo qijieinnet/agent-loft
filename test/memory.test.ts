@@ -19,6 +19,7 @@ const personal = await import("../src/core/personal.js");
 const { memoryMcpSpawn } = await import("../src/core/memory-mcp.js");
 const { parseCommand } = await import("../src/core/commands.js");
 const { buildCatalog } = await import("../src/core/command-catalog.js");
+const { RICH_REPLY_LINES } = await import("../src/core/expert-prompt.js");
 const uploads = await import("../src/core/uploads.js");
 
 const admin = users.createUser({ name: "boss", password: "password-1", role: "admin" });
@@ -603,8 +604,8 @@ test("Claude 的系统提示一律不固定（snapshot: false），改专家、�
   assert.deepEqual(lean.skills, []);
   const work = expertOptions(base).systemPrompt as { type: string; snapshot?: boolean; append?: string };
   const withMemory = expertOptions({ ...base, memory: { userId: alice.id, prompt: "记忆内容" } }).systemPrompt as { append?: string; snapshot?: boolean };
-  assert.deepEqual([work.type, work.snapshot, work.append], ["preset", false, undefined]);
-  assert.deepEqual([withMemory.append, withMemory.snapshot], ["记忆内容", false]);
+  assert.deepEqual([work.type, work.snapshot, work.append], ["preset", false, RICH_REPLY_LINES.join("\n")]);
+  assert.deepEqual([withMemory.append, withMemory.snapshot], [`${RICH_REPLY_LINES.join("\n")}\n\n记忆内容`, false]);
 });
 
 test("两个进程同时写记忆：一条都不丢（跨进程锁）", async () => {

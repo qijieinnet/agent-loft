@@ -64,6 +64,24 @@ function persona(expert: PromptExpert): string[] {
   return [`你是「${expert.name}」，用户通过 agent-loft 的网页或飞书和你对话。`, ...(expert.prompt ? ["", expert.prompt] : [])];
 }
 
+/**
+ * 回复里能画的图：网页把 ```chart / ```mermaid 画出来（web/lib/diagrams.js），飞书把 chart 换成表格（core/charts.ts）。
+ * 所有专家、内置的 Claude Code / Codex 都给。格式改了这三处要一起改。
+ */
+export const RICH_REPLY_LINES = [
+  "## 回复里的图表",
+  "",
+  "- 要展示趋势、对比、占比时，可以在回复里放一个 ```chart 代码块，网页上会画成图（飞书上显示成表格）。内容是一段 JSON，例如：",
+  "  ```chart",
+  '  {"type":"line","title":"近 3 天访问量","x":["10-23","10-24","10-25"],"series":[{"name":"PV","data":[120,98,135]},{"name":"UV","data":[80,66,90]}],"unit":"次"}',
+  "  ```",
+  '  - type：line 折线、area 面积、bar 柱状（加 "horizontal":true 横向）、pie 饼图（只有一组数据，data 写成 [{"name":"A","value":3}]）、scatter 散点（data 写成 [[x,y]]）。',
+  "  - 可选：stack 堆叠（true）、xName x 轴名称、unit 数值单位、height 高度（像素，180–600）。",
+  "  - 一张图最多 8 组数据，饼图最多 8 块；量级差很多的两种数据分成两张图；缺的数据写 null。只写合法 JSON，不要注释，不要省略号。",
+  "- 流程、时序、状态、结构关系可以用 ```mermaid 代码块画图。",
+  "- 只在图比文字更清楚时才画；几个数字用文字或表格就够了。",
+];
+
 /** Claude 自定义专家的整段系统提示（lean：换掉 Claude Code 原装的） */
 export function expertSystemPrompt(expert: PromptExpert, search: string | undefined, cwd: string, memory?: string): string {
   const base = [
@@ -73,6 +91,8 @@ export function expertSystemPrompt(expert: PromptExpert, search: string | undefi
     "",
     ...capabilityLines(expert, search, cwd),
     "",
+    ...RICH_REPLY_LINES,
+    "",
     `今天是 ${today()}。`,
   ].join("\n");
   return memory ? `${base}\n\n${memory}` : base;
@@ -80,7 +100,9 @@ export function expertSystemPrompt(expert: PromptExpert, search: string | undefi
 
 /** Claude 自定义专家选了「Claude Code 原装」：追加在原装提示后面的部分 */
 export function expertAppend(expert: PromptExpert, search: string | undefined, cwd: string): string {
-  return [...persona(expert), "", "## 这个专家能做什么（agent-loft 按配置生成）", "", ...capabilityLines(expert, search, cwd)].join("\n");
+  return [...persona(expert), "", "## 这个专家能做什么（agent-loft 按配置生成）", "", ...capabilityLines(expert, search, cwd), "", ...RICH_REPLY_LINES].join(
+    "\n",
+  );
 }
 
 const OPEN = "<agent-loft-context>";
@@ -88,7 +110,7 @@ const CLOSE = "</agent-loft-context>";
 
 /**
  * Codex：附在会话进程第一条消息后面的背景。
- * expert 不给就是内置的 Codex 专家：只有记忆和技能清单，都没有就不附（返回空串）。
+ * expert 不给就是内置的 Codex 专家：只有记忆、技能清单和图表的写法。
  */
 export function contextBlock(
   expert: { prompt: PromptExpert; cwd: string } | undefined,
@@ -98,8 +120,8 @@ export function contextBlock(
   const head = expert
     ? [...persona(expert.prompt), "", "## 你能做什么（agent-loft 按这个专家的配置生成）", "", ...capabilityLines(expert.prompt, searchLabel("codex", expert.prompt), expert.cwd)]
     : [];
-  const sections = [head, memory ? [memory] : [], skills].filter((s) => s.length > 0);
-  return sections.length ? wrapContext(sections.flatMap((s, i) => (i ? ["", ...s] : s))) : "";
+  const sections = [head, RICH_REPLY_LINES, memory ? [memory] : [], skills].filter((s) => s.length > 0);
+  return wrapContext(sections.flatMap((s, i) => (i ? ["", ...s] : s)));
 }
 
 /** 包成 agent-loft 附上的背景：用户看不到（读历史、实时显示时都剥掉），agent 照着做 */

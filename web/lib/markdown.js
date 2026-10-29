@@ -1,6 +1,7 @@
 import DOMPurify from "/vendor/purify.js";
 import hljs from "/vendor/hljs.js";
 import { marked } from "/vendor/marked.js";
+import { diagramLang, mountDiagram, unmountDiagrams } from "./diagrams.js";
 import { h, toast } from "./dom.js";
 
 // ---------- markdown ----------
@@ -42,6 +43,7 @@ export function patchMarkdown(div, text, { live = false, enhance } = {}) {
   for (const b of blocks.splice(i)) {
     for (const n of b.nodes) {
       if (n.nodeType === Node.ELEMENT_NODE) for (const code of n.querySelectorAll("pre code")) lazyHighlight.unobserve(code);
+      unmountDiagrams(n);
       n.remove();
     }
   }
@@ -60,7 +62,7 @@ export function patchMarkdown(div, text, { live = false, enhance } = {}) {
   }
 }
 
-/** 链接新窗口打开；代码块加上语言 + 复制按钮的头，滚到附近了再高亮 */
+/** 链接新窗口打开；代码块加上语言 + 复制按钮的头，滚到附近了再高亮；```chart / ```mermaid 画成图 */
 function decorate(root, highlight) {
   for (const a of root.querySelectorAll("a")) {
     a.target = "_blank";
@@ -72,7 +74,9 @@ function decorate(root, highlight) {
     const lang = /language-([\w+-]+)/.exec(code.className)?.[1] ?? "";
     const copy = h("button", { class: "copy-btn", onclick: () => copyText(code.textContent, copy) }, "复制");
     pre.prepend(h("div", { class: "code-head" }, h("span", {}, lang || "code"), copy));
-    if (highlight) lazyHighlight.observe(code);
+    const diagram = diagramLang(code);
+    if (diagram) mountDiagram(pre, code, diagram, highlight);
+    else if (highlight) lazyHighlight.observe(code);
   }
 }
 

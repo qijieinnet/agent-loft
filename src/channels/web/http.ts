@@ -2,6 +2,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../../core/config.js";
 import { pageCsp } from "../../core/servers.js";
+import { compressLive, MIN_SIZE, pickEncoding } from "./compress.js";
 
 export class HttpError extends Error {
   constructor(
@@ -100,14 +101,27 @@ export async function readJsonBody<T = Record<string, unknown>>(req: IncomingMes
   }
 }
 
+/** 返回 JSON。大于 1 KB、对方收压缩的就压一下（会话历史、消息分页这些长列表能小到几分之一） */
 export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const data = JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-    "Content-Length": Buffer.byteLength(data),
-  });
-  res.end(data);
+  const headers = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", Vary: "Accept-Encoding" };
+  const encoding = res.req ? pickEncoding(res.req.headers) : undefined;
+  const plain = () => {
+    res.writeHead(status, { ...headers, "Content-Length": Buffer.byteLength(data) });
+    res.end(data);
+  };
+  if (!encoding || Buffer.byteLength(data) < MIN_SIZE) return plain();
+  compressLive(data, encoding).then(
+    (out) => {
+      if (res.headersSent || res.destroyed) return;
+      if (!out) return plain();
+      res.writeHead(status, { ...headers, "Content-Encoding": encoding, "Content-Length": out.length });
+      res.end(out);
+    },
+    () => {
+      if (!res.headersSent && !res.destroyed) plain();
+    },
+  );
 }
 
 export const SECURITY_HEADERS: Record<string, string> = {

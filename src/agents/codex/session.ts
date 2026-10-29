@@ -447,12 +447,12 @@ export class CodexSession implements AgentSession {
   /**
    * 这个会话进程还没告诉过 Codex 专家和记忆：第一条消息后面附上 contextBlock。
    * 进程一换（专家改了、记忆改了、服务重启）就是新的 CodexSession，会再附一次最新的。
-   * 内置专家、没有记忆和技能：什么都不附，和原装的一模一样。
+   * 内置专家没有记忆和技能时也要附：回复里能画图（```chart / ```mermaid）得告诉它。
    */
   private contextSent = false;
 
   private get contextPending(): boolean {
-    return !this.contextSent && (!!this.opts.expert || !!this.opts.memory || codexSkillLines(this.opts.skills).length > 0);
+    return !this.contextSent;
   }
 
   private async openOnce(): Promise<string> {

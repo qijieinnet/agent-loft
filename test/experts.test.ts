@@ -247,7 +247,10 @@ test("Codex：按权限打开 shell / apply_patch，背景里写专家", () => {
   assert.match(block, /简短回答/);
   assert.match(block, /你不能联网/);
   assert.match(block, /记忆/);
-  assert.equal(prompt.contextBlock(undefined, undefined, []), "", "内置专家没记忆没技能：什么都不附");
+  assert.match(block, /```chart/, "回复里能画图");
+  const builtin = prompt.contextBlock(undefined, undefined, []);
+  assert.match(builtin, /```chart/, "内置专家没记忆没技能：也告诉它能画图");
+  assert.doesNotMatch(builtin, /你是「/);
 });
 
 test("删用户：专家和 MCP 一起删", () => {

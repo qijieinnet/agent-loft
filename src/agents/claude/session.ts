@@ -17,7 +17,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { agentEnvironment } from "../../core/agent-env.js";
-import { expertAppend, expertSystemPrompt, searchLabel } from "../../core/expert-prompt.js";
+import { expertAppend, expertSystemPrompt, RICH_REPLY_LINES, searchLabel } from "../../core/expert-prompt.js";
 import { ACCESS_LEVELS, type ExpertAccess } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
@@ -219,9 +219,9 @@ export function expertOptions(opts: SessionOptions): Partial<Options> {
   const expert = opts.expert;
   if (!expert) {
     const mcpServers = loftMcp(opts);
-    const append = [memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n");
+    const append = [RICH_REPLY_LINES.join("\n"), memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n");
     return {
-      systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false },
+      systemPrompt: { type: "preset", preset: "claude_code", append, snapshot: false },
       ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       ...(skills?.pluginDir ? { plugins: [{ type: "local" as const, path: skills.pluginDir, skipMcpDiscovery: true }] } : {}),
       ...(skills && !skills.admin ? { skills: memberSkillAllowlist(skills, opts.cwd) } : {}),

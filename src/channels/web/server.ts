@@ -23,6 +23,7 @@ import { currentUser, handleApi, takeUploads } from "./api.js";
 import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
 import { canSeeKey, sessionVisibleTo } from "./access.js";
 import { cookies } from "./http.js";
+import { compressedFile, compressibleExt, MIN_SIZE, pickEncoding } from "./compress.js";
 import { COOKIE } from "./api.js";
 import { HttpError, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 import { hasSubscriptions, pushToAll } from "./push.js";
@@ -59,6 +60,9 @@ const VENDOR: Record<string, () => string> = {
   "/vendor/xterm.js": () => pkgFile("@xterm/xterm", "lib/xterm.mjs"),
   "/vendor/xterm.css": () => pkgFile("@xterm/xterm", "css/xterm.css"),
   "/vendor/xterm-fit.js": () => pkgFile("@xterm/addon-fit", "lib/addon-fit.mjs"),
+  // 回复里的 ```chart / ```mermaid：都很大，用到时才用 <script> 加载（单文件 UMD，挂到 window 上）
+  "/vendor/echarts.js": () => pkgFile("echarts", "dist/echarts.min.js"),
+  "/vendor/mermaid.js": () => pkgFile("mermaid", "dist/mermaid.min.js"),
 };
 
 const MIME: Record<string, string> = {
@@ -96,12 +100,25 @@ function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: st
       res.end();
       return;
     }
-    res.writeHead(200, {
-      ...headers,
-      "Content-Type": MIME[path.extname(file)] ?? "application/octet-stream",
-      "Content-Length": stat.size,
-    });
-    fs.createReadStream(file).pipe(res);
+    const type = MIME[path.extname(file)] ?? "application/octet-stream";
+    // 文本压一下（压好的存在内存里）；对方不收、太小、压失败了就原样给
+    const text = compressibleExt(path.extname(file));
+    const encoding = text && stat.size >= MIN_SIZE ? pickEncoding(req.headers) : undefined;
+    const raw = () => {
+      res.writeHead(200, { ...headers, "Content-Type": type, "Content-Length": stat.size, ...(text ? { Vary: "Accept-Encoding" } : {}) });
+      fs.createReadStream(file).pipe(res);
+    };
+    if (!encoding) return raw();
+    compressedFile(file, stat.mtimeMs, stat.size, encoding, () => fs.promises.readFile(file)).then(
+      (body) => {
+        if (res.headersSent || res.destroyed) return;
+        res.writeHead(200, { ...headers, "Content-Type": type, "Content-Encoding": encoding, "Content-Length": body.length, Vary: "Accept-Encoding" });
+        res.end(body);
+      },
+      () => {
+        if (!res.headersSent && !res.destroyed) raw();
+      },
+    );
   });
 }
 
