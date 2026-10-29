@@ -306,17 +306,15 @@ const AVATAR_PX = 128;
 /**
  * 头像：点一下选图片，居中裁成正方形、缩到 128px 再上传。没传时显示加号。
  * src.avatar 是已有头像的地址；isNew（复制一份）时把它读成 data URL 一起带上。
- * payload()：没动过就不带 avatar（服务端沿用），去掉了带空字符串
+ * payload()：没动过就不带 avatar（服务端沿用），换了图片就带上新的 data URL
  */
 function avatarPicker(src, isNew) {
-  let value; // undefined = 没动过；"" = 去掉；data URL = 新的
+  let value; // undefined = 没动过；data URL = 新的
   let shown = src.avatar || "";
   const preview = h("button", { type: "button", class: "avatar-preview", title: "上传头像", "aria-label": "上传头像" });
   const file = h("input", { type: "file", accept: "image/*", hidden: true });
-  const remove = h("button", { type: "button", class: "btn small" }, "去掉");
   const refresh = () => {
     fill(preview, shown ? h("img", { src: shown, alt: "", draggable: "false" }) : icon("plus"));
-    remove.hidden = !shown;
   };
   preview.onclick = () => file.click();
   file.onchange = async () => {
@@ -329,11 +327,6 @@ function avatarPicker(src, isNew) {
     } catch (err) {
       toast(err.message);
     }
-  };
-  remove.onclick = () => {
-    value = "";
-    shown = "";
-    refresh();
   };
   // 复制一份：头像也带过去（新专家还没有自己的头像地址）
   if (src.avatar && isNew) {
@@ -348,7 +341,7 @@ function avatarPicker(src, isNew) {
   }
   refresh();
   return {
-    el: h("div", { class: "avatar-field" }, preview, remove, file),
+    el: h("div", { class: "avatar-field" }, preview, file),
     payload: () => (value === undefined ? {} : { avatar: value }),
   };
 }

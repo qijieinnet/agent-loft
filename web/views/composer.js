@@ -301,7 +301,7 @@ export async function sendMessage() {
   let key;
   let res;
   setSending(true);
-  // 发出去之后恢复自动滚动；回显的那条用户消息到了就顶到最上面（见 applyEvent）
+  // 记录本页发送：普通消息回显后定位到顶部，排队消息等开始回复时再定位（见 applyEvent）。
   S.pinNext = true;
   try {
     key = await ensureConversation();

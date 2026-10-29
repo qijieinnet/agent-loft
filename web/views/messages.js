@@ -224,6 +224,7 @@ function historyQuestion(key, m) {
 //     留白靠消息列表后面的 ui.spacer 撑出来：高度 = 刚好够那条消息滚到顶，回复越长它越矮，到 0 为止。
 //   - 回复过程中只要用户自己滚了（滚轮、触摸、拖滚动条、键盘翻页），就不再自动滚，直到下一次发消息。
 //     ui.follow 记着现在要不要自动滚。
+//   - 排队消息不改变当前定位，也不计入自动跟随的底部；轮到它时再切换定位。
 
 function nearBottom(gap = 120) {
   const m = ui.messages;
@@ -233,9 +234,18 @@ function nearBottom(gap = 120) {
 /** 内容变了之后：重算留白，要跟随的话贴到底（有留白时「底」正好就是被顶上去的那条消息） */
 function afterLayout() {
   if (!ui.messages) return;
-  fitSpacer();
-  if (ui.follow && performance.now() > (ui.smoothUntil ?? 0)) ui.messages.scrollTop = ui.messages.scrollHeight;
+  const pinTop = fitSpacer();
+  if (ui.follow && performance.now() > (ui.smoothUntil ?? 0)) ui.messages.scrollTop = followScrollTop(pinTop);
   updateToBottomBtn();
+}
+
+/** 排队消息在当前回复后面：自动滚动只跟随回复，队列再长也不把当前这一轮挤出视口。 */
+function followScrollTop(pinTop) {
+  if (pinTop === undefined || !S.items.at(-1)?.queued) return ui.messages.scrollHeight;
+  const last = S.items.findLast((it) => !it.queued);
+  if (!last?.el?.isConnected) return ui.messages.scrollHeight;
+  const bottom = last.el.offsetTop + last.el.offsetHeight + parseFloat(getComputedStyle(ui.msgInner).paddingBottom);
+  return Math.max(pinTop, bottom - ui.messages.clientHeight);
 }
 
 function fitSpacer() {
@@ -250,6 +260,7 @@ function fitSpacer() {
   const top = Math.max(0, pin.offsetTop - covered - 12);
   const need = top + ui.messages.clientHeight - ui.msgInner.offsetHeight;
   ui.spacer.style.height = `${Math.max(0, Math.ceil(need))}px`;
+  return top;
 }
 
 /** 回到跟随模式并贴到底：打开会话、点「回到底部」时用 */
@@ -262,9 +273,9 @@ export function scrollToBottom() {
 function pinToTop(el) {
   ui.pinEl = el;
   ui.follow = true;
-  fitSpacer();
+  const pinTop = fitSpacer();
   ui.smoothUntil = performance.now() + 450;
-  ui.messages.scrollTo({ top: ui.messages.scrollHeight, behavior: "smooth" });
+  ui.messages.scrollTo({ top: followScrollTop(pinTop), behavior: "smooth" });
   // 平滑滚动期间留白可能又变了（比如输入框清空变矮），滚完再对齐一次
   setTimeout(afterLayout, 460);
   updateToBottomBtn();
@@ -724,10 +735,11 @@ export function applyEvent(env) {
       }
       if (!queued && (!S.turnAi || S.turnAi.done)) turnStartAt = env.ts;
       const it = addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin, id: ev.id, queued });
-      // 这个页面刚发的：顶到最上面
+      // 这个页面刚发的：普通消息顶到最上面，排队消息等轮到它时再定位。
       if (S.pinNext && ev.origin?.channel === "web") {
         S.pinNext = false;
-        pinToTop(it.el);
+        if (queued) it.pinOnStart = true;
+        else pinToTop(it.el);
       }
       if (!queued) currentAi(env.ts);
       return;
@@ -749,6 +761,10 @@ export function applyEvent(env) {
         return;
       }
       if (it) setQueueState(it, ev.state === "dropped" ? "dropped" : null);
+      if (it?.pinOnStart && ev.state === "started") {
+        it.pinOnStart = false;
+        if (ui.follow) pinToTop(it.el);
+      }
       // 轮到它了（上一轮刚出结果）：挂上「思考中」占位，用时从现在算。被当成提问的回答时那一轮还在跑，不用挂
       if (ev.state === "started" && (!S.turnAi || S.turnAi.done)) {
         turnStartAt = env.ts;
