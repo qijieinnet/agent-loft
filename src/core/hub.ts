@@ -500,24 +500,21 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return [...parts, streaming].join("\n");
   }
 
-  /** 正在进行的这一轮（从最后一条用户消息起），给刚打开页面的客户端补画用。 */
+  /** 正在进行的这一轮及尚未处理的输入，给刚打开页面的客户端补画用。 */
   liveTurn(key: string): EventEnvelope[] {
     if (!this.isBusy(key)) return [];
     const buf = this.buffers.get(key) ?? [];
-    let start = buf.length;
-    for (let i = buf.length - 1; i >= 0; i--) {
-      const t = buf[i]!.ev.type;
-      if (t === "user") {
-        start = i;
-        break;
-      }
-      if (t === "result" || t === "error") {
-        start = i + 1;
-        break;
-      }
-      if (i === 0) start = 0;
-    }
-    return buf.slice(start);
+    const start = buf.findLastIndex(({ ev }) => ev.type === "result" || ev.type === "error") + 1;
+    const fifo = this.turnFifo.get(key) ?? [];
+    const active = fifo[0]?.id;
+    const inputs = new Set(fifo.map((entry) => entry.id));
+    for (const [id, waiting] of this.pendingInputs.get(key) ?? []) if (!waiting.cancelled) inputs.add(id);
+    return buf.filter(({ ev }, i) => i >= start || (
+      (ev.type === "user" || ev.type === "queue" || ev.type === "user_anchor") && inputs.has(ev.id!)
+    )).map((env) => (
+      // 下一轮的输入可能早在上一轮结束之前就收到了，重放时它已经不再排队。
+      env.ev.type === "user" && env.ev.id === active ? { ...env, ev: { ...env.ev, queued: false } } : env
+    ));
   }
 
   isBusy(key: string): boolean {

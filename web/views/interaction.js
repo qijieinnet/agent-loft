@@ -95,7 +95,7 @@ export function renderInteraction(item) {
             "div",
             { class: "ix-buttons" },
             spec.allowSession
-              ? h("button", { class: "btn accent", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
+              ? h("button", { class: "btn primary", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
               : null,
             h("button", { class: `btn${spec.allowSession ? "" : " accent"}`, onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, "允许一次"),
             // 会落盘、对所有人生效的「总是允许」只给管理员

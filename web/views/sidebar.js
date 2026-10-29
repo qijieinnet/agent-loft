@@ -475,12 +475,11 @@ export function renderSidebar() {
         onclick: () => open(c.key),
       },
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
-      // 定时任务的专用对话
-      c.taskId ? h("span", { class: "brand-icon lead task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
       h("span", { class: "title" }, convTitle(c)),
-      convExpertMark(c),
       fold ? caret(fold.folded, fold.toggle) : null,
       status(fold?.folded ? fold.keys : [c.key]),
+      convExpertMark(c),
+      c.taskId ? h("span", { class: "brand-icon task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
     );
 
   const nodes = [];
@@ -502,8 +501,8 @@ export function renderSidebar() {
         },
         h("span", { class: "brand-icon lead", title: "飞书", html: ICON.feishu }),
         h("span", { class: "title" }, bot.name),
-        convExpertMark(latest),
         status(convs.map((c) => c.key)),
+        convExpertMark(latest),
       ),
     });
   }

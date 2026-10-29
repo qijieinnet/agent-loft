@@ -201,18 +201,35 @@
   color: var(--fg-faint);
 }
 
-/* 手机：铺满宽度，贴着顶部 */
+/* 手机：和工作目录选择器一样，从底部展开的固定高度抽屉 */
 @media (max-width: 768px) {
   .overlay.search-overlay {
-    padding: calc(8px + env(safe-area-inset-top)) 8px 8px;
+    align-items: flex-end;
+    padding: 0;
   }
 
   .search-modal {
-    height: min(600px, calc(100dvh - env(safe-area-inset-top) - 24px));
-    max-height: calc(100% - 8px);
+    max-width: none;
+    height: min(600px, 86dvh);
+    max-height: calc(100dvh - 32px);
+    padding-bottom: env(safe-area-inset-bottom);
+    border-radius: 16px 16px 0 0;
+    animation: search-sheet-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
   .hit-meta {
     display: none;
+  }
+}
+
+@keyframes search-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-modal {
+    animation: none;
   }
 }

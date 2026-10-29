@@ -364,11 +364,36 @@ button.conv-group:hover {
   display: none;
   place-items: center;
   flex-shrink: 0;
+  margin-left: auto;
   width: 14px;
   height: 14px;
   font-size: 13px;
   line-height: 1;
   color: var(--fg-soft);
+}
+
+/* 有状态点时由状态点推到右侧，专家图标紧随其后 */
+.conv-item > .dot + .expert-mark,
+.conv-item > .conv-spin + .expert-mark {
+  margin-left: 0;
+}
+
+.conv-item .task-mark {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--fg-soft);
+}
+
+.conv-item .task-mark svg {
+  width: 14px;
+  height: 14px;
+}
+
+.conv-item > .dot ~ .task-mark,
+.conv-item > .conv-spin ~ .task-mark {
+  margin-left: 0;
 }
 
 .conv-item .expert-mark-icon {
@@ -387,6 +412,10 @@ button.conv-group:hover {
 @media (hover: hover) {
   .conv-item:hover .expert-mark {
     display: inline-grid;
+  }
+
+  .conv-item:hover .expert-mark + .task-mark {
+    margin-left: 0;
   }
 }
 

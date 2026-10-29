@@ -315,8 +315,18 @@ let bulk = false;
 export function addItem(item) {
   ui.msgInner.querySelector(".empty")?.remove();
   item.el = renderItem(item);
-  ui.msgInner.append(item.el);
-  S.items.push(item);
+  // 当前回复拆成多段或恢复排队消息时，回复和交互卡仍在后续排队输入之前。
+  const activeUser = S.items.findLastIndex((it) => it.type === "user" && !it.queued);
+  const queued = item.type === "ai" || item.type === "ix"
+    ? S.items.findIndex((it, i) => i > activeUser && it.type === "user" && it.queued)
+    : -1;
+  if (queued >= 0) {
+    S.items[queued].el.before(item.el);
+    S.items.splice(queued, 0, item);
+  } else {
+    ui.msgInner.append(item.el);
+    S.items.push(item);
+  }
   if (bulk) return item;
   if (item.type === "user") {
     clampLongUsers([item]);
@@ -507,14 +517,16 @@ function queueNote(item, state) {
     "div",
     { class: "queue-note" },
     h("span", { class: "shimmer" }, "排队中，等上一条回复完"),
-    editButton(item, true),
     h("button", { class: "queue-jump", title: "停掉正在进行的回复，马上处理这条", onclick: () => void doAction("jump", item.id) }, "打断并发送"),
+    editButton(item, true),
   );
 }
 
 /** state：queued / dropped / null（轮到它了，去掉标记） */
 function setQueueState(item, state) {
   item.queued = state === "queued";
+  const actions = item.el.querySelector(".user-actions");
+  if (actions) actions.hidden = item.queued;
   const next = state ? queueNote(item, state) : null;
   if (item.queueEl && next) item.queueEl.replaceWith(next);
   else if (item.queueEl) item.queueEl.remove();
@@ -534,7 +546,7 @@ function renderItem(item) {
         renderUserFiles(item.files),
         item.text ? (item.bubble = h("div", { class: "msg-user" }, origin ? h("span", { class: "origin" }, origin) : null, item.text)) : null,
         (item.queueEl = item.queued ? queueNote(item, "queued") : null),
-        h("div", { class: "user-actions" },
+        h("div", { class: "user-actions", hidden: item.queued },
           item.text ? h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(item.text) }, icon("copy")) : null,
           editButton(item),
         ),

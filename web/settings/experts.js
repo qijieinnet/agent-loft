@@ -136,7 +136,7 @@ function checkList(items, picked, empty) {
 function openEditor(data, e, reload, preset) {
   const src = e ?? preset ?? {};
   const name = h("input", { value: src.name ?? "", maxlength: "40", placeholder: "比如：证券观察员" });
-  const avatar = avatarPicker(src, () => engine.value, !e);
+  const avatar = avatarPicker(src, !e);
   const desc = h("input", { value: src.description ?? "", maxlength: "500", placeholder: "一句话说它是干什么的（选专家时、当子智能体时都看这句）" });
   const engine = h(
     "select",
@@ -189,7 +189,6 @@ function openEditor(data, e, reload, preset) {
     subField.hidden = eng !== "claude";
     baseField.hidden = eng !== "claude";
     perms.setEngine(eng);
-    avatar.refresh();
     void models.load(eng);
   };
   const sync = () => (cwdField.hidden = perms.access() === "web");
@@ -305,18 +304,18 @@ function permChecks(src) {
 const AVATAR_PX = 128;
 
 /**
- * 头像：点一下选图片，居中裁成正方形、缩到 128px 再上传。没传就用引擎的图标（以前设过 emoji 的还显示 emoji）。
+ * 头像：点一下选图片，居中裁成正方形、缩到 128px 再上传。没传时显示加号。
  * src.avatar 是已有头像的地址；isNew（复制一份）时把它读成 data URL 一起带上。
  * payload()：没动过就不带 avatar（服务端沿用），去掉了带空字符串
  */
-function avatarPicker(src, engineOf, isNew) {
+function avatarPicker(src, isNew) {
   let value; // undefined = 没动过；"" = 去掉；data URL = 新的
   let shown = src.avatar || "";
-  const preview = h("button", { type: "button", class: "avatar-preview", title: "上传头像" });
+  const preview = h("button", { type: "button", class: "avatar-preview", title: "上传头像", "aria-label": "上传头像" });
   const file = h("input", { type: "file", accept: "image/*", hidden: true });
   const remove = h("button", { type: "button", class: "btn small" }, "去掉");
   const refresh = () => {
-    fill(preview, shown ? h("img", { src: shown, alt: "" }) : !value && value !== "" && src.icon ? h("span", { class: "avatar-emoji" }, src.icon) : agentIcon(engineOf()));
+    fill(preview, shown ? h("img", { src: shown, alt: "", draggable: "false" }) : icon("plus"));
     remove.hidden = !shown;
   };
   preview.onclick = () => file.click();
@@ -347,9 +346,9 @@ function avatarPicker(src, engineOf, isNew) {
       })
       .catch(() => {});
   }
+  refresh();
   return {
-    el: h("div", { class: "avatar-field" }, preview, h("div", { class: "avatar-btns" }, h("button", { type: "button", class: "btn small", onclick: () => file.click() }, "上传"), remove), file),
-    refresh,
+    el: h("div", { class: "avatar-field" }, preview, remove, file),
     payload: () => (value === undefined ? {} : { avatar: value }),
   };
 }

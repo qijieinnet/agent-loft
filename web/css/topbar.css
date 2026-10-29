@@ -10,7 +10,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  padding: calc(8px + env(safe-area-inset-top)) 12px 8px 8px;
   min-height: 52px;
   /*
    * iOS 26+ 的主屏 PWA 会在页面顶端叠一层系统的模糊渐变（Liquid Glass 边缘效果），CSS 关不掉。
@@ -152,7 +152,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
 }
 
 /* 标题前的专家头像：点一下 / 鼠标停上去弹出专家信息卡 */
@@ -163,7 +163,6 @@
   width: 28px;
   height: 28px;
   padding: 0;
-  margin-left: 2px;
   border-radius: 50%;
   line-height: 1;
   color: var(--fg-soft);
@@ -300,7 +299,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 0 4px;
+  padding: 0 4px 0 0;
 }
 
 .pill {

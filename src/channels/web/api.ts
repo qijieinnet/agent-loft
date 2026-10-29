@@ -950,12 +950,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const seq = hub.currentSeq();
       // 进行中的这一轮，agent 的记录里可能已经写进去了一部分，和 live 重复：
       // 记录里最后一条用户消息就是这一轮的那条时，从它起砍掉，交给 live 来画
-      const liveUser = live.find((e) => e.ev.type === "user")?.ev as { text?: string } | undefined;
-      if (liveUser) {
+      const liveUser = live.find((e) => e.ev.type === "user" && !e.ev.queued)?.ev;
+      if (liveUser?.type === "user") {
+        const anchor = live.findLast((e) => e.ev.type === "user_anchor" && e.ev.id === liveUser.id)?.ev;
         const lastUser = messages.map((m) => m.role).lastIndexOf("user");
         const norm = (t: string) => t.replace(/\s+/g, " ").trim();
         const want = norm(liveUser.text ?? "");
-        if (lastUser >= 0 && want && norm(messages[lastUser]!.text).startsWith(want.slice(0, 200))) {
+        const sameAnchor = anchor?.type === "user_anchor" && messages[lastUser]?.anchor === anchor.anchor;
+        if (lastUser >= 0 && (sameAnchor || (want && norm(messages[lastUser]!.text).startsWith(want.slice(0, 200))))) {
           messages = messages.slice(0, lastUser);
         }
       }
