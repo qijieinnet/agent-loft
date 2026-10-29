@@ -17,7 +17,7 @@ export type SavedAttachment = {
   durationMs?: number;
 };
 
-export type UserInput = { text: string; attachments: SavedAttachment[] };
+export type UserInput = { text: string; attachments: SavedAttachment[]; id?: string };
 
 /** 给前端展示用的附件：能预览 / 下载（path 只在上传目录里有效，见 uploads.resolveUploadFile） */
 export type AttachmentInfo = { kind: AttachmentKind; name: string; path: string; size?: number };
@@ -88,6 +88,8 @@ export type TurnResult = {
 };
 
 export type AgentEvents = {
+  /** 用户消息在 agent 记录里的位置，用于回退 */
+  onUserAnchor?: (input: UserInput, anchor: string) => void;
   /** 一轮开始（agent 真正开始处理） */
   onTurnStart?: () => void;
   /** 过程信息：思考、工具调用等，一行摘要 */
@@ -178,7 +180,7 @@ export type HistoryMessage = {
   todos?: TodoItem[];
   /** 毫秒时间戳；助手消息是这一轮结束的时间 */
   ts?: number;
-  /** 助手消息：从这条回复处分叉用的位置（见 AgentDriver.forkAt） */
+  /** 消息在 agent 记录里的位置：用户消息用于回退，助手消息用于分叉 */
   anchor?: string;
   /** 助手消息：这一轮的用时 / 费用 / tokens（agent-loft 自己记的，agent 记录里没有） */
   footer?: string;
@@ -242,6 +244,8 @@ export type InterruptOptions = { keepQueue?: boolean; first?: UserInput };
 export interface AgentSession {
   readonly sessionId: string | undefined;
   send(input: UserInput): void;
+  /** 仅移除尚未开始的指定输入，不中断当前回复 */
+  cancelQueued?(input: UserInput): boolean;
   interrupt(opts?: InterruptOptions): Promise<void>;
   setModel(model?: string, effort?: string): Promise<void>;
   describeRuntime(): Promise<RuntimeInfo>;
@@ -279,6 +283,8 @@ export interface AgentDriver {
    * 那条回复为止（含），不给就整条复制。原会话不受影响。
    */
   forkAt?(id: string, cwd: string, anchor?: string): Promise<string>;
+  /** 保留指定用户消息之前的上下文；第一条返回 undefined，下一次发送新建会话 */
+  rewindTo?(id: string, cwd: string, anchor: string): Promise<string | undefined>;
   /** 有的 agent（Claude）要借一个活着的会话才能问到模型列表 */
   listModels(session: AgentSession): Promise<ModelInfo[]>;
   /** 不依赖会话的模型列表，设置页的下拉框用 */

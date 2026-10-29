@@ -4,7 +4,8 @@ import { userScrolled } from "./messages.js";
 
 // ---------- 消息区右边的快速定位（像网页版 ChatGPT） ----------
 // 每条用户消息一道短横线，竖着排在滚动条旁边，正看到的那条高亮；平时淡淡的，滚动时清楚些。
-// 鼠标移上去展开成列表，显示每条消息的开头，点一下跳过去。用户消息少于 3 条时不显示；窄屏（手机）不显示。
+// 鼠标移上去展开成列表，显示每条消息的开头，点一下跳过去。用户消息少于 3 条时不显示。
+// 手机只在滚动和操作刻度时显示，停止后自动隐藏，点刻度直接跳转。
 
 const MIN_USERS = 3;
 let entries = [];
@@ -12,11 +13,18 @@ let activeIdx = -1;
 let scheduled = false;
 let scrollRaf = 0;
 let scrollingTimer = 0;
+let builtFor = null;
 
 export function createNav() {
+  resetScrolling();
+  builtFor = null;
+  entries = [];
   ui.navTicks = h("div", { class: "msg-nav-ticks" });
   ui.navPanel = h("div", { class: "msg-nav-panel" });
-  ui.nav = h("nav", { class: "msg-nav", hidden: true, "aria-label": "消息快速定位", onpointerenter: revealActiveRow }, ui.navTicks, ui.navPanel);
+  ui.nav = h("nav", { class: "msg-nav", hidden: true, "aria-label": "消息快速定位", onpointerenter: revealActiveRow, onpointerdown: markScrolling }, ui.navTicks, ui.navPanel);
+  ui.navTicks.addEventListener("scroll", () => {
+    if (ui.nav.classList.contains("scrolling")) markScrolling();
+  }, { passive: true });
   ui.messages.addEventListener("scroll", onScroll, { passive: true });
   return ui.nav;
 }
@@ -41,6 +49,8 @@ function snippet(item) {
 function build() {
   if (!ui.nav) return;
   const users = S.view ? [] : S.items.filter((it) => it.type === "user" && it.el?.isConnected);
+  if (builtFor !== S.current || users.length < MIN_USERS) resetScrolling();
+  builtFor = S.current;
   ui.nav.hidden = users.length < MIN_USERS;
   activeIdx = -1;
   if (ui.nav.hidden) {
@@ -73,11 +83,23 @@ function jump(item) {
   ui.messages.scrollTo({ top: Math.max(0, item.el.offsetTop - covered() - 12), behavior: "smooth" });
 }
 
-function onScroll() {
+function resetScrolling() {
+  clearTimeout(scrollingTimer);
+  cancelAnimationFrame(scrollRaf);
+  scrollRaf = 0;
+  ui.nav?.classList.remove("scrolling");
+}
+
+function markScrolling() {
   if (!entries.length) return;
   ui.nav.classList.add("scrolling");
   clearTimeout(scrollingTimer);
   scrollingTimer = setTimeout(() => ui.nav.classList.remove("scrolling"), 1200);
+}
+
+function onScroll() {
+  if (!entries.length) return;
+  markScrolling();
   if (scrollRaf) return;
   scrollRaf = requestAnimationFrame(() => {
     scrollRaf = 0;
@@ -87,6 +109,7 @@ function onScroll() {
 
 /** 正看到的：顶部往下三分之一处以上、最后一条用户消息；已经滚到底就是最后一条 */
 function updateActive() {
+  if (!entries.length) return;
   const m = ui.messages;
   const line = m.scrollTop + covered() + m.clientHeight * 0.3;
   let idx = 0;

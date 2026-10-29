@@ -33,9 +33,13 @@ setInterval(() => {
   }
 }, 1000);
 
-/** 老版本记下的脚注是「用时 1234.5s」，显示时也换成时 / 分 / 秒 */
+const tokenCount = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
+/** 显示脚注时换算用时和 token 单位，历史回复也采用同样的格式 */
 export function tidyFooter(footer) {
-  return footer?.replace(/用时 ([\d.]+)s/, (_, s) => `用时 ${formatDuration(Number(s) * 1000)}`) ?? "";
+  return footer
+    ?.replace(/用时 ([\d.]+)s/, (_, s) => `用时 ${formatDuration(Number(s) * 1000)}`)
+    .replace(/\b(\d+) tokens\b/g, (_, n) => `${tokenCount.format(Number(n))} tokens`) ?? "";
 }
 
 /** 回复下面的时间：今天只显示时分，今年显示月日，再早带上年份 */

@@ -3,6 +3,7 @@ import { api } from "../lib/api.js";
 import { desktop, remoteTabs, S, ui } from "../state.js";
 import { baseName } from "./topbar.js";
 import { newDraft, openConversation } from "./messages.js";
+import { convExpert, expertIcon } from "./experts.js";
 import { leaveRemote } from "./remote.js";
 import { reportShellState } from "../lib/shell.js";
 
@@ -227,6 +228,13 @@ export function agentLabel(id) {
   return S.agents.find((a) => a.id === id)?.label ?? id;
 }
 
+/** 会话名后面的专家图标，鼠标悬停在会话行上时显示 */
+function convExpertMark(c) {
+  if (!c) return null;
+  const expert = convExpert(c);
+  return h("span", { class: "expert-mark", title: `专家：${expert.name}` }, expertIcon(expert, "expert-mark-icon"));
+}
+
 function agentShort(id) {
   return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
 }
@@ -304,15 +312,6 @@ function setProjectOrder(order) {
 let dirDrag = null;
 let sidebarStale = false;
 
-/** 「最近」「项目」分组标题：点击折叠 / 展开，hover 时显示箭头 */
-function groupHead(label, id, folded) {
-  return h(
-    "button",
-    { class: `conv-group${folded ? " collapsed" : ""}`, title: folded ? "展开" : "折叠", onclick: () => toggleSide("folded", id) },
-    label,
-    h("span", { class: "chev", html: ICON.down }),
-  );
-}
 function toggleSide(list, id) {
   const set = new Set(sideState[list]);
   set.has(id) ? set.delete(id) : set.add(id);
@@ -478,26 +477,20 @@ export function renderSidebar() {
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
       // 定时任务的专用对话
       c.taskId ? h("span", { class: "brand-icon lead task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
-      // 自定义专家的对话：前面挂专家的头像（以前的是 emoji）
-      (c.expert?.avatar || c.expert?.icon) && !c.expert.builtin
-        ? h("span", { class: "brand-icon lead expert-mark", title: `专家：${c.expert.name}` }, c.expert.avatar ? h("img", { src: c.expert.avatar, alt: "" }) : c.expert.icon)
-        : null,
       h("span", { class: "title" }, convTitle(c)),
+      convExpertMark(c),
       fold ? caret(fold.folded, fold.toggle) : null,
       status(fold?.folded ? fold.keys : [c.key]),
     );
 
-  // ---- 最近：Web 会话 + 每个飞书机器人一行（点开它最近活跃的聊天），按活跃时间混排 ----
-  // 分叉出来的对话挂在主对话下面，整棵树按里面最近活跃的那条排
-  const recent = [];
-  for (const node of forkForest(visible.filter((c) => c.channel !== "feishu"))) {
-    recent.push({ at: node.at, el: renderForkNode(node, (c, orphan, fold) => convRow(c, "", `${agentLabel(c.agent)} · ${c.cwd}`, orphan, fold)) });
-  }
+  const nodes = [];
+  // 飞书机器人独立显示在文件夹后面，点击打开它最近活跃的聊天
+  const botRows = [];
   for (const bot of S.bots) {
     const convs = visible.filter((c) => c.channel === "feishu" && c.channelId === bot.id);
     if (bot.enabled === false && convs.length === 0) continue;
     const latest = convs[0];
-    recent.push({
+    botRows.push({
       at: latest?.activeAt ?? 0,
       el: h(
         "button",
@@ -509,23 +502,13 @@ export function renderSidebar() {
         },
         h("span", { class: "brand-icon lead", title: "飞书", html: ICON.feishu }),
         h("span", { class: "title" }, bot.name),
+        convExpertMark(latest),
         status(convs.map((c) => c.key)),
       ),
     });
   }
-  recent.sort((a, b) => b.at - a.at);
-  const recentFolded = sideState.folded.includes("@recent");
-  const nodes = [groupHead("最近", "@recent", recentFolded)];
-  if (!recentFolded) {
-    const rs = pages.recent;
-    const shown = loadedPrefix(rs, recent);
-    if (shown.length === 0 && !rs.loading) nodes.push(h("div", { class: "conv-empty" }, "还没有会话"));
-    nodes.push(...shown.slice(0, rs.show).map((r) => r.el));
-    const btn = moreButton(rs, shown.length, RECENT_LIMIT, (limit) => fetchPage(rs, { scope: "recent", limit: String(limit) }));
-    if (btn) nodes.push(btn);
-  }
 
-  // ---- 项目：Web 会话按工作目录分组，目录按用户排的顺序（见 orderProjectDirs） ----
+  // ---- Web 会话直接按工作目录分组，目录按用户排的顺序（见 orderProjectDirs） ----
   const byDir = new Map();
   for (const c of visible.filter((c) => c.channel === "web")) {
     if (!byDir.has(c.cwd)) byDir.set(c.cwd, []);
@@ -542,11 +525,9 @@ export function renderSidebar() {
   // 目录行要全部显示：服务端给了每个目录最近的活跃时间，加上本地已有的（刚建的、刚变活跃的）
   const dirAt = new Map(pages.dirAt);
   for (const [dir, convs] of byDir) dirAt.set(dir, Math.max(dirAt.get(dir) ?? 0, convs[0].activeAt));
-  const projFolded = sideState.folded.includes("@projects");
-  if (dirAt.size) nodes.push(groupHead("项目", "@projects", projFolded));
   projDirsByActivity = [...dirAt.keys()].sort((a, b) => dirAt.get(b) - dirAt.get(a));
   projDirs = orderProjectDirs(projDirsByActivity);
-  if (dirAt.size && !projFolded) {
+  if (dirAt.size) {
     const clearDrop = () => ui.convList.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
     const endDrag = () => {
       dirDrag = null;
@@ -640,6 +621,8 @@ export function renderSidebar() {
       if (btn) nodes.push(h("div", { class: "sub-more" }, btn));
     }
   }
+  nodes.push(...botRows.sort((a, b) => b.at - a.at).map((r) => r.el));
+  if (!nodes.length) nodes.push(h("div", { class: "conv-empty" }, "还没有会话"));
   paintList(nodes, askKeys.size);
 }
 
@@ -652,8 +635,11 @@ function paintList(nodes, asks) {
   markClipped();
   if (!clipObserver) {
     clipObserver = new ResizeObserver(() => markClipped());
-    clipObserver.observe(ui.convList);
   }
+  clipObserver.disconnect();
+  clipObserver.observe(ui.convList);
+  // hover 显示专家图标时，标题的可用宽度也会变化
+  for (const el of ui.convList.querySelectorAll(".conv-item .title")) clipObserver.observe(el);
   if (hovered) {
     requestAnimationFrame(() => {
       const el = ui.convList.querySelector(".conv-item:hover .title");

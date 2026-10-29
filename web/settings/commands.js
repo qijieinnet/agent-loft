@@ -2,7 +2,7 @@ import { fill, h, icon } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { agentLabel } from "../views/sidebar.js";
 import { confirmDialog, modal } from "../lib/overlay.js";
-import { commandUsage, currentAgentId, oneLine, slash } from "../views/slash.js";
+import { clearCommandCache, commandUsage, currentAgentId, oneLine, preloadCommands } from "../views/slash.js";
 import { field, hasDirty, markClean, markDirty, saveButton, saveConfig } from "./common.js";
 
 /**
@@ -239,7 +239,10 @@ export function commandsTab(cfg, page) {
 
   const save = async (prefs) => {
     const ok = await saveConfig(cfg, { commands: { [agent]: prefs } });
-    slash.cache.clear();
+    if (ok) {
+      clearCommandCache();
+      preloadCommands();
+    }
     return ok;
   };
   const prefsOf = (rows) => ({

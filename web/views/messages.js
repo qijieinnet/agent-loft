@@ -1,4 +1,4 @@
-import { fill, h, icon, starsLoader } from "../lib/dom.js";
+import { fill, h, icon, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { clockTime, liveDuration, serverNow, setServerTime, tidyFooter } from "../lib/time.js";
 import { copyText, patchMarkdown, renderMarkdown } from "../lib/markdown.js";
@@ -7,13 +7,14 @@ import { WS } from "../lib/ws.js";
 import { agentLabel, convTitle, renderSidebar } from "./sidebar.js";
 import { baseName, renderContext, renderTopbar, updateCtxVisibility, usableAgents } from "./topbar.js";
 import { insertCard, renderInteraction, upsertInteraction } from "./interaction.js";
-import { renderChips, setBusy } from "./composer.js";
+import { renderChips, setBusy, updateSendBtn } from "./composer.js";
 import { renderScheduled } from "./schedule.js";
 import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
 import { scheduleNav } from "./msg-nav.js";
 import { linkReplyFiles } from "./file-preview.js";
 import { setTodos } from "./todos.js";
 import { expertIcon, findExpert } from "./experts.js";
+import { preloadCommands } from "./slash.js";
 
 // ---------- 打开会话 ----------
 
@@ -48,6 +49,7 @@ export function newDraft() {
   renderSidebar();
   scheduleNav();
   ui.input?.focus();
+  preloadCommands();
 }
 
 export function renderEmpty() {
@@ -109,6 +111,7 @@ export async function openConversation(key) {
   const token = ++S.loadToken;
   if (S.current && S.current !== key) WS.raw({ t: "unsub", key: S.current });
   S.current = key;
+  if (S.convs.has(key)) preloadCommands();
   S.items = [];
   S.turnAi = null;
   turnStartAt = null;
@@ -145,6 +148,7 @@ export async function openConversation(key) {
   // 侧栏分页：打开的可能是还没拉到的那条（通知、地址里带的），拿到了就补进侧栏
   const known = S.convs.has(key);
   S.convs.set(key, data.info);
+  preloadCommands();
   if (!known) renderSidebar();
   S.allowedAgents = data.allowedAgents;
   if (Number.isFinite(data.serverTime)) setServerTime(data.serverTime);
@@ -160,7 +164,7 @@ export async function openConversation(key) {
   bulk = true;
   try {
     for (const m of data.messages) {
-      if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null });
+      if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null, anchor: m.anchor });
       else if (m.role === "question") addItem({ type: "ix", id: m.question.id, ix: historyQuestion(key, m) });
       else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor, segment: m.segment });
     }
@@ -458,13 +462,52 @@ function clampLongUsers(items) {
   }
 }
 
-/** 排队中的消息下面：「排队中 · 打断并发送」；停止、会话切换后没发出去的：「没有发出」 */
+async function editUserMessage(item, queued, button) {
+  const key = S.current;
+  if (!key || S.editingMessage || S.sending) return;
+  S.editingMessage = key;
+  button.disabled = true;
+  updateSendBtn();
+  try {
+    const result = await api(`/api/conversations/${encodeURIComponent(key)}/${queued ? "cancel-queued" : "rewind"}`, {
+      method: "POST",
+      body: { id: item.id, anchor: item.anchor, sessionId: S.convs.get(key)?.sessionId },
+    });
+    if (S.current !== key) return;
+    if (!queued && !result.queued) await openConversation(key);
+    if (S.current !== key) return;
+    for (const upload of S.uploads) if (upload.url) URL.revokeObjectURL(upload.url);
+    S.uploads = result.draft.uploads;
+    ui.input.value = result.draft.text;
+    renderChips();
+    ui.input.dispatchEvent(new Event("input", { bubbles: true }));
+    ui.input.focus();
+    if (result.draft.missing) toast("部分附件已被清理，请重新添加");
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    S.editingMessage = null;
+    button.disabled = false;
+    updateSendBtn();
+  }
+}
+
+function editButton(item, queued = false) {
+  const label = queued ? "撤销并编辑" : "回退到此处";
+  return h("button", {
+    class: "icon-btn", title: label, "aria-label": label,
+    onclick: (e) => void editUserMessage(item, queued, e.currentTarget),
+  }, icon("undo"));
+}
+
+/** 排队中的消息可立即发送或撤销编辑；停止后没发出去的显示「没有发出」 */
 function queueNote(item, state) {
   if (state === "dropped") return h("div", { class: "queue-note dropped" }, "没有发出");
   return h(
     "div",
     { class: "queue-note" },
     h("span", { class: "shimmer" }, "排队中，等上一条回复完"),
+    editButton(item, true),
     h("button", { class: "queue-jump", title: "停掉正在进行的回复，马上处理这条", onclick: () => void doAction("jump", item.id) }, "打断并发送"),
   );
 }
@@ -491,9 +534,10 @@ function renderItem(item) {
         renderUserFiles(item.files),
         item.text ? (item.bubble = h("div", { class: "msg-user" }, origin ? h("span", { class: "origin" }, origin) : null, item.text)) : null,
         (item.queueEl = item.queued ? queueNote(item, "queued") : null),
-        item.text
-          ? h("div", { class: "user-actions" }, h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(item.text) }, icon("copy")))
-          : null,
+        h("div", { class: "user-actions" },
+          item.text ? h("button", { class: "icon-btn", title: "复制", onclick: () => copyText(item.text) }, icon("copy")) : null,
+          editButton(item),
+        ),
       );
     }
     case "ai":
@@ -642,6 +686,21 @@ export function applyEvent(env) {
   S.seq.set(env.key, env.seq);
   const ev = env.ev;
   switch (ev.type) {
+    case "user_anchor": {
+      const item = S.items.find((it) => it.type === "user" && it.id === ev.id);
+      if (item) item.anchor = ev.anchor;
+      return;
+    }
+    case "history_reset": {
+      if (S.editingMessage === env.key) return;
+      const uploads = S.uploads;
+      void openConversation(env.key).then(() => {
+        if (S.current !== env.key) return;
+        S.uploads = uploads;
+        renderChips();
+      });
+      return;
+    }
     case "user": {
       // 排队的消息：正在进行的那一轮照常在上面接着输出，这条等轮到它（queue 事件）再挂占位
       const queued = !!ev.queued;
@@ -669,6 +728,14 @@ export function applyEvent(env) {
     }
     case "queue": {
       const it = S.items.find((i) => i.type === "user" && i.id === ev.id);
+      if (it && ev.state === "removed") {
+        it.el.remove();
+        S.items = S.items.filter((item) => item !== it);
+        if (ui.pinEl === it.el) ui.pinEl = null;
+        scheduleNav();
+        afterLayout();
+        return;
+      }
       if (it) setQueueState(it, ev.state === "dropped" ? "dropped" : null);
       // 轮到它了（上一轮刚出结果）：挂上「思考中」占位，用时从现在算。被当成提问的回答时那一轮还在跑，不用挂
       if (ev.state === "started" && (!S.turnAi || S.turnAi.done)) {

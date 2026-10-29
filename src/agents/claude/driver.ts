@@ -234,6 +234,7 @@ export class ClaudeDriver implements AgentDriver {
         flush();
         out.push({
           role: "user",
+          anchor: msg.uuid,
           text,
           ...(attachments.length ? { attachments } : {}),
           ...(Number.isFinite(ts) ? { ts } : {}),
@@ -286,6 +287,16 @@ export class ClaudeDriver implements AgentDriver {
     }
     const res = await forkSession(id, { dir: cwd, ...(anchor ? { upToMessageId: anchor } : {}) });
     return res.sessionId;
+  }
+
+  async rewindTo(id: string, cwd: string, anchor: string): Promise<string | undefined> {
+    if (!SESSION_ID.test(id)) throw new Error("会话 id 不对");
+    const raw = await getSessionMessages(id, { dir: cwd });
+    const index = raw.findIndex((m) => m.uuid === anchor && m.type === "user");
+    if (index < 0) throw new Error("在会话记录里找不到这条消息，请刷新后重试");
+    const previous = raw[index - 1];
+    if (!previous) return undefined;
+    return (await forkSession(id, { dir: cwd, upToMessageId: previous.uuid })).sessionId;
   }
 
   async listModels(session: AgentSession): Promise<ModelInfo[]> {

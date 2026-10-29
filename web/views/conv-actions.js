@@ -1,4 +1,4 @@
-import { agentIcon, fill, h, toast } from "../lib/dom.js";
+import { agentIcon, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { S, ui } from "../state.js";
@@ -7,6 +7,7 @@ import { agentCatalog, baseName, catalogDefaults, draftPick, modelName, renderCo
 import { closeMenu, confirmDialog, modal, placePopover, showPopover } from "../lib/overlay.js";
 import { newDraft, openConversation, renderEmpty } from "./messages.js";
 import { setDraftExpert } from "./experts.js";
+import { preloadCommands } from "./slash.js";
 
 // ---------- 会话操作 ----------
 
@@ -47,6 +48,7 @@ export async function forkConversation(anchor, key = S.current) {
 export function switchAgent(id) {
   if (S.current) return;
   setDraftExpert(id);
+  preloadCommands();
   renderTopbar();
   renderEmpty();
 }
@@ -209,6 +211,8 @@ export async function changeCwd(pick) {
   let showHidden = localStorage.getItem("aim.cwdHidden") === "1";
   let listing = null;
   let seq = 0;
+  let loading = false;
+  let creating = false;
 
   const crumbs = h("div", { class: "dir-crumbs" });
   const list = h("div", { class: "dir-list" });
@@ -225,23 +229,44 @@ export async function changeCwd(pick) {
       void load(manual.value.trim());
     }
   };
+  const folderName = h("input", { class: "dir-manual", placeholder: "文件夹名称", "aria-label": "文件夹名称", maxlength: "255", required: true, autocomplete: "off", spellcheck: "false" });
+  const create = h("button", { type: "submit", class: "btn primary small" }, "创建");
+  const cancelCreate = h("button", { type: "button", class: "btn small", onclick: () => (createForm.hidden = true) }, "取消");
+  const createForm = h("form", {
+    class: "dir-create", hidden: true,
+    onsubmit: (e) => {
+      e.preventDefault();
+      void createFolder();
+    },
+  }, folderName, create, cancelCreate);
+  const newFolder = h("button", {
+    type: "button", class: "btn small", disabled: true,
+    onclick: () => {
+      createForm.hidden = false;
+      folderName.value = "";
+      folderName.focus();
+    },
+  }, icon("plus"), "新建文件夹");
   const body = h(
     "div",
     { class: "modal-body" },
     crumbs,
-    h("div", { class: "row", style: { gap: "8px", alignItems: "center" } }, manual, h("label", { class: "check" }, hiddenBox, "显示隐藏")),
+    manual,
+    h("div", { class: "dir-actions" }, h("label", { class: "check" }, hiddenBox, "显示隐藏"), newFolder),
+    createForm,
     list,
   );
   const go = h("button", { class: "btn primary", disabled: true }, goLabel);
   const note = h("span", { class: "muted grow" }, pick ? "" : draft ? "发送第一条消息时在这个目录开会话" : "切换后开新会话");
   const close = modal({
     title: pick || draft ? "选择工作目录" : "切换工作目录",
+    className: "dir-picker",
     body,
     foot: h("div", { class: "modal-foot", style: { alignItems: "center" } }, note, go),
   });
 
   go.onclick = async () => {
-    if (!listing) return;
+    if (!listing || loading || creating) return;
     close();
     if (pick) {
       pick.onPick(listing.path);
@@ -250,11 +275,45 @@ export async function changeCwd(pick) {
     if (draft) {
       S.draftCwd = listing.path === listing.root ? null : listing.path;
       S.draftCwdPicked = true;
+      preloadCommands();
       if (!S.current) renderEmpty();
       return;
     }
     await doAction("cd", listing.path);
   };
+
+  function syncActions() {
+    go.disabled = loading || creating || !listing || listing.path === current;
+    newFolder.disabled = loading || creating || !listing;
+    create.disabled = loading || creating;
+    cancelCreate.disabled = creating;
+    folderName.disabled = creating;
+    create.textContent = creating ? "创建中…" : "创建";
+  }
+
+  async function createFolder() {
+    const name = folderName.value.trim();
+    if (!listing || loading || creating || !name) return;
+    const my = seq;
+    const parent = listing.path;
+    creating = true;
+    syncActions();
+    try {
+      const data = await api("/api/dirs", { method: "POST", body: { path: parent, name } });
+      if (my !== seq || !body.isConnected) return;
+      createForm.hidden = true;
+      await load(data.path);
+    } catch (err) {
+      if (body.isConnected) {
+        toast(err.message);
+        folderName.disabled = false;
+        folderName.focus();
+      }
+    } finally {
+      creating = false;
+      syncActions();
+    }
+  }
 
   function renderCrumbs() {
     const parts = listing.rel ? listing.rel.split(/[\\/]/) : [];
@@ -302,16 +361,16 @@ export async function changeCwd(pick) {
 
   async function load(rel) {
     const my = ++seq;
-    go.disabled = true;
+    loading = true;
+    createForm.hidden = true;
+    syncActions();
     fill(list, h("span", { class: "spinner" }));
     try {
       const data = await api(`/api/dirs?path=${encodeURIComponent(rel)}`);
       if (my !== seq) return;
       listing = data;
       manual.value = "";
-      go.disabled = false;
       go.textContent = data.path === current ? "已是当前目录" : goLabel;
-      if (data.path === current) go.disabled = true;
       renderCrumbs();
       renderList();
     } catch (err) {
@@ -322,8 +381,12 @@ export async function changeCwd(pick) {
       }
       // 进不去就留在原地
       toast(err.message);
-      go.disabled = listing.path === current;
       renderList();
+    } finally {
+      if (my === seq) {
+        loading = false;
+        syncActions();
+      }
     }
   }
 

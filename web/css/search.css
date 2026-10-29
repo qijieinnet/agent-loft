@@ -1,7 +1,7 @@
 /* ---------- 搜索会话弹窗（views/conv-search.js） ---------- */
 
 /* 靠上显示：结果多少不同时输入框不跳 */
-.search-overlay {
+.overlay.search-overlay {
   align-items: flex-start;
   padding-top: 12vh;
 }
@@ -9,7 +9,8 @@
 .search-modal {
   width: 100%;
   max-width: 620px;
-  max-height: 72vh;
+  height: min(600px, 72dvh);
+  max-height: 72dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -20,6 +21,7 @@
 
 .search-head {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 10px;
   padding: 10px 10px 10px 16px;
@@ -107,9 +109,10 @@
 }
 
 .search-results {
+  flex: 1;
   overflow-y: auto;
   padding: 6px;
-  min-height: 120px;
+  min-height: 0;
 }
 
 .search-label {
@@ -200,11 +203,12 @@
 
 /* 手机：铺满宽度，贴着顶部 */
 @media (max-width: 768px) {
-  .search-overlay {
+  .overlay.search-overlay {
     padding: calc(8px + env(safe-area-inset-top)) 8px 8px;
   }
 
   .search-modal {
+    height: min(600px, calc(100dvh - env(safe-area-inset-top) - 24px));
     max-height: calc(100% - 8px);
   }
 

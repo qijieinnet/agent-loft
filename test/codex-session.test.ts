@@ -43,7 +43,7 @@ function makeSession(opts: Partial<SessionOptions> = {}, host = async (_spec: In
     onSessionId: () => {},
   };
   const session = new CodexSession({ cwd: "/tmp", uploadsDir: "/tmp", ...opts }, events, host);
-  return { session, log };
+  return { session, log, events };
 }
 
 function expert(): ExpertRuntime {
@@ -145,6 +145,31 @@ test("连续发送：上一轮没结束就排队，不并发开第二个 turn", 
   const second = take("turn/start");
   assert.equal(second.params.input[0].text, "二");
   assert.deepEqual(log, ["text:回一", "result:回一"]);
+});
+
+test("撤销指定排队输入，不中断当前轮次；记录用户消息对应的轮次位置", async () => {
+  calls.length = 0;
+  const { session, events } = makeSession();
+  const anchors: string[] = [];
+  events.onUserAnchor = (input, anchor) => anchors.push(`${input.text}:${anchor}`);
+  const first = { text: "第一条", attachments: [] };
+  const withdrawn = { text: "撤销这条", attachments: [] };
+  const last = { text: "最后一条", attachments: [] };
+  session.send(first);
+  const t1 = await startTurn();
+  session.send(withdrawn); session.send(last);
+  assert.equal(session.cancelQueued(first), false);
+  assert.equal(session.cancelQueued(withdrawn), true);
+  assert.equal(session.cancelQueued(withdrawn), false);
+  assert.equal(calls.some((call) => call.method === "turn/interrupt"), false);
+  notify("turn/completed", { threadId: t1.threadId, turn: { id: t1.turnId, status: "completed" } });
+  await tick();
+  const next = take("turn/start");
+  assert.equal(next.params.input[0].text, "最后一条");
+  next.resolve({ turn: { id: "after-withdrawal" } });
+  await tick();
+  assert.deepEqual(anchors, [`第一条:${t1.turnId}`, "最后一条:after-withdrawal"]);
+  notify("turn/completed", { threadId: t1.threadId, turn: { id: "after-withdrawal", status: "completed" } });
 });
 
 test("第二轮启动途中点停止：拿到轮次 id 后立刻中断", async () => {

@@ -272,6 +272,7 @@ export class CodexSession implements AgentSession {
   /** 每开一轮加一：迟到的回调据此判断自己是不是已经过时 */
   private turnSeq = 0;
   private queue: UserInput[] = [];
+  private currentInput: UserInput | undefined;
   /** 启动途中就被叫停（停止或丢弃）的轮次代次：turn/start 迟到返回时，拿它的 id 补一个中断 */
   private abandoned = new Set<number>();
   /** 已经收尾过的轮次：error 通知之后还可能再来一个 turn/completed，不能收两次尾 */
@@ -543,7 +544,15 @@ export class CodexSession implements AgentSession {
     this.startTurn(input);
   }
 
+  cancelQueued(input: UserInput): boolean {
+    const index = this.queue.indexOf(input);
+    if (index < 0) return false;
+    this.queue.splice(index, 1);
+    return true;
+  }
+
   private startTurn(input: UserInput): void {
+    this.currentInput = input;
     this.replyText = "";
     this.phase = "starting";
     this.turnId = undefined;
@@ -609,6 +618,7 @@ export class CodexSession implements AgentSession {
   }
 
   private onTurnId(id: string): void {
+    if (id !== this.turnId && this.currentInput) this.events.onUserAnchor?.(this.currentInput, id);
     this.turnId = id;
     this.phase = "running";
     if (this.stopRequested) {

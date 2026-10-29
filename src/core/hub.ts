@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
 import { attachFooters, copyFooters, formatDuration, recordFooter } from "./footers.js";
+import { removeHistoryRecord, replaceConversationRecords } from "./chat-history.js";
 import { flushUsage, recordUsage, usageOf, type UsageTotals } from "./usage.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
@@ -72,7 +73,9 @@ export type ConvEvent =
   /** id：这条消息的编号，后面的 queue 事件按它对上；queued：收到时前面还有在跑 / 在等的，要排队 */
   | { type: "user"; text: string; attachments: string[]; files?: AttachmentInfo[]; origin: Origin; id?: string; queued?: boolean }
   /** 排队的消息：轮到它了（started，或者被当成提问的回答用掉了），或者没发出去（dropped：停止、会话切换…） */
-  | { type: "queue"; id: string; state: "started" | "dropped" }
+  | { type: "queue"; id: string; state: "started" | "dropped" | "removed" }
+  | { type: "user_anchor"; id: string; anchor: string }
+  | { type: "history_reset" }
   /**
    * 这里弹出过一张授权 / 提问卡（内容和状态在 interactions 里按 id 查）。只是给卡片在对话里占个位置：
    * 刷新页面时进行中的这一轮靠重放事件画出来，没有它卡片就丢了
@@ -229,9 +232,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
    * 用来告诉页面哪条消息轮到了 / 被丢了，以及「打断并发送」时把哪条挪到前面
    */
   private turnFifo = new Map<string, { id: string; input: UserInput; queued: boolean }[]>();
+  private pendingInputs = new Map<string, Map<string, { input: UserInput; cancelled: boolean }>>();
+  private rewinding = new Set<string>();
   /** 收到了、还在串行队列里没交给 agent 的消息数：这时再来的消息也算排队 */
   private waitingSends = new Map<string, number>();
-  private msgSeq = 0;
   private announced = new Set<string>();
   /** 每条会话因缓冲区溢出被丢掉的最后一个 seq */
   private truncated = new Map<string, number>();
@@ -665,6 +669,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         ...(skills ? { skills } : {}),
       },
       {
+        onUserAnchor: (input, anchor) => {
+          if (!alive() || !input.id) return;
+          this.emitEvent(key, { type: "user_anchor", id: input.id, anchor });
+        },
         onTurnStart: () => {
           if (!alive()) return;
           this.emitEvent(key, { type: "turn_start" });
@@ -923,6 +931,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
    * 才调到这里时必须传：下载期间点了停止，这条消息就不该再发出去。
    */
   send(key: string, input: UserInput, origin: Origin, gen?: InputGen, opts: { task?: TaskTurn } = {}): void {
+    if (this.rewinding.has(key)) throw new Error("会话正在回退，请稍后发送");
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
     const task = opts.task;
@@ -959,9 +968,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       attachments: input.attachments.map((a) => `${KIND_LABEL[a.kind]} ${a.name}`),
       files: input.attachments.map(attachmentInfo),
       origin,
-      id: `m${++this.msgSeq}`,
+      id: crypto.randomUUID(),
       queued: false,
     };
+    input = { ...input, id: shown.id };
     const by = `${origin.name ?? "用户"}以消息作答`;
 
     /**
@@ -998,6 +1008,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 前面有在跑的、或者还在串行队列里等着的：这条要排队
     shown.queued = this.isBusy(key) || (this.waitingSends.get(key) ?? 0) > 0;
     this.emitEvent(key, shown);
+    const waiting = { input, cancelled: false };
+    let pendingInputs = this.pendingInputs.get(key);
+    if (!pendingInputs) this.pendingInputs.set(key, (pendingInputs = new Map()));
+    pendingInputs.set(shown.id, waiting);
     const dropped = () => this.emitEvent(key, { type: "queue", id: shown.id, state: "dropped" });
     const gone = (text: string) => {
       dropped();
@@ -1006,6 +1020,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     this.waitingSends.set(key, (this.waitingSends.get(key) ?? 0) + 1);
     void this.serial(key, async () => {
       try {
+        if (waiting.cancelled) return;
         if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
         if (questionAtEntry && tryAnswer(questionAtEntry)) {
           // 被当成提问的回答用掉了：不再排队
@@ -1019,16 +1034,20 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         const expired = !task && !switchedAfterEntry && ttl > 0 && Date.now() - lastActive > ttl;
         if (expired) {
           await this.expireNow(key);
+          if (waiting.cancelled) return;
           // 清理要等旧会话 dispose，期间可能又点了停止
           if (cancelled()) return dropped();
         }
         const blocked = await this.blockedSlash(key, input.text);
+        if (waiting.cancelled) return;
         if (blocked) {
           this.emitEvent(key, { type: "notice", text: blocked });
           return gone(blocked);
         }
         this.sendNow(key, input, task ?? null, { id: shown.id, queued: shown.queued });
       } finally {
+        pendingInputs.delete(shown.id);
+        if (!pendingInputs.size) this.pendingInputs.delete(key);
         this.waitingSends.set(key, Math.max(0, (this.waitingSends.get(key) ?? 1) - 1));
       }
     });
@@ -1359,6 +1378,97 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     this.clearOldUploads(key, op.at);
     this.emitEvent(key, { type: "meta" });
     return `已换成专家「${hit.label}」，开了新会话。`;
+  }
+
+  /** 撤销一条还没开始的输入；当前回复和其他排队消息继续 */
+  cancelQueued(key: string, id: string): { text: string; attachments: AttachmentInfo[] } {
+    if (this.rewinding.has(key)) throw new Error("会话正在回退，请稍后重试");
+    const fifo = this.turnFifo.get(key) ?? [];
+    const index = fifo.findIndex((entry) => entry.id === id);
+    let input: UserInput;
+    if (index >= 0) {
+      if (index === 0 || !this.live.get(key)?.session.cancelQueued?.(fifo[index]!.input)) {
+        throw new Error("这条消息已经开始处理了，请使用「回退到此处」");
+      }
+      input = fifo.splice(index, 1)[0]!.input;
+      const tag = this.turnTags.get(key)?.splice(index, 1)[0];
+      if (tag) this.emit("task", { ...tag, key, status: "interrupted", text: "排队消息已撤销" });
+      this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
+    } else {
+      const waiting = this.pendingInputs.get(key)?.get(id);
+      const shown = (this.buffers.get(key) ?? []).find((e) => e.ev.type === "user" && e.ev.id === id);
+      if (!waiting || waiting.cancelled || shown?.ev.type !== "user" || !shown.ev.queued) {
+        throw new Error("这条消息已经不在排队了");
+      }
+      waiting.cancelled = true;
+      input = waiting.input;
+    }
+    this.buffers.set(key, (this.buffers.get(key) ?? []).filter(({ ev }) => !("id" in ev && ev.id === id && ["user", "queue", "user_anchor"].includes(ev.type))));
+    const conv = getConversation(key);
+    const owner = conv && memoryOwnerOf(conv);
+    if (owner) removeHistoryRecord(owner, key, id);
+    this.emitEvent(key, { type: "queue", id, state: "removed" });
+    return { text: stripContext(input.text), attachments: input.attachments.map(attachmentInfo) };
+  }
+
+  /** 回退的是对话上下文，已经执行过的文件修改不在此操作里回滚 */
+  async rewind(key: string, target: { id?: string; anchor?: string; sessionId?: string }): Promise<{ text: string; attachments: AttachmentInfo[]; queued?: boolean }> {
+    if (this.rewinding.has(key)) throw new Error("会话正在回退，请稍后重试");
+    const fifo = this.turnFifo.get(key) ?? [];
+    const queued = target.id && (fifo.findIndex((entry) => entry.id === target.id) > 0 || this.pendingInputs.get(key)?.has(target.id));
+    if (queued) {
+      const users = (this.buffers.get(key) ?? []).flatMap(({ ev }) => ev.type === "user" && ev.id ? [ev.id] : []);
+      const index = users.indexOf(target.id!);
+      if (index < 0) throw new Error("找不到这条排队消息，请刷新后重试");
+      const draft = this.cancelQueued(key, target.id!);
+      for (const id of users.slice(index + 1)) {
+        if (fifo.findIndex((entry) => entry.id === id) > 0 || this.pendingInputs.get(key)?.has(id)) this.cancelQueued(key, id);
+      }
+      return { ...draft, queued: true };
+    }
+    this.rewinding.add(key);
+    try {
+      return await this.switchOp(key, async (op) => {
+        const conv = getConversation(key);
+        if (!conv) throw new Error("会话不存在");
+        const driver = this.requireDriver(conv.agent);
+        if (!driver.rewindTo) throw new Error(`${driver.label} 暂不支持回退`);
+        const source = agentBinding(conv).sessionId;
+        if (target.sessionId && target.sessionId !== source) throw new Error("会话已经变化，请刷新后重试");
+        const buf = this.buffers.get(key) ?? [];
+        const anchorEvent = buf.findLast(({ ev }) => ev.type === "user_anchor" && ev.id === target.id)?.ev;
+        const anchor = target.anchor ?? (anchorEvent?.type === "user_anchor" ? anchorEvent.anchor : undefined);
+        const history = source ? attachFooters(source, await withTimeout(driver.readHistory(source, conv.cwd), "读取回退位置")) : [];
+        const index = anchor ? history.findIndex((m) => m.role === "user" && m.anchor === anchor) : -1;
+        const live = buf.find(({ ev }) => ev.type === "user" && ev.id === target.id)?.ev;
+        // 第一条尚未写入 agent 记录：清空当前会话即可，不丢失更早的上下文
+        const firstUnwritten = history.length === 0 && live?.type === "user";
+        if (index < 0 && !firstUnwritten) throw new Error("在会话记录里找不到这条消息，请稍后刷新重试");
+        const message = index >= 0 ? history[index]! : { text: live!.type === "user" ? live!.text : "", attachments: live!.type === "user" ? live!.files : [] };
+        const kept = index >= 0 ? history.slice(0, index) : [];
+        await this.drop(key, "对话已回退");
+        const sessionId = index > 0 && source && anchor ? await withTimeout(driver.rewindTo(source, conv.cwd, anchor), "回退会话") : undefined;
+        this.markSwitched(key, op.seq);
+        updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
+        if (sessionId) {
+          recordSessionOwner(sessionId, conv.owner);
+          for (const m of kept) if (m.footer) recordFooter(sessionId, m.text, m.footer);
+        }
+        const owner = memoryOwnerOf(conv);
+        if (owner) replaceConversationRecords(owner, key, kept.flatMap((m) => {
+          if (m.role === "question") return [];
+          const text = [m.text, m.attachments?.length ? `（附件：${m.attachments.map((a) => a.name).join("、")}）` : ""].filter(Boolean).join("\n");
+          return text.trim() ? [{ k: key, a: conv.agent, r: m.role === "user" ? "u" as const : "a" as const, t: text, ts: m.ts ?? conv.createdAt }] : [];
+        }));
+        this.buffers.delete(key);
+        this.truncated.set(key, this.currentSeq());
+        this.emitEvent(key, { type: "history_reset" });
+        this.emitEvent(key, { type: "meta" });
+        return { text: message.text, attachments: message.attachments ?? [] };
+      });
+    } finally {
+      this.rewinding.delete(key);
+    }
   }
 
   async stop(key: string): Promise<string> {

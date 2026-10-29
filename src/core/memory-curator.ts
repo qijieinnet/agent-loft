@@ -68,7 +68,7 @@ export function startHistoryCapture(): void {
           ? [ev.text, ev.attachments.length ? `（附件：${ev.attachments.join("、")}）` : ""].filter(Boolean).join("\n")
           : ev.text;
       if (!text.trim()) return;
-      appendRecords(owner, [{ k: env.key, a: conv.agent, r: ev.type === "user" ? "u" : "a", t: text, ts: env.ts }]);
+      appendRecords(owner, [{ k: env.key, a: conv.agent, r: ev.type === "user" ? "u" : "a", t: text, ts: env.ts, ...(ev.type === "user" && ev.id ? { id: ev.id } : {}) }]);
     } catch (err) {
       console.warn("[记忆] 记录聊天失败:", err instanceof Error ? err.message : err);
     }

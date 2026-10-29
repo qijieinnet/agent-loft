@@ -8,9 +8,10 @@ import { autosize, hideKeyboardForMenu, sendMessage, updateSendBtn } from "./com
 // ---------- 斜杠命令补全 ----------
 //
 // 输入框里只有「/xxx」（还没打空格）时弹出命令表，顺序就是设置 → 命令里排好的。
-// 列表按 agent + 会话目录缓存一分钟：Claude 的原生命令要起一次进程才问得到。
+// 列表按 agent + 工作目录缓存：提前加载，过期后先用已有列表、后台刷新。
 
-export const slash = { open: false, shown: false, items: [], index: 0, cache: new Map(), token: 0 };
+export const slash = { open: false, shown: false, items: [], index: 0, cache: new Map(), pending: new Map(), token: 0, contextKey: null };
+let cacheEpoch = 0;
 
 export function commandUsage(c) {
   return `/${c.name}${c.args ? ` ${c.args}` : ""}`;
@@ -26,15 +27,62 @@ export function currentAgentId() {
   return c?.agent ?? S.draftAgent ?? usableAgents()[0]?.id ?? "claude";
 }
 
-async function loadCommands(agent) {
-  const cacheKey = `${agent}|${S.current ?? ""}`;
-  const hit = slash.cache.get(cacheKey);
-  if (hit && Date.now() - hit.at < 60_000) return hit.list;
-  const q = S.current ? `?key=${encodeURIComponent(S.current)}` : "";
-  const data = await api(`/api/agents/${agent}/commands${q}`);
-  const list = data.commands.filter((c) => !c.hidden);
-  slash.cache.set(cacheKey, { at: Date.now(), list });
-  return list;
+function commandContext(agent = currentAgentId()) {
+  const conv = S.current ? S.convs.get(S.current) : null;
+  const cwd = conv?.cwd ?? S.draftCwd ?? S.workspaceRoot ?? "";
+  const query = new URLSearchParams({ channel: "web" });
+  if (conv) query.set("key", conv.key);
+  else if (cwd) query.set("cwd", cwd);
+  return { cacheKey: JSON.stringify([agent, cwd]), url: `/api/agents/${agent}/commands?${query}` };
+}
+
+function refreshCommands({ cacheKey, url }) {
+  const pending = slash.pending.get(cacheKey);
+  if (pending) return pending;
+  const epoch = cacheEpoch;
+  const request = api(url).then((data) => {
+    const list = data.commands.filter((c) => !c.hidden);
+    if (epoch === cacheEpoch) {
+      slash.cache.set(cacheKey, { at: Date.now(), list });
+      if (slash.open && ui.input?.isConnected && commandContext().cacheKey === cacheKey) void updateSlashMenu();
+    }
+    return list;
+  }).finally(() => {
+    if (slash.pending.get(cacheKey) === request) slash.pending.delete(cacheKey);
+  });
+  slash.pending.set(cacheKey, request);
+  return request;
+}
+
+function loadCommands(agent) {
+  const context = commandContext(agent);
+  const hit = slash.cache.get(context.cacheKey);
+  if (hit && Date.now() - hit.at < 60_000) return Promise.resolve(hit.list);
+  const request = refreshCommands(context);
+  if (hit) {
+    void request.catch(() => {});
+    return Promise.resolve(hit.list);
+  }
+  return request;
+}
+
+/** 后台预加载，不阻塞页面；输入 / 时复用同一份进行中的请求 */
+export function preloadCommands() {
+  const agent = currentAgentId();
+  if (!usableAgents().some((a) => a.id === agent)) return;
+  void loadCommands(agent).catch(() => {});
+  if (slash.open && slash.contextKey !== commandContext(agent).cacheKey) {
+    closeSlashMenu();
+    void updateSlashMenu();
+  }
+}
+
+/** 换账号、修改命令设置时作废旧缓存和在途请求的结果 */
+export function clearCommandCache() {
+  cacheEpoch++;
+  slash.cache.clear();
+  slash.pending.clear();
+  closeSlashMenu();
 }
 
 function slashQuery() {
@@ -60,6 +108,8 @@ export async function updateSlashMenu() {
   const q = slashQuery();
   if (q === null) return closeSlashMenu();
   const token = ++slash.token;
+  const contextKey = commandContext().cacheKey;
+  slash.contextKey = contextKey;
   if (!slash.open) renderSlashMenu(null);
   let list;
   try {
@@ -69,7 +119,7 @@ export async function updateSlashMenu() {
     return;
   }
   // 等待期间又打了字：以最新的那次为准
-  if (token !== slash.token || slashQuery() === null) return;
+  if (token !== slash.token || slashQuery() === null || commandContext().cacheKey !== contextKey) return;
   const items = matchCommands(list, slashQuery());
   if (items.length === 0) return closeSlashMenu();
   slash.items = items;
@@ -133,6 +183,7 @@ export function closeSlashMenu() {
   slash.shown = false;
   slash.items = [];
   slash.index = 0;
+  slash.contextKey = null;
   slash.token++;
   if (ui.slashMenu) ui.slashMenu.hidden = true;
 }

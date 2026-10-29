@@ -151,6 +151,11 @@ function hasDraft() {
 
 export function updateSendBtn() {
   if (!ui.sendBtn) return;
+  if (S.editingMessage === S.current && S.current) {
+    ui.sendBtn.disabled = true;
+    ui.sendBtn.title = "正在恢复消息…";
+    return;
+  }
   // 已经点了发送、还在等服务器确认：转圈，不能再点，避免以为没点上又点一次
   if (S.sending) {
     ui.sendBtn.innerHTML = '<span class="send-spinner"></span>';

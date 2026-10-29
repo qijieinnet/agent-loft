@@ -132,6 +132,7 @@ export class CodexDriver implements AgentDriver {
           const bareImages = attachments.length ? 0 : (item.content ?? []).filter((c) => c.type === "localImage").length;
           out.push({
             role: "user",
+            ...(turn.id ? { anchor: turn.id } : {}),
             text: bareImages ? [text, ...Array(bareImages).fill("📎 图片")].filter(Boolean).join("\n") : text,
             ...(attachments.length ? { attachments } : {}),
             ...(ts ? { ts } : {}),
@@ -173,6 +174,14 @@ export class CodexDriver implements AgentDriver {
     // 只是复制，这边不接管：等这条会话真正发消息时再由 CodexSession 去 resume
     void appServer.call("thread/unsubscribe", { threadId: res.thread.id }).catch(() => {});
     return res.thread.id;
+  }
+
+  async rewindTo(id: string, cwd: string, anchor: string): Promise<string | undefined> {
+    const res = await appServer.call<{ thread: { turns?: { id: string }[] } }>("thread/read", { threadId: id, includeTurns: true });
+    const turns = res.thread.turns ?? [];
+    const index = turns.findIndex((turn) => turn.id === anchor);
+    if (index < 0) throw new Error("在会话记录里找不到这条消息，请刷新后重试");
+    return index === 0 ? undefined : this.forkAt(id, cwd, turns[index - 1]!.id);
   }
 
   async listModels(): Promise<ModelInfo[]> {

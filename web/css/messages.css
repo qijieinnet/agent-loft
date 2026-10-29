@@ -1042,9 +1042,36 @@ a.att-file:hover {
   font-weight: 500;
 }
 
-/* 手机上没地方放，也没有悬停 */
-@media (max-width: 768px) {
+/* 手机和触屏：滚动时显示，停止后淡出；点击刻度直接跳转 */
+@media (max-width: 768px), (hover: none) {
   .msg-nav {
+    right: max(2px, env(safe-area-inset-right));
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.2s, visibility 0.2s;
+  }
+
+  .msg-nav.scrolling {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .msg-nav-ticks {
+    max-height: 45dvh;
+    padding: 4px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+  }
+
+  .msg-nav-tick {
+    width: 28px;
+    height: 18px;
+    touch-action: manipulation;
+  }
+
+  .msg-nav-panel {
     display: none;
   }
 }
@@ -1057,6 +1084,17 @@ a.att-file:hover {
   margin-top: -2px;
   font-size: 12px;
   color: var(--fg-faint);
+  flex-wrap: wrap;
+}
+
+.queue-note .icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.queue-note .icon-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .queue-note.dropped {

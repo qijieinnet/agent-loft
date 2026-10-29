@@ -13,6 +13,8 @@ import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 
 export type HistoryRecord = {
+  /** 实时用户消息的编号，撤销排队消息时用于精确移除 */
+  id?: string;
   /** 对话 key */
   k: string;
   /** agent */
@@ -80,6 +82,23 @@ export function readRecords(userId: string): HistoryRecord[] {
     }
   }
   return out;
+}
+
+function rewriteRecords(userId: string, records: HistoryRecord[]): void {
+  fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 });
+  const target = `${base(userId)}.jsonl`;
+  const temporary = `${target}.tmp`;
+  fs.writeFileSync(temporary, records.map((r) => JSON.stringify({ ...r, t: r.t.slice(0, TEXT_MAX) })).join("\n") + (records.length ? "\n" : ""), { mode: 0o600 });
+  fs.renameSync(temporary, target);
+}
+
+export function removeHistoryRecord(userId: string, key: string, id: string): void {
+  rewriteRecords(userId, readRecords(userId).filter((r) => r.k !== key || r.id !== id));
+}
+
+/** 回退后只保留当前对话剩下的内容，避免搜索再搜出已经移除的消息 */
+export function replaceConversationRecords(userId: string, key: string, records: HistoryRecord[]): void {
+  rewriteRecords(userId, [...readRecords(userId).filter((r) => r.k !== key), ...records]);
 }
 
 export function readMeta(userId: string): Meta {

@@ -27,7 +27,7 @@ import {
   type Role,
   type User,
 } from "../../core/users.js";
-import type { SavedAttachment } from "../../core/types.js";
+import type { AttachmentInfo, SavedAttachment } from "../../core/types.js";
 import { dailyUsage } from "../../core/usage.js";
 import { appendDirOrder, getDirOrder, setDirOrder } from "../../core/ui-prefs.js";
 import {
@@ -107,6 +107,33 @@ export function takeUploads(key: string, ids: unknown): SavedAttachment[] {
   if (bad > 0) throw new HttpError(410, `有 ${bad} 个附件已失效（可能会话被重置过），请重新上传`);
   for (const id of ids) uploads.delete(id as string);
   return entries.map((e) => e!.attachment);
+}
+
+/** 已发送的附件重新领一个上传编号，让撤回的消息能带着原附件再次发送 */
+function editableDraft(key: string, user: User, message: { text: string; attachments: AttachmentInfo[] }) {
+  let missing = 0;
+  const restored = message.attachments.flatMap((file) => {
+    const resolved = resolveUploadFile(file.path);
+    const sourceKey = resolved && uploadKeyOf(resolved);
+    const source = sourceKey && getConversation(sourceKey);
+    if (!resolved || !source || !canSeeConv(user, source)) {
+      missing++;
+      return [];
+    }
+    try {
+      const head = Buffer.alloc(12);
+      const fd = fs.openSync(resolved, "r");
+      try { fs.readSync(fd, head, 0, head.length, 0); } finally { fs.closeSync(fd); }
+      const attachment: SavedAttachment = { ...file, path: resolved, size: fs.statSync(resolved).size, mediaType: sniff(head)?.mediaType };
+      const id = crypto.randomBytes(12).toString("hex");
+      uploads.set(id, { key, attachment, at: Date.now() });
+      return [{ id, name: file.name, kind: file.kind, ...(file.kind === "image" ? { url: `/api/file?path=${encodeURIComponent(resolved)}` } : {}) }];
+    } catch {
+      missing++;
+      return [];
+    }
+  });
+  return { text: message.text, uploads: restored, missing };
 }
 
 setInterval(() => {
@@ -735,11 +762,32 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p.startsWith("/api/terminals") && (await handleTerminalApi(req, res, p, user))) return;
   if ((p === "/api/remote" || p.startsWith("/api/desktop/")) && (await handleDesktopApi(req, res, p, user))) return;
 
-  // ----- 目录选择器：列工作区内的子目录 -----
+  // ----- 目录选择器：列出或新建工作区内的子目录 -----
   if (p === "/api/dirs" && method === "GET") {
     const listing = listWorkspaceDirs(url.searchParams.get("path") ?? "");
     if (!listing) throw new HttpError(404, `目录不存在，或不在 ${config().workspaceRoot} 之内`);
     sendJson(res, 200, listing);
+    return;
+  }
+  if (p === "/api/dirs" && method === "POST") {
+    const body = await readJsonBody<{ path?: unknown; name?: unknown }>(req);
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name || name === "." || name === ".." || /[\\/\x00-\x1f\x7f]/.test(name) || Buffer.byteLength(name) > 255) {
+      throw new HttpError(400, "请输入有效的文件夹名称，不能包含斜杠或控制字符");
+    }
+    if (body.path !== undefined && typeof body.path !== "string") throw new HttpError(400, "目录路径必须是文字");
+    const parent = resolveWorkspacePath(typeof body.path === "string" && body.path ? body.path : ".");
+    if (!parent) throw new HttpError(404, `目录不存在，或不在 ${config().workspaceRoot} 之内`);
+    const target = path.join(parent, name);
+    try {
+      fs.mkdirSync(target);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") throw new HttpError(409, "同名文件或文件夹已存在");
+      if (code === "EACCES" || code === "EPERM") throw new HttpError(403, "没有权限在此目录新建文件夹");
+      throw new HttpError(400, "无法新建文件夹，请检查名称和所在目录");
+    }
+    sendJson(res, 201, { path: target });
     return;
   }
 
@@ -817,6 +865,21 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const conv = conversationOr404(key);
     // 别人的会话：当它不存在
     if (!visible(conv)) throw new HttpError(404, "会话不存在");
+
+    if ((sub === "cancel-queued" || sub === "rewind") && method === "POST") {
+      const body = await readJsonBody<{ id?: unknown; anchor?: unknown; sessionId?: unknown }>(req);
+      const id = typeof body.id === "string" ? body.id : undefined;
+      const anchor = typeof body.anchor === "string" ? body.anchor : undefined;
+      const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+      if (!(sub === "cancel-queued" ? id : id || anchor)) throw new HttpError(400, "缺少消息位置");
+      try {
+        const message = sub === "cancel-queued" ? hub.cancelQueued(key, id!) : await hub.rewind(key, { id, anchor, sessionId });
+        sendJson(res, 200, { draft: editableDraft(key, user, message), queued: "queued" in message && message.queued, info: hub.info(key) });
+      } catch (err) {
+        throw new HttpError(409, err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
 
     if (!sub && method === "PATCH") {
       const body = await readJsonBody<{ title?: string; hidden?: boolean }>(req);
@@ -1133,11 +1196,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       }
       const found = getConversation(url.searchParams.get("key") ?? "");
       const conv = found && visible(found) ? found : undefined;
+      const draftCwd = !conv && url.searchParams.get("cwd");
+      const cwd = conv?.cwd ?? (draftCwd ? resolveWorkspacePath(draftCwd) : undefined);
+      if (draftCwd && !cwd) throw new HttpError(404, "工作目录不存在，或不在工作区之内");
       const commands = await hub.commandCatalog(m[1]!, {
-        ...(conv ? { cwd: conv.cwd } : {}),
+        ...(cwd ? { cwd } : {}),
         allowedAgents: hub.enabledAgents().map((d) => d.id),
-        // 带 key 是输入框补全：只列 Web 能用的；不带是设置页排序，全列
-        ...(conv ? { channel: "web" } : {}),
+        // 输入框（包括尚未创建的新对话）只列 Web 能用的；设置页仍列全部
+        ...(conv || url.searchParams.get("channel") === "web" ? { channel: "web" } : {}),
         // 成员看不到机器上装的技能
         ...(admin ? {} : { member: true }),
       });

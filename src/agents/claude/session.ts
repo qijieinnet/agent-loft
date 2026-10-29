@@ -608,6 +608,13 @@ export class ClaudeSession implements AgentSession {
     this.deliver(input);
   }
 
+  cancelQueued(input: UserInput): boolean {
+    const index = this.pending.indexOf(input);
+    if (index < 0) return false;
+    this.pending.splice(index, 1);
+    return true;
+  }
+
   /** 一轮结束（出结果、出错或 CLI 退出）：交出下一条排队的消息 */
   private onTurnEnd(): void {
     this.turnBusy = false;
@@ -632,11 +639,13 @@ export class ClaudeSession implements AgentSession {
     this.start();
     this.queue.push({
       type: "user",
+      ...(input.id ? { uuid: input.id } : {}),
       message: { role: "user", content },
       parent_tool_use_id: null,
       // 人敲的字必须显式标记来源；缺省会在严格的信任门上 fail closed
       origin: { kind: "human" },
     } as SDKUserMessage);
+    if (input.id) this.events.onUserAnchor?.(input, input.id);
   }
 
   async listModels(): Promise<ModelInfo[]> {

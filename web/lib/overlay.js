@@ -54,7 +54,7 @@ export function closeMenu() {
 }
 
 /** beforeClose：点 × 或点外面关闭前先问它，返回（或 resolve 成）false 就不关。返回的 close 不问，直接关 */
-export function modal({ title, body, foot, wide, tall, beforeClose }) {
+export function modal({ title, body, foot, wide, tall, className = "", beforeClose }) {
   const close = () => overlay.remove();
   const tryClose = async () => {
     if (!beforeClose || (await beforeClose()) !== false) close();
@@ -64,7 +64,7 @@ export function modal({ title, body, foot, wide, tall, beforeClose }) {
     { class: "overlay", onclick: (e) => e.target === overlay && void tryClose() },
     h(
       "div",
-      { class: `modal${wide ? " wide" : ""}${tall ? " tall" : ""}` },
+      { class: `modal${wide ? " wide" : ""}${tall ? " tall" : ""}${className ? ` ${className}` : ""}` },
       h("div", { class: "modal-head" }, h("h3", {}, title), h("button", { class: "icon-btn", onclick: () => void tryClose() }, icon("x"))),
       body,
       foot ?? null,

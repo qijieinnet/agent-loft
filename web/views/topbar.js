@@ -133,13 +133,7 @@ function openExpertCard(anchor, key, pinned) {
       row("引擎", agentLabel(c.agent)),
       row("模型", [model ?? "默认", effort ? ` · ${effort}` : ""].join("")),
       row("能力", abilities),
-      access === "web"
-        ? null
-        : row(
-            "工作目录",
-            h("span", { class: "ec-cwd", title: c.cwd }, c.cwd),
-            h("button", { class: "ec-link", onclick: () => (closeMenu(), changeCwd()) }, "切换"),
-          ),
+      access === "web" ? null : row("工作目录", h("span", { class: "ec-cwd", title: c.cwd }, c.cwd)),
     ),
   );
   placePopover(pop, anchor);
@@ -302,7 +296,7 @@ export function usableAgents() {
   return usable.length ? usable : enabled;
 }
 
-/** 新对话里选专家：内置的在前，再是自己的（新建、管理在「设置 → 专家」里） */
+/** 新对话里选专家：统一列表，简介在悬停时显示（新建、管理在「设置 → 专家」里） */
 function pickExpertMenu(anchor) {
   if (ui.menu?.dataset.for === "expert") return closeMenu();
   const pop = showPopover(anchor, { align: "left" });
@@ -314,16 +308,10 @@ function pickExpertMenu(anchor) {
       "button",
       { class: `pop-item${e.id === S.draftExpert ? " on" : ""}`, title: e.description || "", onclick: () => (closeMenu(), switchAgent(e.id)) },
       expertIcon(e),
-      h("span", { class: "grow" }, h("span", { class: "t" }, e.name), e.description ? h("span", { class: "s" }, e.description) : null),
+      h("span", { class: "grow" }, h("span", { class: "t" }, e.name)),
       e.id === S.draftExpert ? h("span", { class: "check" }, "✓") : null,
     );
-  const builtin = choices.filter((e) => e.builtin);
-  const own = choices.filter((e) => !e.builtin);
-  fill(
-    pop,
-    builtin.map(item),
-    own.length ? [h("div", { class: "sep" }), h("div", { class: "pop-head" }, "我的专家"), own.map(item)] : null,
-  );
+  fill(pop, choices.map(item));
   placePopover(pop, anchor);
 }
 

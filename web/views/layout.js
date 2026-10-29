@@ -28,6 +28,7 @@ import { bindFileDrop, renderComposer } from "./composer.js";
 import { openSearch } from "./conv-search.js";
 import { createNav } from "./msg-nav.js";
 import { renameConv } from "./conv-actions.js";
+import { clearCommandCache, preloadCommands } from "./slash.js";
 import { releaseForeignPushSub } from "../lib/push.js";
 
 // ---------- 主界面 ----------
@@ -122,6 +123,7 @@ export function openTasksView() {
 export async function boot() {
   const me = await api("/api/me");
   if (!me.authed) return showAuth();
+  clearCommandCache();
   WS.stopped = false;
   WS.epoch = null;
   WS.hellos = 0;
@@ -164,6 +166,7 @@ export async function boot() {
   else if (fromHash && S.convs.has(fromHash)) await openConversation(fromHash);
   else if (latest) await openConversation(latest.key);
   else newDraft();
+  preloadCommands();
   // 以前的技能页地址：技能现在在设置里
   if (fromHash === "skills") openSettings("技能");
   // 点了桌面端的系统通知 / 菜单栏里的待处理项：跳到对应会话
@@ -262,7 +265,7 @@ function renderLayout() {
     h(
       "div",
       { class: "side-top" },
-      h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("compose"), "新聊天"),
+      h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("plus"), "新建"),
     ),
     // 搜索：弹窗里搜标题和聊天内容，可以按专家筛
     h("button", { class: "btn new-chat side-nav search-nav", onclick: () => openSearch() }, icon("search"), "搜索"),

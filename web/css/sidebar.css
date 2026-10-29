@@ -245,9 +245,8 @@ button.conv-group:hover {
   height: 15px;
 }
 
-/* 行本身已经是 hover 底色，加号的再深一点才看得出来 */
+/* 悬停加号时只提亮图标 */
 .proj-new:hover {
-  background: color-mix(in srgb, var(--fg) 8%, var(--bg-hover));
   color: var(--fg);
 }
 
@@ -362,8 +361,33 @@ button.conv-group:hover {
 }
 
 .conv-item .expert-mark {
+  display: none;
+  place-items: center;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
   font-size: 13px;
   line-height: 1;
+  color: var(--fg-soft);
+}
+
+.conv-item .expert-mark-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+}
+
+.conv-item .expert-mark svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+@media (hover: hover) {
+  .conv-item:hover .expert-mark {
+    display: inline-grid;
+  }
 }
 
 /* ---- 侧栏底部的额度 ---- */

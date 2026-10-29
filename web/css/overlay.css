@@ -234,12 +234,50 @@ button.list-item:hover {
 }
 
 /* ----- 目录选择器 ----- */
+.modal.dir-picker {
+  height: min(600px, 86dvh);
+  max-height: calc(100dvh - 32px);
+}
+
+.dir-picker .modal-head,
+.dir-picker .modal-foot {
+  flex-shrink: 0;
+}
+
+.dir-picker .modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.dir-picker .modal-body > :not(.dir-list) {
+  flex: 0 0 auto;
+}
+
+.dir-actions,
+.dir-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dir-actions {
+  justify-content: space-between;
+}
+
+.dir-create[hidden] {
+  display: none;
+}
+
 .dir-crumbs {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 2px;
   font-size: 14px;
+  max-height: 72px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 
 .dir-crumbs .crumb {
@@ -265,12 +303,13 @@ button.list-item:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-height: 120px;
-  max-height: 50vh;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
 .dir-item {
+  flex-shrink: 0;
   padding: 8px 12px;
 }
 
@@ -286,7 +325,9 @@ button.list-item:hover {
 
 .dir-manual {
   flex: 1;
-  min-width: 160px;
+  min-width: 0;
+  width: 100%;
+  font-size: 16px;
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -296,6 +337,10 @@ button.list-item:hover {
 
 .dir-manual:focus {
   border-color: var(--accent);
+}
+
+.dir-picker .modal-foot .muted {
+  font-size: 12px;
 }
 
 .modal-foot .grow {
@@ -436,14 +481,7 @@ button.list-item:hover {
   white-space: pre-wrap;
 }
 
-/* 选专家：说明不要太长 */
+/* 选专家 */
 .popover.expert-pop {
   max-width: 340px;
-}
-
-.popover.expert-pop .pop-item .s {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
