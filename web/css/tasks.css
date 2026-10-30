@@ -24,10 +24,6 @@
   background: var(--bg-hover);
 }
 
-.conv-item .task-mark {
-  color: var(--fg-soft);
-}
-
 /* 任务页不要输入框，也不要「回到底部」 */
 .main.tasks-view .composer-wrap,
 .main.tasks-view .to-bottom {

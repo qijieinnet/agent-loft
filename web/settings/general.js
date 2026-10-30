@@ -32,7 +32,7 @@ export async function conversationTab(cfg, page) {
     allowBox,
   );
   const allowlist = await api("/api/claude/allowlist");
-  const allowText = h("textarea", { rows: 8 });
+  const allowText = h("textarea", { class: "input", rows: 8 });
   allowText.value = allowlist.join("\n");
   fill(
     allowBox,

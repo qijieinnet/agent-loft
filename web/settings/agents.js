@@ -1,4 +1,4 @@
-import { fill, h, toast } from "../lib/dom.js";
+import { fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { copyText } from "../lib/markdown.js";
 import { desktopQuota, S } from "../state.js";
@@ -14,12 +14,32 @@ import { modelPicker } from "./commands.js";
  */
 function modelChecklist(agent, selected) {
   const box = h("div", { class: "model-checks" }, h("small", {}, "正在读取模型列表…"));
+  const summaryText = h("span", {}, "正在读取模型列表…");
+  const summary = h("summary", { class: "input model-check-summary" }, summaryText, icon("down"));
+  const dropdown = h("details", { class: "model-check-dropdown" }, summary, box);
   let boxes = null;
+  const syncSummary = () => {
+    const count = boxes.filter((b) => b.el.checked).length;
+    summaryText.textContent = count === boxes.length ? `全部模型（${count} 个）` : `已选 ${count} / ${boxes.length} 个模型`;
+  };
+  box.addEventListener("change", syncSummary);
+  dropdown.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && dropdown.open) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropdown.open = false;
+      summary.focus();
+    }
+  });
   api(`/api/agents/${agent}/models`)
     .then((data) => {
       const models = data?.models ?? [];
-      if (!models.length) return fill(box, h("small", {}, "没读到模型列表"));
+      if (!models.length) {
+        summaryText.textContent = "没读到模型列表";
+        return fill(box, h("small", {}, "没读到模型列表，保留原来的选择"));
+      }
       boxes = models.map((m) => ({ id: m.id, el: h("input", { type: "checkbox", checked: !selected.length || selected.includes(m.id) }) }));
+      syncSummary();
       fill(
         box,
         boxes.map(({ el }, i) => {
@@ -35,9 +55,12 @@ function modelChecklist(agent, selected) {
         h("small", {}, "只影响输入框里的模型选择列表；全部勾上 = 以后新出的模型也自动显示"),
       );
     })
-    .catch((err) => fill(box, h("small", {}, err.status === 409 ? err.message : `读取模型列表失败：${err.message ?? err}`)));
+    .catch((err) => {
+      summaryText.textContent = "读取模型列表失败";
+      fill(box, h("small", {}, err.status === 409 ? err.message : `读取模型列表失败：${err.message ?? err}`));
+    });
   return {
-    el: box,
+    el: dropdown,
     /** 列表没读到时原样保留；null = 一个都没勾 */
     value: () => {
       if (!boxes) return selected;
@@ -152,7 +175,7 @@ export function agentsTab(cfg, page) {
   // 自动生成会话名称：一行，勾上才显示后面的模型选择
   const titleOn = h("input", { type: "checkbox", checked: !!a.codex.autoTitle });
   const titlePick = modelPicker("codex", a.codex.titleModel ?? "", "", "跟随 config.toml");
-  const titleModelEl = h("div", { class: "grow" }, titlePick.modelEl);
+  const titleModelEl = h("div", { class: "grow field" }, titlePick.modelEl);
   const syncTitle = () => (titleModelEl.hidden = !titleOn.checked);
   titleOn.addEventListener("change", syncTitle);
   syncTitle();

@@ -75,7 +75,7 @@ export async function memoryTab(panel) {
     toast("已保存，之后的对话会用上");
   });
 
-  const newItem = h("input", { maxlength: mem.limits.item, style: { flex: "1", minWidth: "0" }, placeholder: "手动加一条，比如：我的软路由是 iStoreOS，地址 192.168.8.2" });
+  const newItem = h("input", { class: "input", maxlength: mem.limits.item, style: { flex: "1", minWidth: "0" }, placeholder: "手动加一条，比如：我的软路由是 iStoreOS，地址 192.168.8.2" });
   const addBtn = h("button", { class: "btn" }, "添加");
   addBtn.onclick = run(addBtn, async () => {
     if (!newItem.value.trim()) return false;
@@ -92,7 +92,7 @@ export async function memoryTab(panel) {
     const edit = h("button", { class: "btn small" }, "编辑");
     const del = h("button", { class: "btn small danger" }, "删除");
     edit.onclick = () => {
-      const input = h("textarea", { rows: 2, maxlength: mem.limits.item });
+      const input = h("textarea", { class: "input", rows: 2, maxlength: mem.limits.item });
       input.value = it.text;
       const ok = h("button", { class: "btn small primary" }, "保存");
       ok.onclick = run(ok, () => api(`/api/account/memory/items/${it.id}`, { method: "PATCH", body: { text: input.value } }));

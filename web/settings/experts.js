@@ -3,7 +3,8 @@ import { api } from "../lib/api.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 import { S } from "../state.js";
 import { expertIcon, reloadExperts } from "../views/experts.js";
-import { agentCatalog } from "../views/topbar.js";
+import { agentCatalog, baseName } from "../views/topbar.js";
+import { changeCwd } from "../views/conv-actions.js";
 
 // ---------- 专家（设置里的一页） ----------
 // 专家 = 一份配置：引擎、提示词、权限、技能、MCP、子智能体。新建对话、定时任务时选，对话中途不能换。
@@ -153,7 +154,21 @@ function openEditor(data, e, reload, preset) {
     h("option", { value: "claude_code", selected: src.basePrompt === "claude_code" }, "追加在 Claude Code 原装提示词后面（写代码、干活更稳，每轮多约 1.6 万 token）"),
   );
   const perms = permChecks(src);
-  const cwd = h("input", { value: src.cwd ?? "", placeholder: `留空就是工作区根目录（${S.workspaceRoot ?? ""}）`, spellcheck: "false" });
+  let cwd = src.cwd ?? "";
+  const cwdBtn = h("button", { type: "button", class: "btn task-cwd" });
+  const showCwd = () => {
+    cwdBtn.textContent = cwd ? baseName(cwd) : `${baseName(S.workspaceRoot) || "工作区"}（工作区根目录）`;
+    cwdBtn.title = cwd || S.workspaceRoot || "";
+  };
+  showCwd();
+  cwdBtn.onclick = () =>
+    changeCwd({
+      current: cwd || S.workspaceRoot || "",
+      onPick: (p) => {
+        cwd = p === S.workspaceRoot ? "" : p;
+        showCwd();
+      },
+    });
   const memory = h("input", { type: "checkbox", checked: src.memory !== false });
   const welcome = h("input", { value: src.welcome ?? "", maxlength: "500", placeholder: "新对话页上的那句话，比如：想了解哪只股票？" });
   const quick = h("textarea", { rows: 4, placeholder: "一行一个，新对话页上点一下就填进输入框。可以写成「标题｜提示词」，提示词里的 ___ 是要用户填的空" });
@@ -192,7 +207,7 @@ function openEditor(data, e, reload, preset) {
     void models.load(eng);
   };
   const sync = () => (cwdField.hidden = perms.access() === "web");
-  const cwdField = field("默认工作目录", cwd, "新建对话、定时任务时默认在这个目录里（可以再改）。相对路径按工作区根目录算");
+  const cwdField = field("默认工作目录", cwdBtn, "新建对话、定时任务时默认在这个目录里（可以再改）。点击选择目录，默认使用工作区根目录");
   const baseField = field("基础提示词", basePrompt);
   const subField = field("子智能体", subBox, "主专家可以把子任务派给它们（Agent 工具）。子智能体的权限不能超过主专家，只支持 Claude 专家");
   engine.onchange = renderEngineParts;
@@ -239,7 +254,7 @@ function openEditor(data, e, reload, preset) {
       prompt: prompt.value,
       basePrompt: basePrompt.value,
       access: perms.access(),
-      cwd: cwd.value,
+      cwd,
       webSearch: perms.checked("webSearch"),
       webFetch: perms.checked("webFetch"),
       skills: skills.value(),

@@ -134,7 +134,7 @@ function embeddersSection(cfg) {
   const box = h("div", { class: "section", "data-form": "" });
   let list = [...cfg.servers.embedders];
   const rows = h("div", {});
-  const input = h("input", { placeholder: "https://loft.example.com", autocapitalize: "off", spellcheck: "false" });
+  const input = h("input", { class: "input grow", placeholder: "https://loft.example.com", autocapitalize: "off", spellcheck: "false" });
 
   const render = () => {
     fill(

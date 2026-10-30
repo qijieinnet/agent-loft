@@ -295,16 +295,10 @@ button.conv-group:hover {
   white-space: nowrap;
 }
 
-/* 放不下：尾巴淡出，代替省略号（.clip 由 sidebar.js 量过后加） */
+/* 放不下：只在右侧淡出，悬停滚动时也保持左侧清晰（.clip 由 sidebar.js 量过后加） */
 .conv-item .title.clip {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
-}
-
-/* 跑马灯滚动时两头都淡出 */
-.conv-item .title.clip.marquee {
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent);
-  mask-image: linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent);
 }
 
 .conv-item > .dot,
@@ -383,7 +377,7 @@ button.conv-group:hover {
   width: 14px;
   height: 14px;
   margin-left: auto;
-  color: var(--fg-soft);
+  color: var(--fg-faint);
 }
 
 .conv-item .task-mark svg {
@@ -414,8 +408,8 @@ button.conv-group:hover {
     display: inline-grid;
   }
 
-  .conv-item:hover .expert-mark + .task-mark {
-    margin-left: 0;
+  .conv-item:hover .task-mark {
+    display: none;
   }
 }
 

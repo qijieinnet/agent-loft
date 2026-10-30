@@ -64,6 +64,7 @@
 
 .settings-page .row > .grow {
   flex: 1;
+  min-width: 0;
 }
 
 .section {
@@ -266,6 +267,34 @@
 }
 
 /* 设置 → Agent：输入框可选模型 */
+.model-check-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.model-check-summary::-webkit-details-marker {
+  display: none;
+}
+
+.model-check-summary svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--fg-faint);
+}
+
+.model-check-dropdown[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.model-check-dropdown[open] > .model-checks {
+  margin-top: 6px;
+}
+
 .model-checks {
   display: flex;
   flex-direction: column;
@@ -273,6 +302,8 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 6px;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 .model-checks > small {
@@ -300,10 +331,12 @@
 }
 
 .model-check .t {
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .model-check .s {
+  min-width: 0;
   margin-left: auto;
   font-size: 12px;
   color: var(--fg-faint);
