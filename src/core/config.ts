@@ -52,6 +52,10 @@ export type AppConfig = {
       defaultEffort: string;
       /** 同 claude.models */
       models: string[];
+      /** app-server 不会给线程起名（那是 Codex App / TUI 自己做的），开了就由这边在第一轮后生成 */
+      autoTitle: boolean;
+      /** 生成会话名称用的模型，空 = Codex 默认模型 */
+      titleModel: string;
     };
   };
   web: {
@@ -126,6 +130,8 @@ export function defaultConfig(): AppConfig {
         defaultModel: "",
         defaultEffort: "",
         models: [],
+        autoTitle: false,
+        titleModel: "",
       },
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10, quotaEnabled: true },

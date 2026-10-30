@@ -107,7 +107,50 @@ export class CodexDriver implements AgentDriver {
 
   async sessionTitle(id: string): Promise<string | undefined> {
     const res = await appServer.call<{ thread: Thread }>("thread/read", { threadId: id, includeTurns: false });
-    return res.thread.name?.replace(/\s+/g, " ").trim() || undefined;
+    const name = res.thread.name?.replace(/\s+/g, " ").trim();
+    if (name) return name;
+    // app-server 不会自动起名（Codex App / TUI 是在客户端自己生成的），开了设置就由这边生成一次
+    const c = config().agents.codex;
+    if (!c.autoTitle || this.titled.has(id)) return undefined;
+    this.titled.add(id);
+    return this.generateTitle(id, c.titleModel).catch((err) => {
+      console.error("[codex] 生成会话名称失败:", err instanceof Error ? err.message : err);
+      return undefined;
+    });
+  }
+
+  /** 本进程里已经生成过（或试过）名称的线程：失败了也不反复重试，每轮结束都会来问 */
+  private titled = new Set<string>();
+
+  /** 按第一轮的问答起个短标题，写回线程（thread/name/set），Codex App 里也能看到 */
+  private async generateTitle(id: string, model: string): Promise<string | undefined> {
+    const res = await appServer.call<{ thread: { turns?: { items?: HistoryItem[] }[] } }>("thread/read", { threadId: id, includeTurns: true });
+    const items = res.thread.turns?.[0]?.items ?? [];
+    const user = items
+      .filter((i) => i.type === "userMessage")
+      .flatMap((i) => (i.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")))
+      .join("\n");
+    const question = splitAttachmentNote(stripContext(user)).text.trim();
+    if (!question) return undefined;
+    const answer = items
+      .filter((i) => i.type === "agentMessage" && i.phase !== "commentary" && i.text)
+      .map((i) => i.text)
+      .join("\n\n");
+    const out = (await this.complete({
+      system: "你给对话起标题。根据用户的第一条消息（和助手的回复）概括这次对话在做什么，输出一个简短的标题：和用户用同一种语言，中文不超过 15 个字，不加引号、句号和表情。",
+      prompt: `用户：\n${question.slice(0, 2000)}${answer ? `\n\n助手：\n${answer.slice(0, 1500)}` : ""}`,
+      schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false },
+      ...(model ? { model } : {}),
+      timeoutMs: 60_000,
+    })) as { title?: unknown };
+    const title = String(out?.title ?? "")
+      .replace(/\s+/g, " ")
+      .replace(/^["'“”‘’「」《》]+|["'“”‘’「」《》。.]+$/g, "")
+      .trim()
+      .slice(0, 80);
+    if (!title) return undefined;
+    await appServer.call("thread/name/set", { threadId: id, name: title });
+    return title;
   }
 
   async readHistory(id: string): Promise<HistoryMessage[]> {

@@ -149,6 +149,13 @@ export function agentsTab(cfg, page) {
   );
   const codexPick = modelPicker("codex", a.codex.defaultModel, a.codex.defaultEffort, "跟随 config.toml");
   const codexModels = modelChecklist("codex", a.codex.models ?? []);
+  // 自动生成会话名称：一行，勾上才显示后面的模型选择
+  const titleOn = h("input", { type: "checkbox", checked: !!a.codex.autoTitle });
+  const titlePick = modelPicker("codex", a.codex.titleModel ?? "", "", "跟随 config.toml");
+  const titleModelEl = h("div", { class: "grow" }, titlePick.modelEl);
+  const syncTitle = () => (titleModelEl.hidden = !titleOn.checked);
+  titleOn.addEventListener("change", syncTitle);
+  syncTitle();
   // 一组勾选框不能放进 <label>（点哪都会切到第一个），所以不用 field()
   const checksField = (list) => h("div", { class: "field" }, h("span", {}, "输入框可选模型"), list.el);
   // 两个 agent 一起保存：整组算一张表单
@@ -174,6 +181,7 @@ export function agentsTab(cfg, page) {
         field("默认模型", codexPick.modelEl),
         field("默认思考程度", codexPick.effortEl),
         checksField(codexModels),
+        h("div", { class: "row title-row" }, h("label", { class: "check" }, titleOn, "自动生成会话名称"), titleModelEl),
       ),
       h(
         "div",
@@ -201,6 +209,8 @@ export function agentsTab(cfg, page) {
                 defaultModel: codexPick.model(),
                 defaultEffort: codexPick.effort(),
                 models: codexList,
+                autoTitle: titleOn.checked,
+                titleModel: titlePick.model(),
               },
             },
           });
