@@ -19,7 +19,7 @@ export type UsageTotals = Required<Omit<TokenUsage, "costUsd">> & { costUsd?: nu
 /** 一天里某个人用某个 agent 的合计 */
 export type DailyTotals = Required<Omit<TokenUsage, "costUsd">> & { costUsd?: number };
 /** 查询结果的一行。estimated：costUsd 是按单价估的，不是 agent 报的 */
-export type DailyRow = DailyTotals & { day: string; owner?: string; agent: string; model?: string; estimated?: true };
+export type DailyRow = DailyTotals & { day: string; owner?: string; agent: string; model?: string; estimated?: true; source?: "desktop" | "cli" | "other" };
 
 type TotalsRow = { input: number; cache_read: number; cache_write: number; output: number; reasoning: number; cost_usd: number | null };
 

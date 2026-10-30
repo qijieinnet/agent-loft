@@ -29,6 +29,7 @@ import {
 } from "../../core/users.js";
 import type { AttachmentInfo, SavedAttachment } from "../../core/types.js";
 import { dailyUsage } from "../../core/usage.js";
+import { localUsage } from "../../core/local-usage.js";
 import { appendDirOrder, getDirOrder, setDirOrder } from "../../core/ui-prefs.js";
 import {
   addMemoryItem,
@@ -1158,16 +1159,18 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/usage" && method === "GET") {
     // 按天的 token / 费用账（设置 →「用量」）。?from=&to= 是 YYYY-MM-DD（含两头）。
-    // 管理员看所有人的（只有数字，看不到内容），成员只看自己对话的
+    // 管理员看所有人的，以及服务端本机直接用的桌面端 / CLI；成员只看自己对话的。
+    // 本机记录不属于任何 Web 用户，不能当作未归属的对话暴露给成员。
     const day = /^\d{4}-\d{2}-\d{2}$/;
     const from = url.searchParams.get("from") ?? "";
     const to = url.searchParams.get("to") ?? "";
     if (!day.test(from) || !day.test(to)) throw new HttpError(400, "from / to 要是 YYYY-MM-DD");
     const admin = isAdmin(user);
     const rows = dailyUsage(from, to, admin ? undefined : (owner) => ownedBy(user, owner));
+    if (admin) rows.push(...await localUsage(from, to));
     const names: Record<string, string> = {};
     for (const r of rows) if (r.owner && !(r.owner in names)) names[r.owner] = getUser(r.owner)?.name ?? "已删除的用户";
-    sendJson(res, 200, { rows, users: names, admin });
+    sendJson(res, 200, { rows, users: names, admin, localUsageIncluded: admin });
     return;
   }
   if (p === "/api/quota" && method === "GET") {

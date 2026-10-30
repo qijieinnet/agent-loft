@@ -11,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import { createAwake } from "./awake.js";
 import { openedAtLogin, setOpenAtLogin, syncOpenAtLogin } from "./autostart.js";
 import { localPort, localUrl, readSetupToken } from "./local-server.js";
-import { localUsage } from "./local-usage.js";
 import {
   addUnread,
   applyAuth,
@@ -55,7 +54,7 @@ let shellView = null;
 let activeId = null;
 /** 正显示桌面端自己的面板（这时不挂服务器页面） */
 let managing = false;
-/** managing 时显示哪个面板：manage 是桌面端设置，usage 是所有服务器加本机的用量汇总 */
+/** managing 时显示哪个面板：manage 是桌面端设置，usage 是所有服务器的用量汇总 */
 let panel = "manage";
 let quitting = false;
 
@@ -315,24 +314,19 @@ function showUsage() {
 }
 
 /**
- * 所有服务器某段时间的用量（和网页设置 →「用量」同一个接口），加上这台电脑上直接用的 Claude Code、Codex
- * （id 是 "local"，见 local-usage.js），给用量汇总用。
+ * 所有服务器某段时间的用量（和网页设置 →「用量」同一个接口，含各服务器本机直接使用的桌面端 / CLI）。
  * 不在线的不去问，连同出错的一起带上原因，界面上注明哪几台没算进去
  */
 async function usageOfAll(from, to) {
   const day = /^\d{4}-\d{2}-\d{2}$/;
   if (!day.test(String(from)) || !day.test(String(to))) throw new Error("日期格式不对");
-  const local = localUsage(from, to).then(
-    (rows) => ({ id: "local", rows }),
-    (err) => ({ id: "local", error: err instanceof Error ? err.message : String(err) }),
-  );
-  const remote = Promise.all(
+  return Promise.all(
     store.servers().map(async (s) => {
       const status = rt(s.id).status;
       if (status !== "online") return { id: s.id, status };
       try {
         const data = await callApi(s.id, `/api/usage?from=${from}&to=${to}`, { timeoutMs: 20_000 });
-        return { id: s.id, rows: Array.isArray(data?.rows) ? data.rows : [], users: data?.users ?? {}, admin: !!data?.admin };
+        return { id: s.id, rows: Array.isArray(data?.rows) ? data.rows : [], users: data?.users ?? {}, admin: !!data?.admin, localUsageIncluded: !!data?.localUsageIncluded };
       } catch (err) {
         // 老版本服务端没有这个接口
         const error = err?.status === 404 ? "服务端版本太旧，没有用量统计" : err instanceof Error ? err.message : String(err);
@@ -340,7 +334,6 @@ async function usageOfAll(from, to) {
       }
     }),
   );
-  return [...(await remote), await local];
 }
 
 /** 跳到某台服务器的某条会话（点通知、点菜单栏里的待处理项） */

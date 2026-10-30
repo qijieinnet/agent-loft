@@ -1,6 +1,5 @@
-// 用量汇总：所有服务器加上这台电脑上直接用的 Claude Code、Codex，token 和费用加在一起，按日 / 月 / 年看。
-// 服务器的数据是各自的 /api/usage（和网页设置 →「用量」同一份账），由主进程挨个去问；本机的是主进程读
-// Claude Code、Codex 自己的会话记录（见 local-usage.js），id 是 "local"，每行多一个 source（desktop / cli / other）。
+// 用量汇总：主进程拉各服务器的 /api/usage，含 Agent Loft 和各服务器本机直接使用的桌面端 / CLI。
+// 直接使用的记录带 source（desktop / cli / other），桌面端只展示服务端数据。
 // 写法、配色照着 web/settings/usage.js，多了「按来源」。
 
 const usagePanel = (() => {
@@ -18,8 +17,7 @@ const usagePanel = (() => {
   ];
   const AGENT_LABELS = { claude: "Claude Code", codex: "Codex" };
   const SOURCE_LABELS = { desktop: "桌面端", cli: "CLI", other: "其他" };
-  const LOCAL = "local";
-  /** 服务器上的记成「Claude Code · Agent Loft」，本机直接用的记成「Claude Code 桌面端」这样，免得混在一起 */
+  /** 通过 Agent Loft 用的和各服务器上直接使用的桌面端 / CLI 分开显示 */
   const agentLabel = (key, hasLocal) => {
     const [agent, source] = key.split("\n");
     const name = AGENT_LABELS[agent] ?? agent;
@@ -207,7 +205,7 @@ const usagePanel = (() => {
     );
     const head = [
       h("h1", {}, "用量汇总"),
-      h("p", { class: "muted" }, `已添加的 ${state.servers.length} 台服务器，加上这台电脑上直接用的 Claude Code 和 Codex，Token 和费用合计`),
+      h("p", { class: "muted" }, `已添加的 ${state.servers.length} 台服务器的 Token 和费用合计，包含各服务器本机的 Claude Code、Codex 桌面端和 CLI 用量（仅管理员可见）`),
       h("div", { class: "us-head" }, seg, nav),
     ];
     fill(box, head, h("div", { class: "us-loading" }, h("div", { class: "spinner-lg" })));
@@ -223,13 +221,13 @@ const usagePanel = (() => {
     if (my !== seq || !box?.isConnected) return;
 
     const nameOf = (id) => {
-      if (id === LOCAL) return "本机直接使用";
       const s = state.servers.find((x) => x.id === id);
       return s ? `${s.icon ? `${s.icon} ` : ""}${s.name}` : "已移除的服务器";
     };
     const ok = results.filter((r) => r.rows);
     const rows = ok.flatMap((r) => r.rows.map((row) => ({ ...row, server: r.id })));
     const skipped = results.filter((r) => !r.rows);
+    const outdated = ok.filter((r) => r.admin && !r.localUsageIncluded);
     const total = sum(rows);
     const tokens = tokensOf(total);
     const estimated = rows.reduce((n, r) => n + (r.estimated ? r.costUsd : 0), 0);
@@ -246,8 +244,9 @@ const usagePanel = (() => {
     const note = h(
       "p",
       { class: "hint" },
-      "金额都是按 API 价格算的参考值，订阅用户实际不按这个扣费：服务器上的 Claude 用它自己报的费用；Codex 和本机直接用的 Claude Code 不报费用，按模型单价 × Token 估算。各服务器按自己的时区记日期。",
-      " 本机的用量读的是 Claude Code（~/.claude/projects）和 Codex（~/.codex/sessions）自己的会话记录，Agent Loft 跑的会话已经算在服务器里，不重复算。",
+      "金额都是按 API 价格算的参考值，订阅用户实际不按这个扣费：Agent Loft 的 Claude 用它自己报的费用；Codex 和直接用的 Claude Code 按模型单价 × Token 估算。各服务器按自己的时区记日期。",
+      " 各服务器读取运行服务的系统用户下 Claude Code、Codex 的会话记录，Agent Loft 跑的会话不重复算；桌面端本机如需统计，也要添加本机服务端。",
+      outdated.length ? ` ${outdated.map((r) => nameOf(r.id)).join("、")} 的服务端版本较旧，尚未包含桌面端 / CLI 用量，请升级服务端。` : "",
       unpriced ? ` 有 ${fmtCount(unpriced)} Token 认不出模型单价，没算进金额。` : "",
     );
     if (!tokens) {
@@ -287,9 +286,9 @@ const usagePanel = (() => {
       ),
     );
 
-    const hasLocal = rows.some((r) => r.server === LOCAL);
+    const hasLocal = rows.some((r) => r.source);
     const byServer = groupBy(rows, (r) => r.server).map((g) => ({ ...g, label: nameOf(g.key) }));
-    const byAgent = groupBy(rows, (r) => (r.server === LOCAL ? `${r.agent}\n${r.source ?? "other"}` : r.agent)).map((g) => ({
+    const byAgent = groupBy(rows, (r) => (r.source ? `${r.agent}\n${r.source}` : r.agent)).map((g) => ({
       ...g,
       label: agentLabel(g.key, hasLocal),
     }));
@@ -298,7 +297,7 @@ const usagePanel = (() => {
     const users = new Map(ok.filter((r) => r.admin).map((r) => [r.id, r.users]));
     const multi = new Set(rows.filter((r) => users.has(r.server)).map((r) => r.server)).size > 1;
     const byUser = groupBy(
-      rows.filter((r) => users.has(r.server)),
+      rows.filter((r) => users.has(r.server) && !r.source),
       (r) => `${r.server}\n${r.owner ?? ""}`,
     ).map((g) => {
       const [sid, owner] = g.key.split("\n");

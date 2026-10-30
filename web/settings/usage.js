@@ -135,7 +135,8 @@ export async function usageTab(panel) {
     const note = h(
       "div",
       { class: "muted" },
-      "金额都是按 API 价格算的参考值，订阅用户实际不按这个扣费：Claude 用它自己报的费用；Codex 不报费用，按模型单价（LiteLLM 公开价格表，每天更新）× Token 估算，不含长上下文加价。从这个版本开始记录，之前的用量没有日期，不计入。",
+      "金额都是按 API 价格算的参考值，订阅用户实际不按这个扣费：Agent Loft 的 Claude 用它自己报的费用；Codex 和直接使用的 Claude Code 按模型单价 × Token 估算。Agent Loft 的用量从启用记账起记录。",
+      data.localUsageIncluded ? " 包含服务端运行用户下 Claude Code、Codex 桌面端和 CLI 的历史会话记录，按服务器时区统计，Agent Loft 跑的会话不重复算；本机直接用量仅管理员可见。" : "",
       unpriced ? ` 有 ${fmtCount(unpriced)} Token 认不出模型单价，没算进金额。` : "",
     );
     if (!tokens) {
@@ -178,10 +179,15 @@ export async function usageTab(panel) {
     );
 
     const agentName = (id) => S.agents.find((a) => a.id === id)?.label ?? id;
-    const byAgent = groupBy(rows, (r) => r.agent).map((g) => ({ ...g, label: agentName(g.key) }));
+    const sourceNames = { desktop: "桌面端", cli: "CLI", other: "其他" };
+    const hasLocal = rows.some((r) => r.source);
+    const byAgent = groupBy(rows, (r) => `${r.agent}\n${r.source ?? ""}`).map((g) => {
+      const [agent, source] = g.key.split("\n");
+      return { ...g, label: `${agentName(agent)}${source ? ` ${sourceNames[source] ?? source}` : hasLocal ? " · Agent Loft" : ""}` };
+    });
     const byModel = groupBy(rows, (r) => r.model ?? "").map((g) => ({ ...g, label: g.key || "未记录模型" }));
     const byUser = data.admin
-      ? groupBy(rows, (r) => r.owner ?? "").map((g) => ({ ...g, label: g.key ? data.users[g.key] : "未归属（飞书等）" }))
+      ? groupBy(rows.filter((r) => !r.source), (r) => r.owner ?? "").map((g) => ({ ...g, label: g.key ? data.users[g.key] : "未归属（飞书等）" }))
       : [];
 
     fill(

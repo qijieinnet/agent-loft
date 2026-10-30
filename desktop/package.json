@@ -2,7 +2,7 @@
   "name": "agent-loft-desktop",
   "productName": "Agent Loft",
   "desktopName": "agent-loft-desktop.desktop",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "private": true,
   "description": "agent-loft 的桌面端（macOS / Windows / Linux）：同时连多台 agent-loft 服务器，菜单栏 / 托盘显示额度和待处理，检测并升级服务端",
   "author": "qijieinnet",
