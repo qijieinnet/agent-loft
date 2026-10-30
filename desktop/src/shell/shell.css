@@ -198,7 +198,7 @@ html:not(.os-darwin) .topbar {
 .bar-btn.on {
   background: var(--tab-active);
   box-shadow: var(--tab-active-shadow);
-  color: var(--accent);
+  color: var(--fg);
 }
 /* 有新版本：右上角一个小红点 */
 .bar-btn.has-update::after {

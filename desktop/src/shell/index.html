@@ -8,8 +8,8 @@
     <link rel="stylesheet" href="shell.css" />
   </head>
   <body>
-    <!-- 顶栏：红绿灯后面是各服务器的标签（图标 + 名称），紧跟着用量汇总、设置（桌面端设置、各服务器的设置）两个按钮；
-         页面自己的「更多」留在页面里。下面整块给当前服务器的页面 -->
+    <!-- 顶栏：红绿灯后面是各服务器的标签（图标 + 名称），紧跟着用量汇总、桌面端设置两个按钮；
+         各服务器的设置在页面自己的「更多」里。下面整块给当前服务器的页面 -->
     <header class="topbar">
       <div class="tabs" id="servers"></div>
       <button class="bar-btn" id="usage" title="用量汇总" aria-label="用量汇总">
@@ -20,7 +20,7 @@
           <path d="M17 17V8" />
         </svg>
       </button>
-      <button class="bar-btn" id="settings" title="设置" aria-label="设置">
+      <button class="bar-btn" id="settings" title="桌面端设置" aria-label="桌面端设置">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3" />
           <path

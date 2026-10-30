@@ -57,11 +57,8 @@ sortable($servers, { axis: "x", item: ".tab", onDrop: (id, to) => void call("mov
 // 用量汇总：已经开着再点一下回到当前服务器
 $usage.addEventListener("click", () => void call("toggleUsage"));
 
-// 设置：弹原生菜单（下面挂着服务器页面，HTML 下拉会被它盖住）
-$settings.addEventListener("click", () => {
-  const r = $settings.getBoundingClientRect();
-  void call("settingsMenu", { x: Math.round(r.left), y: Math.round(r.bottom + 4) });
-});
+// 桌面端设置：同上。每台服务器自己的设置在它页面的「更多」里
+$settings.addEventListener("click", () => void call("toggleManage"));
 
 // ---------- 下面的面板 ----------
 

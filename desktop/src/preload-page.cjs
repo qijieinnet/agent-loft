@@ -6,23 +6,16 @@ const { contextBridge, ipcRenderer } = require("electron");
 let openHandler = null;
 ipcRenderer.on("page:open", (_e, key) => openHandler?.(key));
 
-// 桌面端顶栏的设置菜单里点了这台服务器的设置。页面还没注册（还在加载、还没登录）时先记着，注册时补上
-let settingsHandler = null;
-let settingsPending = false;
-ipcRenderer.on("page:open-settings", () => {
-  if (settingsHandler) settingsHandler();
-  else settingsPending = true;
-});
-
 let quotaHandler = null;
 ipcRenderer.on("page:quota-update", (_e, payload) => quotaHandler?.(payload));
 
 contextBridge.exposeInMainWorld("agentLoftDesktop", {
   /**
    * 2：额度由桌面端查（onQuota / refreshQuota）；3：「更多」菜单交给桌面端（setMenu / onMenu）；
-   * 4：「更多」回到页面里（不再有 setMenu / onMenu，页面看到没有就自己显示）
+   * 4：「更多」回到页面里（不再有 setMenu / onMenu，页面看到没有就自己显示）；
+   * 5：服务器的设置也回到页面「更多」里（不再有 onOpenSettings，页面看到没有就自己放设置）
    */
-  version: 4,
+  version: 5,
   /** @param {{ key: string, title: string, body: string, tag: string }} notice */
   notify: (notice) => ipcRenderer.send("page:notify", notice),
   /** @param {{ pending: { id: string, key: string, title: string, conv: string }[], busy: number }} state */
@@ -44,16 +37,5 @@ contextBridge.exposeInMainWorld("agentLoftDesktop", {
   /** 点了通知 / 菜单栏里的待处理项时，跳到哪条会话。重复注册只保留最后一个。 */
   onOpen: (handler) => {
     openHandler = typeof handler === "function" ? handler : null;
-  },
-  /**
-   * 桌面端要打开这台服务器的设置（顶栏的设置菜单）。注册了它，页面就不用在侧栏放设置入口了。
-   * 重复注册只保留最后一个。
-   */
-  onOpenSettings: (handler) => {
-    settingsHandler = typeof handler === "function" ? handler : null;
-    if (settingsHandler && settingsPending) {
-      settingsPending = false;
-      settingsHandler();
-    }
   },
 });

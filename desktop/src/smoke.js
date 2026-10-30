@@ -145,7 +145,13 @@ export async function runSmoke({ openPopover }) {
     // 再点一下：回到当前服务器
     await js(`document.getElementById("usage").click()`);
     await until(() => js(`window.loft.state().then((s) => !s.managing && !!s.activeId)`), "再点用量按钮回到服务器", 3000);
-    await js(`window.loft.call("manage")`);
+    // 设置按钮：直接打开桌面端设置（不弹菜单），按钮亮起
+    await js(`document.getElementById("settings").click()`);
+    await until(
+      () => js(`window.loft.state().then((s) => s.managing && s.panel === "manage" && document.getElementById("settings").classList.contains("on"))`),
+      "设置按钮打开桌面端设置",
+      3000,
+    );
 
     const pop = openPopover();
     await until(() => pop.executeJavaScript(`document.body.innerText.includes("冒烟测试")`), "菜单栏面板里的服务器");

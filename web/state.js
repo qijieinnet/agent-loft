@@ -57,8 +57,8 @@ export const desktopQuota = typeof desktop?.onQuota === "function";
 // 桌面端里：顶栏、侧栏顶部可以按住拖动窗口（样式见 css/topbar.css 的 .in-desktop）
 if (desktop) document.documentElement.classList.add("in-desktop");
 /**
- * 新版桌面端顶栏能打开每台服务器的设置（0.1.18 起在设置按钮的菜单里，之前在「更多」里）：页面「更多」里的设置就不放了。
- * 老版本桌面端没有这个入口，照旧放，免得设置打不开。
+ * 桌面端 0.1.18 及以前的顶栏能打开每台服务器的设置（「更多」或设置按钮的菜单里）：页面「更多」里的设置就不放了。
+ * 更老的和 0.1.19 起的桌面端没有这个入口（不给 onOpenSettings），照旧放。
  */
 export const desktopSettings = typeof desktop?.onOpenSettings === "function";
 /**
