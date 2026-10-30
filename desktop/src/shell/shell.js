@@ -1,10 +1,11 @@
-// 顶栏（服务器标签、更多）+ 下面的面板（服务器管理、用量汇总、连不上、证书确认）。
+// 顶栏（服务器标签、用量汇总、设置）+ 下面的面板（服务器管理、用量汇总、连不上、证书确认）。
 // 当前服务器正常时，面板被服务器自己的页面盖住，看不到。
 
 let state = null;
 const $servers = document.getElementById("servers");
 const $panel = document.getElementById("panel");
-const $more = document.getElementById("more");
+const $usage = document.getElementById("usage");
+const $settings = document.getElementById("settings");
 
 const call = (method, ...args) => window.loft.call(method, ...args);
 
@@ -31,9 +32,10 @@ function renderBar() {
   );
   // 选中的标签滚进可见范围（标签多、窗口窄时）
   $servers.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  $more.classList.toggle("on", state.managing);
-  // 有新版本：按钮上一个小红点
-  $more.classList.toggle("has-update", !!state.system.update.available || state.servers.some((s) => s.server?.updateAvailable && s.server.canUpgrade));
+  $usage.classList.toggle("on", state.managing && state.panel === "usage");
+  $settings.classList.toggle("on", state.managing && state.panel === "manage");
+  // 有新版本：设置按钮上一个小红点
+  $settings.classList.toggle("has-update",!!state.system.update.available || state.servers.some((s) => s.server?.updateAvailable && s.server.canUpgrade));
 }
 
 // 按住标签左右拖：调整服务器顺序
@@ -52,10 +54,13 @@ $servers.addEventListener("click", (e) => {
 });
 sortable($servers, { axis: "x", item: ".tab", onDrop: (id, to) => void call("moveServer", id, to), onEnd: flushRender });
 
-// 更多：弹原生菜单（下面挂着服务器页面，HTML 下拉会被它盖住）
-$more.addEventListener("click", () => {
-  const r = $more.getBoundingClientRect();
-  void call("moreMenu", { x: Math.round(r.left), y: Math.round(r.bottom + 4) });
+// 用量汇总：已经开着再点一下回到当前服务器
+$usage.addEventListener("click", () => void call("toggleUsage"));
+
+// 设置：弹原生菜单（下面挂着服务器页面，HTML 下拉会被它盖住）
+$settings.addEventListener("click", () => {
+  const r = $settings.getBoundingClientRect();
+  void call("settingsMenu", { x: Math.round(r.left), y: Math.round(r.bottom + 4) });
 });
 
 // ---------- 下面的面板 ----------

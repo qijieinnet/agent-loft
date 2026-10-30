@@ -87,7 +87,9 @@ function draw(bars, height, scale) {
   const PAD = 2;
   /** 用掉的部分留多少不透明度 */
   const DIM = 0.3;
-  // 每只宠物：body 是 5 小时条的形状（fill 是条的左右范围），holes 是眼睛（挖空），legs 不算进条里、一直是实的
+  // 每只宠物：body 是 5 小时条的形状，holes 是眼睛（挖空），legs 不算进条里、一直是实的。
+  // fill 是百分比按哪段宽度算，span 是整条的左右范围（默认和 fill 一样）。Claude 两侧的耳朵不算进百分比：
+  // 算进去的话剩 10% 时只有左耳是实的，身子全淡，看着像用完了；左耳有剩就实、右耳满了才实
   const PETS = {
     claude: {
       body: [
@@ -105,7 +107,8 @@ function draw(bars, height, scale) {
         [12, 10, 1, 2],
         [14, 10, 1, 2],
       ],
-      fill: [0, 18],
+      fill: [2, 16],
+      span: [0, 18],
     },
     codex: {
       pill: [1, 4, 16, 6],
@@ -131,12 +134,14 @@ function draw(bars, height, scale) {
     ctx.roundRect(px(x0 + x), px(y), px(w), px(h), px(h / 2));
     ctx.fill();
   };
-  // 条的右边（实心以外的部分）擦淡：left / right 是条的范围，filled 是实心的百分比
-  const dim = (x0, left, right, top, bottom, filled) => {
-    const cut = px(x0 + left) + Math.round(((right - left) * scale * filled) / 100);
+  // 条的右边（实心以外的部分）擦淡：left / right 是百分比按哪段算，filled 是实心的百分比，
+  // [from, to] 是整条的范围（两头可能比 left / right 宽）：0% 时整条都淡，100% 时整条都实
+  const dim = (x0, left, right, top, bottom, filled, [from, to] = [left, right]) => {
+    if (filled >= 100) return;
+    const cut = filled <= 0 ? px(x0 + from) : px(x0 + left) + Math.round(((right - left) * scale * filled) / 100);
     ctx.globalCompositeOperation = "destination-out";
     ctx.fillStyle = `rgba(0,0,0,${1 - DIM})`;
-    ctx.fillRect(cut, px(top), px(x0 + right) - cut, px(bottom - top));
+    ctx.fillRect(cut, px(top), px(x0 + to) - cut, px(bottom - top));
     ctx.globalCompositeOperation = "source-over";
     ctx.fillStyle = "#000";
   };
@@ -148,7 +153,7 @@ function draw(bars, height, scale) {
     if (pet.pill) pill(x0, pet.pill);
     for (const r of pet.body ?? []) rect(x0, r);
     for (const [x, y, w, h] of pet.holes) ctx.clearRect(px(x0 + x), px(y), px(w), px(h));
-    dim(x0, pet.fill[0], pet.fill[1], BODY_Y[0], BODY_Y[1], b.session);
+    dim(x0, pet.fill[0], pet.fill[1], BODY_Y[0], BODY_Y[1], b.session, pet.span);
     for (const r of pet.legs) rect(x0, r);
     if (b.week !== undefined) {
       pill(x0, WEEK);

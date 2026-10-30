@@ -213,15 +213,25 @@ export async function checkUpdates({ manual = false } = {}) {
 
 /** 一键更新：下载、替换、重启。不能原地替换的，打开下载页 */
 export async function applyUpdate(quit) {
-  const u = state.update.available;
+  let u = state.update.available;
   if (!u || state.update.installing !== null) return;
-  if (canSelfUpdate() || !u.pkg) {
-    void shell.openExternal(u.download ?? u.url);
-    return;
-  }
   state.update.installing = 0;
   state.update.error = null;
   changed();
+  // 上次检查可能是几小时前，之后又发了新版本：点的时候再查一次，直接装最新的。查不到就装记下的那个
+  try {
+    u = (await checkForUpdate()) ?? u;
+    state.update.available = u;
+    state.update.checkedAt = Date.now();
+  } catch {
+    // 网络不好，沿用上次的结果
+  }
+  if (canSelfUpdate() || !u.pkg) {
+    state.update.installing = null;
+    changed();
+    void shell.openExternal(u.download ?? u.url);
+    return;
+  }
   let last = 0;
   try {
     await installUpdate(u, (p) => {

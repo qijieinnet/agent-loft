@@ -176,7 +176,7 @@ html:not(.os-darwin) .topbar {
   background: var(--badge-orange);
 }
 
-/* 更多：轻量的图标按钮 */
+/* 顶栏的用量汇总、设置：轻量的图标按钮 */
 .bar-btn {
   position: relative;
   flex: none;

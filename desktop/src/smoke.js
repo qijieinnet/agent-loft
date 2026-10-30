@@ -132,13 +132,19 @@ export async function runSmoke({ openPopover }) {
     await until(() => js(`window.loft.state().then((s) => !s.managing && s.servers.find((x) => x.id === s.activeId)?.name === "排序二")`), "点标签切换到「排序二」", 3000);
     await js(`window.loft.call("manage")`);
 
-    // 用量汇总：三台都连不上，画得出来并注明哪几台没算进去；翻到上个月也正常
-    await js(`window.loft.call("showUsage")`);
+    // 用量汇总：点顶栏的用量按钮打开。三台都连不上，画得出来并注明哪几台没算进去；翻到上个月也正常
+    await js(`document.getElementById("usage").click()`);
     await until(() => js(`document.querySelector(".usage-stats")?.innerText.includes("没算进去")`), "用量汇总页");
+    if (!(await js(`document.getElementById("usage").classList.contains("on") && !document.getElementById("settings").classList.contains("on")`))) {
+      return fail("用量汇总打开了，顶栏的用量按钮没有亮");
+    }
     await js(`document.querySelector('.us-nav [aria-label="上一个"]').click()`);
     await until(() => js(`document.querySelector(".usage-stats")?.innerText.includes("没算进去")`), "用量汇总翻到上个月");
     junk = junkIn(await js(`document.getElementById("panel").innerText`));
     if (junk) return fail(`用量汇总里有渲染残渣：「${junk}」`);
+    // 再点一下：回到当前服务器
+    await js(`document.getElementById("usage").click()`);
+    await until(() => js(`window.loft.state().then((s) => !s.managing && !!s.activeId)`), "再点用量按钮回到服务器", 3000);
     await js(`window.loft.call("manage")`);
 
     const pop = openPopover();

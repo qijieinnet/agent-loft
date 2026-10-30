@@ -31,8 +31,10 @@ export function renderTopbar() {
             ]
           : null,
     ),
-    // 桌面端里这个菜单放到桌面端顶栏的「更多」里了
-    desktopMenu ? null : h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")),
+    // 老版本桌面端把这个菜单放到它顶栏的「更多」里了；菜单里什么都没有时（桌面端里的任务页）也不放
+    desktopMenu || (!topMenuItems().length && !usageSummary())
+      ? null
+      : h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")),
   );
   renderContext();
   syncDesktopMenu();

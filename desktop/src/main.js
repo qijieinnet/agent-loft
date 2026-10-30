@@ -29,7 +29,6 @@ import {
   refreshServerVersion,
   rt,
   servers,
-  setPageMenu,
   setPageQuota,
   setPageState,
   trustCert,
@@ -365,39 +364,13 @@ function openServerSettings(id) {
   else send();
 }
 
-/**
- * 顶栏「更多」：当前服务器页面自己的菜单（聊天模式、定时发送…）+ 桌面端设置 + 每台服务器的设置，
- * 最下面是当前会话的 token 用量
- */
-function popupMoreMenu(pos) {
+/** 顶栏的设置按钮：桌面端设置 + 每台服务器自己的设置（页面自己的「更多」留在页面里） */
+function popupSettingsMenu(pos) {
   if (!win || win.isDestroyed()) return;
   const list = store.servers();
   const appUpdate = !!systemState().update?.available;
-  const pageId = activeId && !managing && !rt(activeId).loadFailed ? activeId : null;
-  const page = pageId ? rt(pageId).pageMenu : undefined;
-  const pageItems = (page?.items ?? []).map((it) =>
-    it.type === "separator"
-      ? { type: "separator" }
-      : {
-          label: it.label,
-          ...(it.checked !== undefined ? { type: "checkbox", checked: it.checked } : {}),
-          click: () => {
-            const wc = rt(pageId).view?.webContents;
-            if (wc && !wc.isDestroyed()) wc.send("page:menu", it.id);
-          },
-        },
-  );
-  const usage = (page?.usage ?? []).map((label) => ({ label, enabled: false }));
   Menu.buildFromTemplate([
-    ...pageItems,
-    ...(pageItems.length ? [{ type: "separator" }] : []),
-    // 已经开着：再点一下回到当前服务器（和原来的设置按钮一样）
-    {
-      label: "用量汇总",
-      type: "checkbox",
-      checked: managing && panel === "usage",
-      click: () => (managing && panel === "usage" && activeId ? select(activeId) : showUsage()),
-    },
+    // 已经开着：再点一下回到当前服务器
     {
       label: appUpdate ? "桌面端设置（有新版本）" : "桌面端设置",
       type: "checkbox",
@@ -410,7 +383,6 @@ function popupMoreMenu(pos) {
       const upgradable = v?.updateAvailable && v.canUpgrade;
       return { label: `${s.name} 设置${upgradable ? "（服务端可升级）" : ""}`, click: () => openServerSettings(s.id) };
     }),
-    ...(usage.length ? [{ type: "separator" }, ...usage] : []),
   ]).popup({ window: win, x: Math.round(Number(pos?.x) || 0), y: Math.round(Number(pos?.y) || BAR) });
 }
 
@@ -604,12 +576,6 @@ ipcMain.on("page:state", (e, state) => {
   if (id) setPageState(id, state);
 });
 
-// 页面的「更多」菜单：顶栏「更多」里排在最上面
-ipcMain.on("page:menu-set", (e, menu) => {
-  const id = pageOwner(e);
-  if (id) setPageMenu(id, menu);
-});
-
 // 老版本页面：自己查了额度报上来
 ipcMain.on("page:quota", (e, quotas) => {
   const id = pageOwner(e);
@@ -673,7 +639,9 @@ const calls = {
     hidePopover();
     showManage();
   },
-  moreMenu: (pos) => popupMoreMenu(pos),
+  settingsMenu: (pos) => popupSettingsMenu(pos),
+  // 顶栏的用量按钮：已经开着再点一下回到当前服务器
+  toggleUsage: () => (managing && panel === "usage" && activeId ? select(activeId) : showUsage()),
   showUsage: () => {
     hidePopover();
     showUsage();

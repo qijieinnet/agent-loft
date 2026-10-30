@@ -89,7 +89,7 @@ input {
 .btn:disabled {
   opacity: 0.5;
 }
-/* 只有图标的按钮（比如「更多」）：正方形 */
+/* 只有图标的按钮（比如本机服务端的「更多」）：正方形 */
 .btn.icon-btn {
   width: 28px;
   padding: 0;
