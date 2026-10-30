@@ -30,6 +30,7 @@ import { createNav } from "./msg-nav.js";
 import { renameConv } from "./conv-actions.js";
 import { clearCommandCache, preloadCommands } from "./slash.js";
 import { releaseForeignPushSub } from "../lib/push.js";
+import { createSidebarNav } from "./sidebar-nav.js";
 
 // ---------- 主界面 ----------
 
@@ -276,20 +277,7 @@ function renderLayout() {
       { class: "side-top" },
       h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("plus"), "新建"),
     ),
-    // 搜索：弹窗里搜标题和聊天内容，可以按专家筛
-    h("button", { class: "btn new-chat side-nav search-nav", onclick: () => openSearch() }, icon("search"), "搜索"),
-    // 「最近」上面的入口，像 ChatGPT 的 Tasks。当前在任务页时高亮（renderSidebar 里切换）
-    (ui.tasksNav = h("button", { class: "btn new-chat side-nav", onclick: () => openTasksView() }, icon("clock"), "定时任务")),
-    // 资料库：发过的附件、agent 生成的文件
-    (ui.libraryNav = h("button", { class: "btn new-chat side-nav", onclick: () => openLibraryView() }, icon("library"), "资料库")),
-    // 远程控制：这台机器的桌面和终端。后台连着时右边亮个小绿点（renderSidebar 里切换）
-    (ui.remoteNav = h(
-      "button",
-      { class: "btn new-chat side-nav", hidden: !remoteTabs().length, onclick: () => openRemoteView() },
-      icon("monitor"),
-      "远程控制",
-      h("span", { class: "live-dot", title: "在后台连着" }),
-    )),
+    createSidebarNav({ search: openSearch, tasks: openTasksView, library: openLibraryView, remote: openRemoteView, settings: openSettings }),
     ui.convList,
     // 底部只有额度：没有额度可显示（关了查询、还没查到）时整块藏起来，连分隔线一起
     (ui.sideBottom = h(

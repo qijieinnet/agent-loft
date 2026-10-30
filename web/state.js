@@ -5,6 +5,8 @@ export const S = {
   bots: [],
   convs: new Map(),
   pending: new Map(),
+  /** 侧栏菜单的显示和顺序，随账号保存；null 使用默认配置。 */
+  sidebarNav: null,
   current: null,
   /** 新对话的引擎（claude / codex），跟着选的专家走 */
   draftAgent: localStorage.getItem("aim.agent") || null,

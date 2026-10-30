@@ -163,11 +163,12 @@ button.conv-group:hover {
 
 .proj-row {
   position: relative;
-  margin-top: 2px;
+  margin-bottom: 4px;
 }
 
 .conv-item.proj {
   color: var(--fg-soft);
+  margin-bottom: 0;
 }
 
 .conv-item.proj:hover {
@@ -277,6 +278,7 @@ button.conv-group:hover {
   border-radius: 8px;
   font-size: 14px;
   position: relative;
+  margin-bottom: 4px;
 }
 
 .conv-item:hover {
@@ -372,7 +374,8 @@ button.conv-group:hover {
   margin-left: 0;
 }
 
-.conv-item .task-mark {
+.conv-item .task-mark,
+.conv-item .feishu-mark {
   flex-shrink: 0;
   width: 14px;
   height: 14px;
@@ -380,13 +383,16 @@ button.conv-group:hover {
   color: var(--fg-faint);
 }
 
-.conv-item .task-mark svg {
+.conv-item .task-mark svg,
+.conv-item .feishu-mark svg {
   width: 14px;
   height: 14px;
 }
 
 .conv-item > .dot ~ .task-mark,
-.conv-item > .conv-spin ~ .task-mark {
+.conv-item > .conv-spin ~ .task-mark,
+.conv-item > .dot ~ .feishu-mark,
+.conv-item > .conv-spin ~ .feishu-mark {
   margin-left: 0;
 }
 
@@ -408,7 +414,8 @@ button.conv-group:hover {
     display: inline-grid;
   }
 
-  .conv-item:hover .task-mark {
+  .conv-item:hover .task-mark,
+  .conv-item:hover .expert-mark ~ .feishu-mark {
     display: none;
   }
 }
@@ -657,7 +664,151 @@ button.conv-group:hover {
   color: var(--fg);
 }
 
-/* 「搜索」和下面的「定时任务」挨着，间距和「新聊天」到它一样 */
-.side-nav.search-nav {
+/* 项目列表上方的菜单；「新建」固定，其余可配置显示和顺序。 */
+.sidebar-nav {
+  padding: 4px 10px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-nav .side-nav {
+  width: 100%;
+  margin: 0 0 4px;
+  text-align: left;
+}
+
+.sidebar-nav .side-nav:last-child {
   margin-bottom: 0;
+}
+
+.sidebar-nav .grow,
+.sidebar-edit-row .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.side-more[aria-expanded="true"] {
+  background: var(--bg-hover);
+}
+
+.popover.side-more-menu {
+  min-width: 200px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+
+.side-more-menu .pop-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.side-more-menu .pop-item > span:first-child {
+  display: inline-grid;
+  flex-shrink: 0;
+}
+
+.side-more-menu .pop-item svg {
+  width: 16px;
+  height: 16px;
+}
+
+.side-more-menu .pop-item.active {
+  background: var(--bg-hover);
+}
+
+.side-more-menu .live-dot {
+  display: none;
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.side-more-menu .live .live-dot {
+  display: block;
+}
+
+.modal.sidebar-editor {
+  max-width: 440px;
+}
+
+.sidebar-edit-hint {
+  margin: 0;
+  color: var(--fg-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sidebar-edit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-edit-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  min-height: 44px;
+  padding: 0 4px 0 10px;
+}
+
+.sidebar-edit-row:hover,
+.sidebar-edit-row.dragging {
+  background: var(--bg-hover);
+}
+
+.sidebar-edit-row.dragging {
+  opacity: 0.6;
+}
+
+.sidebar-edit-row label {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 12px;
+  min-height: 44px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.sidebar-edit-row input {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.sidebar-edit-row svg {
+  width: 17px;
+  height: 17px;
+  color: var(--fg-soft);
+}
+
+.sidebar-edit-grip {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  font-size: 18px;
+  letter-spacing: -3px;
+  color: var(--fg-faint);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.sidebar-edit-grip:hover,
+.sidebar-edit-grip:focus-visible {
+  color: var(--fg);
+  background: var(--bg-soft);
+}
+
+.sidebar-edit-grip:active {
+  cursor: grabbing;
 }

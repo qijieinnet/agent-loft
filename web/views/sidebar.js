@@ -1,11 +1,12 @@
 import { fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop, remoteTabs, S, ui } from "../state.js";
+import { desktop, S, ui } from "../state.js";
 import { baseName } from "./topbar.js";
 import { newDraft, openConversation } from "./messages.js";
-import { convExpert, expertIcon } from "./experts.js";
+import { convExpert, expertIcon, setDraftExpert } from "./experts.js";
 import { leaveRemote } from "./remote.js";
 import { reportShellState } from "../lib/shell.js";
+import { syncSidebarNav } from "./sidebar-nav.js";
 
 // ---------- 侧栏标题跑马灯：名字被省略时，hover 来回滚动显示全名 ----------
 
@@ -351,6 +352,7 @@ export function bootstrapQuery() {
 }
 
 export function applyBootstrap(data) {
+  S.sidebarNav = data.sidebarNav ?? null;
   S.convs = new Map(data.conversations.map((c) => [c.key, c]));
   pages.full = !data.sidebar;
   pages.recent.next = data.sidebar?.recent.next ?? null;
@@ -442,13 +444,7 @@ export function renderSidebar() {
     return;
   }
   sidebarStale = false;
-  ui.tasksNav?.classList.toggle("active", S.view === "tasks");
-  ui.libraryNav?.classList.toggle("active", S.view === "library");
-  if (ui.remoteNav) {
-    ui.remoteNav.hidden = !remoteTabs().length;
-    ui.remoteNav.classList.toggle("active", S.view === "remote");
-    ui.remoteNav.classList.toggle("live", S.remoteLive.desktop || S.remoteLive.terminals > 0);
-  }
+  syncSidebarNav();
   const askKeys = new Set([...S.pending.values()].filter((i) => !i.settled).map((i) => i.convKey));
   const visible = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt);
   const cur = S.current ? S.convs.get(S.current) : null;
@@ -500,10 +496,10 @@ export function renderSidebar() {
           title: latest ? `飞书 · ${bot.name}\n${agentLabel(latest.agent)} · ${latest.cwd}` : `飞书 · ${bot.name}\n还没有会话`,
           onclick: () => (latest ? open(latest.key) : toast("这个机器人还没有会话，先在飞书里给它发条消息")),
         },
-        h("span", { class: "brand-icon lead", title: "飞书", html: ICON.feishu }),
         h("span", { class: "title" }, bot.name),
         status(convs.map((c) => c.key)),
         convExpertMark(latest),
+        h("span", { class: "brand-icon feishu-mark", title: "飞书", html: ICON.feishu }),
       ),
     });
   }
@@ -596,11 +592,30 @@ export function renderSidebar() {
             {
               class: "proj-new",
               title: `在 ${baseName(dir)} 中开新对话`,
-              onclick: () => {
-                S.draftCwd = dir === S.workspaceRoot ? null : dir;
-                S.draftCwdPicked = true;
-                newDraft();
-                closeSide();
+              onclick: async (e) => {
+                const button = e.currentTarget;
+                button.disabled = true;
+                try {
+                  let latest = convs[0];
+                  // 收起的项目可能只加载了旧会话，先补齐最近一棵树，再按会话活跃时间选。
+                  if (!pages.full && (!latest || latest.activeAt < (pages.dirAt.get(dir) ?? 0))) {
+                    const q = new URLSearchParams({ scope: "dir", dir, limit: "1" });
+                    const data = await api(`/api/conversations/page?${q}`);
+                    for (const c of data.conversations) S.convs.set(c.key, c);
+                    latest = [...S.convs.values()]
+                      .filter((c) => !c.hidden && c.channel === "web" && c.cwd === dir)
+                      .sort((a, b) => b.activeAt - a.activeAt)[0];
+                  }
+                  S.draftCwd = dir === S.workspaceRoot ? null : dir;
+                  S.draftCwdPicked = true;
+                  if (latest) setDraftExpert(latest.expert?.id ?? latest.agent);
+                  newDraft();
+                  closeSide();
+                } catch (err) {
+                  toast(`新对话创建失败：${err.message}`);
+                } finally {
+                  button.disabled = false;
+                }
               },
             },
             icon("plus"),

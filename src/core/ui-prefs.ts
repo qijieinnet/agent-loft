@@ -1,9 +1,11 @@
 // 每个用户的界面偏好，跟着账号走（换手机、换浏览器、桌面端都一样）。
-// 现在只有侧栏「项目」目录的顺序：用户拖过的顺序是固定的，新消息不会把目录顶到前面。
+// 侧栏菜单的显示、顺序，以及「项目」目录的顺序。
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 
-type Prefs = { dirOrder?: string[] };
+export type SidebarNavItem = { id: string; visible: boolean };
+const NAV_IDS = ["search", "tasks", "library", "remote", "settings"];
+type Prefs = { dirOrder?: string[]; sidebarNav?: SidebarNavItem[] };
 
 const prefsPath = path.join(dataDir, "ui-prefs.json");
 let cache: Record<string, Prefs> | null = null;
@@ -51,6 +53,31 @@ export function appendDirOrder(userId: string, dirs: unknown): string[] {
   all[userId] = { ...all[userId], dirOrder };
   save();
   return dirOrder;
+}
+
+/** 新菜单接在最后；未配置过的菜单沿用默认显示方式（设置默认收进「更多」）。 */
+function cleanSidebarNav(value: unknown): SidebarNavItem[] {
+  const items: SidebarNavItem[] = [];
+  const seen = new Set<string>();
+  for (const item of Array.isArray(value) ? value : []) {
+    if (!item || typeof item !== "object" || !NAV_IDS.includes(item.id) || seen.has(item.id)) continue;
+    seen.add(item.id);
+    items.push({ id: item.id, visible: typeof item.visible === "boolean" ? item.visible : item.id !== "settings" });
+  }
+  for (const id of NAV_IDS) if (!seen.has(id)) items.push({ id, visible: id !== "settings" });
+  return items;
+}
+
+export function getSidebarNav(userId: string): SidebarNavItem[] {
+  return cleanSidebarNav(load()[userId]?.sidebarNav);
+}
+
+export function setSidebarNav(userId: string, value: unknown): SidebarNavItem[] {
+  const all = load();
+  const sidebarNav = cleanSidebarNav(value);
+  all[userId] = { ...all[userId], sidebarNav };
+  save();
+  return sidebarNav;
 }
 
 export function deleteUiPrefs(userId: string): void {

@@ -30,7 +30,7 @@ import {
 import type { AttachmentInfo, SavedAttachment } from "../../core/types.js";
 import { dailyUsage } from "../../core/usage.js";
 import { localUsage } from "../../core/local-usage.js";
-import { appendDirOrder, getDirOrder, setDirOrder } from "../../core/ui-prefs.js";
+import { appendDirOrder, getDirOrder, getSidebarNav, setDirOrder, setSidebarNav } from "../../core/ui-prefs.js";
 import {
   addMemoryItem,
   clearMemory,
@@ -693,6 +693,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       },
       // 「项目」目录的顺序（拖拽排的），跟着账号走；null = 还没存过
       dirOrder: getDirOrder(user.id) ?? null,
+      sidebarNav: getSidebarNav(user.id),
       pending,
       user: publicMe(user),
       remote: remoteStatus(user),
@@ -708,6 +709,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const body = await readJsonBody<{ order?: unknown; append?: unknown }>(req);
     const order = body.order !== undefined ? setDirOrder(user.id, body.order) : appendDirOrder(user.id, body.append);
     sendJson(res, 200, { order });
+    return;
+  }
+
+  if (p === "/api/ui/sidebar-nav" && method === "PUT") {
+    const body = await readJsonBody<{ items?: unknown }>(req);
+    if (!Array.isArray(body.items)) throw new HttpError(400, "菜单配置必须是列表");
+    sendJson(res, 200, { items: setSidebarNav(user.id, body.items) });
     return;
   }
 

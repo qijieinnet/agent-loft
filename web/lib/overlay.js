@@ -46,6 +46,7 @@ function onOutsideMenu(e) {
 }
 
 export function closeMenu() {
+  ui.menu?.onMenuClose?.();
   ui.menu?.remove();
   ui.menu = null;
   document.removeEventListener("pointerdown", onOutsideMenu);
@@ -83,7 +84,12 @@ export function showPopover(anchor, { place = "above", align = "right" } = {}) {
   pop.dataset.align = align;
   document.body.append(pop);
   ui.menu = pop;
-  setTimeout(() => document.addEventListener("pointerdown", onOutsideMenu), 0);
+  setTimeout(() => {
+    if (ui.menu !== pop) return;
+    document.addEventListener("pointerdown", onOutsideMenu);
+    document.addEventListener("keydown", onMenuKey);
+    addEventListener("blur", closeMenu);
+  }, 0);
   return pop;
 }
 

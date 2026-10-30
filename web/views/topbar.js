@@ -1,12 +1,11 @@
 import { fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
-import { desktop, desktopMenu, desktopSettings, S, ui } from "../state.js";
+import { desktop, desktopMenu, S, ui } from "../state.js";
 import { agentLabel, convTitle, openSide } from "./sidebar.js";
 import { convExpert, expertChoices, expertIcon, findExpert } from "./experts.js";
 import { closeMenu, modal, placePopover, showMenu, showPopover } from "../lib/overlay.js";
 import { openConversation } from "./messages.js";
-import { openSettings } from "./layout.js";
 import { openSchedule } from "./schedule.js";
 import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, renameConv, switchAgent } from "./conv-actions.js";
 
@@ -142,18 +141,11 @@ function openExpertCard(anchor, key, pinned) {
   placePopover(pop, anchor);
 }
 
-/**
- * 右上角「更多」里的项。对话页（含新对话）有定时发送；设置哪个页面都有，
- * 桌面端自己的「更多」里已经有每台服务器的设置时不放
- */
+/** 右上角「更多」只放当前对话的操作；设置在侧边栏的「更多」里。 */
 function topMenuItems() {
   const items = [];
   if (!S.view) {
     items.push({ id: "schedule", label: "定时发送", icon: "clock", onclick: () => openSchedule() });
-  }
-  if (!desktopSettings) {
-    if (items.length) items.push("sep");
-    items.push({ id: "settings", label: "设置", icon: "gear", onclick: () => openSettings() });
   }
   return items;
 }
