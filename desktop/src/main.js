@@ -478,7 +478,7 @@ function rebuildMenu() {
   const viewMenu = {
     label: "显示",
     submenu: [
-      { label: "重新加载", accelerator: "CmdOrCtrl+R", click: () => (activeId && !managing ? reload(activeId) : activeWc()?.reload()) },
+      { label: "重新加载", accelerator: "CmdOrCtrl+R", click: () => (activeId && !managing ? refreshPage(activeId) : activeWc()?.reload()) },
       { label: "开发者工具", accelerator: isMac ? "Alt+Command+I" : "Ctrl+Shift+I", click: () => activeWc()?.toggleDevTools() },
       { type: "separator" },
       { role: "resetZoom", label: "实际大小" },
