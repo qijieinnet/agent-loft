@@ -600,3 +600,8 @@
     grid-template-columns: 1fr 1fr;
   }
 }
+.builtin-agent-defaults + .builtin-agent-defaults {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 16px;
+}

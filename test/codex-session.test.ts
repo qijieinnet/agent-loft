@@ -95,6 +95,40 @@ test("自定义专家：start / resume / fork 失败不会去掉限制重试，�
   }
 });
 
+test("内置 Agent：start / resume / fork 应用个人 MCP 选择与机器技能开关，支持全部关闭", async () => {
+  for (const kind of ["start", "resume", "fork"] as const) {
+    calls.length = 0;
+    const { session } = makeSession({
+      ...(kind === "start" ? {} : { resumeId: `builtin-${kind}` }), ...(kind === "fork" ? { fork: true } : {}),
+      skills: { userId: "u_test", admin: true, machineSkills: false, list: [], env: {} },
+      builtinMcp: { inheritMachine: false, machineMcp: ["machine"], mcp: { personal: { type: "http", url: "https://personal.example.com", headers: {} } }, askMcp: ["personal"] },
+    });
+    session.send({ text: "test", attachments: [] }); await tick();
+    const call = take(`thread/${kind}`);
+    assert.equal(call.params.config["mcp_servers.remote.enabled"], false);
+    assert.equal(call.params.config["mcp_servers.machine.enabled"], true);
+    assert.equal(call.params.config["mcp_servers.personal"].default_tools_approval_mode, "prompt");
+    assert.equal(call.params.config["skills.include_instructions"], false);
+    assert.equal(call.params.config["features.skill_search"], false);
+    await session.dispose(); call.reject(new Error("disposed")); await tick();
+  }
+  calls.length = 0;
+  const { session } = makeSession({ builtinMcp: { inheritMachine: false, machineMcp: [], mcp: {}, askMcp: [] } });
+  session.send({ text: "test", attachments: [] }); await tick();
+  const start = take("thread/start");
+  assert.equal(start.params.config["mcp_servers.machine.enabled"], false);
+  assert.equal(start.params.config["mcp_servers.remote.enabled"], false);
+  await session.dispose(); start.reject(new Error("disposed")); await tick();
+});
+
+test("内置 Agent 的个人 MCP 保留调用前审批", async () => {
+  const { session } = makeSession({ builtinMcp: { inheritMachine: false, machineMcp: [], mcp: { personal: { type: "http", url: "https://personal.example.com", headers: {} } }, askMcp: ["personal"] } }, async () => ({ settlement: "allow-once", answers: {} }));
+  const request = { serverName: "personal", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call" } };
+  assert.deepEqual(await session.handleServerRequest("mcpServer/elicitation/request", request), { action: "accept", content: null, _meta: null });
+  assert.deepEqual(await session.handleServerRequest("mcpServer/elicitation/request", { ...request, serverName: "other" }), { action: "decline", content: null, _meta: null });
+  await session.dispose();
+});
+
 test("MCP 调用审批：允许、拒绝、取消和超时按协议返回；每次询问不沿用命令授权", async () => {
   const seen: InteractionSpec[] = [];
   const decisions: Settlement[] = ["allow-once", "deny", "cancelled", "timeout"];

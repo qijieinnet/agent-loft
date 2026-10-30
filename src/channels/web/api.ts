@@ -770,7 +770,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p.startsWith("/api/tasks") && (await handleTasksApi(req, res, p, user))) return;
   if (p.startsWith("/api/library") && (await handleLibraryApi(req, res, p, user))) return;
   if (p.startsWith("/api/skills") && (await handleSkillsApi(req, res, url, user))) return;
-  if ((p.startsWith("/api/experts") || p.startsWith("/api/mcp")) && (await handleExpertsApi(req, res, p, user))) return;
+  if ((p === "/api/agents/defaults" || p.startsWith("/api/experts") || p.startsWith("/api/mcp")) && (await handleExpertsApi(req, res, p, user))) return;
   if (p.startsWith("/api/terminals") && (await handleTerminalApi(req, res, p, user))) return;
   if ((p === "/api/remote" || p.startsWith("/api/desktop/")) && (await handleDesktopApi(req, res, p, user))) return;
 

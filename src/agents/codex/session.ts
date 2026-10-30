@@ -428,7 +428,13 @@ export class CodexSession implements AgentSession {
       const off = Object.fromEntries((await userMcpServers()).filter((n) => !keep.has(n)).map((n) => [`mcp_servers.${n}.enabled`, false]));
       return { config: { ...expertConfig(expert), ...off, ...codexMcp(expert.mcp, expert.askMcp), ...mcp, ...this.skillConfig() } };
     }
-    const work = { ...mcp, ...this.skillConfig() };
+    const builtin = this.opts.builtinMcp;
+    const keep = new Set([...(builtin?.machineMcp ?? []), ...Object.keys(builtin?.mcp ?? {})]);
+    const off = builtin && !builtin.inheritMachine
+      ? Object.fromEntries((await userMcpServers()).filter((n) => !keep.has(n)).map((n) => [`mcp_servers.${n}.enabled`, false]))
+      : {};
+    const selected = Object.fromEntries((builtin?.machineMcp ?? []).map((n) => [`mcp_servers.${n}.enabled`, true]));
+    const work = { ...off, ...selected, ...codexMcp(builtin?.mcp ?? {}, builtin?.askMcp), ...mcp, ...this.skillConfig() };
     return Object.keys(work).length ? { config: work } : {};
   }
 
@@ -442,7 +448,7 @@ export class CodexSession implements AgentSession {
     if (!skills) return {};
     return {
       ...(this.access === "exec" ? Object.fromEntries(Object.entries(skills.env).map(([k, v]) => [`shell_environment_policy.set.${k}`, v])) : {}),
-      ...(skills.admin && !this.opts.expert ? {} : { "skills.include_instructions": false, "features.skill_search": false }),
+      ...(skills.admin && skills.machineSkills !== false && !this.opts.expert ? {} : { "skills.include_instructions": false, "features.skill_search": false }),
     };
   }
 
@@ -710,7 +716,7 @@ export class CodexSession implements AgentSession {
       case "mcpServer/elicitation/request": {
         const req = params as { serverName: string; mode?: string; message?: string; _meta?: Record<string, unknown> };
         // Codex 用 elicitation 传工具审批；普通 MCP 表单仍按未支持处理，不能把表单当授权。
-        if (req.mode !== "form" || req._meta?.codex_approval_kind !== "mcp_tool_call" || !this.opts.expert?.mcp[req.serverName]) {
+        if (req.mode !== "form" || req._meta?.codex_approval_kind !== "mcp_tool_call" || !(this.opts.expert ?? this.opts.builtinMcp)?.mcp[req.serverName]) {
           return refusalFor(method);
         }
         const detail = [req.message, req._meta.tool_params === undefined ? "" : `\`\`\`json\n${JSON.stringify(req._meta.tool_params, null, 2)}\n\`\`\``].filter(Boolean).join("\n\n");

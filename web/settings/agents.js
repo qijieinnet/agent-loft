@@ -156,7 +156,62 @@ function installCodexButton(after) {
   return h("div", {}, btn);
 }
 
+/** 内置 Agent 的个人默认项；普通成员也能设置自己的，不需要服务器管理权限。 */
+function builtinDefaultsSection() {
+  const section = h("div", { class: "section", "data-form": "" }, h("h4", {}, "内置 Agent 默认加载"), h("span", { class: "spinner" }));
+  const load = async () => {
+    let data;
+    try {
+      data = await api("/api/agents/defaults");
+    } catch (err) {
+      fill(section, h("h4", {}, "内置 Agent 默认加载"), h("div", { class: "error-text" }, err.message), h("button", { class: "btn small", onclick: load }, "重试"));
+      return;
+    }
+    const choices = {};
+    const picker = (label, items, selected, inheritLabel) => {
+      const mode = h("select", { "aria-label": label },
+        ...(inheritLabel ? [h("option", { value: "inherit", selected: selected === null }, inheritLabel)] : []),
+        h("option", { value: "pick", selected: selected !== null }, "指定加载（可全部取消）"));
+      const known = new Set(items.map((item) => item.id));
+      const missing = (selected ?? []).filter((id) => !known.has(id)).map((id) => ({ id, name: `${id}（暂不可用，可取消）` }));
+      const inputs = [...items, ...missing].map((item) => ({ id: item.id, input: h("input", { type: "checkbox", checked: (selected ?? []).includes(item.id) }), item }));
+      const list = h("div", { class: "check-list" }, inputs.length
+        ? inputs.map(({ input, item }) => h("label", { class: "check-item", title: item.description ?? "" }, input, h("span", {}, item.name)))
+        : h("small", {}, "暂无可选项，请先在设置中添加"));
+      const sync = () => { list.hidden = mode.value !== "pick"; };
+      mode.addEventListener("change", sync);
+      sync();
+      return { el: h("div", { class: "field" }, h("span", {}, label), mode, list), value: () => mode.value === "inherit" ? null : inputs.filter((x) => x.input.checked).map((x) => x.id) };
+    };
+    const panels = ["claude", "codex"].map((engine) => {
+      const label = engine === "claude" ? "Claude Code" : "Codex";
+      const prefs = data.agents[engine];
+      const skills = picker(`${label} 技能`, data.skills, prefs.skills, "全部已启用的个人技能（含以后新增）");
+      const machine = (data.machineMcp?.[engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, name: `${name}（本机）` }));
+      const mcp = picker(`${label} MCP`, [...data.mcp, ...machine], prefs.mcp, data.machineMcp ? "沿用机器上的 MCP 配置" : null);
+      const machineSkills = h("input", { type: "checkbox", checked: prefs.machineSkills });
+      choices[engine] = { skills, mcp, machineSkills };
+      return h("div", { class: "builtin-agent-defaults" }, h("h4", {}, label), skills.el,
+        data.machineMcp ? h("label", { class: "check-item" }, machineSkills, "同时加载机器上的技能") : null,
+        mcp.el);
+    });
+    fill(section, h("h4", {}, "内置 Agent 默认加载"),
+      h("p", { class: "skill-note" }, "仅影响你当前账号使用的内置 Agent；自定义专家继续使用各自的配置。保存后，下次发消息生效，正在执行的任务不受影响。"),
+      ...panels,
+      h("small", {}, "技能和 MCP 可分别全部取消。记忆、定时任务、技能管理等系统工具仍按功能设置提供。"),
+      h("div", { class: "row" }, saveButton(async () => {
+        const agents = Object.fromEntries(Object.entries(choices).map(([engine, c]) => [engine, { skills: c.skills.value(), machineSkills: c.machineSkills.checked, mcp: c.mcp.value() }]));
+        await api("/api/agents/defaults", { method: "PUT", body: { agents } });
+        toast("已保存，下次发消息生效");
+      }, "保存默认加载设置")));
+  };
+  void load();
+  return section;
+}
+
 export function agentsTab(cfg, page) {
+  page.append(builtinDefaultsSection());
+  if (!cfg) return;
   page.append(agentHealthSection());
   const a = structuredClone(cfg.agents);
   const claudeOn = h("input", { type: "checkbox", checked: a.claude.enabled });

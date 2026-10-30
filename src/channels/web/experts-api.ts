@@ -16,6 +16,7 @@ import {
   type Expert,
   type ExpertInput,
 } from "../../core/experts.js";
+import { builtinAgentDefaults, setBuiltinAgentDefaults } from "../../core/builtin-agents.js";
 import { hub } from "../../core/hub.js";
 import { claudeMachineMcp, createMcp, deleteMcp, getMcp, listMcp, MACHINE_PREFIX, MCP_LIMITS, mcpView, updateMcp, type McpInput } from "../../core/mcp.js";
 import { activeSkills } from "../../core/skills.js";
@@ -84,6 +85,25 @@ async function machineMcp(user: User): Promise<{ claude: string[]; codex: string
 /** 处理了就返回 true */
 export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse, p: string, user: User): Promise<boolean> {
   const method = req.method ?? "GET";
+
+  if (p === "/api/agents/defaults" && method === "GET") {
+    sendJson(res, 200, {
+      agents: builtinAgentDefaults(user.id),
+      skills: activeSkills(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
+      mcp: listMcp(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
+      ...(await machineMcp(user).then((m) => m ? { machineMcp: m, machinePrefix: MACHINE_PREFIX } : {})),
+    });
+    return true;
+  }
+  if (p === "/api/agents/defaults" && method === "PUT") {
+    const body = await readJsonBody<{ agents?: unknown }>(req);
+    try {
+      sendJson(res, 200, { agents: setBuiltinAgentDefaults(user.id, body.agents) });
+    } catch (err) {
+      throw bad(err);
+    }
+    return true;
+  }
 
   if (p === "/api/experts" && method === "GET") {
     const enabled = hub.enabledAgents().map((d) => d.id);

@@ -18,7 +18,7 @@ import { hasDirty, markDirty } from "./common.js";
 
 // ---------- 设置 ----------
 // 按「谁的、管什么」分组：我的（每个人自己的）、Agent、连接（飞书、远程控制）、管理。
-// 普通成员只有「我的」这一组；其余都是管理员的，要先拿配置。
+// 普通成员可管理自己的资料和内置 Agent 默认项；管理员另有运行环境和服务器设置。
 
 const LAST_TAB = "aim.settingsTab";
 
@@ -38,7 +38,7 @@ function groupsFor(cfg) {
       ["用量", (p) => usageTab(p)],
     ],
   };
-  if (!cfg) return [mine];
+  if (!cfg) return [mine, { name: "Agent", tabs: [["Agent", (p) => agentsTab(null, p)]] }];
   return [
     mine,
     {

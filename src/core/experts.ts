@@ -2,7 +2,7 @@
 // 挂哪些技能和 MCP、能把活派给哪些子智能体。新建对话、定时任务时选一个专家，对话从头到尾都是它，
 // 中途不能换（飞书里换专家等于开新会话）。
 //
-// 两个内置专家 claude、codex 不存盘：就是 agent 原装的样子（原装提示词、机器上的技能和 MCP、所有工具）。
+// 两个内置专家 claude、codex 不存成自定义专家：保留原装提示词和工具，技能 / MCP 默认项由 builtin-agents.ts 按人保存。
 // 对话和任务里没写 expert 的，专家就是它的 agent —— 升级前的数据不用迁移。
 //
 // 自定义专家每人管自己的，不分享。存储：data/experts.json，只有主进程读写。
@@ -389,7 +389,7 @@ export type ExpertRuntime = {
 };
 
 /** 专家选中的 MCP 解析成启动参数。机器上的：Claude 读 ~/.claude.json，Codex 只要名字（由它自己按 config.toml 起） */
-function resolveMcp(expert: Expert, admin: boolean): { mcp: Record<string, ResolvedMcp>; ask: string[]; machine: string[] } {
+export function resolveMcp(expert: Pick<Expert, "owner" | "engine" | "mcp">, admin: boolean): { mcp: Record<string, ResolvedMcp>; ask: string[]; machine: string[] } {
   const mcp: Record<string, ResolvedMcp> = {};
   const ask: string[] = [];
   const machine: string[] = [];

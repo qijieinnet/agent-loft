@@ -219,13 +219,13 @@ export function expertOptions(opts: SessionOptions): Partial<Options> {
   const skills = opts.skills;
   const expert = opts.expert;
   if (!expert) {
-    const mcpServers = loftMcp(opts);
+    const mcpServers = { ...opts.builtinMcp?.mcp, ...loftMcp(opts) };
     const append = [RICH_REPLY_LINES.join("\n"), memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n");
     return {
       systemPrompt: { type: "preset", preset: "claude_code", append, snapshot: false },
-      ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+      ...(opts.builtinMcp && !opts.builtinMcp.inheritMachine ? { strictMcpConfig: true, mcpServers } : Object.keys(mcpServers).length ? { mcpServers } : {}),
       ...(skills?.pluginDir ? { plugins: [{ type: "local" as const, path: skills.pluginDir, skipMcpDiscovery: true }] } : {}),
-      ...(skills && !skills.admin ? { skills: memberSkillAllowlist(skills, opts.cwd) } : {}),
+      ...(skills && (!skills.admin || skills.machineSkills === false) ? { skills: memberSkillAllowlist(skills, opts.cwd) } : {}),
     };
   }
 
@@ -579,10 +579,10 @@ export class ClaudeSession implements AgentSession {
   /** 自定义专家：它配了的联网工具、MCP 工具（没标「调用前询问」的）是用户自己给的，不再逐次问 */
   private expertPreApproved(toolName: string): boolean {
     const e = this.opts.expert;
-    if (!e) return false;
-    if ((toolName === "WebSearch" && e.webSearch) || (toolName === "WebFetch" && e.webFetch)) return true;
+    if (e && ((toolName === "WebSearch" && e.webSearch) || (toolName === "WebFetch" && e.webFetch))) return true;
+    const config = e ?? this.opts.builtinMcp;
     const m = /^mcp__(.+?)__/.exec(toolName);
-    return !!m && m[1]! in e.mcp && !e.askMcp.includes(m[1]!);
+    return !!config && !!m && m[1]! in config.mcp && !config.askMcp.includes(m[1]!);
   }
 
   /** 内置专家算能跑命令 */

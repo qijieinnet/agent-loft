@@ -200,7 +200,7 @@ export type SessionOptions = {
   autoEdit?: boolean;
   /**
    * 自定义专家（core/experts.ts）：提示词、权限、技能、MCP、子智能体都按它来。
-   * 不给就是内置专家 —— agent 原装的样子（原装提示词、机器上的技能和 MCP、所有工具）。
+   * 不给就是内置专家：原装提示词和工具，技能与 MCP 按账号的内置默认配置加载。
    */
   expert?: ExpertRuntime;
   /** 这条对话主人的记忆：prompt 拼进系统提示，userId 交给记忆工具（记给谁由这里定死） */
@@ -219,12 +219,16 @@ export type SessionOptions = {
   tasks?: { userId: string; convKey: string };
   /** 这条对话主人的技能（core/skill-runtime.ts）。没主人的对话不给：机器上的技能照旧，没有 agent-loft 的技能 */
   skills?: SessionSkills;
+  /** 内置 Agent 的个人 MCP 选择；不给时沿用 CLI 原配置。 */
+  builtinMcp?: Pick<ExpertRuntime, "mcp" | "askMcp" | "machineMcp"> & { inheritMachine: boolean };
 };
 
 export type SessionSkills = {
   userId: string;
   /** 管理员：机器上原有的技能照常能用；成员：只有 agent-loft 的技能和 agent 自带的 */
   admin: boolean;
+  /** 内置 Agent 是否加载机器技能；未设置时沿用管理员默认行为 */
+  machineSkills?: boolean;
   /** Claude 插件目录（里面是这个人启用的技能），一个都没有就不给 */
   pluginDir?: string;
   /** 启用的技能：名字、说明、SKILL.md 的路径 */

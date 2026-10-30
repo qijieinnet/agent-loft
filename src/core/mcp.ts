@@ -7,7 +7,7 @@
 // 和技能一样是「信任型」的：能执行命令的专家读得到 data/ 下的文件，包括这里的值。
 //
 // 机器上原有的 MCP（Claude 的 ~/.claude.json、Codex 的 config.toml）只给管理员选，id 写成 machine:<名字>。
-// 内置的 Claude Code / Codex 专家不经过这里：它们照旧加载机器上的配置。
+// 内置的 Claude Code / Codex 专家按 builtin-agents.ts 的个人默认选择加载；管理员默认沿用机器配置。
 //
 // 存储：data/mcp.json，所有人的放在一起，只有主进程读写。
 import crypto from "node:crypto";

@@ -48,7 +48,7 @@ function render(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "专家是一份配置：用哪个引擎、什么提示词、能做什么（联网 / 读文件 / 改文件 / 跑命令）、带哪些技能和 MCP、能把活派给哪些子智能体。新建对话、定时任务时选一个专家，对话从头到尾都是它。内置的 Claude Code、Codex 就是原装的样子。",
+        "专家是一份配置：用哪个引擎、什么提示词、能做什么（联网 / 读文件 / 改文件 / 跑命令）、带哪些技能和 MCP、能把活派给哪些子智能体。新建对话、定时任务时选一个专家，对话从头到尾都是它。内置的 Claude Code、Codex 在「设置 → Agent」里选择默认技能和 MCP。",
       ),
       h("div", { class: "skill-head-btns" }, add),
     ),
@@ -60,7 +60,7 @@ function render(box, data, reload) {
           "div",
           { class: "task-card skill-card" },
           h("div", { class: "task-top" }, h("span", { class: "task-title" }, agentIcon(b.engine, "expert-card-icon"), b.name), h("span", { class: "badge" }, "内置")),
-          h("div", { class: "task-prompt" }, `${b.name} 原装的样子：原装提示词、机器上的技能和 MCP（成员只有自己的技能）、所有工具。`),
+          h("div", { class: "task-prompt" }, `${b.name} 原装的样子：原装提示词、所有工具；默认技能和 MCP 在「设置 → Agent」里配置。`),
         ),
       ),
       data.experts.map((e) => expertCard(data, e, reload)),

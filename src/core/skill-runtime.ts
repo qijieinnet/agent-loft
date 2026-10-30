@@ -115,8 +115,8 @@ export function projectCommandNames(cwd: string): string[] {
  * 把这个人启用的技能整理成一个 Claude 插件目录：skills/<name> 链接到技能本体（作者一改，这里就是新的）。
  * 每次开会话时对一遍账：多的删、少的补，正在用这个目录的其他会话不受影响。
  */
-export function syncPluginDir(userId: string, skills: Skill[]): string {
-  const dir = path.join(pluginsRoot, userId);
+export function syncPluginDir(userId: string, skills: Skill[], scope?: string): string {
+  const dir = path.join(pluginsRoot, userId, ...(scope ? [scope] : []));
   const skillsDir = path.join(dir, "skills");
   fs.mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(skillsDir, { recursive: true, mode: 0o700 });
@@ -188,8 +188,9 @@ function varsPrompt(skills: Skill[], env: Record<string, string>, userId: string
  * 没有主人的对话（飞书群聊等，只有管理员能配）照旧：机器上的技能都在，没有 agent-loft 的技能。
  * only：自定义专家选中的技能 id，只给这些（变量的说明也只说这些的）。插件目录照样是这个人启用的全部 ——
  * 正在用这个目录的其他会话不受影响，Claude 那边再用白名单只放选中的。
+ * 内置 Agent 使用独立 pluginScope，插件里只挂它选中的技能，避免与自定义专家互相覆盖。
  */
-export function sessionSkills(owner: string | undefined, only?: string[]): SessionSkills | undefined {
+export function sessionSkills(owner: string | undefined, only?: string[], machineSkills?: boolean, pluginScope?: string): SessionSkills | undefined {
   if (!owner) return undefined;
   const user = getUser(owner);
   if (!user) return undefined;
@@ -203,7 +204,7 @@ export function sessionSkills(owner: string | undefined, only?: string[]): Sessi
   // 子智能体可能选了主专家没有的技能，插件资源要准备完整；各自的白名单由 driver 限定。
   if (all.length) {
     try {
-      pluginDir = syncPluginDir(owner, all);
+      pluginDir = syncPluginDir(owner, pluginScope ? skills : all, pluginScope);
     } catch (err) {
       console.error("[技能] 整理插件目录失败:", err instanceof Error ? err.message : err);
     }
@@ -211,6 +212,7 @@ export function sessionSkills(owner: string | undefined, only?: string[]): Sessi
   return {
     userId: owner,
     admin,
+    ...(machineSkills !== undefined ? { machineSkills: admin && machineSkills } : {}),
     ...(pluginDir ? { pluginDir } : {}),
     list: skills.map((s) => ({ name: s.name, description: s.description, path: path.join(skillDir(s.id), "SKILL.md") })),
     env,

@@ -8,6 +8,7 @@ import { purgeUserExperts } from "./experts.js";
 import { purgeUserMcp } from "./mcp.js";
 import type { Conversation } from "./store.js";
 import { getUser, legacyOwnerId } from "./users.js";
+import { deleteBuiltinAgentDefaults } from "./builtin-agents.js";
 import { deleteUiPrefs } from "./ui-prefs.js";
 
 /**
@@ -51,4 +52,5 @@ export function purgeUserData(userId: string): void {
   purgeUserExperts(userId);
   purgeUserMcp(userId);
   deleteUiPrefs(userId);
+  deleteBuiltinAgentDefaults(userId);
 }

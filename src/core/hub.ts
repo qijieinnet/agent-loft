@@ -51,6 +51,7 @@ import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
 import { expertSystemPrompt, searchLabel, stripContext } from "./expert-prompt.js";
 import { avatarUrl, expertEvents, expertRuntime, getExpert, isBuiltin, listExperts, type ExpertRuntime } from "./experts.js";
+import { builtinAgentDefaults, builtinAgentEvents, builtinAgentSession } from "./builtin-agents.js";
 import { mcpEvents } from "./mcp.js";
 import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
 import { skillEvents } from "./skills.js";
@@ -278,9 +279,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     interactions.on("created", (i) => this.emitEvent(i.convKey, { type: "ix", id: i.id }));
     // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
     skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
-    // 专家、MCP 改了：用着自定义专家的会话空闲下来换上新的（内置专家不受影响）
+    // 专家修改只影响自定义专家；MCP 和内置默认配置修改也更新该账号的内置会话。
     expertEvents.on("changed", (owner) => this.personalChanged(new Set([owner]), true));
-    mcpEvents.on("changed", (owner) => this.personalChanged(new Set([owner]), true));
+    mcpEvents.on("changed", (owner) => this.personalChanged(new Set([owner])));
+    builtinAgentEvents.on("changed", (owner) => this.personalChanged(new Set([owner])));
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
     onConfigChange((next, prev) => {
       // 默认模型可能改了，缓存作废，下次显示时重新读
@@ -650,7 +652,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const taskOwner = memoryOwnerOf(conv);
     // 技能也跟着主人走：他启用的技能、填的变量；成员看不到机器上原有的技能（见 skill-runtime.ts）。
     // 自定义专家只给它选中的
-    const skills = sessionSkills(taskOwner, expert?.skills);
+    const builtin = !expert && isBuiltin(agent) ? builtinAgentSession(taskOwner, agent) : {};
+    const skills = expert ? sessionSkills(taskOwner, expert.skills) : builtin.skills;
     const session = driver.createSession(
       {
         cwd: conv.cwd,
@@ -664,6 +667,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         ...(memory ? { memory } : {}),
         ...(taskOwner ? { tasks: { userId: taskOwner, convKey: key } } : {}),
         ...(skills ? { skills } : {}),
+        ...(builtin.builtinMcp ? { builtinMcp: builtin.builtinMcp } : {}),
       },
       {
         onUserAnchor: (input, anchor) => {
@@ -1050,11 +1054,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 只有内置的 Claude Code 专家读机器上的技能；自定义专家的技能白名单里只有它选的
     if (!conv || conv.agent !== "claude" || conv.expert) return null;
     const owner = memoryOwnerOf(conv);
-    if (!owner || getUser(owner)?.role === "admin") return null;
+    if (!owner || (getUser(owner)?.role === "admin" && builtinAgentDefaults(owner).claude.machineSkills)) return null;
     const driver = this.enabledAgents().find((d) => d.id === conv.agent);
     if (!driver?.commands) return null;
     const native = await withTimeout(driver.commands(conv.cwd), "读取命令列表").catch(() => [] as AgentCommand[]);
-    return isMachineCommand(m[1]!, native, conv.cwd) ? `/${m[1]} 是这台机器上装的技能，只有管理员能用。` : null;
+    return isMachineCommand(m[1]!, native, conv.cwd) ? `/${m[1]} 是机器上的技能，当前账号的 Agent 设置未允许加载。` : null;
   }
 
   /** 刚点过停止（被打断的那一轮还可能晚到一个出错，见 onError 里的 stopped） */
@@ -1310,7 +1314,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
 
   /**
    * 这些人的记忆、技能、专家或 MCP 变了：他们名下活着的会话空闲下来就重新拉起。
-   * onlyExperts：只管用自定义专家的会话（专家、MCP 变了不影响内置专家）
+   * onlyExperts：只管用自定义专家的会话（修改自定义专家配置时使用）
    */
   private personalChanged(users: Set<string>, onlyExperts = false): void {
     for (const [key, live] of this.live) {
