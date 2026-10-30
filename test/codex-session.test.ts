@@ -11,7 +11,7 @@ after(() => clearInterval(keepAlive));
 
 const { appServer } = await import("../src/agents/codex/app-server.js");
 const { CodexSession } = await import("../src/agents/codex/session.js");
-import type { AgentEvents, InteractionSpec, SessionOptions, Settlement } from "../src/core/types.js";
+import type { AgentEvents, ContextUsage, InteractionSpec, SessionOptions, Settlement, TokenUsage, TurnResult } from "../src/core/types.js";
 import type { ExpertRuntime } from "../src/core/experts.js";
 
 type Call = { method: string; params: any; resolve: (v: unknown) => void; reject: (e: Error) => void };
@@ -130,6 +130,75 @@ async function startTurn(threadId?: string): Promise<{ threadId: string; turnId:
   await tick();
   return { threadId: id, turnId };
 }
+
+test("本轮 Token 累计全部模型请求，重复通知不多算，上下文仍取最后一次请求", async () => {
+  calls.length = 0;
+  const { session, events } = makeSession();
+  const results: TurnResult[] = [];
+  const usages: TokenUsage[] = [];
+  const contexts: ContextUsage[] = [];
+  events.onResult = (r) => results.push(r);
+  events.onUsage = (u) => usages.push(u);
+  events.onContext = (c) => contexts.push(c);
+  session.send({ text: "查天气", attachments: [] });
+  const t = await startTurn();
+  notify("turn/started", { threadId: t.threadId, turn: { id: t.turnId } });
+  let totalTokens = 0;
+  for (const last of [
+    { totalTokens: 20000, inputTokens: 19980, cachedInputTokens: 8000, outputTokens: 20, reasoningOutputTokens: 17 },
+    { totalTokens: 14000, inputTokens: 13949, cachedInputTokens: 5000, outputTokens: 51 },
+    { totalTokens: 25400, inputTokens: 25100, cachedInputTokens: 20700, outputTokens: 300 },
+  ]) {
+    totalTokens += last.totalTokens;
+    const params = { threadId: t.threadId, tokenUsage: { total: { totalTokens }, last, modelContextWindow: 200000 } };
+    notify("thread/tokenUsage/updated", params);
+    notify("thread/tokenUsage/updated", params);
+  }
+  notify("turn/completed", { threadId: t.threadId, turn: { id: t.turnId, status: "completed" } });
+  assert.equal(results[0]?.tokens, 59400);
+  assert.equal(usages.length, 3);
+  const sum = (key: keyof TokenUsage) => usages.reduce((n, u) => n + (u[key] ?? 0), 0);
+  assert.equal(results[0]?.tokens, sum("input") + sum("cacheRead") + sum("cacheWrite") + sum("output"));
+  assert.equal(sum("cacheRead"), 33700);
+  assert.equal(sum("output"), 371, "推理已经包含在输出内，不再重复相加");
+  assert.equal(contexts.at(-1)?.used, 25400, "上下文大小不能用本轮累计消耗代替");
+});
+
+test("本轮 Token 排除恢复的旧用量，排队的下一轮重新计数，没报用量不沿用上一轮", async () => {
+  calls.length = 0;
+  const { session, events } = makeSession();
+  const results: TurnResult[] = [];
+  const usages: TokenUsage[] = [];
+  events.onResult = (r) => results.push(r);
+  events.onUsage = (u) => usages.push(u);
+  session.send({ text: "一", attachments: [] });
+  const t = await startTurn();
+  const usage = (totalTokens: number, inputTokens: number, cacheWriteInputTokens = 0) => notify("thread/tokenUsage/updated", {
+    threadId: t.threadId,
+    tokenUsage: { total: { totalTokens }, last: { totalTokens: inputTokens, inputTokens, cacheWriteInputTokens, outputTokens: 0 } },
+  });
+  // 恢复 thread 的历史用量，可能在本轮 turn/started 之前补报。
+  usage(1000, 1000);
+  notify("turn/started", { threadId: t.threadId, turn: { id: t.turnId } });
+  usage(1100, 100, 30);
+  session.send({ text: "二", attachments: [] });
+  notify("turn/completed", { threadId: t.threadId, turn: { id: t.turnId, status: "completed" } });
+  assert.equal(results[0]?.tokens, 100);
+  assert.equal(usages.length, 1);
+  assert.equal(usages[0]?.cacheWrite, 30);
+  const second = await startTurn(t.threadId);
+  usage(1100, 100, 30); // 下一轮启动前补报上一轮的用量。
+  notify("turn/started", { threadId: t.threadId, turn: { id: second.turnId } });
+  usage(1140, 40);
+  notify("turn/completed", { threadId: t.threadId, turn: { id: second.turnId, status: "completed" } });
+  assert.equal(results[1]?.tokens, 40);
+  session.send({ text: "三", attachments: [] });
+  const third = await startTurn(t.threadId);
+  notify("turn/started", { threadId: t.threadId, turn: { id: third.turnId } });
+  notify("turn/completed", { threadId: t.threadId, turn: { id: third.turnId, status: "completed" } });
+  assert.equal(results[2]?.tokens, undefined);
+  assert.equal(usages.length, 2);
+});
 
 test("连续发送：上一轮没结束就排队，不并发开第二个 turn", async () => {
   calls.length = 0;

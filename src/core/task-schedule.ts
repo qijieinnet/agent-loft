@@ -228,7 +228,7 @@ export function describeSchedule(s: TaskSchedule): string {
     case "weekdays":
       return `工作日 ${s.time}`;
     case "weekly":
-      return s.days.length === 7 ? `每天 ${s.time}` : `每周${s.days.map((d) => WEEK[d]).join("、")} ${s.time}`;
+      return s.days.length === 7 ? `每天 ${s.time}` : `每周${[...s.days].sort((a, b) => (a || 7) - (b || 7)).map((d) => WEEK[d]).join("、")} ${s.time}`;
     case "monthly":
       return `每月 ${s.day} 日 ${s.time}`;
     case "hourly":

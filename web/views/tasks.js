@@ -29,7 +29,7 @@ const FREQS = [
   ["once", "一次"],
   ["daily", "每天"],
   ["weekdays", "工作日（周一到周五）"],
-  ["weekly", "每周"],
+  ["weekly", "每周（可多选）"],
   ["monthly", "每月"],
   ["hourly", "每隔几小时"],
   ["cron", "自定义（cron）"],
@@ -288,7 +288,8 @@ export function openTaskForm(task, preset) {
 
   // ---- 频率 ----
   const sch = { kind: "daily", time: "09:00", days: [1], day: 1, every: 2, minute: 0, expr: "0 9 * * *", at: Date.now() + 3600_000, ...(src.schedule ?? {}) };
-  if (sch.kind === "weekdays" || sch.kind === "daily") sch.days = sch.days ?? [1];
+  if (sch.kind === "daily") sch.days = [...WEEK_ORDER];
+  else if (sch.kind === "weekdays") sch.days = [1, 2, 3, 4, 5];
   const freq = h("select", {}, FREQS.map(([v, label]) => h("option", { value: v, selected: v === sch.kind }, label)));
   const freqBox = h("div", { class: "task-freq" });
   const timeInput = () => {
@@ -303,23 +304,25 @@ export function openTaskForm(task, preset) {
       const at = h("input", { type: "datetime-local", value: toLocalInput(sch.at) });
       at.oninput = () => (sch.at = new Date(at.value).getTime());
       parts.push(at);
-    } else if (sch.kind === "daily" || sch.kind === "weekdays") {
-      parts.push(timeInput());
-    } else if (sch.kind === "weekly") {
+    } else if (["daily", "weekdays", "weekly"].includes(sch.kind)) {
       parts.push(
         h(
           "div",
-          { class: "day-chips" },
+          { class: "day-chips", role: "group", "aria-label": "执行星期（可多选）" },
           WEEK_ORDER.map((d) => {
-            const b = h("button", { type: "button", class: `day-chip${sch.days.includes(d) ? " on" : ""}` }, WEEK_NAME[d]);
+            const b = h("button", { type: "button", class: `day-chip${sch.days.includes(d) ? " on" : ""}`, "aria-pressed": String(sch.days.includes(d)) }, `周${WEEK_NAME[d]}`);
             b.onclick = () => {
               sch.days = sch.days.includes(d) ? sch.days.filter((x) => x !== d) : [...sch.days, d];
+              // 改了预设的星期，就按自选的每周计划保存。
+              sch.kind = freq.value = "weekly";
               b.classList.toggle("on", sch.days.includes(d));
+              b.setAttribute("aria-pressed", String(sch.days.includes(d)));
             };
             return b;
           }),
         ),
         timeInput(),
+        h("span", { class: "freq-word" }, "在选中的星期执行，可多选"),
       );
     } else if (sch.kind === "monthly") {
       const day = h("input", { type: "number", min: "1", max: "31", value: String(sch.day), class: "narrow" });
@@ -338,7 +341,11 @@ export function openTaskForm(task, preset) {
     }
     fill(freqBox, parts);
   };
-  freq.onchange = renderFreq;
+  freq.onchange = () => {
+    if (freq.value === "daily") sch.days = [...WEEK_ORDER];
+    else if (freq.value === "weekdays") sch.days = [1, 2, 3, 4, 5];
+    renderFreq();
+  };
   renderFreq();
   const freqHint = `按服务端时区（${T.tz || "本地时间"}）。两次运行至少隔 15 分钟。`;
 
@@ -401,7 +408,8 @@ export function openTaskForm(task, preset) {
     { class: "modal-body task-form" },
     field("名称", title),
     field("要做的事", prompt, "需要对比的写清楚怎么判断，比如「和上次的结果比」「版本号比当前的新才算更新」。"),
-    field("频率", h("div", { class: "task-freq-row" }, freq, freqBox), freqHint),
+    field("频率", freq),
+    field("执行时间", freqBox, freqHint),
     field("提醒", notify),
     target ? field("结果发到", target) : field("结果发到", h("div", { class: "task-static" }, task?.convKey ? `专用对话「${task.convTitle || "对话"}」` : "专用对话（第一次运行时新建，之后都发到这条）")),
     dedicatedBox,
@@ -425,6 +433,7 @@ export function openTaskForm(task, preset) {
                 ? { kind: "hourly", every: sch.every, minute: sch.minute }
                 : { kind: "cron", expr: sch.expr };
     if (schedule.kind === "once" && !(schedule.at > Date.now())) return toast("运行时间要在现在之后");
+    if (schedule.kind === "weekly" && !schedule.days.length) return toast("至少选择一个执行星期");
     const dedicated = !target || target.value === "dedicated";
     if (dedicated && !expert.value) return toast("选一个专家");
     const payload = {

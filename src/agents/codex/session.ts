@@ -284,10 +284,11 @@ export class CodexSession implements AgentSession {
   /** 用户点过「本会话全部允许」。只在内存里，会话对象一换就重新逐条询问。 */
   private allowAll = false;
   private replyText = "";
-  private lastTokens: number | undefined;
+  /** 本轮所有模型请求的用量，和会话汇总使用相同的输入 / 缓存 / 输出口径。 */
+  private turnTokens: number | undefined;
   /** 上次看到的 thread 累计 token 数：变了才说明有新的模型请求（同一次请求可能报好几遍） */
   private seenTotal: number | undefined;
-  /** 这个对象里开始过轮次：恢复 thread 时补报的旧用量不算新的消耗 */
+  /** 当前轮次已开始：恢复 thread 时补报的旧用量不算新的消耗 */
   private turnSeen = false;
   /** 分叉已经真正完成（拿到并接管了新 thread）。失败了不算，重试还要接着分叉 */
   private forked = false;
@@ -360,6 +361,7 @@ export class CodexSession implements AgentSession {
       if (this.endedTurns.size > 50) this.endedTurns.delete(this.endedTurns.values().next().value!);
     }
     this.phase = "idle";
+    this.turnSeen = false;
     this.turnId = undefined;
     this.stopRequested = false;
     this.turnSeq += 1;
@@ -554,6 +556,8 @@ export class CodexSession implements AgentSession {
   private startTurn(input: UserInput): void {
     this.currentInput = input;
     this.replyText = "";
+    this.turnTokens = undefined;
+    this.turnSeen = false;
     this.phase = "starting";
     this.turnId = undefined;
     this.stopRequested = false;
@@ -854,7 +858,7 @@ export class CodexSession implements AgentSession {
       }
 
       case "thread/tokenUsage/updated": {
-        // last 是最近一次模型请求的用量，total 是整条 thread 的累计；页脚显示最近一次的
+        // last 是最近一次模型请求的用量，total 是整条 thread 的累计；去重后累加到本轮页脚和会话汇总
         const usage = (params as { tokenUsage?: { total?: TokenBreakdown; last?: TokenBreakdown; modelContextWindow?: number | null } })
           .tokenUsage;
         const total = usage?.total?.totalTokens;
@@ -863,21 +867,22 @@ export class CodexSession implements AgentSession {
           // OpenAI 的 inputTokens 含命中缓存的部分，拆出来
           const cached = l.cachedInputTokens ?? 0;
           const written = l.cacheWriteInputTokens ?? 0;
-          this.events.onUsage?.({
+          const delta = {
             input: Math.max(0, (l.inputTokens ?? 0) - cached - written),
             cacheRead: cached,
             cacheWrite: written,
             output: l.outputTokens ?? 0,
             reasoning: l.reasoningOutputTokens ?? 0,
-          });
+          };
+          this.turnTokens = (this.turnTokens ?? 0) + delta.input + delta.cacheRead + delta.cacheWrite + delta.output;
+          this.events.onUsage?.(delta);
         }
         if (typeof total === "number") this.seenTotal = total;
-        const turnTokens = usage?.last?.totalTokens;
-        if (typeof turnTokens === "number") this.lastTokens = turnTokens;
+        const requestTokens = usage?.last?.totalTokens;
         // 最近一次请求的用量 ≈ 当前上下文大小（Codex 自己的「剩余上下文」也是这么算的）
         const window = usage?.modelContextWindow;
-        if (typeof turnTokens === "number" && window) {
-          this.events.onContext?.({ used: turnTokens, window, percent: Math.round((turnTokens / window) * 100) });
+        if (typeof requestTokens === "number" && window) {
+          this.events.onContext?.({ used: requestTokens, window, percent: Math.round((requestTokens / window) * 100) });
         }
         return;
       }
@@ -902,7 +907,7 @@ export class CodexSession implements AgentSession {
           this.events.onResult({
             text,
             durationMs: turn.durationMs ?? 0,
-            ...(this.lastTokens !== undefined ? { tokens: this.lastTokens } : {}),
+            ...(this.turnTokens !== undefined ? { tokens: this.turnTokens } : {}),
             ...(turn.id ? { anchor: turn.id } : {}),
           });
         }

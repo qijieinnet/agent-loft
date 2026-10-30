@@ -45,7 +45,23 @@ test("频率：校验不合规的写法，太频繁的拒绝", () => {
   assert.throws(() => sched.normalizeSchedule({ kind: "once", at: now - 3600_000 }, now), /现在之后/);
   assert.throws(() => sched.normalizeSchedule({ kind: "nope" }, now), /不认识/);
   assert.equal(sched.describeSchedule({ kind: "weekly", days: [1, 3], time: "08:00" }), "每周一、三 08:00");
+  assert.equal(sched.describeSchedule({ kind: "weekly", days: [0, 1, 6], time: "08:00" }), "每周一、六、日 08:00");
   assert.equal(sched.parseLocalDateTime("2026-10-24 15:00"), at(2026, 10, 24, 15, 0));
+});
+
+test("星期多选：保存、修改后按所选星期计算下次执行时间", () => {
+  const task = tasks.createTask("u_weekly", { prompt: "按选中的星期执行", schedule: { kind: "weekly", days: [1, 3, 0], time: "08:30" } }, "user");
+  assert.deepEqual(task.schedule, { kind: "weekly", days: [0, 1, 3], time: "08:30" });
+  const saved = JSON.parse(fs.readFileSync(path.join(home, "data", "tasks.json"), "utf8")).find((t: { id: string }) => t.id === task.id);
+  assert.deepEqual(saved.schedule, task.schedule);
+  assert.equal(sched.nextRun(task.schedule, at(2026, 10, 26, 8, 30)), at(2026, 10, 28, 8, 30));
+  assert.equal(sched.nextRun(task.schedule, at(2026, 10, 28, 8, 30)), at(2026, 11, 1, 8, 30));
+
+  const updated = tasks.updateTask("u_weekly", task.id, { schedule: { kind: "weekly", days: [6, 0], time: "10:15" } });
+  assert.deepEqual(updated.schedule, { kind: "weekly", days: [0, 6], time: "10:15" });
+  assert.equal(updated.nextRunAt, sched.nextRun(updated.schedule, Date.now()));
+  assert.equal(sched.nextRun(updated.schedule, at(2026, 10, 31, 10, 15)), at(2026, 11, 1, 10, 15));
+  tasks.deleteUserTasks("u_weekly");
 });
 
 test("提示词：说明附在后面、给人看时剥掉；静默暗号", () => {

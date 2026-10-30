@@ -17,6 +17,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { agentEnvironment } from "../../core/agent-env.js";
+import { usageOf } from "../../core/usage.js";
 import { expertAppend, expertSystemPrompt, RICH_REPLY_LINES, searchLabel } from "../../core/expert-prompt.js";
 import { ACCESS_LEVELS, type ExpertAccess } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
@@ -313,6 +314,8 @@ export class ClaudeSession implements AgentSession {
    * 恢复 / 分叉来的会话第一轮不知道之前累计了多少，这一轮先不报费用
    */
   private costSoFar: number | undefined;
+  /** 上一轮的累计 Token；恢复 / 分叉时优先从已保存的会话用量建立起点。 */
+  private tokensSoFar: number | undefined;
   /** 任务清单（见 todos.ts）。只记主线的，子 agent 自己列的不算 */
   private todos = new TodoTracker();
 
@@ -322,6 +325,10 @@ export class ClaudeSession implements AgentSession {
     private readonly host: InteractionHost,
   ) {
     this.costSoFar = opts.resumeId ? undefined : 0;
+    const previousUsage = usageOf(opts.resumeId);
+    this.tokensSoFar = previousUsage
+      ? previousUsage.input + previousUsage.cacheRead + previousUsage.cacheWrite + previousUsage.output
+      : opts.resumeId ? undefined : 0;
     // 接着老会话说：之前列的任务后面可能接着改（TaskUpdate 只给编号），先读回来。
     // 读一个本地文件，比模型第一次调工具快得多
     if (opts.resumeId) void readTodos(opts.resumeId, opts.cwd).then((items) => this.todos.seed(items));
@@ -449,11 +456,12 @@ export class ClaudeSession implements AgentSession {
 
     if (message.type === "result") {
       const costUsd = this.turnCost(message.total_cost_usd);
-      this.reportUsage(message.modelUsage);
+      const tokens = this.reportUsage(message.modelUsage);
       if (message.subtype === "success") {
         this.events.onResult({
           text: message.result,
           ...(costUsd !== undefined ? { costUsd } : {}),
+          ...(tokens !== undefined ? { tokens } : {}),
           durationMs: message.duration_ms,
           ...(this.lastAssistantUuid ? { anchor: this.lastAssistantUuid } : {}),
         });
@@ -477,7 +485,7 @@ export class ClaudeSession implements AgentSession {
    * 报这个会话到目前的累计用量。用 modelUsage 而不是 usage：usage 只有主循环这一轮的，
    * modelUsage 含子 agent、压缩等所有调用，而且是累计值（恢复的会话接着原来的总数算）
    */
-  private reportUsage(modelUsage: Record<string, ModelUsage> | undefined): void {
+  private reportUsage(modelUsage: Record<string, ModelUsage> | undefined): number | undefined {
     const sum: TokenUsage = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, costUsd: 0 };
     for (const m of Object.values(modelUsage ?? {})) {
       sum.input += m.inputTokens || 0;
@@ -487,8 +495,14 @@ export class ClaudeSession implements AgentSession {
       sum.reasoning! += m.thinkingTokens || 0;
       sum.costUsd! += m.costUSD || 0;
     }
-    // 崩溃时的 result 全是 0
-    if (sum.input + sum.cacheRead + sum.cacheWrite + sum.output > 0) this.events.onUsage?.(sum, true);
+    const total = sum.input + sum.cacheRead + sum.cacheWrite + sum.output;
+    // 崩溃时的 result 全是 0，不覆盖上一轮的起点。
+    if (!(total > 0)) return undefined;
+    const prev = this.tokensSoFar;
+    this.tokensSoFar = total;
+    this.events.onUsage?.(sum, true);
+    // 没有历史起点或累计值倒退时，先建立起点，避免把旧用量当成本轮的。
+    return prev !== undefined && total >= prev ? total - prev : undefined;
   }
 
   /**

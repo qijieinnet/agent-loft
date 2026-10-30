@@ -351,13 +351,7 @@ button.task-run:hover {
   gap: 12px;
 }
 
-/* 频率：上面选种类，下面填具体时间 */
-.task-freq-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
+/* 执行时间：选择星期和当天的时间 */
 .task-freq {
   display: flex;
   flex-wrap: wrap;
@@ -391,13 +385,16 @@ button.task-run:hover {
 
 .day-chips {
   display: flex;
+  flex-wrap: wrap;
+  width: 100%;
   gap: 4px;
 }
 
 .day-chip {
-  width: 34px;
+  min-width: 44px;
+  padding: 0 8px;
   height: 34px;
-  border-radius: 50%;
+  border-radius: 8px;
   border: 1px solid var(--border);
   font-size: 13px;
 }
@@ -406,6 +403,11 @@ button.task-run:hover {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
+}
+
+.day-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .task-static {
