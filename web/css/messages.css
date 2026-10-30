@@ -547,54 +547,50 @@ a.att-file:hover {
   color: var(--fg);
 }
 
-.ai-actions {
+.ai-actions,
+.user-actions {
   display: flex;
   gap: 4px;
   align-items: center;
-  /* 只有最后一条回复默认显示，前面的 hover 时才出来；用 opacity 占着位置，免得 hover 时内容跳动 */
+  /* 两类消息预留相同高度，隐藏时也占位，展开操作栏不会改变消息间距。 */
+  min-height: 28px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.15s;
 }
 
-.msg-ai.latest .ai-actions,
-.msg-ai:hover .ai-actions,
-.ai-actions:focus-within {
+.msg-ai.latest .ai-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
-/* 触屏没有 hover：都显示，否则前面的回复就没法复制 / 分叉了 */
-@media (hover: none) {
-  .ai-actions {
+@media (hover: hover) {
+  .msg-ai:hover .ai-actions,
+  .msg-user-group:hover .user-actions,
+  .ai-actions:focus-within,
+  .user-actions:focus-within {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 
-/* 用户消息下面的复制：hover 时才出来，和回复的操作栏一样用 opacity 占着位置 */
-.user-actions {
-  display: flex;
-  margin-top: -4px;
-  opacity: 0;
-  transition: opacity 0.15s;
+@media (hover: none) {
+  .msg-ai.actions-open .ai-actions,
+  .msg-user-group.actions-open .user-actions,
+  .ai-actions:has(:focus-visible),
+  .user-actions:has(:focus-visible) {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .user-actions[hidden] {
   display: none;
 }
 
-.msg-user-group:hover .user-actions,
-.user-actions:focus-within {
-  opacity: 1;
-}
-
-@media (hover: none) {
-  .user-actions {
-    opacity: 1;
-  }
-}
-
 .user-actions .icon-btn {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
 }
 
 .user-actions .icon-btn svg {

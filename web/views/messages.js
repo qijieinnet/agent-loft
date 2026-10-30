@@ -301,13 +301,24 @@ export function bindScrollWatch() {
     if (["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "].includes(e.key)) userScrolled();
   });
   m.addEventListener("scroll", updateToBottomBtn, { passive: true });
+  // 触屏点消息才展开操作栏；点其它消息或空白处收起，链接、按钮和选中文字保持原来的行为。
+  document.addEventListener("click", (e) => {
+    if (!matchMedia("(hover: none)").matches) return;
+    const message = m.contains(e.target) ? e.target.closest(".msg-user-group, .msg-ai") : null;
+    if (message && (e.target.closest("button, a, input, textarea, select, summary, [role='button'], [contenteditable], .ai-actions, .user-actions") || window.getSelection()?.isCollapsed === false)) return;
+    const wasOpen = message?.classList.contains("actions-open");
+    for (const el of m.querySelectorAll(".actions-open")) el.classList.remove("actions-open");
+    if (!wasOpen && message && !message.classList.contains("latest") && message.querySelector(".ai-actions, .user-actions:not([hidden])")) {
+      message.classList.add("actions-open");
+    }
+  });
   // 消息区变高（发送后输入框清空变矮）、内容变高都要重算留白；窗口 resize 管不到元素自己变尺寸
   const ro = new ResizeObserver(() => afterLayout());
   ro.observe(m);
   ro.observe(ui.msgInner);
 }
 
-/** 只有最后一条回复默认显示底部的操作栏（复制 / 分叉 / 用时…），前面的 hover 才出来 */
+/** 只有最后一条回复默认显示底部操作栏，前面的在桌面 hover、触屏点击时显示 */
 function markLatestAi() {
   let latest = null;
   for (let i = S.items.length - 1; i >= 0; i--) {
