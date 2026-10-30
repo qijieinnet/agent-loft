@@ -182,6 +182,9 @@ type Client = {
   /** 页面在前台，且正看着哪条会话（前端在切会话、切前后台时上报） */
   visible: boolean;
   viewing: string | null;
+  /** 本设备应用是否在前台、它的推送订阅（与当前会话及空闲计时无关）。 */
+  foreground: boolean;
+  pushEndpoint: string | null;
   /** 最后一次收到这个页面的消息（含 ping） */
   seen: number;
 };
@@ -246,14 +249,24 @@ function broadcastSkills(): void {
 // ---------- 系统通知（Web Push） ----------
 
 /**
- * 有页面正在前台看着这条会话：人就在眼前，不用推。
+ * 桌面端或旧页面正在前台看着这条会话：人就在眼前，不用推。
+ * 能上报订阅的新页面按设备过滤，避免手机在前台时连带屏蔽其它设备。
  * 页面每 25 秒发一次 ping；40 秒没收到它的任何消息就不算（手机切走后网络断了，连接还没被心跳清掉，
  * 最后报的还是「在看」）
  */
 const SEEN_MS = 40_000;
 function watching(key: string): boolean {
   const now = Date.now();
-  for (const client of clients) if (client.visible && client.viewing === key && now - client.seen < SEEN_MS) return true;
+  for (const client of clients) if (!client.pushEndpoint && client.visible && client.viewing === key && now - client.seen < SEEN_MS) return true;
+  return false;
+}
+
+/** 只暂停前台设备自己的推送，不影响同账号的其它设备或其它用户。 */
+function foregroundDevice(endpoint: string, owner: string | undefined): boolean {
+  const now = Date.now();
+  for (const client of clients) {
+    if (client.foreground && client.pushEndpoint === endpoint && client.user.id === owner && now - client.seen < SEEN_MS && checkClient(client)) return true;
+  }
   return false;
 }
 
@@ -286,7 +299,7 @@ type Notice = { title: string; body: string; tag: string };
  * 一条要提醒的动静，走两条路：
  *   - 广播给所有连着的页面（t: "notice"）：桌面端据此弹系统通知，要不要弹由它自己判断
  *     （它知道自己是不是正看着这条会话）。普通网页忽略。
- *   - Web Push：只在没有页面正看着这条会话时推。
+ *   - Web Push：只在没有页面正看着这条会话时推，并跳过应用正在前台的设备。
  */
 function notify(key: string, notice: Notice): void {
   if (!isWebConv(key)) return;
@@ -297,7 +310,7 @@ function notify(key: string, notice: Notice): void {
   void pushToAll({ ...notice, url: `/#${encodeURIComponent(key)}` }, (owner) => {
     const u = getUser(owner ?? legacy);
     return !!u && !u.disabled && canSeeKey(u, key);
-  });
+  }, (endpoint, owner) => !foregroundDevice(endpoint, owner ?? legacy));
 }
 
 function pushEvent(env: EventEnvelope): void {
@@ -376,6 +389,8 @@ function handleClientMessage(client: Client, raw: string): void {
       case "presence":
         client.visible = msg.visible === true;
         client.viewing = typeof msg.key === "string" && msg.key ? msg.key : null;
+        client.foreground = msg.foreground === true;
+        client.pushEndpoint = typeof msg.pushEndpoint === "string" && msg.pushEndpoint.length <= 4096 ? msg.pushEndpoint : null;
         return;
 
       case "unsub":
@@ -509,7 +524,7 @@ export async function startWeb(): Promise<void> {
       if (url.pathname === "/ws/term") return upgradeTerminal(wss!, req, socket, head, user, token, url);
       if (url.pathname === "/ws/desktop") return upgradeDesktop(wss!, req, socket, head, user, token, url);
       wss!.handleUpgrade(req, socket, head, (ws) => {
-        const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null, seen: Date.now() };
+        const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null, foreground: false, pushEndpoint: null, seen: Date.now() };
         clients.add(client);
         ws.on("pong", () => (client.alive = true));
         ws.on("message", (data) => {

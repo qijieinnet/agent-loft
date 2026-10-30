@@ -1,7 +1,7 @@
 import { $app, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { desktop, desktopMenu, desktopQuota, desktopSettings, framed, remoteTabs, S, ui } from "../state.js";
-import { clearAppBadge, WS } from "../lib/ws.js";
+import { clearAppNotifications, WS } from "../lib/ws.js";
 import { showAuth } from "./auth.js";
 import {
   applyBootstrap,
@@ -184,10 +184,10 @@ export async function boot() {
   }
   // 被嵌在别的服务器的页面里时，通知、角标都归外壳管
   if ("serviceWorker" in navigator && !framed) {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
-    clearAppBadge();
+    navigator.serviceWorker.register("/sw.js").then(() => clearAppNotifications()).catch(() => {});
     void releaseForeignPushSub()
       .catch(() => {})
+      .then(() => WS.refreshPushPresence())
       .then(() => refreshShellPush());
     // 点了系统通知、页面本来就开着：跳到通知对应的会话
     navigator.serviceWorker.addEventListener("message", (e) => {

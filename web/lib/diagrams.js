@@ -244,7 +244,8 @@ function chartOption(spec) {
     axisTick: { show: false },
     axisLabel: { color: c.muted },
     splitLine: { show: type === "value", lineStyle: { color: c.grid } },
-    scale: type === "value" && spec.type === "scatter",
+    // 普通折线和散点按数据范围缩放；柱形、面积及堆叠图保留 0 基线。
+    scale: type === "value" && (spec.type === "scatter" || (spec.type === "line" && !spec.stack)),
   });
   const category = axis("category", spec.xName);
   category.data = spec.x;

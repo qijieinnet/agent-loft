@@ -168,10 +168,6 @@
   color: var(--fg-soft);
 }
 
-.top-title .conv-expert-icon:hover {
-  background: var(--bg-hover);
-}
-
 .top-title .conv-expert-icon .agent-icon {
   display: inline-grid;
   place-items: center;

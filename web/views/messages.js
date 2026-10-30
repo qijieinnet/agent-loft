@@ -1,4 +1,4 @@
-import { fill, h, icon, starsLoader, toast } from "../lib/dom.js";
+import { fill, h, icon, isTouch, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { clockTime, liveDuration, serverNow, setServerTime, tidyFooter } from "../lib/time.js";
 import { copyText, patchMarkdown, renderMarkdown } from "../lib/markdown.js";
@@ -48,7 +48,7 @@ export function newDraft() {
   renderChips();
   renderSidebar();
   scheduleNav();
-  ui.input?.focus();
+  if (!isTouch) ui.input?.focus();
   preloadCommands();
 }
 

@@ -1,6 +1,6 @@
 import { h } from "./dom.js";
 import { api } from "./api.js";
-import { desktop, S, ui } from "../state.js";
+import { desktop, framed, S, ui } from "../state.js";
 import { showAuth } from "../views/auth.js";
 import { applyBootstrap, bootstrapQuery, renderSidebar, scheduleSidebar } from "../views/sidebar.js";
 import { scheduleQuota } from "../views/quota.js";
@@ -8,7 +8,8 @@ import { renderTopbar } from "../views/topbar.js";
 import { applyEvent, openConversation } from "../views/messages.js";
 import { upsertInteraction } from "../views/interaction.js";
 import { setBusy } from "../views/composer.js";
-import { shownHere } from "./shell.js";
+import { SH, shownHere } from "./shell.js";
+import { currentPushSub } from "./push.js";
 import { renderScheduled } from "../views/schedule.js";
 
 // ---------- WebSocket ----------
@@ -20,6 +21,7 @@ export const WS = {
   backoff: 500,
   connected: false,
   pingTimer: null,
+  pushEndpoint: null,
 
   stopped: false,
   epoch: null,
@@ -101,12 +103,27 @@ export const WS = {
     // 多服务器：外壳切到了别的服务器、或者这台被嵌着但没在显示，也算没在看
     const visible = document.visibilityState === "visible" && document.hasFocus() && Date.now() - lastInput < IDLE_MS && shownHere();
     // 在定时任务、远程控制页上：没在看哪条对话（远程控制页不清 S.current，回来时对话还在）
-    this.raw({ t: "presence", visible, key: S.view ? "" : (S.current ?? "") });
+    this.raw({
+      t: "presence", visible, key: S.view ? "" : (S.current ?? ""),
+      // 前台免打扰按设备判断，不受正在看哪条会话、是否空闲的影响。
+      foreground: document.visibilityState === "visible",
+      pushEndpoint: framed ? (SH.push?.subscription.endpoint ?? null) : this.pushEndpoint,
+    });
+  },
+
+  async refreshPushPresence() {
+    if (!framed) this.pushEndpoint = (await currentPushSub())?.endpoint ?? null;
+    this.presence();
   },
 };
 
 // 切回窗口本身就算动了一下
-window.addEventListener("focus", () => (markActive(), WS.presence()));
+window.addEventListener("focus", () => {
+  markActive();
+  WS.presence();
+  clearAppNotifications();
+  void WS.refreshPushPresence();
+});
 document.addEventListener("aim:shell-active", () => {
   if (shownHere()) markActive();
   WS.presence();
@@ -146,17 +163,28 @@ function onInput() {
 for (const ev of ["pointerdown", "keydown", "wheel", "touchstart", "scroll"]) window.addEventListener(ev, onInput, { capture: true, passive: true });
 armIdle();
 
-/** 打开 / 切回页面：清掉桌面图标角标和计数（计数由 sw.js 在收到推送时累加） */
-export function clearAppBadge() {
-  if (document.visibilityState !== "visible") return;
+/** 打开 / 切回页面：清掉本应用已显示的通知、桌面图标角标和计数。 */
+export function clearAppNotifications() {
+  if (framed || document.visibilityState !== "visible") return;
   navigator.clearAppBadge?.().catch(() => {});
   if ("caches" in window) caches.delete("aim-badge").catch(() => {});
+  navigator.serviceWorker?.getRegistration().then(async (reg) => {
+    const notifications = await reg?.getNotifications();
+    // 异步读取期间可能已经切走，后台到达的新通知留着提醒。
+    if (document.visibilityState === "visible") for (const n of notifications ?? []) n.close();
+  }).catch(() => {});
 }
+
+window.addEventListener("pageshow", () => {
+  clearAppNotifications();
+  void WS.refreshPushPresence();
+});
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") markActive();
   WS.presence();
-  clearAppBadge();
+  clearAppNotifications();
+  if (document.visibilityState === "visible") void WS.refreshPushPresence();
   // 手机切回前台：连接多半已经被系统掐了，立刻重连而不是等退避
   if (document.visibilityState === "visible" && WS.sock?.readyState !== 1) {
     WS.backoff = 300;
@@ -194,6 +222,7 @@ function onWsMessage(msg) {
       WS.epoch = msg.epoch;
       WS.hellos += 1;
       WS.presence();
+      void WS.refreshPushPresence();
       if (restarted) {
         // 服务重启过：seq 从头计数了，旧游标全部作废，当前会话整页重拉
         S.seq.clear();

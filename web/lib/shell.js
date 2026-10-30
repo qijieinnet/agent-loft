@@ -575,10 +575,12 @@ function onHostMessage(origin, m) {
       return;
     case "push":
       SH.push = m.push ?? null;
+      emit("aim:shell-active");
       applyRelayPush();
       return;
     case "push-off":
       SH.push = null;
+      emit("aim:shell-active");
       void dropRelayPush(m.endpoint, false).then(() => {
         toHost({ t: "push-off-done", request: m.request });
       }).catch((err) => console.warn("[多服务器] 通知订阅没有撤销：", err.message));

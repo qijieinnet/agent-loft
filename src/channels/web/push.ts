@@ -347,9 +347,9 @@ export function removeSubscriptionsOf(mine: OwnerFilter): void {
   if (s.subscriptions.length !== before) persist();
 }
 
-/** 推给订阅的设备（给了 to 就只推给它挑出来的主人），返回成功的数量。单个设备失败不影响别的 */
-export async function pushToAll(payload: PushPayload, to?: OwnerFilter): Promise<number> {
-  const subs = load().subscriptions.filter((x) => !to || to(x.userId));
+/** 按主人和设备筛选订阅，返回成功的数量。单个设备失败不影响别的。 */
+export async function pushToAll(payload: PushPayload, to?: OwnerFilter, device?: (endpoint: string, userId: string | undefined) => boolean): Promise<number> {
+  const subs = load().subscriptions.filter((x) => (!to || to(x.userId)) && (!device || device(x.endpoint, x.userId)));
   if (subs.length === 0) return 0;
   const results = await Promise.all(
     subs.map((sub) =>
