@@ -16,13 +16,14 @@ export function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
   const tasks = S.view === "tasks";
   const remote = S.view === "remote";
+  const library = S.view === "library";
   fill(ui.topbar,
     h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
     h(
       "div",
       { class: "top-title" },
-      tasks || remote
-        ? h("span", { class: "conv-name" }, tasks ? "定时任务" : "远程控制")
+      tasks || remote || library
+        ? h("span", { class: "conv-name" }, tasks ? "定时任务" : library ? "资料库" : "远程控制")
         : c
           ? [
               // 标题前面是专家的头像：点一下或鼠标停上去，看专家的信息和工作目录

@@ -1,19 +1,17 @@
 // 记忆：agent 对「这个人」的长期了解，像 ChatGPT 的记忆那样。
 //
-// 每个用户一份，存在 data/memory/<用户 id>.json：
+// 每个用户一份，存在数据库的 memory 表里（见 db.ts），一人一行：
 //   - about：用户自己写的「关于我」；
 //   - items：一条条记住的事，用户在设置里加的，或者 agent 在对话里用 remember 工具记下的。
 // 开会话时拼成一段文字放进系统提示（见 memoryPrompt），Claude / Codex、Web / 飞书共用同一份。
 //
 // 归属跟着对话的主人走（见 memoryOwnerOf）：别人的对话里绝不注入你的记忆，也不往你的记忆里写。
-// 记忆隔离和多用户一样是「信任型」的：agent 都以同一个系统用户运行，工作模式下能读到这些文件。
+// 记忆隔离和多用户一样是「信任型」的：agent 都以同一个系统用户运行，工作模式下能读到数据库文件。
 //
-// 不做内存缓存，每次都读文件：agent 的记忆工具跑在单独的进程里（见 mcp/memory-server.ts），
-// 两边都会写，读文件最简单也不会读到过期的内容。文件很小。
+// 不做内存缓存，每次都查库：agent 的记忆工具跑在单独的进程里（见 mcp/memory-server.ts），
+// 两边都会写。读—改—写放在一个事务里，两边同时改也不会互相冲掉。
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { dataDir, readJson, writeJsonAtomic } from "../home.js";
+import { MEMORY_DEFAULT_OFF, sql, transaction } from "./db.js";
 
 export type MemoryItem = {
   id: string;
@@ -94,12 +92,10 @@ export const MEMORY_LIMITS = {
   promptItems: 4000,
 };
 
-const memoryDir = path.join(dataDir, "memory");
-
-/** 用户 id 只会是 users.ts 生成的那种；校验一下，免得拼出目录外的路径 */
-function fileOf(userId: string): string {
+/** 用户 id 只会是 users.ts 生成的那种 */
+function checkUser(userId: string): string {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(userId)) throw new Error("用户 id 不合法");
-  return path.join(memoryDir, `${userId}.json`);
+  return userId;
 }
 
 function empty(): UserMemory {
@@ -107,30 +103,37 @@ function empty(): UserMemory {
 }
 
 /**
- * 记忆从默认开改成默认关（0.2.46）：升级前就有、但还没写过记忆文件的用户，补一份开着的，
+ * 记忆从默认开改成默认关（0.2.46）：升级前就有、但还没存过记忆的用户，补一份开着的，
  * 让老实例里的人保持原样。只跑一次，跑过留个标记；新装的第一次启动时还没有用户，什么都不补。
  */
 export function migrateMemoryDefault(userIds: string[]): void {
-  const marker = path.join(memoryDir, ".default-off-migrated");
-  if (fs.existsSync(marker)) return;
-  fs.mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
-  let n = 0;
-  for (const id of userIds) {
-    if (fs.existsSync(fileOf(id))) continue;
-    write(id, { ...empty(), enabled: true });
-    n++;
-  }
-  fs.writeFileSync(marker, String(Date.now()), { mode: 0o600 });
+  const n = transaction(() => {
+    if (sql("SELECT 1 FROM migrations WHERE name = ?").get(MEMORY_DEFAULT_OFF)) return 0;
+    let added = 0;
+    for (const id of userIds) {
+      if (sql("SELECT 1 FROM memory WHERE user_id = ?").get(checkUser(id))) continue;
+      write(id, { ...empty(), enabled: true });
+      added++;
+    }
+    sql("INSERT INTO migrations (name, at) VALUES (?, ?)").run(MEMORY_DEFAULT_OFF, Date.now());
+    return added;
+  });
   if (n) console.log(`[记忆] 默认改成关闭：升级前的 ${n} 个用户保持开启`);
 }
 
 export function readMemory(userId: string): UserMemory {
-  const raw = readJson<Partial<UserMemory> & { autoExtract?: boolean }>(fileOf(userId), {});
+  const row = sql("SELECT data FROM memory WHERE user_id = ?").get(checkUser(userId)) as { data: string } | undefined;
+  let raw: Partial<UserMemory> & { autoExtract?: boolean } = {};
+  try {
+    raw = row ? JSON.parse(row.data) : {};
+  } catch {
+    // 坏了就当没有
+  }
   const items = Array.isArray(raw.items)
     ? raw.items.filter((i): i is MemoryItem => !!i && typeof i.id === "string" && typeof i.text === "string")
     : [];
   return {
-    // 默认关：后台整理会占订阅额度，夜里还会单独开一个 5 小时窗口。写过的文件都存着 enabled，老用户不受影响
+    // 默认关：后台整理会占订阅额度，夜里还会单独开一个 5 小时窗口。存过的都带着 enabled，老用户不受影响
     enabled: raw.enabled === true,
     // 早先的版本只有一个「自动整理」开关：关着的就是不整理
     curate: cleanCurate(raw.curate, raw.autoExtract === false ? { ...DEFAULT_CURATE, when: "off" } : DEFAULT_CURATE),
@@ -147,44 +150,15 @@ export function readMemory(userId: string): UserMemory {
 }
 
 function write(userId: string, memory: UserMemory): void {
-  fs.mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
-  writeJsonAtomic(fileOf(userId), memory);
+  sql("INSERT OR REPLACE INTO memory (user_id, data) VALUES (?, ?)").run(checkUser(userId), JSON.stringify(memory));
 }
 
-const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
 /**
- * 读—改—写之间加一把跨进程的锁：主进程（设置页、自动整理）和每个会话的记忆工具子进程都会写同一个文件，
- * 不锁的话两边同时改，后写的那个会把先写的冲掉（新记的一条、刚保存的「关于我」悄悄没了）。
- * 用 O_EXCL 建锁文件；持锁的进程被杀了留下的锁，5 秒后当作废。改动都是毫秒级的，等不到 3 秒就报错。
+ * 读—改—写放进一个事务：主进程（设置页、自动整理）和每个会话的记忆工具子进程都会写同一个人的记忆，
+ * 不这样的话两边同时改，后写的那个会把先写的冲掉（新记的一条、刚保存的「关于我」悄悄没了）。
  */
 function locked<T>(userId: string, fn: (memory: UserMemory) => T): T {
-  const lock = `${fileOf(userId)}.lock`;
-  fs.mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + 3000;
-  for (;;) {
-    try {
-      fs.writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 });
-      break;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > 5000) {
-          fs.rmSync(lock, { force: true });
-          continue;
-        }
-      } catch {
-        continue; // 刚好被释放了
-      }
-      if (Date.now() > deadline) throw new Error("记忆文件正被别处修改，稍后再试");
-      sleepSync(15);
-    }
-  }
-  try {
-    return fn(readMemory(userId));
-  } finally {
-    fs.rmSync(lock, { force: true });
-  }
+  return transaction(() => fn(readMemory(userId)));
 }
 
 function cleanText(text: unknown, max: number, what: string): string {
@@ -283,9 +257,9 @@ export function clearMemory(userId: string): void {
   locked(userId, (memory) => write(userId, { ...memory, about: "", items: [] }));
 }
 
-/** 删用户时：整个文件删掉 */
+/** 删用户时：整个删掉 */
 export function deleteMemory(userId: string): void {
-  fs.rmSync(fileOf(userId), { force: true });
+  sql("DELETE FROM memory WHERE user_id = ?").run(checkUser(userId));
 }
 
 // ---------- 注入系统提示 ----------

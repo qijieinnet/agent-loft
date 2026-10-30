@@ -296,24 +296,24 @@ export function localInstallScript(platform = process.platform) {
   const prepareNode = platform === "darwin" ? `
 if need_node; then
   if command -v brew >/dev/null 2>&1; then
-    echo "需要 Node.js 22 以上，用 Homebrew 安装…"; echo
+    echo "需要 Node.js 22.13 以上，用 Homebrew 安装…"; echo
     brew install node || exit 1
     # 系统旧 Node 可能仍排在 PATH 前面，明确选中刚安装的 Homebrew Node。
     NODE_PREFIX=$(brew --prefix node) || exit 1
     export PATH="$NODE_PREFIX/bin:$PATH"
   else
-    echo "需要 Node.js 22 以上。"
+    echo "需要 Node.js 22.13 以上。"
     echo "先安装 Homebrew（https://brew.sh）或者到 https://nodejs.org 下载安装 Node.js，再回到 Agent Loft 点「安装」。"
     exit 1
   fi
 fi` : "";
   return `need_node() {
   command -v node >/dev/null 2>&1 || return 0
-  ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'
+  ! node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 13) ? 0 : 1)'
 }
 ${prepareNode}
 if need_node; then
-  echo "需要 Node.js 22 以上。请安装或升级 Node.js 后回到 Agent Loft 再点「安装」。"
+  echo "需要 Node.js 22.13 以上。请安装或升级 Node.js 后回到 Agent Loft 再点「安装」。"
   exit 1
 fi
 command -v npm >/dev/null 2>&1 || { echo "没有找到 npm，请重新安装 Node.js。"; exit 1; }

@@ -1,0 +1,266 @@
+/* ---------- 资料库 ---------- */
+/* 页面沿用定时任务页的外框（.tasks-page / .tasks-head），这里只管文件网格。弹窗「从资料库选」用同一套 */
+
+.lib-page .tasks-head p .lib-status {
+  margin-left: 6px;
+  color: var(--fg-faint);
+}
+
+.lib-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.lib-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lib-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--bg-soft);
+  border-radius: 10px;
+}
+
+.lib-tab {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lib-tab.active {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.lib-search {
+  flex: 1;
+  min-width: 160px;
+  max-width: 280px;
+  margin-left: auto;
+}
+
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.lib-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: center;
+  padding: 48px 12px;
+  color: var(--fg-faint);
+  font-size: 14px;
+  text-align: center;
+}
+
+.lib-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.lib-tile.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.lib-thumb {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: var(--bg-soft);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.lib-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lib-ext {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--fg-soft);
+}
+
+.lib-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 9px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.lib-name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-sub,
+.lib-conv {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-conv {
+  display: block;
+}
+
+.lib-badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--ask-bg);
+  color: var(--fg-soft);
+  font-size: 11px;
+}
+
+/* 右上角：菜单按钮（鼠标停上去才出来，触屏一直在）、选择框 */
+.lib-menu {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  background: var(--bg);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  opacity: 0;
+}
+
+.lib-tile:hover .lib-menu,
+.lib-menu:focus-visible {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .lib-menu {
+    opacity: 1;
+  }
+}
+
+.lib-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  cursor: pointer;
+}
+
+.lib-tile.selected .lib-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.lib-check svg {
+  width: 14px;
+  height: 14px;
+}
+
+.lib-more {
+  align-self: center;
+}
+
+.lib-more[hidden] {
+  display: none;
+}
+
+/* 选择模式下贴在页面底部的操作条 */
+.lib-selbar {
+  position: sticky;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.lib-selbar[hidden] {
+  display: none;
+}
+
+.lib-selbar .grow {
+  flex: 1;
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+
+/* 弹窗：网格在中间滚，筛选条和底部按钮不动 */
+.lib-pick .modal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+.lib-pick .modal-foot {
+  align-items: center;
+}
+
+.lib-pick .lib-grid {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+
+.lib-pick .modal-foot .grow {
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+/* 窄屏：搜索框换到下一行时占满一行 */
+@media (max-width: 600px) {
+  .lib-search {
+    flex-basis: 100%;
+    max-width: none;
+    margin-left: 0;
+  }
+
+  .lib-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

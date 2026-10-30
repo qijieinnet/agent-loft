@@ -30,7 +30,7 @@ export const S = {
   remote: null,
   /** 远程控制在后台连着的：桌面连着没、开着几个终端（侧栏「远程控制」上的小绿点） */
   remoteLive: { desktop: false, terminals: 0 },
-  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页，"remote" 是远程控制 */
+  /** 主区域在显示什么：null 是对话（或新对话），"tasks" 是定时任务页，"library" 是资料库，"remote" 是远程控制 */
   view: null,
 };
 

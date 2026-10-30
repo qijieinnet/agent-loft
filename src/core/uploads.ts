@@ -1,4 +1,5 @@
-// 附件落盘：每条会话一个上传目录，开新会话就整个删掉。
+// 附件落盘：每条会话一个上传目录。发出去的附件收进资料库（见 library.ts），开新会话也不删；
+// 对话没了、或者上传了一直没发的，启动时清掉（library.ts 的 tidyLibrary）。
 //
 // 放在家目录下而不是项目目录里，免得弄脏用户的仓库。agent 需要能直接读这些文件：
 // Claude 通过 additionalDirectories 放行，Codex 的沙箱本来就允许读。
@@ -17,50 +18,6 @@ export function ensureUploadsDir(key: string): string {
   const dir = uploadsDirFor(key);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
-}
-
-/**
- * keep：要保留的文件（绝对路径）。
- * olderThan：只删修改时间早于它的（毫秒时间戳）—— 切换会话时用，保住切换途中刚收到的附件。
- */
-export function clearUploads(key: string, keep: string[] = [], olderThan?: number): void {
-  try {
-    const dir = uploadsDirFor(key);
-    if (keep.length === 0 && olderThan === undefined) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return;
-    }
-    const kept = new Set(keep.map((p) => path.resolve(p)));
-    for (const entry of fs.readdirSync(dir)) {
-      const full = path.join(dir, entry);
-      if (kept.has(full)) continue;
-      if (olderThan !== undefined && fs.statSync(full).mtimeMs >= olderThan) continue;
-      fs.rmSync(full, { recursive: true, force: true });
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-    console.warn(`[附件] 清理 ${key} 的上传目录失败:`, err);
-  }
-}
-
-/** 启动时清理：会话没了、或闲置过期的，目录一并删掉。 */
-export function sweepUploads(isAlive: (key: string) => boolean): void {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(uploadsRoot);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    let key: string;
-    try {
-      key = decodeURIComponent(entry);
-    } catch {
-      continue;
-    }
-    if (isAlive(key)) continue;
-    fs.rmSync(path.join(uploadsRoot, entry), { recursive: true, force: true });
-  }
 }
 
 /** 去掉路径分隔符和控制字符，防止文件名把文件写到目录外面去。 */
@@ -96,7 +53,7 @@ export function uniquePath(dir: string, name: string): string {
   return candidate;
 }
 
-function kindOf(mediaType: string | undefined): AttachmentKind {
+export function kindOf(mediaType: string | undefined): AttachmentKind {
   if (mediaType?.startsWith("image/")) return "image";
   if (mediaType?.startsWith("audio/")) return "audio";
   if (mediaType?.startsWith("video/")) return "video";

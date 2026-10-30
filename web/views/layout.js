@@ -120,6 +120,14 @@ export function openTasksView() {
   );
 }
 
+/** 资料库页：第一次打开时才加载 */
+export function openLibraryView() {
+  import("./library.js").then(
+    (m) => m.openLibrary(),
+    (err) => toast(`资料库加载失败，刷新页面再试：${err.message}`),
+  );
+}
+
 export async function boot() {
   const me = await api("/api/me");
   if (!me.authed) return showAuth();
@@ -157,6 +165,7 @@ export async function boot() {
   // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
   const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
   if (fromHash === "tasks") openTasksView();
+  else if (fromHash === "library") openLibraryView();
   else if (fromHash.startsWith("remote") && remoteTabs().length) {
     // 刷新前在远程控制里：底下先放上最近的对话，切回对话时就是它
     if (latest) await openConversation(latest.key);
@@ -271,6 +280,8 @@ function renderLayout() {
     h("button", { class: "btn new-chat side-nav search-nav", onclick: () => openSearch() }, icon("search"), "搜索"),
     // 「最近」上面的入口，像 ChatGPT 的 Tasks。当前在任务页时高亮（renderSidebar 里切换）
     (ui.tasksNav = h("button", { class: "btn new-chat side-nav", onclick: () => openTasksView() }, icon("clock"), "定时任务")),
+    // 资料库：发过的附件、agent 生成的文件
+    (ui.libraryNav = h("button", { class: "btn new-chat side-nav", onclick: () => openLibraryView() }, icon("library"), "资料库")),
     // 远程控制：这台机器的桌面和终端。后台连着时右边亮个小绿点（renderSidebar 里切换）
     (ui.remoteNav = h(
       "button",

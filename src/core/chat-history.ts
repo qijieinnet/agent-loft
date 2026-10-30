@@ -1,16 +1,14 @@
 // 聊天记录索引：给「参考以前的聊天」（search_past_chats）和「聊完自动整理记忆」用。
 //
-// 每个用户一份，data/history/<用户 id>.jsonl，一行一句（用户说的 / agent 的最终回复）。
+// 存在数据库的 history 表里（见 db.ts），一行一句（用户说的 / agent 的最终回复），按用户分开。
 // 只收有主人的对话（见 personal.ts 的 memoryOwnerOf），按主人分开存 —— 搜索只在自己的里面搜。
 // 来源两个：
 //   - 实时：hub 的事件流（见 startHistoryCapture），从现在起说的话；
 //   - 回填：第一次用时把已有对话从 agent 的记录里读一遍（见 memory-curator.ts），只做一次。
 //
-// 为什么不用 SQLite 全文索引：FTS5 的 trigram 分词搜不到两个字的中文词（「豆豆」），
-// 个人的聊天量直接扫文件就够快（几万句也是毫秒级），也省得 MCP 子进程每次打实验性 API 的警告。
-import fs from "node:fs";
-import path from "node:path";
-import { dataDir, readJson, writeJsonAtomic } from "../home.js";
+// 搜索不用 SQLite 的 FTS5：trigram 分词搜不到两个字的中文词（「豆豆」）。先用 instr 在库里筛出
+// 含有某个词的句子，再在这里按命中情况打分，不用把整个人的记录都读出来。
+import { sql, transaction } from "./db.js";
 
 export type HistoryRecord = {
   /** 实时用户消息的编号，撤销排队消息时用于精确移除 */
@@ -48,61 +46,69 @@ export type Meta = {
   lastCuration?: CurationLog;
 };
 
-const historyDir = path.join(dataDir, "history");
 /** 一句话最多存这么多字：长篇代码、整页网页没必要全存 */
 const TEXT_MAX = 4000;
 
-function base(userId: string): string {
+function checkUser(userId: string): string {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(userId)) throw new Error("用户 id 不合法");
-  return path.join(historyDir, userId);
+  return userId;
+}
+
+type Row = { id: number; conv_key: string; agent: string; role: "u" | "a"; text: string; ts: number; msg_id: string | null };
+
+const COLUMNS = "id, conv_key, agent, role, text, ts, msg_id";
+
+function toRecord(row: Row): HistoryRecord {
+  return { ...(row.msg_id ? { id: row.msg_id } : {}), k: row.conv_key, a: row.agent, r: row.role, t: row.text, ts: row.ts };
+}
+
+function insertRecords(userId: string, records: HistoryRecord[]): void {
+  const insert = sql("INSERT INTO history (user_id, conv_key, agent, role, text, ts, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  for (const r of records) insert.run(userId, r.k, r.a, r.r, r.t.slice(0, TEXT_MAX), r.ts, r.id ?? null);
 }
 
 export function appendRecords(userId: string, records: HistoryRecord[]): void {
+  checkUser(userId);
   if (records.length === 0) return;
-  fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 });
-  const lines = records.map((r) => JSON.stringify({ ...r, t: r.t.slice(0, TEXT_MAX) })).join("\n");
-  fs.appendFileSync(`${base(userId)}.jsonl`, `${lines}\n`, { mode: 0o600 });
+  transaction(() => insertRecords(userId, records));
 }
 
+/** 这个用户的全部记录，按记下的先后 */
 export function readRecords(userId: string): HistoryRecord[] {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(`${base(userId)}.jsonl`, "utf8");
-  } catch {
-    return [];
-  }
-  const out: HistoryRecord[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line) continue;
-    try {
-      const r = JSON.parse(line) as HistoryRecord;
-      if (typeof r.k === "string" && typeof r.t === "string" && (r.r === "u" || r.r === "a")) out.push(r);
-    } catch {
-      // 写到一半被打断的行：跳过
-    }
-  }
-  return out;
+  checkUser(userId);
+  return (sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? ORDER BY id`).all(userId) as Row[]).map(toRecord);
 }
 
-function rewriteRecords(userId: string, records: HistoryRecord[]): void {
-  fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 });
-  const target = `${base(userId)}.jsonl`;
-  const temporary = `${target}.tmp`;
-  fs.writeFileSync(temporary, records.map((r) => JSON.stringify({ ...r, t: r.t.slice(0, TEXT_MAX) })).join("\n") + (records.length ? "\n" : ""), { mode: 0o600 });
-  fs.renameSync(temporary, target);
+/** 有多少句、来自多少段对话 */
+export function countRecords(userId: string): { count: number; conversations: number } {
+  checkUser(userId);
+  const row = sql("SELECT count(*) AS n, count(DISTINCT conv_key) AS c FROM history WHERE user_id = ?").get(userId) as { n: number; c: number };
+  return { count: row.n, conversations: row.c };
 }
 
 export function removeHistoryRecord(userId: string, key: string, id: string): void {
-  rewriteRecords(userId, readRecords(userId).filter((r) => r.k !== key || r.id !== id));
+  checkUser(userId);
+  sql("DELETE FROM history WHERE user_id = ? AND conv_key = ? AND msg_id = ?").run(userId, key, id);
 }
 
 /** 回退后只保留当前对话剩下的内容，避免搜索再搜出已经移除的消息 */
 export function replaceConversationRecords(userId: string, key: string, records: HistoryRecord[]): void {
-  rewriteRecords(userId, [...readRecords(userId).filter((r) => r.k !== key), ...records]);
+  checkUser(userId);
+  transaction(() => {
+    sql("DELETE FROM history WHERE user_id = ? AND conv_key = ?").run(userId, key);
+    insertRecords(userId, records);
+  });
 }
 
 export function readMeta(userId: string): Meta {
-  const m = readJson<Partial<Meta>>(`${base(userId)}.meta.json`, {});
+  checkUser(userId);
+  const row = sql("SELECT data FROM history_meta WHERE user_id = ?").get(userId) as { data: string } | undefined;
+  let m: Partial<Meta> = {};
+  try {
+    m = row ? (JSON.parse(row.data) as Partial<Meta>) : {};
+  } catch {
+    // 坏了就当没有
+  }
   return { ...m, extracted: m.extracted && typeof m.extracted === "object" ? m.extracted : {} };
 }
 
@@ -111,20 +117,25 @@ export function patchMeta(userId: string, patch: Partial<Meta>): void {
 }
 
 export function writeMeta(userId: string, meta: Meta): void {
-  fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 });
-  writeJsonAtomic(`${base(userId)}.meta.json`, meta);
+  checkUser(userId);
+  sql("INSERT OR REPLACE INTO history_meta (user_id, data) VALUES (?, ?)").run(userId, JSON.stringify(meta));
 }
 
 export function markExtracted(userId: string, key: string, upTo: number): void {
-  const meta = readMeta(userId);
-  meta.extracted[key] = Math.max(meta.extracted[key] ?? 0, upTo);
-  writeMeta(userId, meta);
+  transaction(() => {
+    const meta = readMeta(userId);
+    meta.extracted[key] = Math.max(meta.extracted[key] ?? 0, upTo);
+    writeMeta(userId, meta);
+  });
 }
 
 /** 删用户时：整个删掉 */
 export function purgeHistory(userId: string): void {
-  fs.rmSync(`${base(userId)}.jsonl`, { force: true });
-  fs.rmSync(`${base(userId)}.meta.json`, { force: true });
+  checkUser(userId);
+  transaction(() => {
+    sql("DELETE FROM history WHERE user_id = ?").run(userId);
+    sql("DELETE FROM history_meta WHERE user_id = ?").run(userId);
+  });
 }
 
 /**
@@ -137,9 +148,13 @@ export function pendingConversations(
   now = Date.now(),
 ): { key: string; records: HistoryRecord[]; last: number }[] {
   const meta = readMeta(userId);
+  // 每条对话整理到的时刻在 meta 里，交给 json_each 在库里比，只取还没整理过的
+  const rows = sql(
+    `SELECT h.id, h.conv_key, h.agent, h.role, h.text, h.ts, h.msg_id FROM history h LEFT JOIN json_each(?) e ON e.key = h.conv_key
+     WHERE h.user_id = ? AND h.ts > coalesce(e.value, 0) ORDER BY h.id`,
+  ).all(JSON.stringify(meta.extracted), userId) as Row[];
   const byKey = new Map<string, HistoryRecord[]>();
-  for (const r of readRecords(userId)) {
-    if (r.ts <= (meta.extracted[r.k] ?? 0)) continue;
+  for (const r of rows.map(toRecord)) {
     let list = byKey.get(r.k);
     if (!list) byKey.set(r.k, (list = []));
     list.push(r);
@@ -230,38 +245,44 @@ export function searchHistory(
   query: string,
   opts: { limit?: number; skip?: (key: string) => boolean; now?: number } = {},
 ): SearchHit[] {
-  const records = readRecords(userId);
+  checkUser(userId);
+  // 能得分的句子至少含有一个词（长的中文词是至少含有它的一个两字组合），先在库里筛出来
+  const needles = [...new Set(terms(query).flatMap((t) => (isCjk(t) && t.length >= 4 ? [t, ...bigrams(t)] : [t])))].slice(0, 200);
+  if (needles.length === 0) return [];
+  const rows = sql(
+    `SELECT ${COLUMNS} FROM history WHERE user_id = ? AND (${needles.map(() => "instr(lower(text), ?) > 0").join(" OR ")})`,
+  ).all(userId, ...needles) as Row[];
   const now = opts.now ?? Date.now();
-  const scored: { i: number; score: number }[] = [];
-  records.forEach((r, i) => {
-    if (opts.skip?.(r.k)) return;
-    const s = scoreText(r.t, query);
-    if (s === 0) return;
+  const scored: { row: Row; score: number }[] = [];
+  for (const row of rows) {
+    if (opts.skip?.(row.conv_key)) continue;
+    const s = scoreText(row.text, query);
+    if (s === 0) continue;
     // 新的稍微靠前：一个月内的最多加 30%
-    const age = Math.max(0, now - r.ts) / (30 * 86400_000);
-    scored.push({ i, score: s * (1 + 0.3 * Math.exp(-age)) });
-  });
-  scored.sort((a, b) => b.score - a.score || records[b.i]!.ts - records[a.i]!.ts);
+    const age = Math.max(0, now - row.ts) / (30 * 86400_000);
+    scored.push({ row, score: s * (1 + 0.3 * Math.exp(-age)) });
+  }
+  scored.sort((a, b) => b.score - a.score || b.row.ts - a.row.ts || a.row.id - b.row.id);
   const out: SearchHit[] = [];
   const used = new Set<number>();
   const limit = opts.limit ?? 6;
-  for (const { i, score } of scored) {
+  const next = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND id > ? ORDER BY id LIMIT 1`);
+  const prev = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT 1`);
+  for (const { row, score } of scored) {
     if (out.length >= limit) break;
-    if (used.has(i)) continue;
-    const r = records[i]!;
+    if (used.has(row.id)) continue;
     // 配上同一条对话里紧挨着的另一半：问配答，答配问
-    const pairIndex = r.r === "u" ? i + 1 : i - 1;
-    const pair = records[pairIndex];
-    const partner = pair && pair.k === r.k && pair.r !== r.r ? pair : undefined;
-    used.add(i);
-    if (partner) used.add(pairIndex);
-    const user = r.r === "u" ? r : partner;
-    const assistant = r.r === "a" ? r : partner;
+    const pair = (row.role === "u" ? next : prev).get(userId, row.id) as Row | undefined;
+    const partner = pair && pair.conv_key === row.conv_key && pair.role !== row.role ? pair : undefined;
+    used.add(row.id);
+    if (partner) used.add(partner.id);
+    const user = row.role === "u" ? row : partner;
+    const assistant = row.role === "a" ? row : partner;
     out.push({
-      key: r.k,
-      ts: r.ts,
-      ...(user ? { user: snippet(user.t, query, 300) } : {}),
-      ...(assistant ? { assistant: snippet(assistant.t, query, 600) } : {}),
+      key: row.conv_key,
+      ts: row.ts,
+      ...(user ? { user: snippet(user.text, query, 300) } : {}),
+      ...(assistant ? { assistant: snippet(assistant.text, query, 600) } : {}),
       score,
     });
   }

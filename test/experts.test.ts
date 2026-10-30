@@ -82,6 +82,32 @@ test("头像：只收图片 data URL，没传沿用、传空去掉；地址带�
   experts.deleteExpert(alice.id, e.id);
 });
 
+test("头像存成单独的图片文件，experts.json 里只记文件名；以前存在 JSON 里的读进来拆出去；删了专家图片也删", () => {
+  const store = path.join(home, "data", "experts.json");
+  const dir = path.join(home, "data", "expert-avatars");
+  const png = `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`;
+  const e = experts.createExpert(alice.id, { name: "文件头像", engine: "claude", access: "web", avatar: png });
+  assert.deepEqual(fs.readFileSync(path.join(dir, `${e.id}.png`)), Buffer.from("png-bytes"));
+  const saved = JSON.parse(fs.readFileSync(store, "utf8")).find((x: { id: string }) => x.id === e.id);
+  assert.equal(saved.avatar, undefined);
+  assert.equal(saved.avatarFile, `${e.id}.png`);
+  experts.resetExpertCache();
+  assert.equal(experts.getExpert(e.id)?.avatar, png, "重新读进来还原成 data URL");
+
+  // 老版本：data URL 直接在 JSON 里
+  const jpg = `data:image/jpeg;base64,${Buffer.from("jpg-bytes").toString("base64")}`;
+  const all = JSON.parse(fs.readFileSync(store, "utf8"));
+  fs.writeFileSync(store, JSON.stringify(all.map((x: { id: string; avatarFile?: string }) => (x.id === e.id ? { ...x, avatarFile: undefined, avatar: jpg } : x))));
+  experts.resetExpertCache();
+  assert.equal(experts.getExpert(e.id)?.avatar, jpg);
+  assert.ok(fs.existsSync(path.join(dir, `${e.id}.jpg`)), "拆出去了");
+  assert.ok(!fs.existsSync(path.join(dir, `${e.id}.png`)), "旧格式的图片删了");
+  assert.ok(!fs.readFileSync(store, "utf8").includes("base64"));
+
+  experts.deleteExpert(alice.id, e.id);
+  assert.ok(!fs.existsSync(path.join(dir, `${e.id}.jpg`)));
+});
+
 test("子智能体：只能是自己的 Claude 专家、权限不超过主专家；删掉后从别人的列表里去掉", () => {
   const reader = experts.createExpert(alice.id, { name: "Doc Reader", engine: "claude", access: "read", description: "读文档" });
   const runner = experts.createExpert(alice.id, { name: "跑命令", engine: "claude", access: "exec" });

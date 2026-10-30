@@ -8,6 +8,7 @@
 // 自定义专家每人管自己的，不分享。存储：data/experts.json，只有主进程读写。
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { resolveWorkspacePath } from "./config.js";
@@ -96,19 +97,76 @@ export function avatarImage(e: Pick<Expert, "avatar">): { type: string; data: Bu
 }
 
 const storePath = path.join(dataDir, "experts.json");
+/** 头像图片单独放：<专家 id>.<扩展名>。experts.json 里只记文件名，免得几十 KB 的 base64 每次都跟着整个重写 */
+const avatarDir = path.join(dataDir, "expert-avatars");
+const AVATAR_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
+const EXT_TYPE = Object.fromEntries(Object.entries(AVATAR_EXT).map(([t, e]) => [e, t]));
+
+/** 存在 experts.json 里的样子：头像换成文件名 */
+type StoredExpert = Omit<Expert, "avatar"> & { avatar?: string; avatarFile?: string };
 
 /** 专家改了 / 删了。owner：谁的。用着它的会话空闲下来要换上新的 */
 export const expertEvents = new EventEmitter<{ changed: [owner: string, id: string] }>();
 
 let cache: Expert[] | null = null;
 
+function readAvatar(file: string): string | undefined {
+  const type = EXT_TYPE[path.extname(file).slice(1)];
+  if (!type || path.basename(file) !== file) return undefined;
+  try {
+    return `data:${type};base64,${fs.readFileSync(path.join(avatarDir, file)).toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function load(): Expert[] {
-  cache ??= readJson<Expert[]>(storePath, []).filter((e) => e && typeof e.id === "string" && typeof e.owner === "string" && !isBuiltin(e.id));
+  if (cache) return cache;
+  let legacy = false;
+  cache = readJson<StoredExpert[]>(storePath, [])
+    .filter((e) => e && typeof e.id === "string" && typeof e.owner === "string" && !isBuiltin(e.id))
+    .map(({ avatarFile, avatar: inline, ...e }) => {
+      // 以前头像的 data URL 直接存在 experts.json 里：读进来照用，下面存一次就拆出去
+      if (inline) legacy = true;
+      const avatar = inline || (avatarFile ? readAvatar(avatarFile) : undefined);
+      return { ...e, ...(avatar ? { avatar } : {}) };
+    });
+  if (legacy) save();
   return cache;
 }
 
 function save(): void {
-  writeJsonAtomic(storePath, load());
+  const list = load();
+  const keep = new Set<string>();
+  const stored: StoredExpert[] = list.map(({ avatar, ...e }) => {
+    const img = avatarImage({ ...(avatar ? { avatar } : {}) });
+    if (!img) return e;
+    const file = `${e.id}.${AVATAR_EXT[img.type]}`;
+    keep.add(file);
+    const target = path.join(avatarDir, file);
+    let same = false;
+    try {
+      same = fs.readFileSync(target).equals(img.data);
+    } catch {
+      // 还没有
+    }
+    if (!same) {
+      fs.mkdirSync(avatarDir, { recursive: true, mode: 0o700 });
+      const tmp = `${target}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, img.data, { mode: 0o600 });
+      fs.renameSync(tmp, target);
+    }
+    return { ...e, avatarFile: file };
+  });
+  writeJsonAtomic(storePath, stored);
+  // 删掉的专家、换了格式的头像留下的旧图片
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(avatarDir);
+  } catch {
+    // 目录还没有
+  }
+  for (const f of files) if (!keep.has(f)) fs.rmSync(path.join(avatarDir, f), { force: true });
 }
 
 export function resetExpertCache(): void {

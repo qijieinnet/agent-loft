@@ -1,6 +1,6 @@
 {
   "name": "agent-loft",
-  "version": "0.2.59",
+  "version": "0.2.60",
   "type": "module",
   "description": "多个 agent 的工作台：把本机 Claude Code / Codex 放到一处统一管理，用飞书和 Web 页面随时驱动——会话、审批、模型切换都共用",
   "keywords": [
@@ -23,7 +23,7 @@
     "url": "git+https://github.com/qijieinnet/agent-loft.git"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "bin": {
     "agent-loft": "bin/cli.js",

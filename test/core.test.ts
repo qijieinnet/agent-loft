@@ -343,13 +343,12 @@ test("按目录批准连带子目录，但不越进隐藏目录、不从家目�
   assert.equal(isPreApproved("Write", "Write:/etc"), false);
 });
 
-test("Web 上传：同名文件每次存到不同路径，重置后旧 id 撞不上新文件", async () => {
-  const { saveBuffer, clearUploads } = await import("../src/core/uploads.js");
+test("Web 上传：同名文件每次存到不同路径，旧 id 撞不上新文件", async () => {
+  const { saveBuffer } = await import("../src/core/uploads.js");
   const a = saveBuffer({ key: "k-up", data: Buffer.from("A"), name: "report.png", subdir: "id1" });
-  clearUploads("k-up");
   const b = saveBuffer({ key: "k-up", data: Buffer.from("B"), name: "report.png", subdir: "id2" });
   assert.notEqual(a.path, b.path);
-  assert.equal(fs.existsSync(a.path), false);
+  assert.equal(fs.readFileSync(a.path, "utf8"), "A");
   assert.equal(fs.readFileSync(b.path, "utf8"), "B");
 });
 
@@ -504,7 +503,7 @@ test("顶栏模型：没起进程时用 agent 默认，跑起来后显示实际�
   assert.equal(hub.info(key)!.runtimeModel, "gpt-real");
 });
 
-test("切换途中收到的附件不被清掉；改 workspaceRoot 让下载中的旧消息作废", async () => {
+test("开新会话不清附件（都在资料库里）；改 workspaceRoot 让下载中的旧消息作废", async () => {
   const { hub } = await import("../src/core/hub.js");
   const { saveBuffer } = await import("../src/core/uploads.js");
   const { saveConfig, config } = await import("../src/core/config.js");
@@ -546,7 +545,7 @@ test("切换途中收到的附件不被清掉；改 workspaceRoot 让下载中�
   const fresh = saveBuffer({ key, data: Buffer.from("new"), name: "new.txt", subdir: "u2" });
   release();
   await pending;
-  assert.equal(fs.existsSync(old.path), false);
+  assert.equal(fs.existsSync(old.path), true, "开新会话前的附件还在");
   assert.equal(fs.existsSync(fresh.path), true);
 
   // 改工作区根目录：之前收到、还在下载的消息作废

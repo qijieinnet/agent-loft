@@ -5,10 +5,9 @@
 //
 // 只实现 MCP 里用得到的那一小块：initialize、tools/list、tools/call、ping。
 // 传输是一行一条 JSON（MCP stdio 的规定），stdout 只能写协议消息，日志一律走 stderr。
-import path from "node:path";
 import { addMemoryEntry, localDate, MEMORY_LIMITS, removeMemoryItem } from "../core/memory.js";
 import { searchHistory } from "../core/chat-history.js";
-import { dataDir, readJson } from "../home.js";
+import { conversationLabels } from "../core/store.js";
 
 const userId = process.env.AGENT_LOFT_MEMORY_USER ?? "";
 const via = process.env.AGENT_LOFT_MEMORY_VIA ?? "";
@@ -60,20 +59,18 @@ const TOOLS = [
   },
 ].filter((t) => t.name !== "search_past_chats" || searchEnabled);
 
-type ConvMeta = { title?: string; hidden?: boolean; agent?: string };
-
 function search(query: string, limit: number) {
   if (!searchEnabled) return text("没有开启「参考以前的聊天」。", true);
   if (!query.trim()) return text("要给关键词。", true);
   // 每次现读：用户在 Web 上删掉的对话（隐藏）立刻搜不到
-  const convs = readJson<Record<string, ConvMeta>>(path.join(dataDir, "conversations.json"), {});
+  const convs = conversationLabels();
   const hits = searchHistory(userId, query, {
     limit: Math.max(1, Math.min(15, Math.round(limit) || 6)),
-    skip: (k) => k === currentConv || !!convs[k]?.hidden,
+    skip: (k) => k === currentConv || !!convs.get(k)?.hidden,
   });
   if (hits.length === 0) return text(`以前的聊天里没找到「${query}」相关的内容。可以换个说法再搜。`);
   const blocks = hits.map((h, i) => {
-    const title = convs[h.key]?.title ?? (h.key.startsWith("feishu:") ? "飞书私聊" : "未命名对话");
+    const title = convs.get(h.key)?.title ?? (h.key.startsWith("feishu:") ? "飞书私聊" : "未命名对话");
     return [
       `[${i + 1}] ${localDate(h.ts)} · 「${title}」`,
       ...(h.user ? [`用户：${h.user}`] : []),

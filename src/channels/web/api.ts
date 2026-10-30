@@ -42,7 +42,7 @@ import {
 } from "../../core/memory.js";
 import { createLinkCode, listLinks, unlink, unlinkUser } from "../../core/feishu-links.js";
 import { purgeUserData } from "../../core/personal.js";
-import { purgeHistory, readMeta, readRecords, searchHistory, writeMeta } from "../../core/chat-history.js";
+import { countRecords, purgeHistory, readMeta, searchHistory, writeMeta } from "../../core/chat-history.js";
 import { curateNow, pendingCount } from "../../core/memory-curator.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
@@ -70,6 +70,8 @@ import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor, searchConvs } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
+import { handleLibraryApi } from "./library-api.js";
+import { attachToConversation, canSeeFile, getLibraryFile } from "../../core/library.js";
 import { handleSkillsApi } from "./skills-api.js";
 import { handleExpertsApi } from "./experts-api.js";
 import { canUseExpert, getExpert, isBuiltin, listExperts } from "../../core/experts.js";
@@ -757,6 +759,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 定时任务 -----
   if (p.startsWith("/api/tasks") && (await handleTasksApi(req, res, p, user))) return;
+  if (p.startsWith("/api/library") && (await handleLibraryApi(req, res, p, user))) return;
   if (p.startsWith("/api/skills") && (await handleSkillsApi(req, res, url, user))) return;
   if ((p.startsWith("/api/experts") || p.startsWith("/api/mcp")) && (await handleExpertsApi(req, res, p, user))) return;
   if (p.startsWith("/api/terminals") && (await handleTerminalApi(req, res, p, user))) return;
@@ -1018,6 +1021,27 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { id, name: attachment.name, kind: attachment.kind, size: attachment.size });
       return;
     }
+    // 从资料库拿来用：{ ids: [...] }，放进这条对话的上传目录，和刚上传的一样领个编号，发消息时认领
+    if (sub === "attach" && method === "POST") {
+      const body = await readJsonBody<{ ids?: unknown }>(req);
+      if (!Array.isArray(body.ids) || body.ids.length === 0) throw new HttpError(400, "要给出用哪些文件");
+      const out = body.ids.slice(0, 20).map((fid) => {
+        const file = typeof fid === "string" ? getLibraryFile(fid) : undefined;
+        if (!file || file.source === "copy" || !canSeeFile(user, file) || !fs.existsSync(file.path)) throw new HttpError(404, "资料库里没有这个文件（可能已经删了）");
+        const attachment = attachToConversation(file, key);
+        const id = crypto.randomBytes(8).toString("hex");
+        uploads.set(id, { key, attachment, at: Date.now() });
+        return {
+          id,
+          name: attachment.name,
+          kind: attachment.kind,
+          size: attachment.size,
+          ...(attachment.kind === "image" ? { url: `/api/file?path=${encodeURIComponent(attachment.path)}` } : {}),
+        };
+      });
+      sendJson(res, 200, { uploads: out });
+      return;
+    }
     if (sub === "fork" && method === "POST") {
       const body = await readJsonBody<{ anchor?: string }>(req);
       const anchor = typeof body.anchor === "string" && body.anchor ? body.anchor : undefined;
@@ -1273,8 +1297,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/account/history" && method === "GET") {
     // 只给数量：索引里有多少句、来自多少段对话
-    const records = readRecords(user.id);
-    sendJson(res, 200, { count: records.length, conversations: new Set(records.map((r) => r.k)).size });
+    sendJson(res, 200, countRecords(user.id));
     return;
   }
   if (p === "/api/account/history" && method === "DELETE") {

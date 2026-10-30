@@ -1,8 +1,8 @@
 // 入口：拉起 agent 驱动、飞书机器人和 Web 服务。
 import { config, loadConfig, onConfigChange } from "./core/config.js";
 import { hub } from "./core/hub.js";
-import { flushStore, getConversation, isExpired } from "./core/store.js";
-import { sweepUploads } from "./core/uploads.js";
+import { flushStore, getConversation } from "./core/store.js";
+import { backfillLibrary, startLibraryCapture, tidyLibrary } from "./core/library.js";
 import { ClaudeDriver } from "./agents/claude/driver.js";
 import { CodexDriver } from "./agents/codex/driver.js";
 import { agentHealth } from "./agents/health.js";
@@ -40,10 +40,11 @@ async function main(): Promise<void> {
     if (next.agents.codex.enabled && !prev.agents.codex.enabled) void startDriver("codex");
   });
 
-  sweepUploads((key) => {
-    const conv = getConversation(key);
-    return !!conv && !isExpired(conv);
-  });
+  // 资料库：升级时把已有的附件收进来（只一次），再清掉对话没了的、上传了一直没发的
+  const backfilled = backfillLibrary();
+  if (backfilled) console.log(`[资料库] 已收录上传目录里原有的 ${backfilled} 个文件`);
+  tidyLibrary();
+  startLibraryCapture();
 
   // 聊天记录索引和聊完后的记忆整理
   migrateMemoryDefault(listUsers().map((u) => u.id));

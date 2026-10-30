@@ -10,6 +10,7 @@ import { renderTodos } from "./todos.js";
 import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
 import { doAction, openModelPicker, openSessions } from "./conv-actions.js";
+import { showMenu } from "../lib/overlay.js";
 
 // ---------- 输入框 ----------
 
@@ -95,7 +96,7 @@ export function renderComposer() {
     h(
       "div",
       { class: "composer-row" },
-      h("button", { class: "icon-btn add-btn", title: "添加附件", onclick: () => ui.fileInput.click() }, icon("plus")),
+      h("button", { class: "icon-btn add-btn", title: "添加附件", onclick: (e) => openAddMenu(e.currentTarget) }, icon("plus")),
       ui.fileInput,
       h("span", { class: "spacer" }),
       ui.ctxRing,
@@ -244,6 +245,40 @@ export async function ensureConversation() {
   renderTopbar();
   renderSidebar();
   return info.key;
+}
+
+/** 「+」：上传本机的文件，或者从资料库里挑 */
+function openAddMenu(anchor) {
+  showMenu(anchor, [
+    { label: "上传文件", onclick: () => ui.fileInput.click() },
+    {
+      label: "从资料库选",
+      onclick: () =>
+        import("./library.js").then(
+          (m) => m.pickFromLibrary(),
+          (err) => toast(`资料库加载失败，刷新页面再试：${err.message}`),
+        ),
+    },
+  ]);
+}
+
+/** 资料库里的文件放进输入框：服务端放进这条对话的上传目录，领到和上传一样的编号 */
+export async function attachLibraryFiles(ids) {
+  if (!ids.length) return;
+  let key;
+  try {
+    key = await ensureConversation();
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+  try {
+    const res = await api(`/api/conversations/${encodeURIComponent(key)}/attach`, { method: "POST", body: { ids } });
+    for (const u of res.uploads) S.uploads.push({ id: u.id, name: u.name, kind: u.kind, serverName: u.name, ...(u.url ? { url: u.url } : {}) });
+  } catch (err) {
+    toast(`添加失败：${err.message}`);
+  }
+  renderChips();
 }
 
 async function addFiles(files) {

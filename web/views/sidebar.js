@@ -443,6 +443,7 @@ export function renderSidebar() {
   }
   sidebarStale = false;
   ui.tasksNav?.classList.toggle("active", S.view === "tasks");
+  ui.libraryNav?.classList.toggle("active", S.view === "library");
   if (ui.remoteNav) {
     ui.remoteNav.hidden = !remoteTabs().length;
     ui.remoteNav.classList.toggle("active", S.view === "remote");

@@ -4,8 +4,8 @@
 // 的一条对话。它记着用哪个专家（core/experts.ts）和它的引擎（agent）、在哪个目录，以及 agent 的会话 id
 // 和模型。专家定了就不换：飞书里换专家等于开新会话（见 hub.setExpert）。
 import path from "node:path";
-import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { config } from "./config.js";
+import { sql, transaction } from "./db.js";
 
 export type AgentBinding = {
   /** agent 侧的会话 id（Claude 的 sessionId / Codex 的 threadId） */
@@ -61,13 +61,24 @@ export type Conversation = {
 
 type StoreShape = Record<string, Conversation>;
 
-const storePath = path.join(dataDir, "conversations.json");
+// 存在数据库的 conversations 表里（见 db.ts），一条对话一行。读进内存后都改内存里的对象，
+// 落盘时和上次写下去的比，只写变了的、删掉没了的。
 let cache: StoreShape | null = null;
+/** 每条对话上次写进数据库的内容 */
+const written = new Map<string, string>();
 let persistTimer: NodeJS.Timeout | null = null;
 
 function load(): StoreShape {
   if (cache) return cache;
-  cache = readJson<StoreShape>(storePath, {});
+  cache = {};
+  for (const row of sql("SELECT key, data FROM conversations").all() as { key: string; data: string }[]) {
+    try {
+      cache[row.key] = JSON.parse(row.data) as Conversation;
+      written.set(row.key, row.data);
+    } catch {
+      console.warn(`[store] 会话 ${row.key} 的数据坏了，跳过`);
+    }
+  }
   // 聊天模式取消了（换成了专家）：以前聊天模式的对话直接丢掉，不迁移
   let dropped = 0;
   for (const [key, conv] of Object.entries(cache)) {
@@ -79,9 +90,26 @@ function load(): StoreShape {
   }
   if (dropped) {
     console.log(`[store] 聊天模式已取消，丢掉了 ${dropped} 条聊天模式的对话`);
-    writeJsonAtomic(storePath, cache);
+    writeChanges();
   }
   return cache;
+}
+
+function writeChanges(): void {
+  const all = cache ?? {};
+  const changed: [string, string][] = [];
+  for (const [key, conv] of Object.entries(all)) {
+    const data = JSON.stringify(conv);
+    if (written.get(key) !== data) changed.push([key, data]);
+  }
+  const removed = [...written.keys()].filter((key) => !(key in all));
+  if (changed.length === 0 && removed.length === 0) return;
+  transaction(() => {
+    for (const [key, data] of changed) sql("INSERT OR REPLACE INTO conversations (key, data) VALUES (?, ?)").run(key, data);
+    for (const key of removed) sql("DELETE FROM conversations WHERE key = ?").run(key);
+  });
+  for (const [key, data] of changed) written.set(key, data);
+  for (const key of removed) written.delete(key);
 }
 
 /** 这条对话的专家 id：自定义专家的 id，或者内置专家（就是 agent 本身） */
@@ -94,12 +122,12 @@ function persist(immediate = false): void {
   if (immediate) {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = null;
-    writeJsonAtomic(storePath, cache ?? {});
+    writeChanges();
     return;
   }
   persistTimer ??= setTimeout(() => {
     persistTimer = null;
-    writeJsonAtomic(storePath, cache ?? {});
+    writeChanges();
   }, 500);
 }
 
@@ -222,23 +250,23 @@ export function putConversation(conv: Conversation): void {
 // /sessions、/resume 列的是 agent 自己存的全部历史（磁盘上谁开的都有），多用户时要按人过滤：
 // 记下每个 agent 会话 id 是哪个用户的对话里开出来的。没记过的（飞书、终端里开的、升级前的）归管理员。
 
-const sessionOwnersPath = path.join(dataDir, "session-owners.json");
-let sessionOwners: Record<string, string> | null = null;
-
-function owners(): Record<string, string> {
-  sessionOwners ??= readJson<Record<string, string>>(sessionOwnersPath, {});
-  return sessionOwners;
-}
-
 /** 第一次见到这个会话 id 时记下主人；已经有主了不改 */
 export function recordSessionOwner(sessionId: string | undefined, userId: string | undefined): void {
   if (!sessionId || !userId) return;
-  const all = owners();
-  if (all[sessionId]) return;
-  all[sessionId] = userId;
-  writeJsonAtomic(sessionOwnersPath, all);
+  sql("INSERT OR IGNORE INTO session_owners (session_id, user_id) VALUES (?, ?)").run(sessionId, userId);
 }
 
 export function sessionOwner(sessionId: string): string | undefined {
-  return owners()[sessionId];
+  const row = sql("SELECT user_id FROM session_owners WHERE session_id = ?").get(sessionId) as { user_id: string } | undefined;
+  return row?.user_id;
+}
+
+/** 别的进程（记忆工具）要对话的标题和是否隐藏：直接查库，不走缓存，Web 上刚删的立刻生效 */
+export function conversationLabels(): Map<string, { title?: string; hidden?: boolean }> {
+  const rows = sql("SELECT key, json_extract(data, '$.title') AS title, json_extract(data, '$.hidden') AS hidden FROM conversations").all() as {
+    key: string;
+    title: string | null;
+    hidden: number | null;
+  }[];
+  return new Map(rows.map((r) => [r.key, { ...(r.title ? { title: r.title } : {}), ...(r.hidden ? { hidden: true } : {}) }]));
 }

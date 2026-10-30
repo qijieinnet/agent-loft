@@ -12,7 +12,7 @@ import { EventEmitter } from "node:events";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
 import { attachFooters, copyFooters, formatDuration, recordFooter } from "./footers.js";
 import { removeHistoryRecord, replaceConversationRecords } from "./chat-history.js";
-import { flushUsage, recordUsage, usageOf, type UsageTotals } from "./usage.js";
+import { recordUsage, usageOf, type UsageTotals } from "./usage.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
 import {
   agentBinding,
@@ -27,7 +27,7 @@ import {
   updateConversation,
   type Conversation,
 } from "./store.js";
-import { attachmentInfo, clearUploads, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
+import { attachmentInfo, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import { memoryOwnerOf, sessionMemory } from "./personal.js";
 import { readMemory } from "./memory.js";
 import { getUser } from "./users.js";
@@ -903,7 +903,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
   }
 
   /**
-   * 切换类操作的统一入口：调用那一刻记下「有一个切换在排队」和发起时刻（清上传目录用），
+   * 切换类操作的统一入口：调用那一刻记下「有一个切换在排队」和发起时刻，
    * 进串行队列执行，结束后撤掉排队计数。真正换没换会话由操作自己 markSwitched。
    */
   private switchOp<T>(key: string, fn: (op: { at: number; seq: number }) => Promise<T>): Promise<T> {
@@ -914,14 +914,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     });
   }
 
-  /**
-   * 切换类操作清上传目录：只清这次操作发起之前就有的文件。切换途中刚收到的附件
-   * 属于切换之后的新消息，不能一起删掉。截止时间由各操作在入口自己捕获后传进来，
-   * 不读共享状态 —— 否则后面再来一条命令就会把它覆盖掉。
-   */
-  private clearOldUploads(key: string, before: number): void {
-    clearUploads(key, [], before);
-  }
 
   /**
    * gen：这条消息是在哪个停止代次下收到的。渠道自己还要先做点异步的事（飞书下载附件）
@@ -1164,7 +1156,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     await this.drop(key, "已开新会话");
     this.markSwitched(key, op.seq);
     updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
-    this.clearOldUploads(key, op.at);
     this.emitEvent(key, { type: "meta" });
     const runtime = await this.runtimeNow(key);
     return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
@@ -1194,7 +1185,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     }
     await this.drop(key, "会话已切换");
     this.markSwitched(key, op.seq);
-    if (sessionId !== agentBinding(conv).sessionId) this.clearOldUploads(key, op.at);
     updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
     // 显式恢复 = 用户要接着它聊：刷新活跃时间，否则下一条消息会按恢复前的闲置时间判成过期
     touchConversation(key);
@@ -1372,7 +1362,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     this.markSwitched(key, op.seq);
     // 新会话：所有 agent 的旧会话都不接着用（专家换了，上下文里的人设、权限都不对了）
     updateConversation(key, { agent: hit.engine, expert: isBuiltin(hit.id) ? undefined : hit.id, perAgent: {} });
-    this.clearOldUploads(key, op.at);
     this.emitEvent(key, { type: "meta" });
     return `已换成专家「${hit.label}」，开了新会话。`;
   }
@@ -1533,7 +1522,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
     );
     updateConversation(key, { cwd: resolved, cwdExplicit: true, perAgent });
-    this.clearOldUploads(key, op.at);
     this.emitEvent(key, { type: "meta" });
     return `工作目录已切换到 ${resolved}，下条消息将开新会话。`;
   }
@@ -1781,7 +1769,6 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
   async shutdown(): Promise<void> {
     for (const key of [...this.live.keys()]) await this.drop(key, "服务正在重启");
     for (const driver of this.drivers.values()) await driver.stop().catch(() => {});
-    flushUsage();
   }
 }
 

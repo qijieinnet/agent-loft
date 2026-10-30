@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 
 process.env.AGENT_LOFT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-usage-"));
-const { dailyUsage, dayOf, flushUsage, recordUsage, usageOf } = await import("../src/core/usage.js");
-const { dataDir } = await import("../src/home.js");
+const { dailyUsage, dayOf, recordUsage, usageOf } = await import("../src/core/usage.js");
+const { closeDatabaseForTest } = await import("../src/core/db.js");
 const { estimateCost, pickOpenAiPrices, priceOf } = await import("../src/core/pricing.js");
 
 test("增量（Codex）累加，累计值（Claude）取较大的", () => {
@@ -33,11 +33,10 @@ test("没有会话 id 不记；坏数据当 0", () => {
   assert.equal(usageOf(undefined), undefined);
 });
 
-test("落盘", () => {
-  flushUsage();
-  const saved = JSON.parse(fs.readFileSync(path.join(dataDir, "usage.json"), "utf8"));
-  assert.equal(saved["codex-1"].input, 110);
-  assert.equal(saved["claude-1"].output, 200);
+test("落盘：重新打开数据库还在", () => {
+  closeDatabaseForTest();
+  assert.equal(usageOf("codex-1")?.input, 110);
+  assert.equal(usageOf("claude-1")?.output, 200);
 });
 
 test("按天的账：累计值只记增量，按人和 agent 分开，能按主人过滤", () => {
@@ -60,9 +59,8 @@ test("按天的账：累计值只记增量，按人和 agent 分开，能按主�
   assert.deepEqual(dailyUsage(today, today, (o) => o === "u1").map((r) => r.agent), ["claude"]);
   assert.equal(dailyUsage("2000-01-01", "2000-12-31").length, 0);
 
-  flushUsage();
-  const saved = JSON.parse(fs.readFileSync(path.join(dataDir, "usage-daily.json"), "utf8"));
-  assert.equal(saved[today]["u1\tclaude\t"].output, 30);
+  closeDatabaseForTest();
+  assert.equal(dailyUsage(today, today).find((r) => r.owner === "u1")?.output, 30);
 });
 
 test("单价：从 LiteLLM 的表里只挑 OpenAI 对话模型，换成每百万 token", () => {

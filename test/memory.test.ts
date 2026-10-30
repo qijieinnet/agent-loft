@@ -21,6 +21,9 @@ const { parseCommand } = await import("../src/core/commands.js");
 const { buildCatalog } = await import("../src/core/command-catalog.js");
 const { RICH_REPLY_LINES } = await import("../src/core/expert-prompt.js");
 const uploads = await import("../src/core/uploads.js");
+const { sql } = await import("../src/core/db.js");
+/** 直接往库里写一份记忆（模拟老版本存下的、或者手工构造的） */
+const putRawMemory = (userId: string, raw: unknown) => sql("INSERT OR REPLACE INTO memory (user_id, data) VALUES (?, ?)").run(userId, JSON.stringify(raw));
 
 const admin = users.createUser({ name: "boss", password: "password-1", role: "admin" });
 const alice = users.createUser({ name: "alice", password: "password-2" });
@@ -32,7 +35,7 @@ test("记忆：默认关着，打开后整理默认每天凌晨 2 点", () => {
   assert.equal(m.enabled, false);
   assert.equal(m.curate.dailyHour, 2);
   // 存过的文件里写着 enabled，老用户不受默认值影响
-  fs.writeFileSync(path.join(home, "data", "memory", "u_old.json"), JSON.stringify({ enabled: true, items: [] }));
+  putRawMemory("u_old", { enabled: true, items: [] });
   assert.equal(memory.readMemory("u_old").enabled, true);
 });
 
@@ -255,7 +258,7 @@ test("整理设置：默认每天一次；不合规的值收拢；自动选 agen
   assert.deepEqual(c, { when: "daily", scope: "all", experts: [], idleMinutes: 5, dailyHour: 23, agent: "auto", model: "" });
   assert.equal(memory.setMemoryOptions(alice.id, { curate: { agent: "codex", model: "gpt-x" } }).curate.model, "gpt-x");
   memory.setMemoryOptions(alice.id, { curate: { agent: "auto" } });
-  fs.writeFileSync(path.join(home, "data", "memory", "u_legacy.json"), JSON.stringify({ enabled: true, autoExtract: false, items: [] }));
+  putRawMemory("u_legacy", { enabled: true, autoExtract: false, items: [] });
   assert.equal(memory.readMemory("u_legacy").curate.when, "off");
 });
 
@@ -527,7 +530,6 @@ test("清空记忆只清内容，开关和整理设置保留（关着的人清�
 
 test("记忆满了：挤掉最旧的非用户条目（自动整理的也算），整理结果如实报告新增和挤掉的", () => {
   memory.clearMemory(alice.id);
-  const file = path.join(home, "data", "memory", `${alice.id}.json`);
   const m = memory.readMemory(alice.id);
   const t0 = Date.now() - 86400_000;
   m.items = Array.from({ length: memory.MEMORY_LIMITS.items }, (_, i) => ({
@@ -537,7 +539,7 @@ test("记忆满了：挤掉最旧的非用户条目（自动整理的也算）�
     updatedAt: t0 + i,
     source: i === 0 ? ("user" as const) : ("auto" as const),
   }));
-  fs.writeFileSync(file, JSON.stringify(m));
+  putRawMemory(alice.id, m);
   const r = curator.applyProposal(alice.id, { add: ["用户新学了日语"], update: [], remove: [] });
   assert.deepEqual(r.added, ["用户新学了日语"]);
   assert.deepEqual(r.removed, ["第 1 条"], "挤掉的是最旧的自动整理条目，不是用户加的第 0 条");

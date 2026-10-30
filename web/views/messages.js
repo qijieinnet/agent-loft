@@ -401,14 +401,14 @@ function fileCard(f, gone) {
     gone ? "span" : "a",
     {
       class: `att-file${gone ? " gone" : ""}`,
-      ...(gone ? { title: "文件已清理（开新会话 / 切换目录时会清掉附件）" } : { href: fileUrl(f, true), download: f.name, title: `下载 ${f.name}` }),
+      ...(gone ? { title: "文件已经删了（在资料库里删掉的，或者上传后一直没发出去）" } : { href: fileUrl(f, true), download: f.name, title: `下载 ${f.name}` }),
     },
     h("span", { class: "att-ext" }, ext || "FILE"),
     h(
       "span",
       { class: "att-meta" },
       h("span", { class: "att-name" }, f.name),
-      h("span", { class: "att-size" }, gone ? "已清理" : fmtSize(f.size) || "下载"),
+      h("span", { class: "att-size" }, gone ? "已删除" : fmtSize(f.size) || "下载"),
     ),
   );
 }
@@ -427,7 +427,7 @@ function renderUserFiles(files) {
       if (f.kind !== "image") return fileCard(f);
       const box = h("button", { class: "att-img", title: f.name, onclick: () => openLightbox(fileUrl(f), f.name, fileUrl(f, true)) });
       const img = h("img", { src: fileUrl(f), alt: f.name, loading: "lazy" });
-      // 文件已经被清理：退回成「已清理」的文件卡片
+      // 文件已经被清理：退回成「已删除」的文件卡片
       img.onerror = () => box.replaceWith(fileCard(f, true));
       box.append(img);
       return box;
