@@ -383,31 +383,83 @@ button.task-run:hover {
   color: var(--fg-soft);
 }
 
-.day-chips {
-  display: flex;
-  flex-wrap: wrap;
+.task-weekly-controls {
   width: 100%;
-  gap: 4px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-side);
 }
 
-.day-chip {
-  min-width: 44px;
-  padding: 0 8px;
-  height: 34px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
+.task-weekly-heading,
+.task-clock-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--fg-soft);
   font-size: 13px;
 }
 
-.day-chip.on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
+.task-weekly-hint {
+  color: var(--fg-faint);
+  font-size: 12px;
 }
 
-.day-chip:focus-visible {
-  outline: 2px solid var(--accent);
+.task-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.task-weekday {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 40px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--fg-soft);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.task-weekday:hover {
+  border-color: var(--fg-faint);
+}
+
+.task-weekday[aria-pressed="true"] {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+}
+
+.task-weekday:focus-visible {
+  outline: 2px solid var(--fg);
   outline-offset: 2px;
+}
+
+.task-clock-row {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.field .task-clock-row input[type="time"] {
+  flex: 0 0 132px;
+  width: 132px;
+  min-width: 0;
+  height: 40px;
+  padding: 0 10px;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
 }
 
 .task-static {

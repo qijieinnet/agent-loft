@@ -14,14 +14,14 @@ const vendor = {
 };
 const styles = (await fs.readFile(new URL("web/index.html", root), "utf8")).match(/<link[^>]+rel="stylesheet"[^>]*>/g).join("\n");
 
-async function fixture(t, width) {
+async function fixture(t, width, colorScheme = "light") {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
     args: ["--no-sandbox"],
   });
   t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: "block" });
+  const page = await browser.newPage({ viewport: { width, height: 900 }, locale: "zh-CN", deviceScaleFactor: 2, colorScheme, serviceWorkers: "block" });
   const calls = [];
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -58,6 +58,49 @@ async function fixture(t, width) {
   await page.goto("https://host.example.test/#tasks");
   await page.waitForFunction(() => window.booted);
   return { page, calls };
+}
+
+for (const width of [1280, 390, 320]) {
+  for (const colorScheme of ["light", "dark"]) {
+    test(`${width}px ${colorScheme}：星期文字保持单行等宽，执行时刻独立排列`, async (t) => {
+      const { page } = await fixture(t, width, colorScheme);
+      await page.evaluate(() => window.openTaskForm({
+        id: "preview", title: "ETF 投资跟踪", prompt: "查看关注的 ETF 最近 15 个交易日的价格和份额变化，整理走势图与简短摘要。",
+        schedule: { kind: "weekly", days: [1, 3, 5], time: "08:00" },
+        target: { kind: "dedicated" }, expert: "claude", notify: "always",
+      }));
+      const chips = page.getByRole("group", { name: "执行星期（可多选）" });
+      await chips.scrollIntoViewIfNeeded();
+      const geometry = await chips.locator("button").evaluateAll((buttons) => buttons.map((button) => {
+        const rect = button.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(button);
+        const text = range.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, bottom: rect.bottom, right: rect.right, textX: text.x, textRight: text.right, lines: range.getClientRects().length };
+      }));
+      for (const button of geometry) {
+        assert.equal(button.lines, 1, "周一至周日不能折成两行");
+        assert.ok(Math.abs(button.width - geometry[0].width) < 1, "七个按钮等宽");
+        assert.equal(button.y, geometry[0].y, "七个星期保持同一行");
+        assert.ok(button.textX >= button.x && button.textRight <= button.right, "文字不能超出按钮");
+        assert.ok(button.x >= 0 && button.right <= width, "按钮不能超出屏幕");
+      }
+      const clock = page.getByRole("textbox", { name: "执行时刻" });
+      const clockBounds = await clock.boundingBox();
+      assert.ok(clockBounds.y > geometry[0].bottom, "时间框排在星期下一行");
+      await chips.getByRole("button", { name: "周日", exact: true }).focus();
+      await page.keyboard.press("Space");
+      assert.equal(await chips.getByRole("button", { name: "周日", exact: true }).getAttribute("aria-pressed"), "true");
+      await page.keyboard.press("Space");
+      if (process.env.AGENT_LOFT_UI_SCREENSHOTS) {
+        await chips.getByRole("button", { name: "周日", exact: true }).blur();
+        const dir = process.env.AGENT_LOFT_UI_SCREENSHOTS;
+        await fs.mkdir(dir, { recursive: true });
+        await page.locator(".task-weekly-controls").screenshot({ path: `${dir}/schedule-${width}-${colorScheme}.png` });
+        await page.locator(".modal").screenshot({ path: `${dir}/form-${width}-${colorScheme}.png` });
+      }
+    });
+  }
 }
 
 for (const width of [1280, 390]) {

@@ -29,7 +29,7 @@ const FREQS = [
   ["once", "一次"],
   ["daily", "每天"],
   ["weekdays", "工作日（周一到周五）"],
-  ["weekly", "每周（可多选）"],
+  ["weekly", "每周"],
   ["monthly", "每月"],
   ["hourly", "每隔几小时"],
   ["cron", "自定义（cron）"],
@@ -293,7 +293,7 @@ export function openTaskForm(task, preset) {
   const freq = h("select", {}, FREQS.map(([v, label]) => h("option", { value: v, selected: v === sch.kind }, label)));
   const freqBox = h("div", { class: "task-freq" });
   const timeInput = () => {
-    const el = h("input", { type: "time", value: sch.time, required: true });
+    const el = h("input", { type: "time", value: sch.time, required: true, "aria-label": "执行时刻" });
     el.oninput = () => (sch.time = el.value);
     return el;
   };
@@ -308,21 +308,24 @@ export function openTaskForm(task, preset) {
       parts.push(
         h(
           "div",
-          { class: "day-chips", role: "group", "aria-label": "执行星期（可多选）" },
-          WEEK_ORDER.map((d) => {
-            const b = h("button", { type: "button", class: `day-chip${sch.days.includes(d) ? " on" : ""}`, "aria-pressed": String(sch.days.includes(d)) }, `周${WEEK_NAME[d]}`);
-            b.onclick = () => {
-              sch.days = sch.days.includes(d) ? sch.days.filter((x) => x !== d) : [...sch.days, d];
-              // 改了预设的星期，就按自选的每周计划保存。
-              sch.kind = freq.value = "weekly";
-              b.classList.toggle("on", sch.days.includes(d));
-              b.setAttribute("aria-pressed", String(sch.days.includes(d)));
-            };
-            return b;
-          }),
+          { class: "task-weekly-controls" },
+          h("div", { class: "task-weekly-heading" }, h("span", {}, "重复日期"), h("span", { class: "task-weekly-hint" }, "可多选")),
+          h(
+            "div",
+            { class: "task-weekdays", role: "group", "aria-label": "执行星期（可多选）" },
+            WEEK_ORDER.map((d) => {
+              const b = h("button", { type: "button", class: "task-weekday", "aria-pressed": String(sch.days.includes(d)) }, `周${WEEK_NAME[d]}`);
+              b.onclick = () => {
+                sch.days = sch.days.includes(d) ? sch.days.filter((x) => x !== d) : [...sch.days, d];
+                // 改了预设的星期，就按自选的每周计划保存。
+                sch.kind = freq.value = "weekly";
+                b.setAttribute("aria-pressed", String(sch.days.includes(d)));
+              };
+              return b;
+            }),
+          ),
+          h("label", { class: "task-clock-row" }, h("span", {}, "执行时刻"), timeInput()),
         ),
-        timeInput(),
-        h("span", { class: "freq-word" }, "在选中的星期执行，可多选"),
       );
     } else if (sch.kind === "monthly") {
       const day = h("input", { type: "number", min: "1", max: "31", value: String(sch.day), class: "narrow" });

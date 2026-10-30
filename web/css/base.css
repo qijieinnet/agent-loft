@@ -192,8 +192,12 @@ select.input {
 .input:focus,
 .field input:focus,
 .field select:focus,
-.field textarea:focus {
-  border-color: var(--accent);
+.field textarea:focus,
+.settings-page input:not([type="checkbox"]):not([type="radio"]):focus,
+.settings-page select:focus,
+.settings-page textarea:focus {
+  border-color: var(--fg-soft);
+  outline: none;
 }
 
 .btn {

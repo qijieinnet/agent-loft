@@ -8,23 +8,26 @@ import { field, saveButton } from "./common.js";
 
 // ---------- 记忆（每个人自己的） ----------
 
-export async function memoryTab(panel) {
+export async function memoryTab(panel, refresh = false) {
   const box = h("div", { class: "section" }, h("h4", {}, "记忆"), h("span", { class: "spinner" }));
-  fill(panel, box);
+  // 更新时保留旧内容，避免加载占位让页面变短、滚动位置被浏览器压回顶部。
+  if (!refresh) fill(panel, box);
   let mem;
   try {
     mem = await api("/api/account/memory");
   } catch (err) {
-    fill(box, h("h4", {}, "记忆"), h("div", { class: "error-text" }, err.message));
+    if (refresh) toast(err.message);
+    else fill(box, h("h4", {}, "记忆"), h("div", { class: "error-text" }, err.message));
     return;
   }
-  const reload = () => void memoryTab(panel);
+  const reload = () => memoryTab(panel, true);
   const run = (btn, fn) => async () => {
     btn.disabled = true;
     try {
-      if ((await fn()) !== false) reload();
+      if ((await fn()) !== false) await reload();
     } catch (err) {
       toast(err.message);
+    } finally {
       btn.disabled = false;
     }
   };
@@ -116,6 +119,9 @@ export async function memoryTab(panel) {
     toast("已清空");
   });
 
+  // 数据都已就绪再替换；保留用户在等待接口期间滚动到的位置。
+  const scroller = panel.closest(".settings-body");
+  const scrollTop = scroller?.scrollTop ?? 0;
   fill(
     panel,
     h(
@@ -161,6 +167,7 @@ export async function memoryTab(panel) {
       h("div", { class: "row" }, clearBtn),
     ),
   );
+  if (scroller) scroller.scrollTop = scrollTop;
 }
 
 /** 记忆页里的「整理记忆」：什么时候整理、用哪个 agent 的哪个模型、现在整理、上次的结果 */

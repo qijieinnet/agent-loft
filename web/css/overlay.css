@@ -70,8 +70,8 @@
 }
 
 .rename-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: var(--fg-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
 .dialog-foot {
@@ -336,7 +336,7 @@ button.list-item:hover {
 }
 
 .dir-manual:focus {
-  border-color: var(--accent);
+  border-color: var(--fg-soft);
 }
 
 .dir-picker .modal-foot .muted {
