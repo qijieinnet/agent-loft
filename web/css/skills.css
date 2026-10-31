@@ -318,6 +318,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .skill-people[hidden] {
@@ -329,6 +331,7 @@
   align-items: center;
   gap: 5px;
   font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .skill-upload-btns {
@@ -338,7 +341,7 @@
 }
 
 @media (max-width: 640px) {
-  .skills-page .tasks-head {
+  .skills-head {
     flex-direction: column;
     gap: 12px;
   }

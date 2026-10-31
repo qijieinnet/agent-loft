@@ -194,6 +194,7 @@ export async function handleSkillsApi(req: IncomingMessage, res: ServerResponse,
     return true;
   }
   if (!m[2] && method === "PATCH") {
+    if (skill.owner !== user.id) throw new HttpError(403, "只有作者能修改技能内容和共享范围");
     const body = await readJsonBody<SkillInput & { upload?: UploadBody }>(req, 16 * 1024 * 1024);
     let updated: Skill;
     try {

@@ -4,13 +4,12 @@ import { renderMarkdown } from "../lib/markdown.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 
 // ---------- 技能（设置里的一页） ----------
-// 我的技能：自己建的，加上以前从别人那装的（可以停用、填变量、卸载）；管理员另有「本机技能」（机器上原有的）。
+// 我的技能：自己建的和安装的；共享技能：别人分享给自己的，可查看、安装；管理员另有「本机技能」。
 // 技能有变化时服务端推 { t: "skills" }（lib/ws.js 转成 aim:skills 事件），这一页开着就重新拉。
 
 const K = { data: null, tab: "mine", query: "", token: 0, reloadTimer: 0, box: null };
 
-/** 以前分享出去的技能（现在不能再设了）：卡片上标一下还有谁看得到 */
-const SHARED = { users: "分享给了指定的人", all: "所有人可见" };
+const SHARED = { private: "仅自己可见", users: "共享给指定用户", all: "所有人可见" };
 
 export async function skillsTab(panel) {
   K.tab = "mine";
@@ -45,18 +44,21 @@ function mine() {
   return K.data.skills.filter((s) => s.installed).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function shared() {
+  return K.data.skills.filter((s) => !s.mine).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function matches(s) {
   const q = K.query.trim().toLowerCase();
   return !q || s.name.includes(q) || s.description.toLowerCase().includes(q) || (s.ownerName ?? "").toLowerCase().includes(q);
 }
 
 function render() {
-  const tabs = K.data.machine
-    ? [
-        ["mine", `我的技能 ${mine().length}`],
-        ["machine", `本机技能 ${K.data.machine.length}`],
-      ]
-    : [];
+  const tabs = [
+    ["mine", `我的技能 ${mine().length}`],
+    ["shared", `共享技能 ${shared().length}`],
+    ...(K.data.machine ? [["machine", `本机技能 ${K.data.machine.length}`]] : []),
+  ];
   const search = h("input", { class: "skill-search", type: "search", placeholder: "搜索名字、说明", value: K.query });
   search.oninput = () => {
     K.query = search.value;
@@ -71,7 +73,7 @@ function render() {
       h(
         "p",
         { class: "skill-note" },
-        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。内置的 Claude Code / Codex 专家能用你启用的全部技能，自定义专家只用它选中的（设置 → 专家）；agent 遇到对得上的事会自己用。",
+        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。自己建的技能可共享给指定用户或所有人；别人共享的技能安装后可用，变量由每个人自己填写。内置专家默认使用你启用的技能，自定义专家只用它选中的（设置 → 专家）。",
       ),
       h(
         "div",
@@ -112,8 +114,15 @@ function renderList() {
   if (K.tab === "machine") {
     const list = K.data.machine.filter((m) => matches({ ...m, ownerName: "" }));
     return [
-      h("p", { class: "skill-note" }, "这台机器上原有的技能（~/.claude/skills、~/.agents/skills 等）。只有管理员的会话能用，其他人的会话里看不到、也调不了。要给别人用，请复制内容，在他的账号里新建一个。"),
+      h("p", { class: "skill-note" }, "这台机器上原有的技能（~/.claude/skills、~/.agents/skills 等）。只有管理员的会话能用。要共享给别人，请在「我的技能」中新建或上传技能包，再设置共享范围。"),
       list.length ? h("div", { class: "task-list" }, list.map(machineCard)) : h("div", { class: "skill-empty" }, "没有找到"),
+    ];
+  }
+  if (K.tab === "shared") {
+    const list = shared().filter(matches);
+    return [
+      h("p", { class: "skill-note" }, "这里是其他用户共享给你的技能。安装前可点开查看说明和附带文件；安装后跟随作者更新，撤回共享后将无法再用。变量和密钥使用你自己填写的值。"),
+      list.length ? h("div", { class: "task-list" }, list.map(sharedCard)) : h("div", { class: "skill-empty" }, K.query ? "没有找到" : "还没有别人共享给你的技能"),
     ];
   }
   const list = mine().filter(matches);
@@ -164,6 +173,7 @@ function mineCard(s) {
       ...(s.mine
         ? [
             { label: "编辑…", onclick: () => openEditor(s) },
+            { label: "共享…", onclick: () => openSharing(s) },
             { label: "用文件替换…", onclick: () => pickUpload(s) },
           ]
         : []),
@@ -198,6 +208,21 @@ function mineCard(s) {
   );
 }
 
+function sharedCard(s) {
+  const install = h("button", { class: "btn primary", onclick: () => installShared(s, install) }, "安装");
+  return h(
+    "div",
+    { class: "task-card skill-card" },
+    h("div", { class: "task-top" },
+      h("button", { class: "task-title skill-name", title: "查看", onclick: () => openDetail(s) }, s.name),
+      s.installed ? h("span", { class: "badge" }, s.enabled ? "已安装" : "已安装 · 已停用") : install,
+      s.canDelete ? h("button", { class: "btn", onclick: () => removeSkill(s) }, "下架") : null,
+    ),
+    h("div", { class: "task-meta" }, h("span", {}, `${s.ownerName} 建的`), h("span", {}, SHARED[s.visibility]), s.vars.length ? h("span", {}, `${s.vars.length} 个变量`) : null),
+    h("div", { class: "task-prompt" }, s.description),
+  );
+}
+
 function machineCard(m) {
   return h(
     "div",
@@ -210,11 +235,25 @@ function machineCard(m) {
 
 // ---------- 操作 ----------
 
-/** 卸载以前从别人那装的技能。不再有广场，卸了就装不回来了，先问一句 */
+async function installShared(s, button) {
+  button.disabled = true;
+  try {
+    const installed = await api(`/api/skills/${s.id}/install`, { method: "POST", body: { on: true } });
+    toast(`已安装 ${s.name}`);
+    await reload();
+    if (varsNeedAttention(installed)) openVars(installed);
+    return true;
+  } catch (err) {
+    button.disabled = false;
+    toast(err.message);
+    return false;
+  }
+}
+
 async function uninstall(s) {
   const sure = await confirmDialog({
     title: `卸载「${s.name}」？`,
-    message: `这是 ${s.ownerName} 建的技能。卸载后就装不回来了，要用的话得请他把内容发给你，自己新建一个。`,
+    message: `这是 ${s.ownerName} 建的技能。卸载后不再加载；只要作者仍共享给你，就可以在「共享技能」中重新安装。`,
     confirmText: "卸载",
     danger: true,
   });
@@ -230,9 +269,9 @@ async function uninstall(s) {
 
 async function removeSkill(s) {
   const sure = await confirmDialog({
-    title: `删除技能「${s.name}」？`,
-    message: `删除后找不回来${s.installs ? `，装了它的 ${s.installs} 个人也用不了了` : ""}。`,
-    confirmText: "删除",
+    title: `${s.mine ? "删除" : "下架"}技能「${s.name}」？`,
+    message: `删除后找不回来${s.mine ? s.installs ? `，装了它的 ${s.installs} 个人也用不了了` : "" : "，作者和安装它的用户也将无法使用"}。`,
+    confirmText: s.mine ? "删除" : "下架",
     danger: true,
   });
   if (!sure) return;
@@ -249,13 +288,19 @@ async function removeSkill(s) {
 
 async function openDetail(s) {
   const body = h("div", { class: "modal-body skill-detail" }, starsLoader());
-  modal({ title: s.name, body, wide: true });
+  const foot = h("div", { class: "modal-foot" });
+  const close = modal({ title: s.name, body, foot, wide: true });
   let d;
   try {
     d = await api(`/api/skills/${s.id}`);
   } catch (err) {
     fill(body, h("div", { class: "error-text" }, err.message));
     return;
+  }
+  if (d.mine) foot.append(h("button", { class: "btn", onclick: () => (close(), openSharing(d)) }, "共享…"));
+  else if (!d.installed) {
+    const install = h("button", { class: "btn primary", onclick: async () => { if (await installShared(d, install)) close(); } }, "安装");
+    foot.append(install);
   }
   const filePreview = h("div", { class: "skill-file-preview" });
   fill(
@@ -264,7 +309,7 @@ async function openDetail(s) {
       "div",
       { class: "task-meta" },
       h("span", {}, d.mine ? "我建的" : `${d.ownerName} 建的`),
-      d.mine && SHARED[d.visibility] ? h("span", {}, SHARED[d.visibility]) : null,
+      h("span", {}, SHARED[d.visibility]),
       h("span", {}, `更新于 ${new Date(d.updatedAt).toLocaleString()}`),
     ),
     h("p", { class: "skill-desc" }, d.description),
@@ -414,6 +459,67 @@ function openVars(s) {
 
 // ---------- 新建 / 编辑 ----------
 
+function visibilityEditor(skill = {}) {
+  const select = h("select", { "aria-label": "共享范围" },
+    h("option", { value: "private" }, "仅自己可见"),
+    h("option", { value: "users" }, "指定用户"),
+    h("option", { value: "all" }, "所有人可见"),
+  );
+  select.value = skill.visibility ?? "private";
+  const selected = new Set(skill.sharedWith ?? []);
+  // 已停用或删除的接收者也保留，让编辑正文不会意外改变共享名单。
+  const users = [...K.data.users];
+  for (const id of selected) if (!users.some((u) => u.id === id)) users.push({ id, name: `${id}（当前不可登录）` });
+  const checks = users.map((u) => {
+    const input = h("input", { type: "checkbox", checked: selected.has(u.id) });
+    return { id: u.id, input, el: h("label", { class: "skill-person" }, input, u.name) };
+  });
+  const people = h("div", { class: "skill-people" }, checks.length ? checks.map((c) => c.el) : h("small", {}, "暂无其他用户，请先添加用户或选择所有人可见。"));
+  const sync = () => (people.hidden = select.value !== "users");
+  select.onchange = sync;
+  sync();
+  return {
+    el: h("div", { class: "skill-visibility" }, select, people),
+    value: () => {
+      const sharedWith = select.value === "users" ? checks.filter((c) => c.input.checked).map((c) => c.id) : [];
+      if (select.value === "users" && !sharedWith.length) throw new Error("选「指定用户」时至少勾一个人");
+      return { visibility: select.value, sharedWith };
+    },
+  };
+}
+
+async function openSharing(s) {
+  let d;
+  try {
+    d = await api(`/api/skills/${s.id}`);
+  } catch (err) {
+    return toast(err.message);
+  }
+  const visibility = visibilityEditor(d);
+  const save = h("button", { class: "btn primary" }, "保存");
+  const close = modal({
+    title: `共享 ${d.name}`,
+    body: h("div", { class: "modal-body task-form" },
+      field("共享范围", visibility.el),
+      h("p", { class: "skill-note" }, "其他用户在「共享技能」中查看和安装。共享的是技能正文和附带文件，安装后跟随你的更新；变量和密钥由每个人自己填写。缩小范围或改为仅自己可见后，不在范围内的用户将无法再使用。"),
+    ),
+    foot: h("div", { class: "modal-foot" }, save),
+  });
+  save.onclick = async () => {
+    try {
+      const payload = visibility.value();
+      save.disabled = true;
+      await api(`/api/skills/${d.id}`, { method: "PATCH", body: payload });
+      close();
+      toast("已更新共享范围");
+      void reload();
+    } catch (err) {
+      save.disabled = false;
+      toast(err.message);
+    }
+  };
+}
+
 /** 变量声明的编辑器：一行一个 */
 function varsEditor(list) {
   const rows = [];
@@ -482,7 +588,7 @@ const BODY_TEMPLATE = `## 什么时候用
 
 - 不要把密钥打印出来`;
 
-/** s：编辑这个（自己的）；不给就是新建。preset：上传后预填 */
+/** s：编辑这个（自己的）；不给就是新建。上传后也用这个确认。 */
 async function openEditor(s) {
   let d = null;
   if (s) {
@@ -498,6 +604,7 @@ async function openEditor(s) {
   const body = h("textarea", { rows: 14, class: "skill-body-input", spellcheck: "false", placeholder: "写给 agent 的操作说明（Markdown）" });
   body.value = d?.body ?? (s ? "" : BODY_TEMPLATE);
   const vars = varsEditor(d?.vars);
+  const visibility = visibilityEditor(d ?? {});
   const save = h("button", { class: "btn primary" }, d ? "保存" : "创建");
   const close = modal({
     title: d ? `编辑 ${d.name}` : "新建技能",
@@ -508,6 +615,7 @@ async function openEditor(s) {
       { class: "modal-body task-form" },
       field("名字", name, d ? "建好后不能改。" : "全站唯一，建好后不能改。"),
       field("说明", desc),
+      field("共享范围", visibility.el, "其他用户可在「共享技能」中安装，正文和附带文件跟随你的更新；变量和密钥由每个人自己填写。"),
       field("正文（SKILL.md）", body, d?.files?.length ? `另有 ${d.files.length} 个附带文件，要改的话用「用文件替换」上传整个包。` : "可以引用同目录下的脚本、资料（上传技能包时一起带上）。"),
       field(
         "变量",
@@ -519,9 +627,9 @@ async function openEditor(s) {
   });
   (d ? desc : name).focus();
   save.onclick = async () => {
-    const payload = { description: desc.value, body: body.value, vars: vars.value() };
-    save.disabled = true;
     try {
+      const payload = { description: desc.value, body: body.value, vars: vars.value(), ...visibility.value() };
+      save.disabled = true;
       if (d) await api(`/api/skills/${d.id}`, { method: "PATCH", body: payload });
       else await api("/api/skills", { method: "POST", body: { name: name.value.trim().toLowerCase(), ...payload } });
       close();
