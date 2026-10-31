@@ -16,6 +16,9 @@ import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { config } from "./config.js";
 
 export type Role = "admin" | "member";
+export type ResourceKind = "experts" | "agents" | "servers";
+/** 未设置 / null = 全部（含以后新增）；[] = 不允许使用。只限制成员。 */
+export type ResourcePermissions = Partial<Record<ResourceKind, string[] | null>>;
 
 export type User = {
   id: string;
@@ -27,6 +30,7 @@ export type User = {
   disabled?: boolean;
   /** 成员能不能用远程控制（终端、桌面）。管理员一直能用，不看这个 */
   remote?: boolean;
+  permissions?: ResourcePermissions;
 };
 
 export type PublicUser = Omit<User, "passwordHash">;
@@ -34,8 +38,8 @@ export type PublicUser = Omit<User, "passwordHash">;
 type StoreShape = { users: User[] };
 
 const usersPath = path.join(dataDir, "users.json");
-/** 用户增删改、停用、改密码：登录态要重新校验 */
-export const userEvents = new EventEmitter<{ changed: [] }>();
+/** 登录态总要重新校验；accessChanged 只在使用权限、角色或可用账号发生变化时为 true。 */
+export const userEvents = new EventEmitter<{ changed: [accessChanged: boolean] }>();
 
 let cache: User[] | null = null;
 let loadedMtime = 0;
@@ -67,11 +71,11 @@ function load(): User[] {
   return cache;
 }
 
-function save(list: User[]): void {
+function save(list: User[], accessChanged = true): void {
   cache = list;
   writeJsonAtomic(usersPath, { users: list });
   loadedMtime = mtimeOf(usersPath);
-  userEvents.emit("changed");
+  userEvents.emit("changed", accessChanged);
 }
 
 /**
@@ -99,7 +103,7 @@ function newId(): string {
 
 function publicUser(u: User): PublicUser {
   const { passwordHash: _hidden, ...rest } = u;
-  return { ...rest };
+  return structuredClone(rest);
 }
 
 // ---------- 密码 ----------
@@ -173,6 +177,23 @@ export function canUseRemote(user: Pick<User, "role" | "disabled" | "remote"> | 
   return user.role === "admin" || user.remote === true;
 }
 
+export function canUseResource(user: Pick<User, "role" | "disabled" | "permissions"> | undefined, kind: ResourceKind, id: string): boolean {
+  if (!user || user.disabled) return false;
+  return user.role === "admin" || user.permissions?.[kind] == null || user.permissions[kind]!.includes(id);
+}
+
+function cleanPermissions(value: unknown, current: ResourcePermissions = {}): ResourcePermissions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("使用权限格式不对");
+  const next = structuredClone(current);
+  for (const [kind, ids] of Object.entries(value)) {
+    if (!["experts", "agents", "servers"].includes(kind)) throw new Error("未知的使用权限");
+    if (ids !== null && (!Array.isArray(ids) || ids.length > 200 || ids.some((id) => typeof id !== "string" || !/^[\w-]{1,100}$/.test(id)))) throw new Error("使用权限必须是 ID 列表或 null");
+    if (kind === "agents" && ids?.some((id: string) => !["claude", "codex"].includes(id))) throw new Error("未知的内置 Agent");
+    next[kind as ResourceKind] = ids === null ? null : [...new Set(ids as string[])];
+  }
+  return next;
+}
+
 /**
  * 升级前的登录态、推送订阅没有记是谁的：都算最早的那个管理员的（就是迁移出来的 admin）。
  */
@@ -212,7 +233,7 @@ function assertAdminLeft(list: User[]): void {
   if (!list.some((u) => u.role === "admin" && !u.disabled)) throw new Error("至少要保留一个能登录的管理员");
 }
 
-export function createUser(params: { name: string; password: string; role?: Role }): PublicUser {
+export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; permissions?: unknown }): PublicUser {
   const list = load();
   const name = checkName(params.name);
   if (list.some((u) => u.name.toLowerCase() === name.toLowerCase())) throw new Error(`用户名「${name}」已经有人用了`);
@@ -223,6 +244,8 @@ export function createUser(params: { name: string; password: string; role?: Role
     role: params.role === "admin" ? "admin" : "member",
     passwordHash: hashPassword(params.password),
     createdAt: Date.now(),
+    ...(params.remote === true ? { remote: true } : {}),
+    ...(params.permissions !== undefined ? { permissions: cleanPermissions(params.permissions) } : {}),
   };
   save([...list, user]);
   return publicUser(user);
@@ -230,7 +253,7 @@ export function createUser(params: { name: string; password: string; role?: Role
 
 export function updateUser(
   id: string,
-  patch: { name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean },
+  patch: { name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; permissions?: unknown },
 ): PublicUser {
   const list = load().map((u) => ({ ...u }));
   const user = list.find((u) => u.id === id);
@@ -249,12 +272,13 @@ export function updateUser(
     if (patch.remote) user.remote = true;
     else delete user.remote;
   }
+  if (patch.permissions !== undefined) user.permissions = cleanPermissions(patch.permissions, user.permissions);
   if (patch.password !== undefined) {
     checkPassword(patch.password);
     user.passwordHash = hashPassword(patch.password);
   }
   assertAdminLeft(list);
-  save(list);
+  save(list, patch.permissions !== undefined || patch.role !== undefined || patch.disabled !== undefined);
   return publicUser(user);
 }
 

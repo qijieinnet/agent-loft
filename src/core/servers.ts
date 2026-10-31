@@ -11,6 +11,7 @@
 import crypto from "node:crypto";
 import os from "node:os";
 import type { AppConfig } from "./config.js";
+import { canUseResource, type User } from "./users.js";
 
 export type ServerEntry = AppConfig["servers"]["list"][number];
 
@@ -106,11 +107,12 @@ export function selfName(cfg: AppConfig["servers"]): string {
 }
 
 /** 页面要的：左上角的切换列表。没加别的服务器就是 null（不显示切换） */
-export function shellInfo(cfg: AppConfig["servers"]) {
-  if (cfg.list.length === 0) return null;
+export function shellInfo(cfg: AppConfig["servers"], user?: User) {
+  const list = cfg.list.filter((s) => !user || canUseResource(user, "servers", s.id));
+  if (list.length === 0) return null;
   return {
     self: { id: SELF_ID, name: selfName(cfg), icon: cfg.selfIcon },
-    list: cfg.list.map(({ id, name, icon, url }) => ({ id, name, icon, url })),
+    list: list.map(({ id, name, icon, url }) => ({ id, name, icon, url })),
   };
 }
 

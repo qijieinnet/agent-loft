@@ -21,6 +21,8 @@ import {
 } from "../../core/experts.js";
 import { builtinAgentDefaults, setBuiltinAgentDefaults } from "../../core/builtin-agents.js";
 import { hub } from "../../core/hub.js";
+import { config } from "../../core/config.js";
+import { shellInfo } from "../../core/servers.js";
 import { claudeMachineMcp, createMcp, deleteMcp, getMcp, listMcp, MACHINE_PREFIX, MCP_LIMITS, mcpView, updateMcp, type McpInput } from "../../core/mcp.js";
 import { activeSkills } from "../../core/skills.js";
 import { isAdmin, type User } from "../../core/users.js";
@@ -95,7 +97,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
 
   if (p === "/api/agents/defaults" && method === "GET") {
     sendJson(res, 200, {
-      agents: builtinAgentDefaults(user.id),
+      agents: Object.fromEntries(Object.entries(builtinAgentDefaults(user.id)).filter(([id]) => canUseExpert(user.id, id))),
       skills: activeSkills(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
       mcp: listMcp(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
       ...(await machineMcp(user).then((m) => m ? { machineMcp: m, machinePrefix: MACHINE_PREFIX } : {})),
@@ -104,8 +106,9 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   }
   if (p === "/api/agents/defaults" && method === "PUT") {
     const body = await readJsonBody<{ agents?: unknown }>(req);
+    if (body.agents && typeof body.agents === "object" && Object.keys(body.agents).some((id) => !canUseExpert(user.id, id))) throw new HttpError(403, "没有使用这个内置 Agent 的权限");
     try {
-      sendJson(res, 200, { agents: setBuiltinAgentDefaults(user.id, body.agents) });
+      sendJson(res, 200, { agents: Object.fromEntries(Object.entries(setBuiltinAgentDefaults(user.id, body.agents)).filter(([id]) => canUseExpert(user.id, id))) });
     } catch (err) {
       throw bad(err);
     }
@@ -116,7 +119,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     const enabled = hub.enabledAgents().map((d) => d.id);
     sendJson(res, 200, {
       experts: availableExperts(user.id).map((e) => expertView(e, user.id)),
-      builtin: enabled.map((id) => ({ id, name: hub.label(id), engine: id })),
+      builtin: enabled.filter((id) => canUseExpert(user.id, id)).map((id) => ({ id, name: hub.label(id), engine: id })),
       engines: enabled,
       templates: EXPERT_TEMPLATES.map((t) => ({ id: t.id, label: t.label, expert: t.expert })),
       access: ACCESS_LEVELS.map((id) => ({ id, label: ACCESS_LABEL[id] })),
@@ -129,7 +132,12 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   }
 
   if (p === "/api/experts/brief" && method === "GET") {
-    sendJson(res, 200, { experts: availableExperts(user.id).map(expertBrief) });
+    sendJson(res, 200, {
+      experts: availableExperts(user.id).map(expertBrief),
+      builtin: hub.enabledAgents().filter((d) => canUseExpert(user.id, d.id)).map((d) => d.id),
+      user: { id: user.id, name: user.name, role: user.role },
+      servers: shellInfo(config().servers, user),
+    });
     return true;
   }
 

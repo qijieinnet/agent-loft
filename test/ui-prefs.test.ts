@@ -26,6 +26,17 @@ test("追加只把新目录接在最后，不动已有的名次", () => {
   assert.deepEqual(prefs.getDirOrder("u3"), []);
 });
 
+test("项目与飞书混合排序：兼容旧目录、去重、持久化，新分组只追加且账号独立", () => {
+  prefs.setDirOrder("mixed", ["/project-b", "/project-a"]);
+  assert.deepEqual(prefs.appendDirOrder("mixed", ["feishu:bot-1"]), ["/project-b", "/project-a", "feishu:bot-1"]);
+  const order = ["feishu:bot-2", "/project-b", "feishu:bot-1", "/project-a"];
+  prefs.setDirOrder("mixed", [...order, "feishu:bot-1"]);
+  prefs.resetUiPrefsForTest();
+  assert.deepEqual(prefs.getDirOrder("mixed"), order);
+  assert.deepEqual(prefs.appendDirOrder("mixed", ["/project-a", "feishu:bot-3"]), [...order, "feishu:bot-3"]);
+  assert.equal(prefs.getDirOrder("mixed-other"), undefined);
+});
+
 test("删用户时一起删掉", () => {
   prefs.deleteUiPrefs("u1");
   assert.equal(prefs.getDirOrder("u1"), undefined);

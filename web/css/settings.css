@@ -95,6 +95,32 @@
   flex-wrap: wrap;
 }
 
+/* 用户权限表单在整行下方展开，手机上也有足够的宽度。 */
+.user-entry {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.user-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-entry-head > .row {
+  flex-shrink: 0;
+}
+
+.user-entry > div:empty {
+  display: none;
+}
+
+.user-permissions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* 用户列表：重置密码就地展开的输入框 */
 .user-reset {
   margin-top: 8px;

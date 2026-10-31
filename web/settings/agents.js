@@ -183,7 +183,7 @@ function builtinDefaultsSection() {
       sync();
       return { el: h("div", { class: "field" }, h("span", {}, label), mode, list), value: () => mode.value === "inherit" ? null : inputs.filter((x) => x.input.checked).map((x) => x.id) };
     };
-    const panels = ["claude", "codex"].map((engine) => {
+    const panels = ["claude", "codex"].filter((engine) => data.agents[engine]).map((engine) => {
       const label = engine === "claude" ? "Claude Code" : "Codex";
       const prefs = data.agents[engine];
       const skills = picker(`${label} 技能`, data.skills, prefs.skills, "全部已启用的个人技能（含以后新增）");
@@ -198,6 +198,7 @@ function builtinDefaultsSection() {
     fill(section, h("h4", {}, "内置 Agent 默认加载"),
       h("p", { class: "skill-note" }, "仅影响你当前账号使用的内置 Agent；自定义专家继续使用各自的配置。保存后，下次发消息生效，正在执行的任务不受影响。"),
       ...panels,
+      !panels.length ? h("p", { class: "muted" }, "没有获授权的内置 Agent，请联系管理员配置使用权限。") : null,
       h("small", {}, "技能和 MCP 可分别全部取消。记忆、定时任务、技能管理等系统工具仍按功能设置提供。"),
       h("div", { class: "row" }, saveButton(async () => {
         const agents = Object.fromEntries(Object.entries(choices).map(([engine, c]) => [engine, { skills: c.skills.value(), machineSkills: c.machineSkills.checked, mcp: c.mcp.value() }]));

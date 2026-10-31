@@ -23,11 +23,13 @@ export async function accountTab(page) {
   };
   const old = h("input", { type: "password", autocomplete: "current-password" });
   const pw = h("input", { type: "password", autocomplete: "new-password" });
+  const name = h("input", { value: S.user?.name ?? "", autocomplete: "username", autocapitalize: "off", spellcheck: "false", maxlength: "32" });
+  const currentName = h("span", {}, S.user?.name ?? "");
   const devicesBox = h("div", { class: "section" }, h("h4", {}, "已登录的设备"), h("span", { class: "spinner" }));
   page.append(
     h(
       "div",
-      { class: "section" },
+      { class: "section", "data-form": "" },
       h(
         "h4",
         {},
@@ -35,7 +37,14 @@ export async function accountTab(page) {
         h("span", { class: "grow" }),
         logout,
       ),
-      S.user ? h("div", {}, S.user.name, " ", h("span", { class: "status-tag" }, S.user.role === "admin" ? "管理员" : "成员")) : null,
+      S.user ? h("div", {}, currentName, " ", h("span", { class: "status-tag" }, S.user.role === "admin" ? "管理员" : "成员")) : null,
+      field("账号名称", name, "也是登录时使用的用户名。1～32 个字符，可用文字、数字和 _ . @ -；修改后请用新名称登录。"),
+      h("div", { class: "row" }, saveButton(async () => {
+        const data = await api("/api/account", { method: "PATCH", body: { name: name.value.trim() } });
+        S.user = data.user;
+        name.value = currentName.textContent = data.user.name;
+        toast("账号名称已修改");
+      }, "保存账号名称")),
     ),
     h(
       "div",

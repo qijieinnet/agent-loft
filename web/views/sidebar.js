@@ -240,15 +240,15 @@ function agentShort(id) {
   return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
 }
 
-/** 侧栏状态：展开的项目和机器人、折叠的分组和分叉、目录顺序（more 是老版本的，不再用） */
+/** 侧栏状态：order 混排目录路径和 feishu:<机器人 id>，兼容原有的目录顺序。 */
 export const sideState = { open: [], botOpen: [], more: [], folded: [], forkFolded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
 
 /**
- * 「项目」目录的顺序固定按 sideState.order，新消息不会把目录顶到前面。
- * 顺序存在服务端、跟着账号走（换设备也一样）；新出现的目录接在最后（几个一起出现时按活跃排），
+ * 项目和飞书分组共用 sideState.order，新消息不会改变分组位置。
+ * 顺序存在服务端、跟着账号走（换设备也一样）；新出现的分组接在最后，
  * 接上之后名次也就定了
  */
-function orderProjectDirs(dirs) {
+function orderSidebarGroups(dirs) {
   const rank = new Map(sideState.order.map((d, i) => [d, i]));
   const ranked = dirs.filter((d) => rank.has(d)).sort((a, b) => rank.get(a) - rank.get(b));
   const fresh = dirs.filter((d) => !rank.has(d));
@@ -277,41 +277,94 @@ async function putDirOrder(body) {
       scheduleSidebar();
     }
   } catch (err) {
-    toast(`保存目录顺序失败：${err.message}`);
+    toast(`保存侧栏顺序失败：${err.message}`);
   }
 }
 
-/** 当前侧栏里显示的目录顺序（renderSidebar 时记下，拖拽 / 右键菜单用） */
-export let projDirs = [];
-/** 同一批目录按最近活跃的顺序（「按最近活跃重排」用） */
-let projDirsByActivity = [];
+/** 飞书的排序键与绝对目录路径分开，改机器人名称不会影响位置。 */
+export const botGroupId = (id) => `feishu:${id}`;
 
-/** 把目录 dir 挪到 target 前面（after 为 true 时挪到后面）；target 为 null 表示挪到最前 */
-export function moveProjectDir(dir, target, after = false) {
+/** 当前侧栏里显示的混合顺序（拖拽 / 右键菜单用） */
+export let sidebarGroups = [];
+/** 同一批分组按最近活跃的顺序（「按最近活跃重排」用） */
+let groupsByActivity = [];
+
+/** 移到另一个分组前 / 后；target 为 null 时置顶。隐藏的分组仍保留在已存顺序中。 */
+export function moveSidebarGroup(dir, target, after = false) {
   if (dir === target) return;
-  const list = projDirs.filter((d) => d !== dir);
+  const list = sidebarGroups.filter((d) => d !== dir);
   const idx = target === null ? 0 : list.indexOf(target);
   if (idx < 0) return;
   list.splice(idx + (after ? 1 : 0), 0, dir);
   // 暂时没显示出来的目录（会话都被隐藏了之类）保留原来的名次，排在后面
-  setProjectOrder([...list, ...sideState.order.filter((d) => !list.includes(d))]);
+  setSidebarGroupOrder([...list, ...sideState.order.filter((d) => !list.includes(d))]);
 }
 
 /** 按最近活跃重排一次，之后照样固定 */
-export function resetProjectOrder() {
-  setProjectOrder([...projDirsByActivity, ...sideState.order.filter((d) => !projDirsByActivity.includes(d))]);
+export function resetSidebarGroupOrder() {
+  setSidebarGroupOrder([...groupsByActivity, ...sideState.order.filter((d) => !groupsByActivity.includes(d))]);
 }
 
-function setProjectOrder(order) {
+function setSidebarGroupOrder(order) {
   sideState.order = order;
   saveSideState();
   if (orderSynced) void putDirOrder({ order });
   renderSidebar();
 }
 
-/** 正在拖的目录。拖的过程中侧栏不重绘（重绘会换掉被拖的元素，拖拽就断了），松手后补一次 */
-let dirDrag = null;
+/** 拖动过程中暂停重绘，防止被拖的元素被替换；结束后补上更新。 */
+let groupDrag = null;
 let sidebarStale = false;
+
+function groupDragAttrs(id) {
+  const clearDrop = () => ui.convList.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+  const isAfter = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return e.clientY > r.top + r.height / 2;
+  };
+  const endDrag = () => {
+    groupDrag = null;
+    clearDrop();
+    if (sidebarStale) renderSidebar();
+  };
+  return {
+    draggable: "true",
+    ondragstart: (e) => {
+      groupDrag = id;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", id);
+      e.currentTarget.classList.add("dragging");
+      stopMarquee();
+    },
+    ondragend: (e) => {
+      e.currentTarget.classList.remove("dragging");
+      endDrag();
+    },
+    ondragover: (e) => {
+      if (!groupDrag) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const after = isAfter(e);
+      if (!e.currentTarget.classList.contains(after ? "drop-after" : "drop-before")) {
+        clearDrop();
+        if (groupDrag !== id) e.currentTarget.classList.add(after ? "drop-after" : "drop-before");
+      }
+    },
+    ondragleave: (e) => {
+      if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop-before", "drop-after");
+    },
+    ondrop: (e) => {
+      if (!groupDrag) return;
+      e.preventDefault();
+      const from = groupDrag;
+      const after = isAfter(e);
+      groupDrag = null;
+      clearDrop();
+      if (from !== id) moveSidebarGroup(from, id, after);
+      else if (sidebarStale) renderSidebar();
+    },
+  };
+}
 
 function toggleSide(list, id) {
   const set = new Set(sideState[list]);
@@ -450,7 +503,7 @@ export function reportDesktop() {
 
 export function renderSidebar() {
   if (!ui.convList) return;
-  if (dirDrag) {
+  if (groupDrag) {
     sidebarStale = true;
     return;
   }
@@ -490,8 +543,7 @@ export function renderSidebar() {
       c.taskId ? h("span", { class: "brand-icon task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
     );
 
-  const nodes = [];
-  // 飞书机器人和项目一样展开会话，独立显示在文件夹后面。
+  // 飞书和项目共用排序，展开后的会话跟随所属分组。
   if (cur?.channel === "feishu" && cur.key !== autoOpenedFor) {
     autoOpenedFor = cur.key;
     if (!sideState.botOpen.includes(cur.channelId)) {
@@ -507,12 +559,12 @@ export function renderSidebar() {
     const expanded = sideState.botOpen.includes(bot.id);
     const rows = [h(
       "div",
-      { class: "proj-row bot-row", "data-bot": bot.id },
+      { class: "proj-row bot-row", "data-bot": bot.id, ...groupDragAttrs(botGroupId(bot.id)) },
       h(
         "button",
         {
           class: "conv-item proj",
-          title: `飞书 · ${bot.name}`,
+          title: `飞书 · ${bot.name}\n拖动可调整顺序，右键更多操作`,
           "aria-expanded": String(expanded),
           onclick: () => toggleSide("botOpen", bot.id),
         },
@@ -553,12 +605,13 @@ export function renderSidebar() {
       if (btn) rows.push(h("div", { class: "sub-more" }, btn));
     }
     botRows.push({
+      id: botGroupId(bot.id),
       at: latest?.activeAt ?? 0,
       rows,
     });
   }
 
-  // ---- Web 会话直接按工作目录分组，目录按用户排的顺序（见 orderProjectDirs） ----
+  // ---- Web 会话直接按工作目录分组，目录按用户排的顺序（见 orderSidebarGroups） ----
   const byDir = new Map();
   for (const c of visible.filter((c) => c.channel === "web")) {
     if (!byDir.has(c.cwd)) byDir.set(c.cwd, []);
@@ -575,65 +628,21 @@ export function renderSidebar() {
   // 目录行要全部显示：服务端给了每个目录最近的活跃时间，加上本地已有的（刚建的、刚变活跃的）
   const dirAt = new Map(pages.dirAt);
   for (const [dir, convs] of byDir) dirAt.set(dir, Math.max(dirAt.get(dir) ?? 0, convs[0].activeAt));
-  projDirsByActivity = [...dirAt.keys()].sort((a, b) => dirAt.get(b) - dirAt.get(a));
-  projDirs = orderProjectDirs(projDirsByActivity);
+  const dirsByActivity = [...dirAt.keys()].sort((a, b) => dirAt.get(b) - dirAt.get(a));
+  const groupRows = new Map(botRows.map((group) => [group.id, group.rows]));
+  const groupAt = new Map([...dirAt, ...botRows.map((group) => [group.id, group.at])]);
+  groupsByActivity = [...groupAt.keys()].sort((a, b) => groupAt.get(b) - groupAt.get(a));
+  sidebarGroups = orderSidebarGroups([...dirsByActivity, ...botRows.sort((a, b) => b.at - a.at).map((group) => group.id)]);
   if (dirAt.size) {
-    const clearDrop = () => ui.convList.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
-    const endDrag = () => {
-      dirDrag = null;
-      clearDrop();
-      if (sidebarStale) renderSidebar();
-    };
-    for (const dir of projDirs) {
+    for (const dir of dirsByActivity) {
       const convs = byDir.get(dir) ?? [];
       const expanded = sideState.open.includes(dir);
-      // 鼠标在目标行的上半截就插到它前面，下半截插到后面
-      const isAfter = (e, row) => {
-        const r = row.getBoundingClientRect();
-        return e.clientY > r.top + r.height / 2;
-      };
-      nodes.push(
+      const rows = [];
+      groupRows.set(dir, rows);
+      rows.push(
         h(
           "div",
-          {
-            class: "proj-row",
-            "data-dir": dir,
-            draggable: "true",
-            ondragstart: (e) => {
-              dirDrag = dir;
-              e.dataTransfer.effectAllowed = "move";
-              e.dataTransfer.setData("text/plain", dir);
-              e.currentTarget.classList.add("dragging");
-              stopMarquee();
-            },
-            ondragend: (e) => {
-              e.currentTarget.classList.remove("dragging");
-              endDrag();
-            },
-            ondragover: (e) => {
-              if (!dirDrag) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              const after = isAfter(e, e.currentTarget);
-              if (!e.currentTarget.classList.contains(after ? "drop-after" : "drop-before")) {
-                clearDrop();
-                if (dirDrag !== dir) e.currentTarget.classList.add(after ? "drop-after" : "drop-before");
-              }
-            },
-            ondragleave: (e) => {
-              if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove("drop-before", "drop-after");
-            },
-            ondrop: (e) => {
-              if (!dirDrag) return;
-              e.preventDefault();
-              const from = dirDrag;
-              const after = isAfter(e, e.currentTarget);
-              dirDrag = null;
-              clearDrop();
-              if (from !== dir) moveProjectDir(from, dir, after);
-              else if (sidebarStale) renderSidebar();
-            },
-          },
+          { class: "proj-row", "data-dir": dir, ...groupDragAttrs(dir) },
           h(
             "button",
             { class: "conv-item proj", title: `${dir}\n拖动可调整顺序，右键可置顶`, onclick: () => toggleSide("open", dir) },
@@ -684,13 +693,13 @@ export function renderSidebar() {
       // 「展开显示」按主对话算条数，分叉跟着主对话一起出现
       const forest = loadedPrefix(st, forkForest(convs));
       for (const node of forest.slice(0, st.show)) {
-        nodes.push(renderForkNode(node, (c, orphan, fold) => convRow(c, " sub", agentLabel(c.agent), orphan, fold)));
+        rows.push(renderForkNode(node, (c, orphan, fold) => convRow(c, " sub", agentLabel(c.agent), orphan, fold)));
       }
       const btn = moreButton(st, forest.length, PROJECT_LIMIT, load);
-      if (btn) nodes.push(h("div", { class: "sub-more" }, btn));
+      if (btn) rows.push(h("div", { class: "sub-more" }, btn));
     }
   }
-  nodes.push(...botRows.sort((a, b) => b.at - a.at).flatMap((r) => r.rows));
+  const nodes = sidebarGroups.flatMap((id) => groupRows.get(id) ?? []);
   if (!nodes.length) nodes.push(h("div", { class: "conv-empty" }, "还没有会话"));
   paintList(nodes, askKeys.size);
 }

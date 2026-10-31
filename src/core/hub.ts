@@ -292,10 +292,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       }
     });
     expertToolEvents.on("changed", (owner) => this.personalChanged(new Set([owner]), true));
-    userEvents.on("changed", () => {
+    userEvents.on("changed", (accessChanged) => {
+      if (!accessChanged) return;
+      // 自定义专家还可能加载了权限已变更的子智能体；空闲后重新构建工具。
       for (const [key, live] of this.live) {
         const conv = getConversation(key);
-        if (!conv?.expert || canUseExpert(memoryOwnerOf(conv), conv.expert)) continue;
+        if (!conv || (!conv.expert && canUseExpert(memoryOwnerOf(conv), conv.agent))) continue;
         this.staleLive.add(live.id);
         this.dropIfStale(key);
       }
@@ -419,7 +421,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
 
   /** 对话的专家，给顶栏和列表看 */
   expertBadge(conv: Pick<Conversation, "agent" | "expert" | "owner" | "channel">): ExpertBadge {
-    if (!conv.expert) return { id: conv.agent, name: this.label(conv.agent), builtin: true };
+    if (!conv.expert) return { id: conv.agent, name: this.label(conv.agent), builtin: true, ...(!canUseExpert(memoryOwnerOf(conv), conv.agent) ? { missing: true } : {}) };
     const e = getExpert(conv.expert);
     if (!e || !canUseExpert(memoryOwnerOf(conv), e.id)) return { id: conv.expert, name: "（专家已删除或未共享）", missing: true };
     return {
@@ -456,7 +458,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
    */
   expertChoices(owner: string | undefined, allowedAgents: string[], allowedExperts?: string[]): { id: string; label: string; engine: string }[] {
     const usable = new Set(this.enabledAgents().map((d) => d.id).filter((a) => allowedAgents.includes(a)));
-    const builtin = [...usable].map((a) => ({ id: a, label: this.label(a), engine: a }));
+    const builtin = [...usable].filter((a) => canUseExpert(owner, a)).map((a) => ({ id: a, label: this.label(a), engine: a }));
     const own = owner ? availableExperts(owner).filter((e) => usable.has(e.engine)) : [];
     return [...builtin, ...own.map((e) => ({ id: e.id, label: `${e.icon ? `${e.icon} ` : ""}${e.name}`, engine: e.engine }))].filter((e) => allowedExperts === undefined || allowedExperts.includes(e.id));
   }
@@ -665,7 +667,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 先检查 agent 还启用着：设置里关掉了，已经打开的会话也不能再用
     const driver = this.requireDriver(conv.agent);
     // 撤回共享后，即使上一轮还在运行，也不能把新输入交给缓存着的会话。
-    if (conv.expert && !canUseExpert(memoryOwnerOf(conv), conv.expert)) throw new Error("这条对话用的专家已经删除或取消共享了。新开一个对话，换个专家吧。");
+    if (!canUseExpert(memoryOwnerOf(conv), conv.expert ?? conv.agent)) throw new Error("这条对话用的专家或 Agent 已删除、取消共享或未获授权。新开一个对话，换个专家吧。");
     const existing = this.live.get(key);
     if (existing && existing.agent === conv.agent && existing.cwd === conv.cwd && !opts.resumeId) {
       return existing.session;

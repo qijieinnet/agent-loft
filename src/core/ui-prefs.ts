@@ -1,5 +1,5 @@
 // 每个用户的界面偏好，跟着账号走（换手机、换浏览器、桌面端都一样）。
-// 侧栏菜单的显示、顺序，以及「项目」目录的顺序。
+// 侧栏菜单的显示、顺序，以及项目和飞书分组的混合顺序。
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 
@@ -29,7 +29,7 @@ function cleanDirs(list: unknown): string[] {
   return [...new Set(list.filter((d): d is string => typeof d === "string" && d.length > 0 && d.length < 4096))].slice(0, MAX_DIRS);
 }
 
-/** 目录顺序；undefined = 这个用户还没在服务端存过（前端可以把本地的迁上来） */
+/** 分组顺序：项目用目录路径，飞书用 feishu:<机器人 id>。沿用旧字段，兼容已有项目排序。 */
 export function getDirOrder(userId: string): string[] | undefined {
   return load()[userId]?.dirOrder;
 }
@@ -43,7 +43,7 @@ export function setDirOrder(userId: string, order: unknown): string[] {
   return dirOrder;
 }
 
-/** 新出现的目录接在最后。只追加没有的，不动已有的名次 —— 别的设备同时在拖也不会被盖掉 */
+/** 新分组接在最后。只追加没有的，不动已有的名次 —— 别的设备同时在拖也不会被盖掉 */
 export function appendDirOrder(userId: string, dirs: unknown): string[] {
   const all = load();
   const cur = all[userId]?.dirOrder ?? [];

@@ -30,7 +30,7 @@ test("侧栏菜单接口：按登录账号保存，刷新 bootstrap 返回配置
   const put = (body: unknown, auth = aliceCookie, origin = base) => fetch(`${base}/api/ui/sidebar-nav`, {
     method: "PUT", headers: { Cookie: auth, Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-  const bootstrap = async (auth: string) => (await (await fetch(`${base}/api/bootstrap`, { headers: { Cookie: auth } })).json()) as { sidebarNav: { id: string; visible: boolean }[] };
+  const bootstrap = async (auth: string) => (await (await fetch(`${base}/api/bootstrap`, { headers: { Cookie: auth } })).json()) as { sidebarNav: { id: string; visible: boolean }[]; dirOrder: string[] | null };
   const defaults = (await bootstrap(aliceCookie)).sidebarNav;
   assert.equal((await put({ items: [] }, "")).status, 401);
   assert.equal((await put({ items: [] }, aliceCookie, "https://other.example")).status, 403);
@@ -41,4 +41,16 @@ test("侧栏菜单接口：按登录账号保存，刷新 bootstrap 返回配置
   assert.deepEqual(await res.json(), { items });
   assert.deepEqual((await bootstrap(aliceCookie)).sidebarNav, items);
   assert.deepEqual((await bootstrap(bobCookie)).sidebarNav, defaults);
+
+  const order = ["feishu:bot-a", "/project-a", "feishu:bot-b", "/project-b"];
+  const putOrder = (body: unknown, auth = aliceCookie, origin = base) => fetch(`${base}/api/ui/dir-order`, {
+    method: "PUT", headers: { Cookie: auth, Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  assert.equal((await putOrder({ order }, "")).status, 401);
+  assert.equal((await putOrder({ order }, aliceCookie, "https://other.example")).status, 403);
+  assert.equal((await putOrder({ order, userId: bob.id })).status, 200);
+  assert.deepEqual((await bootstrap(aliceCookie)).dirOrder, order);
+  assert.equal((await bootstrap(bobCookie)).dirOrder, null);
+  assert.deepEqual(await (await putOrder({ append: ["feishu:bot-a", "/new-project"] })).json(), { order: [...order, "/new-project"] });
+  assert.deepEqual((await bootstrap(aliceCookie)).sidebarNav, items, "混合排序不覆盖菜单偏好");
 });

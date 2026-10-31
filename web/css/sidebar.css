@@ -201,7 +201,7 @@ button.conv-group:hover {
   color: var(--fg);
 }
 
-/* 拖动目录排序：被拖的行变淡，落点处画一条横线 */
+/* 项目 / 飞书分组拖动排序：被拖的行变淡，落点处画一条横线 */
 .proj-row.dragging {
   opacity: 0.4;
 }

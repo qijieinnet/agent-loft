@@ -2,6 +2,7 @@ import { agentIcon, h } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { S } from "../state.js";
 import { agentLabel } from "./sidebar.js";
+import { applyShellInfo } from "../lib/shell.js";
 
 // ---------- 专家：新对话、定时任务里选 ----------
 // 内置专家就是能用的 agent（Claude Code / Codex），自定义专家在「设置 → 专家」里建。
@@ -18,7 +19,7 @@ function usableEngines() {
 export function expertChoices() {
   const engines = usableEngines();
   return [
-    ...engines.map((id) => ({ id, name: agentLabel(id), engine: id, builtin: true })),
+    ...engines.filter((id) => S.agents.find((a) => a.id === id)?.allowed !== false).map((id) => ({ id, name: agentLabel(id), engine: id, builtin: true })),
     ...S.experts.filter((e) => engines.includes(e.engine)),
   ];
 }
@@ -66,6 +67,9 @@ export async function reloadExperts() {
   try {
     const d = await api("/api/experts/brief");
     S.experts = d.experts ?? [];
+    if (Array.isArray(d.builtin)) for (const a of S.agents) a.allowed = d.builtin.includes(a.id);
+    if (d.user) S.user = d.user;
+    if ("servers" in d) applyShellInfo(d.servers);
   } catch {
     // 拉不到就先用旧的
   }

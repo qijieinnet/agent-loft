@@ -14,6 +14,9 @@ const sched = await import("../src/core/task-schedule.js");
 const tasks = await import("../src/core/tasks.js");
 const { isSilentReply, stripSilentMark, taskMessage } = await import("../src/core/task-prompt.js");
 const { stripContext } = await import("../src/core/expert-prompt.js");
+// 任务现在按账号校验内置 Agent 使用权，存储层测试也使用真实账号。
+const { createUser: createTaskUser } = await import("../src/core/users.js");
+const [weeklyOwner, ownerA, ownerB, manyOwner] = ["weekly", "owner-a", "owner-b", "many"].map((name) => createTaskUser({ name, password: "test-password" }).id);
 
 const at = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime();
 
@@ -50,18 +53,18 @@ test("频率：校验不合规的写法，太频繁的拒绝", () => {
 });
 
 test("星期多选：保存、修改后按所选星期计算下次执行时间", () => {
-  const task = tasks.createTask("u_weekly", { prompt: "按选中的星期执行", schedule: { kind: "weekly", days: [1, 3, 0], time: "08:30" } }, "user");
+  const task = tasks.createTask(weeklyOwner!, { prompt: "按选中的星期执行", schedule: { kind: "weekly", days: [1, 3, 0], time: "08:30" } }, "user");
   assert.deepEqual(task.schedule, { kind: "weekly", days: [0, 1, 3], time: "08:30" });
   const saved = JSON.parse(fs.readFileSync(path.join(home, "data", "tasks.json"), "utf8")).find((t: { id: string }) => t.id === task.id);
   assert.deepEqual(saved.schedule, task.schedule);
   assert.equal(sched.nextRun(task.schedule, at(2026, 10, 26, 8, 30)), at(2026, 10, 28, 8, 30));
   assert.equal(sched.nextRun(task.schedule, at(2026, 10, 28, 8, 30)), at(2026, 11, 1, 8, 30));
 
-  const updated = tasks.updateTask("u_weekly", task.id, { schedule: { kind: "weekly", days: [6, 0], time: "10:15" } });
+  const updated = tasks.updateTask(weeklyOwner!, task.id, { schedule: { kind: "weekly", days: [6, 0], time: "10:15" } });
   assert.deepEqual(updated.schedule, { kind: "weekly", days: [0, 6], time: "10:15" });
   assert.equal(updated.nextRunAt, sched.nextRun(updated.schedule, Date.now()));
   assert.equal(sched.nextRun(updated.schedule, at(2026, 10, 31, 10, 15)), at(2026, 11, 1, 10, 15));
-  tasks.deleteUserTasks("u_weekly");
+  tasks.deleteUserTasks(weeklyOwner!);
 });
 
 test("提示词：说明附在后面、给人看时剥掉；静默暗号", () => {
@@ -75,50 +78,50 @@ test("提示词：说明附在后面、给人看时剥掉；静默暗号", () =>
 });
 
 test("任务按人隔离：别人的任务看不到、改不了、删不掉", () => {
-  const a = tasks.createTask("u_a", { prompt: "每天看新闻", schedule: { kind: "daily", time: "08:00" } }, "user");
-  tasks.createTask("u_b", { prompt: "B 的任务", schedule: { kind: "daily", time: "09:00" } }, "user");
-  assert.deepEqual(tasks.listTasks("u_a").map((t) => t.id), [a.id]);
-  assert.equal(tasks.getTask("u_b", a.id), undefined);
-  assert.throws(() => tasks.updateTask("u_b", a.id, { enabled: false }), /不存在/);
-  assert.equal(tasks.deleteTask("u_b", a.id), undefined);
-  assert.equal(tasks.getTask("u_a", a.id)?.enabled, true);
+  const a = tasks.createTask(ownerA!, { prompt: "每天看新闻", schedule: { kind: "daily", time: "08:00" } }, "user");
+  tasks.createTask(ownerB!, { prompt: "B 的任务", schedule: { kind: "daily", time: "09:00" } }, "user");
+  assert.deepEqual(tasks.listTasks(ownerA!).map((t) => t.id), [a.id]);
+  assert.equal(tasks.getTask(ownerB!, a.id), undefined);
+  assert.throws(() => tasks.updateTask(ownerB!, a.id, { enabled: false }), /不存在/);
+  assert.equal(tasks.deleteTask(ownerB!, a.id), undefined);
+  assert.equal(tasks.getTask(ownerA!, a.id)?.enabled, true);
   assert.equal(a.agent, "claude", "默认内置的 Claude Code 专家");
   assert.equal(a.expert, undefined);
-  assert.throws(() => tasks.createTask("u_a", { prompt: "p", schedule: { kind: "daily", time: "08:00" }, expert: "e_nope" }, "user"), /专家不存在/);
+  assert.throws(() => tasks.createTask(ownerA!, { prompt: "p", schedule: { kind: "daily", time: "08:00" }, expert: "e_nope" }, "user"), /专家不存在/);
   assert.equal(a.title, "每天看新闻", "没给名称就用提示词");
   assert.ok(a.nextRunAt && a.nextRunAt > Date.now());
 
   // 暂停清掉下次时间，恢复重新算
-  assert.equal(tasks.updateTask("u_a", a.id, { enabled: false }).nextRunAt, undefined);
-  assert.ok(tasks.updateTask("u_a", a.id, { enabled: true }).nextRunAt);
+  assert.equal(tasks.updateTask(ownerA!, a.id, { enabled: false }).nextRunAt, undefined);
+  assert.ok(tasks.updateTask(ownerA!, a.id, { enabled: true }).nextRunAt);
 
   // 专用对话的专家变了：旧对话对不上了（对话中途不能换专家），下次新开
-  const t = tasks.getTask("u_a", a.id)!;
+  const t = tasks.getTask(ownerA!, a.id)!;
   t.target = { kind: "dedicated", key: "web:old" };
-  const switched = tasks.updateTask("u_a", a.id, { expert: "codex" });
+  const switched = tasks.updateTask(ownerA!, a.id, { expert: "codex" });
   assert.deepEqual(switched.target, { kind: "dedicated" });
   assert.equal(switched.agent, "codex");
 
   // 清空目录 / 模型：字段真的去掉，不是留着旧值
-  tasks.updateTask("u_a", a.id, { cwd: "/tmp/x", model: "m1" });
-  const cleared = tasks.updateTask("u_a", a.id, { cwd: "", model: "" });
+  tasks.updateTask(ownerA!, a.id, { cwd: "/tmp/x", model: "m1" });
+  const cleared = tasks.updateTask(ownerA!, a.id, { cwd: "", model: "" });
   assert.equal(cleared.cwd, undefined);
   assert.equal(cleared.model, undefined);
 
   // 删用户：他的任务一起删，别人的不动
-  assert.equal(tasks.deleteUserTasks("u_a"), 1);
-  assert.equal(tasks.listTasks("u_a").length, 0);
-  assert.equal(tasks.listTasks("u_b").length, 1);
+  assert.equal(tasks.deleteUserTasks(ownerA!), 1);
+  assert.equal(tasks.listTasks(ownerA!).length, 0);
+  assert.equal(tasks.listTasks(ownerB!).length, 1);
 
   // 落盘了
   const onDisk = JSON.parse(fs.readFileSync(path.join(home, "data", "tasks.json"), "utf8")) as { owner: string }[];
-  assert.deepEqual(onDisk.map((t) => t.owner), ["u_b"]);
+  assert.deepEqual(onDisk.map((t) => t.owner), [ownerB!]);
 });
 
 test("每人有数量上限", () => {
-  for (let i = 0; i < tasks.TASKS_PER_USER; i++) tasks.createTask("u_many", { prompt: `p${i}`, schedule: { kind: "daily", time: "08:00" } }, "user");
-  assert.throws(() => tasks.createTask("u_many", { prompt: "再来", schedule: { kind: "daily", time: "08:00" } }, "user"), /最多/);
-  tasks.deleteUserTasks("u_many");
+  for (let i = 0; i < tasks.TASKS_PER_USER; i++) tasks.createTask(manyOwner!, { prompt: `p${i}`, schedule: { kind: "daily", time: "08:00" } }, "user");
+  assert.throws(() => tasks.createTask(manyOwner!, { prompt: "再来", schedule: { kind: "daily", time: "08:00" } }, "user"), /最多/);
+  tasks.deleteUserTasks(manyOwner!);
 });
 
 test("运行：发到专用对话，agent 判断不用提醒时标成 silent，否则照常提醒", async () => {

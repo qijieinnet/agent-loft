@@ -499,7 +499,7 @@ function adminOnly(p: string): boolean {
   );
 }
 
-function publicMe(user: User) {
+function publicMe(user: Pick<User, "id" | "name" | "role">) {
   return { id: user.id, name: user.name, role: user.role };
 }
 
@@ -680,6 +680,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           id,
           label: d?.label ?? id,
           enabled: hub.enabledAgents().some((e) => e.id === id),
+          allowed: canUseExpert(user.id, id),
           capabilities: d?.capabilities ?? {},
           // 输入框模型列表里显示哪些，空 = 全部
           models: config().agents[id].models.filter((m) => typeof m === "string"),
@@ -700,20 +701,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         // 展开着的目录带上翻页游标（没带 next 的目录前端还没拉过）
         dirs: dirsOf(all).map((d) => (dirPages.has(d.dir) ? { ...d, next: dirPages.get(d.dir)!.next } : d)),
       },
-      // 「项目」目录的顺序（拖拽排的），跟着账号走；null = 还没存过
+      // 项目和飞书分组的混合顺序，跟着账号走；沿用目录排序字段兼容旧数据
       dirOrder: getDirOrder(user.id) ?? null,
       sidebarNav: getSidebarNav(user.id),
       pending,
       user: publicMe(user),
       remote: remoteStatus(user),
       // 左上角切换服务器：没加别的服务器是 null
-      servers: shellInfo(config().servers),
+      servers: shellInfo(config().servers, user),
       serverTime: Date.now(),
     });
     return;
   }
 
-  // ----- 侧栏「项目」目录顺序：order 整份换掉，append 只把新目录接在最后 -----
+  // ----- 侧栏分组顺序：order 整份换掉，append 只把新分组接在最后 -----
   if (p === "/api/ui/dir-order" && method === "PUT") {
     const body = await readJsonBody<{ order?: unknown; append?: unknown }>(req);
     const order = body.order !== undefined ? setDirOrder(user.id, body.order) : appendDirOrder(user.id, body.append);
@@ -746,7 +747,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   // 多服务器（core/servers.ts）：外壳把这个浏览器的订阅连同签名密钥转给嵌着的各台（web/lib/shell.js），
   // 各台直接推到手机上，不经过外壳。密钥只在加了别的服务器时给
   if (p === "/api/push/relay-key" && method === "GET") {
-    if (!config().servers.list.length) throw new HttpError(404, "没有加别的服务器");
+    if (!shellInfo(config().servers, user)) throw new HttpError(404, "没有可用的其他服务器");
     sendJson(res, 200, vapidKeyPair());
     return;
   }
@@ -866,8 +867,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string }>(req);
     const enabled = hub.enabledAgents().map((d) => d.id);
     const wanted = body.expert ?? body.agent;
-    if (wanted && !canUseExpert(user.id, wanted)) throw new HttpError(400, "这个专家不存在或已取消共享");
-    const expertId = wanted || enabled[0];
+    if (wanted && !canUseExpert(user.id, wanted)) throw new HttpError(400, "这个专家或 Agent 不存在、已取消共享或未获授权");
+    const expertId = wanted || hub.expertChoices(user.id, enabled)[0]?.id;
     if (!expertId) throw new HttpError(400, "没有可用的 agent");
     const custom = isBuiltin(expertId) ? undefined : getExpert(expertId);
     const agent = custom ? custom.engine : expertId;
@@ -1379,6 +1380,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
 
+  // 修改自己的登录名：只允许改名称，沿用现有设备和会话归属。
+  if (p === "/api/account" && method === "PATCH") {
+    const body = await readJsonBody<{ name?: unknown }>(req);
+    if (typeof body.name !== "string") throw new HttpError(400, "请填写账号名称");
+    const updated = userOp(() => patchUser(user.id, { name: body.name as string }));
+    sendJson(res, 200, { user: publicMe(updated) });
+    return;
+  }
+
   // ----- 用户管理（管理员） -----
   if (p === "/api/users" && method === "GET") {
     const devices = listWebSessions();
@@ -1390,6 +1400,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         feishuLinks: listLinks(u.id).length,
       })),
       me: user.id,
+      resources: {
+        experts: availableExperts(user.id).filter((e) => e.shared).map((e) => ({ id: e.id, name: e.name })),
+        agents: [...AGENT_IDS].map((id) => ({ id, name: hub.label(id) })),
+        servers: config().servers.list.map(({ id, name }) => ({ id, name })),
+      },
     });
     return;
   }
@@ -1412,11 +1427,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
   }
   if (p === "/api/users" && method === "POST") {
-    const body = await readJsonBody<{ name?: string; password?: string; role?: Role }>(req);
+    const body = await readJsonBody<{ name?: string; password?: string; role?: Role; remote?: boolean; permissions?: unknown }>(req);
     sendJson(
       res,
       200,
-      userOp(() => createUser({ name: String(body.name ?? ""), password: String(body.password ?? ""), role: body.role === "admin" ? "admin" : "member" })),
+      userOp(() => createUser({ name: String(body.name ?? ""), password: String(body.password ?? ""), role: body.role === "admin" ? "admin" : "member", ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}), ...(body.permissions !== undefined ? { permissions: body.permissions } : {}) })),
     );
     return;
   }
@@ -1425,7 +1440,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const id = userMatch[1]!;
     if (!getUser(id)) throw new HttpError(404, "用户不存在");
     if (method === "PATCH") {
-      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean }>(req);
+      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; permissions?: unknown }>(req);
       if (id === user.id && (body.disabled === true || (body.role !== undefined && body.role !== "admin"))) {
         throw new HttpError(400, "不能停用自己，也不能取消自己的管理员");
       }
@@ -1437,6 +1452,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           ...(typeof body.disabled === "boolean" ? { disabled: body.disabled } : {}),
           ...(typeof body.password === "string" ? { password: body.password } : {}),
           ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}),
+          ...(body.permissions !== undefined ? { permissions: body.permissions } : {}),
         }),
       );
       // 管理员在用户列表里重置了自己的密码：当前这台换个新登录态，别把自己踢出去

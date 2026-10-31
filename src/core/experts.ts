@@ -14,7 +14,7 @@ import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { resolveWorkspacePath } from "./config.js";
 import { claudeMachineMcp, getMcp, isMachineId, machineName, specOf, type McpSpec } from "./mcp.js";
 import { activeSkills, canSee, getSkill } from "./skills.js";
-import { getUser } from "./users.js";
+import { canUseResource, getUser } from "./users.js";
 
 export type Engine = "claude" | "codex";
 export const ENGINES: readonly Engine[] = ["claude", "codex"];
@@ -196,13 +196,13 @@ export function getExpert(id: string): Expert | undefined {
 
 /** 共享只开放使用权，不转移专家、工具或会话的所有权。无身份的飞书聊天不能用。 */
 export function canUseExpert(owner: string | undefined, id: string): boolean {
-  if (isBuiltin(id)) return true;
+  if (isBuiltin(id)) return !owner || canUseResource(getUser(owner), "agents", id);
   const e = getExpert(id);
   if (!e || !owner) return false;
   if (e.owner === owner) return true;
   const creator = getUser(e.owner);
   const user = getUser(owner);
-  return e.shared === true && !!creator && !creator.disabled && !!user && !user.disabled;
+  return e.shared === true && !!creator && !creator.disabled && canUseResource(user, "experts", id);
 }
 
 /** 发布者沿用专家原有的工具选择；其他人未配置时不加载技能和 MCP。 */

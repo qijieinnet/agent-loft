@@ -51,18 +51,18 @@ type Resolved = { key: string } | { pause: string } | { error: string };
 /** 这次该发到哪条对话；专用对话还没有（或者被删了）就新建一条 */
 function resolveConv(task: Task): Resolved {
   const missingExpert = (id: string | undefined) => !!id && !canUseExpert(task.owner, id);
-  const deletedExpert = { pause: "任务用的专家已经删除或取消共享了，任务已暂停。编辑任务换一个专家再启用。" };
+  const deletedExpert = { pause: "任务用的专家已经删除、取消共享，或专家 / Agent 未获授权，任务已暂停。编辑任务换一个专家再启用。" };
   if (task.target.kind === "conv") {
     const conv = getConversation(task.target.key);
     if (!conv || conv.hidden) return { pause: "回复的那条对话已经被删除，任务已暂停。可以改成「专用对话」后再启用。" };
     if (ownerOf(conv) !== task.owner) return { pause: "回复的那条对话已经不属于你了，任务已暂停。" };
-    if (missingExpert(conv.expert)) return deletedExpert;
+    if (missingExpert(conv.expert ?? conv.agent)) return deletedExpert;
     return { key: conv.key };
   }
   // 复用专用对话前也要检查，不能等到新建对话时才发现专家已删除。
-  if (missingExpert(task.expert)) return deletedExpert;
+  if (missingExpert(task.expert ?? task.agent)) return deletedExpert;
   const existing = task.target.key ? getConversation(task.target.key) : undefined;
-  if (existing && !existing.hidden && existing.taskId === task.id && ownerOf(existing) === task.owner) return missingExpert(existing.expert) ? deletedExpert : { key: existing.key };
+  if (existing && !existing.hidden && existing.taskId === task.id && ownerOf(existing) === task.owner) return missingExpert(existing.expert ?? existing.agent) ? deletedExpert : { key: existing.key };
 
   // 专家被删了：不能换成别的专家去跑（权限可能大得多），暂停等用户改
   const expert = task.expert ? getExpert(task.expert) : undefined;

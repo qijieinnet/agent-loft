@@ -8,11 +8,12 @@ import {
   bootstrapQuery,
   closeSide,
   marquee,
-  moveProjectDir,
-  projDirs,
+  botGroupId,
+  moveSidebarGroup,
+  sidebarGroups,
   renderSidebar,
   reportDesktop,
-  resetProjectOrder,
+  resetSidebarGroupOrder,
   setSideWidth,
   startMarquee,
   startSideResize,
@@ -232,23 +233,19 @@ function renderLayout() {
     lastDown = { key, at: now };
   });
   ui.convList.addEventListener("contextmenu", (e) => {
-    // 飞书机器人那一行：右键看这个机器人的所有聊天
+    // 项目和飞书共用移动菜单；触屏也可以通过长按调整混合顺序。
     const bot = e.target.closest?.("[data-bot]")?.dataset.bot;
-    if (bot) {
-      e.preventDefault();
-      showMenu({ x: e.clientX, y: e.clientY }, [{ label: "历史会话…", onclick: () => openBotConversations(bot) }]);
-      return;
-    }
-    // 项目目录那一行：调整顺序（触屏上拖不动，靠这个菜单）
     const dir = e.target.closest?.("[data-dir]")?.dataset.dir;
-    if (dir) {
-      const i = projDirs.indexOf(dir);
+    const group = bot ? botGroupId(bot) : dir;
+    if (group) {
+      const i = sidebarGroups.indexOf(group);
       const moves = [
-        ...(i > 0 ? [{ label: "置顶", onclick: () => moveProjectDir(dir, null) }, { label: "上移", onclick: () => moveProjectDir(dir, projDirs[i - 1]) }] : []),
-        ...(i >= 0 && i < projDirs.length - 1 ? [{ label: "下移", onclick: () => moveProjectDir(dir, projDirs[i + 1], true) }] : []),
+        ...(i > 0 ? [{ label: "置顶", onclick: () => moveSidebarGroup(group, null) }, { label: "上移", onclick: () => moveSidebarGroup(group, sidebarGroups[i - 1]) }] : []),
+        ...(i >= 0 && i < sidebarGroups.length - 1 ? [{ label: "下移", onclick: () => moveSidebarGroup(group, sidebarGroups[i + 1], true) }] : []),
       ];
-      const reset = projDirs.length > 1 ? [{ label: "按最近活跃重排", onclick: resetProjectOrder }] : [];
+      const reset = sidebarGroups.length > 1 ? [{ label: "按最近活跃重排", onclick: resetSidebarGroupOrder }] : [];
       const items = moves.length && reset.length ? [...moves, "sep", ...reset] : [...moves, ...reset];
+      if (bot) items.push(...(items.length ? ["sep"] : []), { label: "历史会话…", onclick: () => openBotConversations(bot) });
       if (!items.length) return;
       e.preventDefault();
       showMenu({ x: e.clientX, y: e.clientY }, items);

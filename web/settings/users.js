@@ -6,6 +6,32 @@ import { field, saveButton } from "./common.js";
 import { networkSection } from "./general.js";
 import { deviceList } from "./security.js";
 
+/** null 沿用全部；指定列表可以全部取消，新增资源不会自动加入。 */
+function permissionFields(resources, permissions = {}) {
+  const pickers = {};
+  const el = h("div", { class: "user-permissions" });
+  for (const [kind, label] of [["experts", "共享专家"], ["agents", "内置 Agent"], ["servers", "服务器切换"]]) {
+    const selected = permissions[kind];
+    const items = resources?.[kind] ?? [];
+    const known = new Set(items.map((item) => item.id));
+    const missing = (selected ?? []).filter((id) => !known.has(id)).map((id) => ({ id, name: `${id}（暂不可用）` }));
+    const mode = h("select", { "aria-label": `${label}范围` },
+      h("option", { value: "all", selected: selected == null }, "全部允许（含以后新增）"),
+      h("option", { value: "pick", selected: selected != null }, "仅允许勾选项（可全部取消）"));
+    const inputs = [...items, ...missing].map((item) => ({ id: item.id, input: h("input", { type: "checkbox", checked: selected == null || selected.includes(item.id) }), name: item.name }));
+    const list = h("div", { class: "check-list" }, inputs.length
+      ? inputs.map(({ input, name }) => h("label", { class: "check-item" }, input, h("span", {}, name)))
+      : h("small", {}, kind === "servers" ? "尚未添加其他服务器" : "暂无可选项"));
+    const sync = () => { list.hidden = mode.value !== "pick"; };
+    mode.onchange = sync;
+    sync();
+    pickers[kind] = () => mode.value === "all" ? null : inputs.filter((x) => x.input.checked).map((x) => x.id);
+    el.append(h("div", { class: "field" }, h("span", {}, label), mode, list));
+  }
+  el.append(h("small", {}, "自己创建的专家仍可使用。内置 Agent 权限只控制直接使用 Claude Code / Codex，不影响已获授权的专家。当前服务器保持可用；其他服务器仍需各自登录，由对应服务器管理账号权限。"));
+  return { el, value: () => Object.fromEntries(Object.entries(pickers).map(([kind, value]) => [kind, value()])) };
+}
+
 // ---------- 用户（管理员） ----------
 
 export async function usersTab(page) {
@@ -33,6 +59,17 @@ export async function usersTab(page) {
     }
   };
   const patch = (u, body) => api(`/api/users/${encodeURIComponent(u.id)}`, { method: "PATCH", body });
+
+  const permissionsRow = (u, holder) => {
+    const picker = permissionFields(data.resources, u.permissions);
+    const save = saveButton(async () => {
+      await patch(u, { permissions: picker.value() });
+      toast(`已更新「${u.name}」的使用权限`);
+      reload();
+    }, "保存使用权限");
+    fill(holder, h("div", { "data-form": "" }, h("h4", {}, "使用权限"), picker.el,
+      h("div", { class: "row" }, save, h("button", { class: "btn", onclick: () => fill(holder) }, "取消"))));
+  };
 
   /** 重置密码：就地展开一个输入框 */
   const resetRow = (u, holder) => {
@@ -158,7 +195,8 @@ export async function usersTab(page) {
       const extra = h("div");
       return h(
         "div",
-        { class: "list-item" },
+        { class: "list-item user-entry" },
+        h("div", { class: "user-entry-head" },
         h(
           "div",
           { class: "grow" },
@@ -173,9 +211,11 @@ export async function usersTab(page) {
             u.role !== "admin" && u.remote ? h("span", { class: "status-tag" }, "远程控制") : null,
           ),
           h("div", { class: "s" }, `创建于 ${relTime(u.createdAt)} · ${u.devices} 台设备已登录${u.feishuLinks ? ` · 绑定了 ${u.feishuLinks} 个飞书账号` : ""}`),
-          extra,
         ),
-        actions(u, self, extra),
+        h("div", { class: "row" },
+          u.role !== "admin" ? h("button", { class: "btn small", onclick: () => permissionsRow(u, extra) }, "使用权限") : null,
+          actions(u, self, extra))),
+        extra,
       );
     }),
   );
@@ -183,17 +223,29 @@ export async function usersTab(page) {
   const name = h("input", { autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "登录用的名字" });
   const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: "至少 8 位" });
   const role = h("select", {}, h("option", { value: "member" }, "成员"), h("option", { value: "admin" }, "管理员"));
+  const permissions = permissionFields(data.resources);
+  const remote = h("input", { type: "checkbox" });
+  const memberOptions = h("div", { class: "user-permissions" }, permissions.el,
+    h("div", { class: "field" }, h("span", {}, "远程权限"), h("label", { class: "check-item" }, remote, h("span", {}, "允许使用终端和桌面"))));
+  role.onchange = () => { memberOptions.hidden = role.value === "admin"; };
   fill(
     addBox,
     h("h4", {}, "添加用户"),
     field("用户名", name),
     field("密码", pw, "告诉对方，让他登录后在 设置 →「账号」里自己改掉"),
     field("角色", role, "成员只能用自己的对话；管理员能改所有设置、管理用户"),
+    memberOptions,
     h(
       "div",
       { class: "row" },
       saveButton(async () => {
-        await api("/api/users", { method: "POST", body: { name: name.value.trim(), password: pw.value, role: role.value } });
+        if (role.value === "member" && remote.checked && !(await confirmDialog({
+          title: `给「${name.value.trim()}」开通远程控制？`,
+          message: "他能以运行 agent-loft 的系统用户直接使用终端和桌面，读写服务器上的文件、安装软件、停止服务，不经过授权卡。只开给完全信任的人。",
+          confirmText: "开通并添加", danger: true,
+        }))) return false;
+        await api("/api/users", { method: "POST", body: { name: name.value.trim(), password: pw.value, role: role.value,
+          ...(role.value === "member" ? { remote: remote.checked, permissions: permissions.value() } : {}) } });
         toast(`已添加「${name.value.trim()}」`);
         // 先标成已保存再刷新，免得离开提醒
         addBox.removeAttribute("data-dirty");
