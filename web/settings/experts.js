@@ -20,6 +20,8 @@ const PERMS = [
   { id: "exec", label: "跑命令", hint: "执行命令，等于能改任何文件；需要授权时会弹卡" },
 ];
 const FILE_LEVELS = ["read", "edit", "exec"];
+let refreshExpertsPage = () => {};
+document.addEventListener("aim:experts", () => refreshExpertsPage());
 
 export async function expertsTab(panel) {
   const box = h("div", { class: "experts-page" }, h("span", { class: "spinner" }));
@@ -35,6 +37,7 @@ export async function expertsTab(panel) {
     if (!box.isConnected) return;
     render(box, data, load);
   };
+  refreshExpertsPage = () => { if (box.isConnected) void load(); };
   await load();
 }
 
@@ -48,7 +51,7 @@ function render(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "专家是一份配置：用哪个引擎、什么提示词、能做什么（联网 / 读文件 / 改文件 / 跑命令）、带哪些技能和 MCP、能把活派给哪些子智能体。新建对话、定时任务时选一个专家，对话从头到尾都是它。内置的 Claude Code、Codex 在「设置 → Agent」里选择默认技能和 MCP。",
+        "专家决定引擎、提示词和能力。共享给所有账号后，设定由创建者维护，每个人的记忆、技能和 MCP 仍各自独立；点「我的工具」选择自己要用的工具。内置的 Claude Code、Codex 在「设置 → Agent」里选择默认技能和 MCP。",
       ),
       h("div", { class: "skill-head-btns" }, add),
     ),
@@ -70,14 +73,15 @@ function render(box, data, reload) {
 }
 
 function expertCard(data, e, reload) {
+  const editable = e.editable !== false;
+  const open = () => editable ? openEditor(data, e, reload) : viewSharedExpert(e);
   const access = data.access.find((a) => a.id === e.access)?.label ?? e.access;
   const more = h("button", { class: "icon-btn", title: "更多" }, icon("more"));
   more.onclick = () =>
     showMenu(more, [
-      { label: "编辑…", onclick: () => openEditor(data, e, reload) },
-      { label: "复制一份…", onclick: () => openEditor(data, null, reload, { ...e, name: `${e.name} 副本` }) },
-      "sep",
-      { label: "删除", danger: true, onclick: () => removeExpert(e, reload) },
+      { label: editable ? "编辑…" : "查看设定…", onclick: open },
+      { label: "复制一份…", onclick: () => openEditor(data, null, reload, { ...e, shared: false, subagents: editable ? e.subagents : [], name: `${e.name} 副本` }) },
+      ...(editable ? ["sep", { label: "删除", danger: true, onclick: () => removeExpert(e, reload) }] : []),
     ]);
   const extras = [
     e.skills.length ? `${e.skills.length} 个技能` : null,
@@ -91,12 +95,48 @@ function expertCard(data, e, reload) {
     h(
       "div",
       { class: "task-top" },
-      h("button", { class: "task-title skill-name", title: "编辑", onclick: () => openEditor(data, e, reload) }, expertIcon(e, "expert-card-icon"), e.name),
+      h("button", { class: "task-title skill-name", title: editable ? "编辑" : "查看设定", onclick: open }, expertIcon(e, "expert-card-icon"), e.name),
+      e.shared ? h("span", { class: "badge" }, editable ? "已共享" : "共享") : null,
+      e.shared ? h("button", { class: "btn", onclick: () => openTools(data, e, reload) }, "我的工具") : null,
       more,
     ),
     h("div", { class: "task-meta" }, h("span", {}, ENGINE_LABEL[e.engine]), h("span", {}, access), e.model ? h("span", {}, e.model) : null, extras.map((x) => h("span", {}, x))),
     e.description ? h("div", { class: "task-prompt" }, e.description) : null,
   );
+}
+
+function viewSharedExpert(e) {
+  const prompt = h("textarea", { rows: 12, readonly: true, "aria-label": "提示词" });
+  prompt.value = e.prompt;
+  modal({ title: e.name, wide: true, body: h("div", { class: "modal-body" },
+    h("p", { class: "muted" }, "这是共享专家，设定由创建者维护。你的记忆和工具独立，工具可在「我的工具」里配置。"),
+    field("说明", h("p", {}, e.description || "暂无说明")),
+    field("引擎", h("p", {}, ENGINE_LABEL[e.engine])),
+    field("提示词", prompt),
+  ) });
+}
+
+function openTools(data, e, reload) {
+  const skills = checkList(data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })), e.skills, "还没有启用的技能（设置 → 技能）");
+  const machine = (data.machineMcp?.[e.engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, label: `${name}（本机）` }));
+  const mcp = checkList([...data.mcp.map((s) => ({ id: s.id, label: s.name, hint: s.description })), ...machine], e.mcp, "还没有 MCP（设置 → MCP）");
+  const save = h("button", { class: "btn primary" }, "保存我的工具");
+  const close = modal({ title: `${e.name} · 我的工具`, body: h("div", { class: "modal-body" },
+    h("p", { class: "muted" }, "只影响你使用这个专家时加载的工具，网页和绑定账号后的飞书私聊共用。未选择时不加载技能或 MCP；记忆使用你自己的设置。子智能体的工具需在对应专家中单独配置。"),
+    field("我的技能", skills.el), field("我的 MCP", mcp.el),
+  ), foot: h("div", { class: "modal-foot" }, save) });
+  save.onclick = async () => {
+    save.disabled = true;
+    try {
+      await api(`/api/experts/${e.id}/tools`, { method: "PUT", body: { skills: skills.value(), mcp: mcp.value() } });
+      close();
+      toast("已保存，你的对话下一条消息起使用新的工具");
+      void reload();
+    } catch (err) {
+      save.disabled = false;
+      toast(err.message);
+    }
+  };
 }
 
 async function removeExpert(e, reload) {
@@ -170,6 +210,7 @@ function openEditor(data, e, reload, preset) {
       },
     });
   const memory = h("input", { type: "checkbox", checked: src.memory !== false });
+  const shared = h("input", { type: "checkbox", checked: src.shared === true });
   const welcome = h("input", { value: src.welcome ?? "", maxlength: "500", placeholder: "新对话页上的那句话，比如：想了解哪只股票？" });
   const quick = h("textarea", { rows: 4, placeholder: "一行一个，新对话页上点一下就填进输入框。可以写成「标题｜提示词」，提示词里的 ___ 是要用户填的空" });
   quick.value = (src.quickPrompts ?? []).map((q) => (q.title && q.title !== q.prompt.slice(0, 20) ? `${q.title}｜${q.prompt}` : q.prompt)).join("\n");
@@ -196,7 +237,7 @@ function openEditor(data, e, reload, preset) {
     const keepSubs = subs.value();
     // 子智能体只有 Claude：自己的 Claude 专家，不能是自己
     subs = checkList(
-      data.experts.filter((x) => x.engine === "claude" && x.id !== e?.id).map((x) => ({ id: x.id, label: !x.avatar && x.icon ? `${x.icon} ${x.name}` : x.name, hint: x.description })),
+      data.experts.filter((x) => x.editable !== false && x.engine === "claude" && x.id !== e?.id).map((x) => ({ id: x.id, label: !x.avatar && x.icon ? `${x.icon} ${x.name}` : x.name, hint: x.description })),
       keepSubs,
       "还没有别的 Claude 专家可以当子智能体",
     );
@@ -218,15 +259,16 @@ function openEditor(data, e, reload, preset) {
     { class: "modal-body task-form expert-form" },
     h("div", { class: "row-fields avatar-row" }, field("头像", avatar.el), field("名字", name)),
     field("说明", desc),
+    field("共享", h("label", { class: "check-item" }, shared, h("span", {}, "共享给所有账号")), "其他账号可在网页、飞书私聊和定时任务中使用；只有你能修改设定。取消共享后，其他人的旧对话保留但不能继续调用。子智能体也需要先共享。"),
     h("div", { class: "row-fields" }, field("引擎", engine, e ? "建好后不能换" : null), field("模型", models.model), field("思考程度", models.effort)),
     field("提示词", prompt, "agent-loft 会在后面自动补上：这个专家能做什么、不能做什么，今天的日期，记忆"),
     baseField,
     field("权限", perms.el, "改文件包含读文件，跑命令包含改文件。什么都不勾就是只能聊天"),
     cwdField,
-    field("技能", skills.el, "只给选中的技能；没选就不挂技能（省 token）"),
-    field("MCP", mcpBox, "选中的 MCP 的工具直接可用（MCP 设了「调用前询问」的会弹授权）"),
+    field("我的技能", skills.el, "只影响你的工具选择；共享后其他账号单独选择自己的技能"),
+    field("我的 MCP", mcpBox, "只使用你的 MCP；共享后不会把你的 MCP 或凭据交给其他账号"),
     subField,
-    field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "带上我的个人记忆（设置 → 记忆）"))),
+    field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "使用聊天者自己的个人记忆（需在设置 → 记忆开启）"))),
     field("欢迎语", welcome),
     field("快捷提问", quick),
   );
@@ -246,6 +288,7 @@ function openEditor(data, e, reload, preset) {
       });
     const payload = {
       name: name.value,
+      shared: shared.checked,
       ...avatar.payload(),
       description: desc.value,
       engine: engine.value,

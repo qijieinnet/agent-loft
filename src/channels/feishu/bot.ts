@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { config, type FeishuBotConfig } from "../../core/config.js";
+import { botAgentIds, botExpertIds } from "../../core/feishu-experts.js";
 import { hub, type CommandReply, type EventEnvelope } from "../../core/hub.js";
 import { interactions, type Interaction } from "../../core/interactions.js";
 import { parseCommand } from "../../core/commands.js";
@@ -96,11 +97,12 @@ export class FeishuBot {
    * 飞书的指令面板是整个应用一份，不分会话，没法跟着每个会话当前的 agent 变。
    */
   private async slashCommands(): Promise<CommandEntry[]> {
-    const agents = [this.cfg.defaultAgent, ...this.cfg.agents.filter((a) => a !== this.cfg.defaultAgent)];
+    const allowed = this.allowedAgents();
+    const agents = [this.cfg.defaultAgent, ...allowed.filter((a) => a !== this.cfg.defaultAgent)].filter((a) => allowed.includes(a));
     const out: CommandEntry[] = [];
     for (const agent of agents) {
       if (!hub.driver(agent)) continue;
-      out.push(...(await hub.commandCatalog(agent, { allowedAgents: this.cfg.agents, channel: "feishu" })));
+      out.push(...(await hub.commandCatalog(agent, { allowedAgents: allowed, channel: "feishu" })).filter((c) => !["claude", "codex"].includes(c.name) || this.cfg.experts === undefined || this.cfg.experts.includes(c.name)));
     }
     return out;
   }
@@ -132,12 +134,28 @@ export class FeishuBot {
   /** 这个机器人能用的 agent：配置里勾选的 ∩ 已启用的 */
   allowedAgents(): string[] {
     const enabled = new Set(hub.enabledAgents().map((d) => d.id));
-    return this.cfg.agents.filter((a) => enabled.has(a));
+    return botAgentIds(this.cfg).filter((a) => enabled.has(a));
   }
 
   /** 某条会话能切到哪些 agent：自己的会话按机器人的勾选；接着的 Web 会话和 Web 上一样，启用的都行 */
   private allowedFor(key: string): string[] {
     return this.mine(key) ? this.allowedAgents() : hub.enabledAgents().map((d) => d.id);
+  }
+
+  private expertsFor(key: string): string[] | undefined {
+    return this.mine(key) ? botExpertIds(this.cfg) : undefined;
+  }
+
+  /** 下载附件、旧卡片点击期间配置可能变化，真正发送前再核对一次。 */
+  private send(...args: Parameters<typeof hub.send>): void {
+    const [key] = args;
+    const selected = this.expertsFor(key);
+    const conv = getConversation(key);
+    if (selected !== undefined && (!conv || !selected.includes(conv.expert ?? conv.agent))) {
+      hub.notice(key, "这个聊天的专家已不在机器人的可用列表中，请重新发消息以选择默认专家。");
+      return;
+    }
+    hub.send(...args);
   }
 
   // ---------- 这个聊天能碰哪些东西 ----------
@@ -629,20 +647,21 @@ export class FeishuBot {
     if (!text && attachments.length === 0) return;
 
     const allowed = this.allowedAgents();
-    if (allowed.length === 0) {
-      await this.client.sendText(chatId, "这个机器人没有可用的 agent，请到 agent-loft 设置里给它勾选至少一个。");
+    if (allowed.length === 0 && feishuCommandOf(text)?.kind !== "bind") {
+      await this.client.sendText(chatId, "这个机器人没有可用的专家。所选专家可能已取消共享、删除，或引擎已停用；请在设置 → 飞书中重新选择。");
       return;
     }
 
     const ownKey = this.keyOf(chatId, message.thread_id);
+    const fresh = !getConversation(ownKey);
     const conv = hub.ensure({
       key: ownKey,
       channel: "feishu",
       channelId: this.cfg.id,
-      defaultAgent: allowed.includes(this.cfg.defaultAgent) ? this.cfg.defaultAgent : allowed[0]!,
+      defaultAgent: allowed.includes(this.cfg.defaultAgent) ? this.cfg.defaultAgent : allowed[0] ?? this.cfg.defaultAgent,
     });
-    // 配置改过（这个机器人不再能用当前 agent）：退回默认
-    if (!allowed.includes(conv.agent)) {
+    // 旧配置按引擎选择；明确选择专家的新配置在下面通过 setExpert 切换，清掉旧上下文。
+    if (this.cfg.experts === undefined && !allowed.includes(conv.agent)) {
       updateConversation(ownKey, { agent: allowed.includes(this.cfg.defaultAgent) ? this.cfg.defaultAgent : allowed[0]! });
     }
     const operator = openId!.trim().toLowerCase();
@@ -651,7 +670,8 @@ export class FeishuBot {
     // 私聊的主人跟着发消息的人的绑定走：绑定了就是他的个人会话（用他的记忆），解绑了就回到管理员的地盘。
     // 群聊不动：群里不止一个人
     const p2p = message.chat_type === "p2p";
-    if (p2p && hub.reassignOwner(ownKey, linkedUser(this.cfg.id, operator)?.id)) {
+    const ownerChanged = p2p && hub.reassignOwner(ownKey, linkedUser(this.cfg.id, operator)?.id);
+    if (ownerChanged) {
       const owner = this.viewerOf(ownKey);
       console.log(`${this.tag} 私聊 ${ownKey} 的主人变为 ${owner?.name ?? "（无，归管理员）"}`);
     }
@@ -667,11 +687,23 @@ export class FeishuBot {
     const key = this.attachedWeb(ownKey) ?? ownKey;
     this.operators.set(pairKey(key, chatId), operator);
 
+    const selected = this.expertsFor(key);
+    let noExpert = false;
+    if (selected !== undefined) {
+      const choices = hub.expertChoices(this.viewerOf(ownKey)?.id, allowed, selected);
+      noExpert = choices.length === 0;
+      if (!noExpert && (fresh || ownerChanged || !choices.some((e) => e.id === (conv.expert ?? conv.agent)))) {
+        const preferred = choices.find((e) => e.id === this.cfg.defaultExpert) ?? choices[0]!;
+        await hub.setExpert(ownKey, preferred.id, allowed, selected);
+      }
+    }
+
     const command = attachments.length > 0 ? ({ kind: "chat", text } as const) : parseCommand(text);
     if (command.kind !== "chat") {
       try {
         const reply = await hub.command(key, command, {
           allowedAgents: this.allowedFor(key),
+          allowedExperts: this.expertsFor(key),
           by: "飞书命令",
           channel: "feishu",
           // 别人的 agent 会话、挂着的请求，这个聊天里都碰不到
@@ -684,13 +716,18 @@ export class FeishuBot {
       return;
     }
 
+    if (noExpert) {
+      await this.client.sendText(chatId, p2p ? "这个机器人使用共享专家。请先在网页「设置 → 账号 → 飞书账号」生成绑定码，再私聊发送 /bind 绑定码，即可使用你自己的记忆和工具。" : "这个机器人只选择了共享专家，请在私聊中绑定你自己的账号后使用。");
+      return;
+    }
+
     void this.markTyping(key, message.message_id);
     const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书", chatId };
     // 收到消息这一刻的代次：下载附件期间点了 /stop、或者 /cd /new 换了会话，这条就作废
     const gen = hub.generation(key);
     this.enqueue(key, async () => {
       if (attachments.length === 0) {
-        hub.send(key, { text: command.text, attachments: [] }, origin, gen);
+        this.send(key, { text: command.text, attachments: [] }, origin, gen);
         return;
       }
       const { saved, failed } = await this.download(key, message.message_id, attachments);
@@ -704,7 +741,7 @@ export class FeishuBot {
         this.clearTyping(key);
         return;
       }
-      hub.send(key, { text: command.text, attachments: saved }, origin, gen);
+      this.send(key, { text: command.text, attachments: saved }, origin, gen);
     });
   }
 
@@ -746,19 +783,25 @@ export class FeishuBot {
     try {
       if (cmd.kind === "web") await this.sendWebList(ownKey, chatId);
       else if (cmd.kind === "detach") await this.client.sendCard(chatId, replyCard(this.detachFrom(ownKey)));
-      else await this.client.sendCard(chatId, replyCard(this.bind(cmd.code, ownKey, sender)));
+      else await this.client.sendCard(chatId, replyCard(await this.bind(cmd.code, ownKey, sender)));
     } catch (err) {
       await this.client.sendText(chatId, `出错了：${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   /** /bind 绑定码：把发消息的人的飞书账号绑到生成这个码的 agent-loft 用户上 */
-  private bind(code: string, ownKey: string, sender: { openId: string; p2p: boolean } | undefined): string {
+  private async bind(code: string, ownKey: string, sender: { openId: string; p2p: boolean } | undefined): Promise<string> {
     if (!sender) return "请直接在聊天里发 `/bind 绑定码`。";
     // 群里发的码别人也看得见，而且群聊本来就不归个人：只在私聊里绑
     if (!sender.p2p) return "请在和我的私聊里发 `/bind 绑定码`（群里别人也看得到绑定码）。绑定码已经露出来了的话，到 Web 上重新生成一个。";
     const user = redeemLinkCode(code, this.cfg.id, sender.openId);
     hub.reassignOwner(ownKey, user.id);
+    const selected = this.expertsFor(ownKey);
+    if (selected !== undefined) {
+      const choices = hub.expertChoices(user.id, this.allowedAgents(), selected);
+      const preferred = choices.find((e) => e.id === this.cfg.defaultExpert) ?? choices[0];
+      if (preferred) await hub.setExpert(ownKey, preferred.id, this.allowedAgents(), selected);
+    }
     console.log(`${this.tag} ${sender.openId} 绑定到用户 ${user.name}`);
     return [
       `已绑定到 agent-loft 用户 **${user.name}**。`,
@@ -917,7 +960,7 @@ export class FeishuBot {
       case "effort":
         return this.background(envelope.k, chatId, `思考程度设为 ${envelope.f}`, () => hub.setEffort(envelope.k, envelope.f));
       case "agent":
-        return this.background(envelope.k, chatId, "正在换专家…", () => hub.setExpert(envelope.k, envelope.g, this.allowedFor(envelope.k)));
+        return this.background(envelope.k, chatId, "正在换专家…", () => hub.setExpert(envelope.k, envelope.g, this.allowedFor(envelope.k), this.expertsFor(envelope.k)));
       case "cmd":
         return this.runCardCommand(envelope.k, chatId, operatorOpenId, `/${envelope.c}`);
       case "attach": {
@@ -966,11 +1009,11 @@ export class FeishuBot {
     if (command.kind === "chat") {
       const origin = { channel: "feishu", channelId: this.cfg.id, name: "飞书", chatId: chat };
       const gen = hub.generation(key);
-      this.enqueue(key, async () => hub.send(key, { text, attachments: [] }, origin, gen));
+      this.enqueue(key, async () => this.send(key, { text, attachments: [] }, origin, gen));
       return { toast: { type: "success", content: `已发送 ${text}` } };
     }
     void hub
-      .command(key, command, { allowedAgents: this.allowedFor(key), by: "飞书命令", channel: "feishu", ...this.commandScope(ownKey) })
+      .command(key, command, { allowedAgents: this.allowedFor(key), allowedExperts: this.expertsFor(key), by: "飞书命令", channel: "feishu", ...this.commandScope(ownKey) })
       .then((reply) => this.renderReply(key, chat, reply))
       .catch((err) => this.client.sendText(chat, `出错了：${err instanceof Error ? err.message : String(err)}`));
     return { toast: { type: "info", content: `正在执行 ${text}` } };

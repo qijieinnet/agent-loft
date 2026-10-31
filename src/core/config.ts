@@ -26,6 +26,10 @@ export type FeishuBotConfig = {
   agents: string[];
   /** 新会话默认用哪个 agent，必须在 agents 里 */
   defaultAgent: string;
+  /** 明确选择可用专家（内置 id 或共享专家 id）；未设置时兼容旧的按引擎配置 */
+  experts?: string[];
+  /** 新聊天默认使用的专家，必须在 experts 中 */
+  defaultExpert?: string;
 };
 
 export type AppConfig = {
@@ -167,6 +171,7 @@ function mergeDefaults<T>(base: T, value: unknown): T {
 function normalizeBot(raw: Partial<FeishuBotConfig>): FeishuBotConfig {
   const agents = (raw.agents ?? []).filter((a) => (AGENT_IDS as readonly string[]).includes(a));
   const list = agents.length > 0 ? agents : ["claude"];
+  const experts = Array.isArray(raw.experts) ? [...new Set(raw.experts.filter((id) => typeof id === "string" && (AGENT_IDS.includes(id as typeof AGENT_IDS[number]) || /^e_[a-f0-9]+$/.test(id))))] : undefined;
   return {
     id: raw.id?.trim() || `bot_${crypto.randomBytes(3).toString("hex")}`,
     name: raw.name?.trim() || "飞书机器人",
@@ -179,6 +184,7 @@ function normalizeBot(raw: Partial<FeishuBotConfig>): FeishuBotConfig {
       .filter((s) => s.startsWith("ou_")),
     agents: list,
     defaultAgent: raw.defaultAgent && list.includes(raw.defaultAgent) ? raw.defaultAgent : list[0]!,
+    ...(experts ? { experts, defaultExpert: raw.defaultExpert && experts.includes(raw.defaultExpert) ? raw.defaultExpert : experts[0] ?? "" } : {}),
   };
 }
 

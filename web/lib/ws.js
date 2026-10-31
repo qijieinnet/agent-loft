@@ -11,6 +11,7 @@ import { setBusy } from "../views/composer.js";
 import { SH, shownHere } from "./shell.js";
 import { currentPushSub } from "./push.js";
 import { renderScheduled } from "../views/schedule.js";
+import { reloadExperts } from "../views/experts.js";
 
 // ---------- WebSocket ----------
 
@@ -280,6 +281,9 @@ function onWsMessage(msg) {
     case "remote":
       // 自己的终端开了 / 关了，或者远程控制的权限、设置变了：重新问一下（views/layout.js）
       document.dispatchEvent(new Event("aim:remote"));
+      return;
+    case "experts":
+      void reloadExperts();
       return;
     case "skills":
       // 技能变了：设置里的技能页开着就重新拉，@ 补全的缓存作废

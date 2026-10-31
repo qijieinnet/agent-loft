@@ -157,7 +157,7 @@ function cleanPrompt(v: unknown): string {
   return p;
 }
 
-/** 选的专家 → 引擎 + 自定义专家 id。只能选内置的或自己的 */
+/** 选的专家 → 引擎 + 自定义专家 id。可选内置、自己的或共享的专家 */
 function cleanExpert(owner: string, v: unknown): { agent: string; expert?: string } {
   const id = str(v) || "claude";
   if (!canUseExpert(owner, id)) throw new Error("这个专家不存在");

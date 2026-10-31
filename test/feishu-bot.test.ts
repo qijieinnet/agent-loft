@@ -423,6 +423,101 @@ test("/bind：私聊归绑定的人、用他的记忆、/web 只列他的；群�
   assert.equal(created.at(-1)?.memory, undefined);
 });
 
+test("同一个机器人里的共享专家：两个账号私聊各用自己的记忆与 MCP，未绑定和群聊不可选", async () => {
+  const users = await import("../src/core/users.js");
+  const memory = await import("../src/core/memory.js");
+  const links = await import("../src/core/feishu-links.js");
+  const experts = await import("../src/core/experts.js");
+  const mcp = await import("../src/core/mcp.js");
+  const a = users.createUser({ name: "family-a", password: "password-1" });
+  const b = users.createUser({ name: "family-b", password: "password-1" });
+  // 测试机器人已有 ou_owner 白名单；第二个家人也先经过配对。
+  bot.cfg.allowFrom.push("ou_family_b");
+  const helper = experts.createExpert(a.id, { name: "全家共用", engine: "codex", access: "web", prompt: "共同人设", shared: true });
+  for (const [user, openId, chat] of [[a, "ou_owner", "oc_family_a"], [b, "ou_family_b", "oc_family_b"]] as const) {
+    memory.setMemoryOptions(user.id, { enabled: true, about: `personal-${user.name}` });
+    const server = mcp.createMcp(user.id, { name: "calendar", type: "http", url: "https://calendar.example/mcp", headers: [{ name: "Authorization", value: `token-${user.name}`, secret: true }] });
+    experts.setExpertTools(user.id, helper.id, { skills: [], mcp: [server.id] });
+    await message(openId, `/bind ${links.createLinkCode(user.id).code}`, chat);
+    await message(openId, "/expert 全家共用", chat);
+    assert.equal(hub.conversation(`feishu:b1:${chat}`)?.expert, helper.id);
+  }
+  const before = created.length;
+  await Promise.all([message("ou_owner", "家人 A 的问题", "oc_family_a"), message("ou_family_b", "家人 B 的问题", "oc_family_b")]);
+  await tick(100);
+  for (const user of [a, b]) {
+    const session = created.slice(before).find((s) => s.memory?.userId === user.id)!;
+    assert.ok(session);
+    assert.equal(session.expert?.id, helper.id);
+    assert.equal(session.expert?.prompt, "共同人设");
+    assert.match(session.memory!.prompt, new RegExp(`personal-${user.name}`));
+    assert.match(JSON.stringify(session.expert?.mcp), new RegExp(`token-${user.name}`));
+    assert.doesNotMatch(JSON.stringify(session), new RegExp(`token-${user.id === a.id ? b.name : a.name}`));
+  }
+  await groupMessage("ou_owner", "/expert 全家共用");
+  assert.equal(hub.conversation("feishu:b1:oc_group")?.expert, undefined);
+  links.unlink("b1", "ou_owner");
+  await message("ou_owner", "/expert 全家共用", "oc_unbound_family");
+  assert.equal(hub.conversation("feishu:b1:oc_unbound_family")?.expert, undefined);
+});
+
+test("机器人直接勾选共享专家：绑定后默认使用、限制命令和旧卡片、配置撤回不退回 Agent", async () => {
+  const users = await import("../src/core/users.js");
+  const links = await import("../src/core/feishu-links.js");
+  const experts = await import("../src/core/experts.js");
+  const { createEnvelope } = await import("../src/channels/feishu/envelope.js");
+  const a = users.createUser({ name: "bot-default-a", password: "password-1" });
+  const b = users.createUser({ name: "bot-default-b", password: "password-1" });
+  const helper = experts.createExpert(a.id, { name: "机器人默认专家", shared: true, engine: "claude", access: "web", prompt: "共同人设" });
+  const another = experts.createExpert(a.id, { name: "另一位共享专家", shared: true, engine: "claude", access: "web" });
+  const legacy = structuredClone(bot.cfg);
+  Object.assign(bot.cfg, { agents: ["codex"], defaultAgent: "codex", experts: [helper.id], defaultExpert: helper.id });
+  try {
+    assert.deepEqual(bot.allowedAgents(), ["claude"], "只勾共享专家，不用另外勾底层引擎");
+    links.unlink("b1", "ou_owner");
+    const before = created.length;
+    sent.length = 0;
+    await message("ou_owner", "未绑定的问题", "oc_default_a"); await tick();
+    assert.equal(created.length, before);
+    assert.ok(sent.some((s) => s.kind === "text" && s.body.includes("/bind")));
+    for (const [user, openId, chat] of [[a, "ou_owner", "oc_default_a"], [b, "ou_family_b", "oc_default_b"]] as const) {
+      await message(openId, `/bind ${links.createLinkCode(user.id).code}`, chat);
+      assert.equal(hub.conversation(`feishu:b1:${chat}`)?.expert, helper.id, "绑定即选择默认共享专家");
+      await message(openId, "直接说话，不发 /expert", chat); await tick();
+      assert.equal(created.at(-1)?.expert?.id, helper.id);
+      assert.equal(created.at(-1)?.tasks?.userId, user.id);
+    }
+    const key = "feishu:b1:oc_default_a";
+    await message("ou_owner", "/claude", "oc_default_a");
+    assert.equal(hub.conversation(key)?.expert, helper.id, "同引擎的内置专家也不能越过勾选列表");
+    await (bot as any).handleCardAction({ token: "old-agent-card", operator: { open_id: "ou_owner" }, context: { open_chat_id: "oc_default_a" }, action: { value: createEnvelope({ a: "agent", g: "claude", k: key }, { operatorOpenId: "ou_owner", chatId: "oc_default_a", expiresAt: Date.now() + 60000 }) } });
+    await tick();
+    assert.equal(hub.conversation(key)?.expert, helper.id, "旧卡片也受最新的机器人专家列表约束");
+    sent.length = 0;
+    await message("ou_owner", "/expert", "oc_default_a");
+    assert.ok(cardText(sent.at(-1)!.body).includes("机器人默认专家"));
+    assert.ok(!cardText(sent.at(-1)!.body).includes("另一位共享专家"));
+    bot.cfg.experts = [helper.id, another.id];
+    bot.cfg.defaultExpert = another.id;
+    await message("ou_owner", "/expert 另一位共享专家", "oc_default_a");
+    await message("ou_owner", "继续使用手动选择", "oc_default_a"); await tick();
+    assert.equal(hub.conversation(key)?.expert, another.id);
+    bot.cfg.experts = [helper.id];
+    bot.cfg.defaultExpert = helper.id;
+    await message("ou_owner", "配置收回另一个专家后", "oc_default_a"); await tick();
+    assert.equal(hub.conversation(key)?.expert, helper.id);
+    experts.updateExpert(a.id, helper.id, { shared: false });
+    const n = created.length;
+    await message("ou_family_b", "共享已撤回", "oc_default_b"); await tick();
+    assert.equal(created.length, n, "默认专家不可用时不悄悄启动底层 Agent");
+    assert.equal(hub.conversation("feishu:b1:oc_default_b")?.expert, helper.id);
+  } finally {
+    delete bot.cfg.experts;
+    delete bot.cfg.defaultExpert;
+    Object.assign(bot.cfg, legacy);
+  }
+});
+
 test("收尾", () => {
   bot.stop();
   fs.rmSync(home, { recursive: true, force: true });

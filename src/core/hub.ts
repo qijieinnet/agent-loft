@@ -30,7 +30,7 @@ import {
 import { attachmentInfo, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import { memoryOwnerOf, sessionMemory } from "./personal.js";
 import { readMemory } from "./memory.js";
-import { getUser } from "./users.js";
+import { getUser, userEvents } from "./users.js";
 import type {
   AgentDriver,
   AttachmentInfo,
@@ -50,7 +50,7 @@ import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry
 import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
 import { expertSystemPrompt, searchLabel, stripContext } from "./expert-prompt.js";
-import { avatarUrl, expertEvents, expertRuntime, getExpert, isBuiltin, listExperts, type ExpertRuntime } from "./experts.js";
+import { availableExperts, avatarUrl, canUseExpert, expertEvents, expertToolEvents, expertRuntime, getExpert, isBuiltin, type ExpertRuntime } from "./experts.js";
 import { builtinAgentDefaults, builtinAgentEvents, builtinAgentSession } from "./builtin-agents.js";
 import { mcpEvents } from "./mcp.js";
 import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
@@ -280,7 +280,26 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
     skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
     // 专家修改只影响自定义专家；MCP 和内置默认配置修改也更新该账号的内置会话。
-    expertEvents.on("changed", (owner) => this.personalChanged(new Set([owner]), true));
+    expertEvents.on("changed", (_owner, id) => {
+      for (const conv of listConversations()) {
+        if (conv.expert !== id && !(conv.expert && getExpert(conv.expert)?.subagents.includes(id))) continue;
+        const live = this.live.get(conv.key);
+        if (live) {
+          this.staleLive.add(live.id);
+          this.dropIfStale(conv.key);
+        }
+        this.emitEvent(conv.key, { type: "meta" });
+      }
+    });
+    expertToolEvents.on("changed", (owner) => this.personalChanged(new Set([owner]), true));
+    userEvents.on("changed", () => {
+      for (const [key, live] of this.live) {
+        const conv = getConversation(key);
+        if (!conv?.expert || canUseExpert(memoryOwnerOf(conv), conv.expert)) continue;
+        this.staleLive.add(live.id);
+        this.dropIfStale(key);
+      }
+    });
     mcpEvents.on("changed", (owner) => this.personalChanged(new Set([owner])));
     builtinAgentEvents.on("changed", (owner) => this.personalChanged(new Set([owner])));
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
@@ -402,7 +421,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
   expertBadge(conv: Pick<Conversation, "agent" | "expert" | "owner" | "channel">): ExpertBadge {
     if (!conv.expert) return { id: conv.agent, name: this.label(conv.agent), builtin: true };
     const e = getExpert(conv.expert);
-    if (!e || e.owner !== memoryOwnerOf(conv)) return { id: conv.expert, name: "（已删除的专家）", missing: true };
+    if (!e || !canUseExpert(memoryOwnerOf(conv), e.id)) return { id: conv.expert, name: "（专家已删除或未共享）", missing: true };
     return {
       id: e.id,
       name: e.name,
@@ -417,27 +436,29 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
 
   /**
    * 拉起会话时交给 driver 的专家。内置专家返回 undefined（agent 原装的样子）。
-   * 专家被删了、不是对话主人的、引擎对不上：抛错 —— 不能悄悄换成别的专家接着聊。
+   * 专家被删了、未授权共享、引擎对不上：抛错 —— 不能悄悄换成别的专家接着聊。
    */
   private expertFor(conv: Conversation): ExpertRuntime | undefined {
     if (!conv.expert) return undefined;
     const e = getExpert(conv.expert);
-    if (!e || e.owner !== memoryOwnerOf(conv)) throw new Error("这条对话用的专家已经删除了。新开一个对话，换个专家吧。");
+    const owner = memoryOwnerOf(conv);
+    if (!e || !owner || !canUseExpert(owner, e.id)) throw new Error("这条对话用的专家已经删除或取消共享了。新开一个对话，换个专家吧。");
     if (e.engine !== conv.agent) throw new Error(`专家「${e.name}」的引擎和这条对话的对不上，新开一个对话吧。`);
     return expertRuntime(e, (sub, access) =>
       expertSystemPrompt({ name: sub.name, prompt: sub.prompt, access, webSearch: sub.webSearch, webFetch: sub.webFetch }, searchLabel("claude", sub), conv.cwd),
+      owner,
     );
   }
 
   /**
-   * 这个人在某个渠道能选的专家：允许的内置专家（agent 启用着的），加上他自己的、引擎可用的专家。
+   * 这个人在某个渠道能选的专家：允许的内置专家（agent 启用着的），加上自己的及共享的、引擎可用的专家。
    * 没有主人的对话（飞书群聊等）只有内置专家。
    */
-  expertChoices(owner: string | undefined, allowedAgents: string[]): { id: string; label: string; engine: string }[] {
+  expertChoices(owner: string | undefined, allowedAgents: string[], allowedExperts?: string[]): { id: string; label: string; engine: string }[] {
     const usable = new Set(this.enabledAgents().map((d) => d.id).filter((a) => allowedAgents.includes(a)));
     const builtin = [...usable].map((a) => ({ id: a, label: this.label(a), engine: a }));
-    const own = owner ? listExperts(owner).filter((e) => usable.has(e.engine)) : [];
-    return [...builtin, ...own.map((e) => ({ id: e.id, label: `${e.icon ? `${e.icon} ` : ""}${e.name}`, engine: e.engine }))];
+    const own = owner ? availableExperts(owner).filter((e) => usable.has(e.engine)) : [];
+    return [...builtin, ...own.map((e) => ({ id: e.id, label: `${e.icon ? `${e.icon} ` : ""}${e.name}`, engine: e.engine }))].filter((e) => allowedExperts === undefined || allowedExperts.includes(e.id));
   }
 
   /** 已注册且在配置里启用的 agent */
@@ -617,6 +638,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     if (!conv) throw new Error(`会话不存在：${key}`);
     // 先检查 agent 还启用着：设置里关掉了，已经打开的会话也不能再用
     const driver = this.requireDriver(conv.agent);
+    // 撤回共享后，即使上一轮还在运行，也不能把新输入交给缓存着的会话。
+    if (conv.expert && !canUseExpert(memoryOwnerOf(conv), conv.expert)) throw new Error("这条对话用的专家已经删除或取消共享了。新开一个对话，换个专家吧。");
     const existing = this.live.get(key);
     if (existing && existing.agent === conv.agent && existing.cwd === conv.cwd && !opts.resumeId) {
       return existing.session;
@@ -1352,11 +1375,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
    * 换专家（飞书里的 /agent、/claude、/codex）：对话中途不能换专家，所以换了就开新会话。
    * target 可以是专家 id，也可以是名字。allowed：这个渠道允许的内置 agent。
    */
-  private async setExpertNow(key: string, target: string, allowed: string[], op: SwitchOp): Promise<string> {
+  private async setExpertNow(key: string, target: string, allowed: string[], op: SwitchOp, allowedExperts?: string[]): Promise<string> {
     const conv = getConversation(key)!;
     // 网页上的对话（包括飞书 /web 接上的）从头到尾一个专家：要换就新建对话
     if (conv.channel === "web") return "网页上的对话中途不能换专家。在网页上新建一个对话，选好专家再聊。";
-    const choices = this.expertChoices(memoryOwnerOf(conv), allowed);
+    const choices = this.expertChoices(memoryOwnerOf(conv), allowed, allowedExperts);
     const want = target.trim().toLowerCase();
     const hit = choices.find((c) => c.id.toLowerCase() === want) ?? choices.find((c) => c.label.toLowerCase().includes(want));
     if (!hit) return `这里没有「${target}」这个专家。可选：${choices.map((c) => c.label).join("、")}`;
@@ -1639,8 +1662,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return this.serial(key, () => this.setEffortNow(key, effort));
   }
 
-  setExpert(key: string, target: string, allowed: string[]): Promise<string> {
-    return this.switchOp(key, (op) => this.setExpertNow(key, target, allowed, op));
+  setExpert(key: string, target: string, allowed: string[], allowedExperts?: string[]): Promise<string> {
+    return this.switchOp(key, (op) => this.setExpertNow(key, target, allowed, op, allowedExperts));
   }
 
   cd(key: string, dir: string): Promise<string> {
@@ -1662,6 +1685,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     cmd: ParsedCommand,
     ctx: {
       allowedAgents: string[];
+      allowedExperts?: string[];
       by: string;
       channel?: string;
       /** 多用户：发命令的人能看到哪些 agent 会话（/sessions 列哪些、/resume 能恢复哪些） */
@@ -1686,7 +1710,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
           ...(channel ? { channel } : {}),
           ...(owner && getUser(owner)?.role !== "admin" ? { member: true } : {}),
         });
-        return { type: "commands", agent: conv.agent, commands: all.filter((c) => !c.hidden) };
+        return { type: "commands", agent: conv.agent, commands: all.filter((c) => !c.hidden && (!["claude", "codex"].includes(c.name) || ctx.allowedExperts === undefined || ctx.allowedExperts.includes(c.name))) };
       }
       case "pwd":
         return text(getConversation(key)!.cwd);
@@ -1719,11 +1743,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
           const conv = getConversation(key)!;
           return {
             type: "agents",
-            agents: this.expertChoices(memoryOwnerOf(conv), ctx.allowedAgents).map(({ id, label }) => ({ id, label })),
+            agents: this.expertChoices(memoryOwnerOf(conv), ctx.allowedAgents, ctx.allowedExperts).map(({ id, label }) => ({ id, label })),
             current: expertIdOf(conv),
           };
         }
-        return text(await this.setExpert(key, cmd.agent, ctx.allowedAgents));
+        return text(await this.setExpert(key, cmd.agent, ctx.allowedAgents, ctx.allowedExperts));
       }
       case "stop":
         return text(await this.stop(key));

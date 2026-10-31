@@ -7,7 +7,7 @@
 //     更不能被当成对挂着的提问的回答。
 import crypto from "node:crypto";
 import { resolveWorkspacePath } from "./config.js";
-import { getExpert } from "./experts.js";
+import { canUseExpert, getExpert } from "./experts.js";
 import { hub, type TaskTurnEnd } from "./hub.js";
 import { interactions } from "./interactions.js";
 import { memoryOwnerOf } from "./personal.js";
@@ -50,8 +50,8 @@ type Resolved = { key: string } | { pause: string } | { error: string };
 
 /** 这次该发到哪条对话；专用对话还没有（或者被删了）就新建一条 */
 function resolveConv(task: Task): Resolved {
-  const missingExpert = (id: string | undefined) => !!id && getExpert(id)?.owner !== task.owner;
-  const deletedExpert = { pause: "任务用的专家已经删除了，任务已暂停。编辑任务换一个专家再启用。" };
+  const missingExpert = (id: string | undefined) => !!id && !canUseExpert(task.owner, id);
+  const deletedExpert = { pause: "任务用的专家已经删除或取消共享了，任务已暂停。编辑任务换一个专家再启用。" };
   if (task.target.kind === "conv") {
     const conv = getConversation(task.target.key);
     if (!conv || conv.hidden) return { pause: "回复的那条对话已经被删除，任务已暂停。可以改成「专用对话」后再启用。" };

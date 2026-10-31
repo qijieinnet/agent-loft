@@ -5,7 +5,7 @@
 // 两个内置专家 claude、codex 不存成自定义专家：保留原装提示词和工具，技能 / MCP 默认项由 builtin-agents.ts 按人保存。
 // 对话和任务里没写 expert 的，专家就是它的 agent —— 升级前的数据不用迁移。
 //
-// 自定义专家每人管自己的，不分享。存储：data/experts.json，只有主进程读写。
+// 自定义专家由创建者维护；共享后其他账号可以使用，技能、MCP 和记忆仍按使用者分别加载。
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -34,6 +34,8 @@ export type QuickPrompt = { title: string; prompt: string };
 export type Expert = {
   id: string;
   owner: string;
+  /** 共享给所有已登录、已绑定的账号；只有创建者能修改设定 */
+  shared?: boolean;
   name: string;
   description: string;
   /** emoji（以前的图标；有头像时用头像） */
@@ -107,6 +109,10 @@ type StoredExpert = Omit<Expert, "avatar"> & { avatar?: string; avatarFile?: str
 
 /** 专家改了 / 删了。owner：谁的。用着它的会话空闲下来要换上新的 */
 export const expertEvents = new EventEmitter<{ changed: [owner: string, id: string] }>();
+export const expertToolEvents = new EventEmitter<{ changed: [owner: string, id: string] }>();
+export type ExpertTools = { skills: string[]; mcp: string[] };
+const toolsPath = path.join(dataDir, "expert-tools.json");
+type PersonalTools = Record<string, Record<string, ExpertTools>>;
 
 let cache: Expert[] | null = null;
 
@@ -179,15 +185,70 @@ export function listExperts(owner: string): Expert[] {
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
+/** 选择器展示自己的专家和其他人共享的专家；不改变 listExperts 的所有权语义。 */
+export function availableExperts(owner: string): Expert[] {
+  return load().filter((e) => canUseExpert(owner, e.id)).sort((a, b) => a.createdAt - b.createdAt);
+}
+
 export function getExpert(id: string): Expert | undefined {
   return load().find((e) => e.id === id);
 }
 
-/** 谁都能用的（内置）或者是他自己的 */
+/** 共享只开放使用权，不转移专家、工具或会话的所有权。无身份的飞书聊天不能用。 */
 export function canUseExpert(owner: string | undefined, id: string): boolean {
   if (isBuiltin(id)) return true;
   const e = getExpert(id);
-  return !!e && !!owner && e.owner === owner;
+  if (!e || !owner) return false;
+  if (e.owner === owner) return true;
+  const creator = getUser(e.owner);
+  const user = getUser(owner);
+  return e.shared === true && !!creator && !creator.disabled && !!user && !user.disabled;
+}
+
+/** 发布者沿用专家原有的工具选择；其他人未配置时不加载技能和 MCP。 */
+export function expertTools(owner: string, expert: Expert): ExpertTools {
+  if (!canUseExpert(owner, expert.id)) throw new Error("这个专家不存在或已取消共享");
+  if (expert.owner === owner) return { skills: expert.skills, mcp: expert.mcp };
+  return readJson<PersonalTools>(toolsPath, {})[owner]?.[expert.id] ?? { skills: [], mcp: [] };
+}
+
+export function setExpertTools(owner: string, id: string, input: unknown): ExpertTools {
+  const expert = getExpert(id);
+  if (!expert || !canUseExpert(owner, id)) throw new Error("这个专家不存在或已取消共享");
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("工具配置格式不对");
+  const raw = input as Record<string, unknown>;
+  const selection = (value: unknown): string[] => {
+    if (!Array.isArray(value) || value.length > 200 || value.some((v) => typeof v !== "string" || v.length > 100)) throw new Error("技能和 MCP 必须是列表");
+    return [...new Set(value as string[])];
+  };
+  const next = { skills: selection(raw.skills), mcp: selection(raw.mcp) };
+  const available = new Set(activeSkills(owner).map((s) => s.id));
+  if (next.skills.some((id) => !available.has(id))) throw new Error("只能选择自己已启用的技能");
+  const admin = getUser(owner)?.role === "admin";
+  const names = new Set<string>();
+  for (const id of next.mcp) {
+    const server = getMcp(id);
+    const name = isMachineId(id) ? machineName(id) : server?.name;
+    if (isMachineId(id) ? !admin || !name || !/^[A-Za-z0-9_-]{1,100}$/.test(name) : !server || server.owner !== owner) throw new Error("只能选择自己的 MCP（机器 MCP 仅管理员可选）");
+    if (names.has(name!)) throw new Error(`MCP 服务名重复：${name}`);
+    names.add(name!);
+  }
+  if (expert.owner === owner) {
+    updateExpert(owner, id, next);
+  } else {
+    const all = readJson<PersonalTools>(toolsPath, {});
+    (all[owner] ??= {})[id] = next;
+    writeJsonAtomic(toolsPath, all);
+    expertToolEvents.emit("changed", owner, id);
+  }
+  return next;
+}
+
+function purgeExpertTools(owner?: string, expertId?: string): void {
+  const all = readJson<PersonalTools>(toolsPath, {});
+  if (owner) delete all[owner];
+  if (expertId) for (const tools of Object.values(all)) delete tools[expertId];
+  writeJsonAtomic(toolsPath, all);
 }
 
 export const accessRank = (a: ExpertAccess) => ACCESS_LEVELS.indexOf(a);
@@ -208,6 +269,9 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
   const user = getUser(owner);
   if (!user) throw new Error("用户不存在");
   const admin = user.role === "admin";
+  const sharedRaw = pick("shared");
+  if (sharedRaw !== undefined && typeof sharedRaw !== "boolean") throw new Error("共享开关必须是布尔值");
+  const shared = sharedRaw === true;
 
   const name = text(pick("name"), EXPERT_LIMITS.name, "名字");
   if (!name) throw new Error("给专家起个名字");
@@ -255,6 +319,7 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
     if (id === selfId) throw new Error("子智能体不能是它自己");
     const sub = getExpert(id);
     if (!sub || sub.owner !== owner) continue;
+    if (shared && !sub.shared) throw new Error(`共享专家的子智能体「${sub.name}」也需要先共享`);
     if (sub.engine !== "claude") throw new Error(`「${sub.name}」是 Codex 专家，子智能体只能用 Claude 专家`);
     if (accessRank(sub.access) > accessRank(access as ExpertAccess)) {
       throw new Error(`「${sub.name}」的权限（${ACCESS_LABEL[sub.access]}）比这个专家高，子智能体的权限不能超过主专家`);
@@ -273,6 +338,7 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
   const model = text(pick("model"), 100, "模型");
   const effort = text(pick("effort"), 20, "思考程度");
   return {
+    shared,
     name,
     description: text(pick("description"), EXPERT_LIMITS.description, "说明"),
     icon: text(pick("icon"), 16, "图标"),
@@ -316,7 +382,13 @@ export function updateExpert(owner: string, id: string, input: ExpertInput): Exp
   const next: Expert = { id, owner, ...validate(owner, input, prev, id), rev: prev.rev + 1, createdAt: prev.createdAt, updatedAt: Date.now() };
   list[idx] = next;
   save();
-  expertEvents.emit("changed", owner, id);
+  // 工具是发布者本人的选择，不需要让其他使用者重载共享设定。
+  const definitionChanged = [...new Set([...Object.keys(prev), ...Object.keys(next)])].some((key) =>
+    !["skills", "mcp", "rev", "updatedAt"].includes(key) &&
+    JSON.stringify(prev[key as keyof Expert]) !== JSON.stringify(next[key as keyof Expert]),
+  );
+  if (definitionChanged) expertEvents.emit("changed", owner, id);
+  else expertToolEvents.emit("changed", owner, id);
   return next;
 }
 
@@ -325,6 +397,7 @@ export function deleteExpert(owner: string, id: string): void {
   const idx = list.findIndex((e) => e.id === id && e.owner === owner);
   if (idx < 0) throw new Error("这个专家不存在");
   list.splice(idx, 1);
+  purgeExpertTools(undefined, id);
   // 别的专家把它当子智能体的，一并去掉
   for (const e of list) {
     if (e.subagents.includes(id)) {
@@ -338,11 +411,9 @@ export function deleteExpert(owner: string, id: string): void {
 }
 
 export function purgeUserExperts(owner: string): void {
+  purgeExpertTools(owner);
   const list = load();
-  const kept = list.filter((e) => e.owner !== owner);
-  if (kept.length === list.length) return;
-  cache = kept;
-  save();
+  for (const e of [...list]) if (e.owner === owner) deleteExpert(owner, e.id);
 }
 
 // ---------- 开会话时 ----------
@@ -428,18 +499,23 @@ function subagentKey(name: string, taken: Set<string>): string {
  * 按专家配置拼出交给 driver 的样子。prompt：子智能体的完整提示词怎么拼（core/expert-prompt.ts 给）。
  * 子智能体的权限封顶在主专家的权限：主专家后来降了权限也不会被子智能体绕过去。
  */
-export function expertRuntime(expert: Expert, subPrompt: (sub: Expert, access: ExpertAccess) => string): ExpertRuntime {
-  const admin = getUser(expert.owner)?.role === "admin";
-  const active = new Map(activeSkills(expert.owner).map((s) => [s.id, s]));
-  const { mcp, ask, machine } = resolveMcp(expert, admin);
+export function expertRuntime(expert: Expert, subPrompt: (sub: Expert, access: ExpertAccess) => string, owner = expert.owner): ExpertRuntime {
+  if (!canUseExpert(owner, expert.id)) throw new Error("这个专家不存在或已取消共享");
+  const tools = expertTools(owner, expert);
+  const admin = getUser(owner)?.role === "admin";
+  const active = new Map(activeSkills(owner).map((s) => [s.id, s]));
+  const { mcp, ask, machine } = resolveMcp({ owner, engine: expert.engine, mcp: tools.mcp }, admin);
   const taken = new Set<string>();
   const subagents: SubagentRuntime[] = [];
   if (expert.engine === "claude") {
     for (const id of expert.subagents) {
       const sub = getExpert(id);
       if (!sub || sub.owner !== expert.owner || sub.engine !== "claude" || sub.id === expert.id) continue;
+      // 共享主专家不能把未共享的私人子专家带给其他使用者。
+      if ((expert.shared && !sub.shared) || !canUseExpert(owner, sub.id)) continue;
+      const subTools = expertTools(owner, sub);
       const access = accessRank(sub.access) > accessRank(expert.access) ? expert.access : sub.access;
-      const subMcp = resolveMcp(sub, admin).mcp;
+      const subMcp = resolveMcp({ owner, engine: sub.engine, mcp: subTools.mcp }, admin).mcp;
       subagents.push({
         key: subagentKey(sub.name, taken),
         name: sub.name,
@@ -449,7 +525,7 @@ export function expertRuntime(expert: Expert, subPrompt: (sub: Expert, access: E
         webSearch: sub.webSearch,
         webFetch: sub.webFetch,
         ...(sub.model ? { model: sub.model } : {}),
-        skills: sub.skills.map((s) => active.get(s)?.name).filter((n): n is string => !!n),
+        skills: subTools.skills.map((s) => active.get(s)?.name).filter((n): n is string => !!n),
         mcp: subMcp,
       });
     }
@@ -463,7 +539,7 @@ export function expertRuntime(expert: Expert, subPrompt: (sub: Expert, access: E
     access: expert.access,
     webSearch: expert.webSearch,
     webFetch: expert.webFetch,
-    skills: expert.skills.filter((id) => active.has(id)),
+    skills: tools.skills.filter((id) => active.has(id)),
     mcp,
     askMcp: ask,
     machineMcp: machine,

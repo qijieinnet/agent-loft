@@ -14,7 +14,7 @@ function usableEngines() {
   return (usable.length ? usable : enabled).map((a) => a.id);
 }
 
-/** 能选的专家：内置的在前，再是自己的（引擎能用的） */
+/** 能选的专家：内置的在前，再是自己的和共享的（引擎能用的） */
 export function expertChoices() {
   const engines = usableEngines();
   return [

@@ -75,7 +75,8 @@ import { handleLibraryApi } from "./library-api.js";
 import { attachToConversation, canSeeFile, getLibraryFile } from "../../core/library.js";
 import { handleSkillsApi } from "./skills-api.js";
 import { handleExpertsApi } from "./experts-api.js";
-import { canUseExpert, getExpert, isBuiltin, listExperts } from "../../core/experts.js";
+import { availableExperts, canUseExpert, getExpert, isBuiltin } from "../../core/experts.js";
+import { botExpertSelection } from "../../core/feishu-experts.js";
 import { expertBrief } from "./experts-api.js";
 import { handleTerminalApi } from "./terminal.js";
 import { handleDesktopApi, remoteStatus } from "./desktop.js";
@@ -265,7 +266,7 @@ type Registration = {
 };
 const registrations = new Map<string, Registration>();
 
-async function startRegistration(name: string, agents: string[]): Promise<{ id: string } & Registration> {
+async function startRegistration(name: string, agents: string[], selection?: ReturnType<typeof botExpertSelection>): Promise<{ id: string } & Registration> {
   await initRegistration("feishu");
   const begin = await beginRegistration("feishu");
   const id = crypto.randomBytes(8).toString("hex");
@@ -291,6 +292,7 @@ async function startRegistration(name: string, agents: string[]): Promise<{ id: 
         allowFrom: outcome.result.openId ? [outcome.result.openId.toLowerCase()] : [],
         agents: list.length ? list : ["claude"],
         defaultAgent: list[0] ?? "claude",
+        ...selection,
       });
       saveConfig(cfg);
       reg.status = "success";
@@ -407,7 +409,14 @@ function applyConfig(input: Partial<AppConfig>, selfOrigin?: string): void {
         const old = current.feishu.bots.find((o) => o.id === b.id);
         // 前端拿到的是打码后的密钥，原样传回来表示「没改」
         const secret = !b.appSecret || b.appSecret.startsWith(MASK) ? (old?.appSecret ?? "") : b.appSecret;
-        return { ...b, appSecret: secret };
+        try {
+          if (old?.experts && JSON.stringify([b.experts, b.defaultExpert]) === JSON.stringify([old.experts, old.defaultExpert])) {
+            return { ...b, appSecret: secret, agents: old.agents, defaultAgent: old.defaultAgent };
+          }
+          return { ...b, appSecret: secret, ...(b.experts === undefined ? {} : botExpertSelection(b.experts, b.defaultExpert)) };
+        } catch (err) {
+          throw new HttpError(400, err instanceof Error ? err.message : String(err));
+        }
       });
     }
   }
@@ -680,8 +689,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       }),
       // 飞书机器人是管理员配的，飞书会话也只给管理员看
       bots: admin ? config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })) : [],
-      // 自己的专家（新对话、定时任务里选）。内置的 Claude Code / Codex 就是上面的 agents
-      experts: listExperts(user.id).map(expertBrief),
+      // 自己的和共享的专家（新对话、定时任务里选）。内置的 Claude Code / Codex 就是上面的 agents
+      experts: availableExperts(user.id).map(expertBrief),
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
       quotaEnabled: config().web.quotaEnabled,
@@ -847,11 +856,12 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/conversations" && method === "POST") {
-    // expert：新对话页上选的专家（内置的 claude / codex，或者自己的专家 id）。agent 是以前的叫法
+    // expert：新对话页上选的专家（内置的 claude / codex，或者自己的、共享的专家 id）。agent 是以前的叫法
     const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string }>(req);
     const enabled = hub.enabledAgents().map((d) => d.id);
     const wanted = body.expert ?? body.agent;
-    let expertId = wanted && canUseExpert(user.id, wanted) ? wanted : enabled[0];
+    if (wanted && !canUseExpert(user.id, wanted)) throw new HttpError(400, "这个专家不存在或已取消共享");
+    const expertId = wanted || enabled[0];
     if (!expertId) throw new HttpError(400, "没有可用的 agent");
     const custom = isBuiltin(expertId) ? undefined : getExpert(expertId);
     const agent = custom ? custom.engine : expertId;
@@ -1500,8 +1510,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/feishu/register" && method === "POST") {
-    const body = await readJsonBody<{ name?: string; agents?: string[] }>(req);
-    sendJson(res, 200, await startRegistration(String(body.name ?? ""), Array.isArray(body.agents) ? body.agents : []));
+    const body = await readJsonBody<{ name?: string; agents?: string[]; experts?: unknown; defaultExpert?: unknown }>(req);
+    let selection: ReturnType<typeof botExpertSelection> | undefined;
+    try {
+      if (body.experts !== undefined) selection = botExpertSelection(body.experts, body.defaultExpert);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    sendJson(res, 200, await startRegistration(String(body.name ?? ""), Array.isArray(body.agents) ? body.agents : [], selection));
     return;
   }
   const regMatch = /^\/api\/feishu\/register\/([a-f0-9]+)$/.exec(p);

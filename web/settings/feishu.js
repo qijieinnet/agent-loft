@@ -9,7 +9,17 @@ import { field, markDirty, saveButton, saveConfig } from "./common.js";
  * 设置 → 飞书：机器人、谁能用（配对请求、已配对的人）、指令面板同步，都是飞书这一侧的事，放在一页。
  * 每个机器人一张表单各自保存；存了一个，其它机器人没保存的改动原样留着（表单按机器人缓存，不重建）。
  */
-export function feishuTab(cfg, page) {
+export async function feishuTab(cfg, page) {
+  let shared;
+  try {
+    shared = (await api("/api/experts/brief")).experts.filter((e) => e.shared);
+  } catch (err) {
+    page.append(h("div", { class: "error-text" }, `无法加载共享专家：${err.message}`));
+    return;
+  }
+  const choices = [...S.agents.map((a) => ({ id: a.id, label: a.label, engine: a.id })), ...shared.map((e) => ({ id: e.id, label: `${e.name}（共享）`, engine: e.engine }))];
+  // 复选框各有自己的 label，外层使用分组，避免把第一项关联到整组说明。
+  const expertField = (content, hint) => h("div", { class: "field", role: "group", "aria-label": "可用专家" }, h("span", {}, "可用专家"), content, h("small", {}, hint));
   /** 已经存进配置的机器人（以服务端为准） + 手动添加、还没保存的 */
   let saved = structuredClone(cfg.feishu.bots);
   let drafts = [];
@@ -42,7 +52,7 @@ export function feishuTab(cfg, page) {
         "div",
         { class: "section" },
         h("h4", {}, "飞书机器人"),
-        h("div", { class: "muted" }, "一个机器人可以对应一个 agent，也可以在会话里用 /agent 切换。扫码创建会自动建好飞书应用；Lark 国际版请用「手动添加」，填开发者后台里的 App ID 和 App Secret。"),
+        h("div", { class: "muted" }, "勾选这个机器人可用的内置或共享专家，并选择默认专家。共享专家在每个人绑定账号后的私聊中使用各自的记忆和工具。扫码创建会自动建好飞书应用；Lark 国际版请用「手动添加」。"),
         h(
           "div",
           { class: "row" },
@@ -79,11 +89,21 @@ export function feishuTab(cfg, page) {
     const allow = h("textarea", { rows: 2, placeholder: "ou_xxx，一行一个" });
     allow.value = b.allowFrom.join("\n");
     const enabled = h("input", { type: "checkbox", checked: b.enabled });
-    const agentChecks = S.agents.map((a) => {
-      const box = h("input", { type: "checkbox", checked: b.agents.includes(a.id), value: a.id });
-      return { id: a.id, box, el: h("label", { class: "check" }, box, a.label) };
+    const selected = b.experts ?? b.agents;
+    const missing = selected.filter((id) => !choices.some((e) => e.id === id)).map((id) => ({ id, label: `${id}（已删除或未共享，请取消勾选）` }));
+    const expertChecks = [...choices, ...missing].map((e) => {
+      const box = h("input", { type: "checkbox", checked: selected.includes(e.id), value: e.id });
+      return { id: e.id, box, el: h("label", { class: "check" }, box, e.label) };
     });
-    const def = h("select", {}, S.agents.map((a) => h("option", { value: a.id, selected: a.id === b.defaultAgent }, a.label)));
+    const def = h("select", { "aria-label": "默认专家" });
+    const syncDefault = () => {
+      const preferred = def.value || b.defaultExpert || b.defaultAgent;
+      const enabled = choices.filter((e) => expertChecks.some((c) => c.id === e.id && c.box.checked));
+      fill(def, enabled.map((e) => h("option", { value: e.id }, e.label)));
+      if (enabled.some((e) => e.id === preferred)) def.value = preferred;
+    };
+    for (const c of expertChecks) c.box.addEventListener("change", syncDefault);
+    syncDefault();
     const status = h("span", { class: "status-tag" }, b.enabled ? "…" : "未启用");
     if (!isDraft) statusTags.set(b.id, status);
     const collect = () => {
@@ -96,14 +116,16 @@ export function feishuTab(cfg, page) {
         domain: domain.value,
         allowFrom: allow.value.split(/[\s,]+/).filter(Boolean),
         enabled: enabled.checked,
-        agents: agentChecks.filter((c) => c.box.checked).map((c) => c.id),
-        defaultAgent: def.value,
+        experts: expertChecks.filter((c) => c.box.checked).map((c) => c.id),
+        defaultExpert: def.value,
+        agents: [...new Set(choices.filter((e) => expertChecks.some((c) => c.id === e.id && c.box.checked)).map((e) => e.engine))],
+        defaultAgent: choices.find((e) => e.id === def.value)?.engine ?? b.defaultAgent,
       };
     };
     const save = async () => {
       const v = collect();
-      if (!v.agents.length) {
-        toast("至少勾选一个 agent");
+      if (!v.experts.length) {
+        toast("至少勾选一个专家");
         return false;
       }
       // 只存这一个：其它机器人按服务端现在的样子原样带上，别的草稿不跟着存
@@ -125,8 +147,8 @@ export function feishuTab(cfg, page) {
       field("名称", name),
       h("div", { class: "row" }, h("div", { style: { flex: 1 } }, field("App ID", appId)), h("div", { style: { flex: 1 } }, field("App Secret", secret))),
       field("域名", domain),
-      field("可用的 Agent", h("div", { class: "row" }, agentChecks.map((c) => c.el)), "勾一个 = 一个机器人对应一个 agent；勾多个可在会话里用 /agent 切换"),
-      field("默认 Agent", def),
+      expertField(h("div", { class: "row" }, expertChecks.map((c) => c.el)), "只勾一个共享专家即可专用；无需再勾选底层 Agent。勾多个可用 /expert 切换。保存后按这里的名单限制可选专家"),
+      field("默认专家", def, "新聊天和绑定账号后使用；已有聊天在当前专家仍可用时继续使用原专家"),
       field("Owner 白名单（open_id）", allow, "陌生人发消息会拿到配对码，在下面「配对请求」里批准即可，不必手填"),
       h(
         "div",
@@ -174,22 +196,24 @@ export function feishuTab(cfg, page) {
 
   const registerBot = async () => {
     const nameInput = h("input", { value: "Agent 助手" });
-    const checks = S.agents.filter((a) => a.enabled).map((a) => ({ id: a.id, box: h("input", { type: "checkbox", checked: true }), label: a.label }));
+    const checks = choices.map((e) => ({ id: e.id, box: h("input", { type: "checkbox", checked: false }), label: e.label }));
     const body = h(
       "div",
       { class: "modal-body" },
       h("div", { class: "muted" }, "用飞书扫码，会自动创建一个飞书应用（机器人），并把扫码的你设为 owner。"),
       field("机器人名称", nameInput),
-      field("可用的 Agent", h("div", { class: "row" }, checks.map((c) => h("label", { class: "check" }, c.box, c.label)))),
+      expertField(h("div", { class: "row" }, checks.map((c) => h("label", { class: "check" }, c.box, c.label))), "可直接选择共享专家；选多个时默认使用第一个，创建后可以再调整默认专家"),
     );
     const go = h("button", { class: "btn primary" }, "生成二维码");
     const closeReg = modal({ title: "扫码创建飞书机器人", body, foot: h("div", { class: "modal-foot" }, go) });
     go.onclick = async () => {
+      const selected = checks.filter((c) => c.box.checked).map((c) => c.id);
+      if (!selected.length) return toast("至少勾选一个专家");
       go.disabled = true;
       try {
         const reg = await api("/api/feishu/register", {
           method: "POST",
-          body: { name: nameInput.value, agents: checks.filter((c) => c.box.checked).map((c) => c.id) },
+          body: { name: nameInput.value, experts: selected, defaultExpert: selected[0] },
         });
         const state = h("div", { class: "muted", style: { textAlign: "center" } }, "等待扫码确认…");
         fill(

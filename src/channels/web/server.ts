@@ -15,6 +15,7 @@ import { interactions, type Interaction } from "../../core/interactions.js";
 import { getConversation } from "../../core/store.js";
 import { taskEvents } from "../../core/tasks.js";
 import { skillEvents } from "../../core/skills.js";
+import { expertEvents } from "../../core/experts.js";
 import { enforceTerminalAccess, killAllTerminals, terminalEvents, watchTerminalAccess } from "../../core/terminals.js";
 import { RUNNING_VERSION } from "../../core/upgrade.js";
 import type { Settlement } from "../../core/types.js";
@@ -239,6 +240,11 @@ function broadcastTerminals(owner: string): void {
 /** 用户改了（比如远程控制权限被开通 / 收回）、远程控制的设置改了：页面重新问一下能用什么 */
 function broadcastUsersChanged(): void {
   for (const client of clients) send(client, { t: "remote" });
+  broadcastExperts();
+}
+
+function broadcastExperts(): void {
+  for (const client of clients) send(client, { t: "experts" });
 }
 
 /** 技能变了：以前装过别人技能的人也受影响，通知所有人重新拉（列表很小） */
@@ -571,6 +577,7 @@ export async function startWeb(): Promise<void> {
   interactions.on("settled", broadcastInteraction);
   taskEvents.on("changed", broadcastTasks);
   skillEvents.on("changed", broadcastSkills);
+  expertEvents.on("changed", broadcastExperts);
   terminalEvents.on("changed", broadcastTerminals);
   userEvents.on("changed", broadcastUsersChanged);
   watchTerminalAccess();
@@ -619,6 +626,7 @@ export async function stopWeb(): Promise<void> {
   interactions.off("settled", broadcastInteraction);
   taskEvents.off("changed", broadcastTasks);
   skillEvents.off("changed", broadcastSkills);
+  expertEvents.off("changed", broadcastExperts);
   terminalEvents.off("changed", broadcastTerminals);
   userEvents.off("changed", broadcastUsersChanged);
   stopWatchingRemote?.();

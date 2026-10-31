@@ -23,6 +23,8 @@ function reconcile(list: FeishuBotConfig[]): void {
   for (const [id, cfg] of wanted) {
     const existing = bots.get(id);
     if (existing) {
+      delete existing.cfg.experts;
+      delete existing.cfg.defaultExpert;
       Object.assign(existing.cfg, cfg);
       continue;
     }
@@ -42,7 +44,7 @@ export function startFeishu(): void {
     for (const bot of bots.values()) {
       const before = prev.feishu.bots.find((b) => b.id === bot.id);
       const agentsChanged =
-        !before || JSON.stringify([before.agents, before.defaultAgent]) !== JSON.stringify([bot.cfg.agents, bot.cfg.defaultAgent]);
+        !before || JSON.stringify([before.agents, before.defaultAgent, before.experts, before.defaultExpert]) !== JSON.stringify([bot.cfg.agents, bot.cfg.defaultAgent, bot.cfg.experts, bot.cfg.defaultExpert]);
       if (commandsChanged || agentsChanged) bot.slash.request();
     }
   });

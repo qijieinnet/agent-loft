@@ -1,18 +1,21 @@
-// 专家和 MCP 的接口：/api/experts、/api/mcp。每人管自己的，看不到别人的（管理员也一样）。
+// 专家由创建者管理，可共享使用；工具选择和 MCP 配置按登录账号隔离。
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { userMcpServers } from "../../agents/codex/session.js";
 import {
   ACCESS_LABEL,
   ACCESS_LEVELS,
+  availableExperts,
   avatarImage,
   avatarUrl,
   createExpert,
+  canUseExpert,
   deleteExpert,
   EXPERT_LIMITS,
   EXPERT_TEMPLATES,
   getExpert,
-  listExperts,
+  expertTools,
   updateExpert,
+  setExpertTools,
   type Expert,
   type ExpertInput,
 } from "../../core/experts.js";
@@ -25,7 +28,8 @@ import { HttpError, readJsonBody, sendJson } from "./http.js";
 
 const bad = (err: unknown) => (err instanceof HttpError ? err : new HttpError(400, err instanceof Error ? err.message : String(err)));
 
-function expertView(e: Expert) {
+function expertView(e: Expert, viewer: string) {
+  const tools = expertTools(viewer, e);
   return {
     id: e.id,
     name: e.name,
@@ -44,9 +48,11 @@ function expertView(e: Expert) {
     cwd: e.cwd ?? "",
     webSearch: e.webSearch,
     webFetch: e.webFetch,
-    skills: e.skills,
-    mcp: e.mcp,
-    subagents: e.subagents,
+    shared: e.shared === true,
+    editable: e.owner === viewer,
+    skills: tools.skills,
+    mcp: tools.mcp,
+    subagents: e.subagents.filter((id) => canUseExpert(viewer, id)),
     memory: e.memory,
     updatedAt: e.updatedAt,
   };
@@ -55,6 +61,7 @@ function expertView(e: Expert) {
 /** 选专家时要的那点信息（bootstrap 里给，/api/experts/brief 刷新） */
 export function expertBrief(e: Expert) {
   return {
+    shared: e.shared === true,
     id: e.id,
     name: e.name,
     description: e.description,
@@ -108,7 +115,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   if (p === "/api/experts" && method === "GET") {
     const enabled = hub.enabledAgents().map((d) => d.id);
     sendJson(res, 200, {
-      experts: listExperts(user.id).map(expertView),
+      experts: availableExperts(user.id).map((e) => expertView(e, user.id)),
       builtin: enabled.map((id) => ({ id, name: hub.label(id), engine: id })),
       engines: enabled,
       templates: EXPERT_TEMPLATES.map((t) => ({ id: t.id, label: t.label, expert: t.expert })),
@@ -122,14 +129,14 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   }
 
   if (p === "/api/experts/brief" && method === "GET") {
-    sendJson(res, 200, { experts: listExperts(user.id).map(expertBrief) });
+    sendJson(res, 200, { experts: availableExperts(user.id).map(expertBrief) });
     return true;
   }
 
   if (p === "/api/experts" && method === "POST") {
     const body = await readJsonBody<ExpertInput>(req, 1024 * 1024);
     try {
-      sendJson(res, 200, expertView(createExpert(user.id, body)));
+      sendJson(res, 200, expertView(createExpert(user.id, body), user.id));
     } catch (err) {
       throw bad(err);
     }
@@ -147,18 +154,31 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     return true;
   }
 
+  const tm = /^\/api\/experts\/(e_[a-f0-9]+)\/tools$/.exec(p);
+  if (tm && method === "PUT") {
+    if (!canUseExpert(user.id, tm[1]!)) throw new HttpError(404, "这个专家不存在");
+    const body = await readJsonBody<unknown>(req);
+    try {
+      sendJson(res, 200, setExpertTools(user.id, tm[1]!, body));
+    } catch (err) {
+      throw bad(err);
+    }
+    return true;
+  }
+
   const em = /^\/api\/experts\/(e_[a-f0-9]+)$/.exec(p);
   if (em) {
     const expert = getExpert(em[1]!);
-    if (!expert || expert.owner !== user.id) throw new HttpError(404, "这个专家不存在");
+    if (!expert || !canUseExpert(user.id, expert.id)) throw new HttpError(404, "这个专家不存在");
     if (method === "GET") {
-      sendJson(res, 200, expertView(expert));
+      sendJson(res, 200, expertView(expert, user.id));
       return true;
     }
+    if (expert.owner !== user.id) throw new HttpError(403, "只有创建者能修改或删除共享专家；你的工具可单独配置");
     if (method === "PATCH") {
       const body = await readJsonBody<ExpertInput>(req, 1024 * 1024);
       try {
-        sendJson(res, 200, expertView(updateExpert(user.id, expert.id, body)));
+        sendJson(res, 200, expertView(updateExpert(user.id, expert.id, body), user.id));
       } catch (err) {
         throw bad(err);
       }
@@ -177,9 +197,9 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   }
 
   if (p === "/api/mcp" && method === "GET") {
-    const experts = listExperts(user.id);
+    const experts = availableExperts(user.id);
     sendJson(res, 200, {
-      servers: listMcp(user.id).map((s) => ({ ...mcpView(s), usedBy: experts.filter((e) => e.mcp.includes(s.id)).map((e) => e.name) })),
+      servers: listMcp(user.id).map((s) => ({ ...mcpView(s), usedBy: experts.filter((e) => expertTools(user.id, e).mcp.includes(s.id)).map((e) => e.name) })),
       limits: MCP_LIMITS,
     });
     return true;
