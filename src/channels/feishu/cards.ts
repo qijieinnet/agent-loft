@@ -8,6 +8,7 @@ import { createEnvelope, type CardCtx, type EnvelopeAction } from "./envelope.js
 import { answerTextOf, SETTLEMENT_LABEL, type Interaction } from "../../core/interactions.js";
 import { usageOf, type CommandEntry } from "../../core/command-catalog.js";
 import { chartsToTables } from "../../core/charts.js";
+import { albumsToText } from "../../core/albums.js";
 import type { ModelInfo, SessionSummary } from "../../core/types.js";
 
 function button(
@@ -174,9 +175,9 @@ export function progressCard(params: { steps: string[]; done?: boolean; footer?:
   ]);
 }
 
-/** 回复卡：飞书纯文本不渲染 markdown，所以回复必须走卡片。刻意做到最简。```chart 画不了，换成表格 */
+/** 回复卡：飞书纯文本不渲染 markdown，所以回复走卡片。图表换成表格，相册换成摘要。 */
 export function replyCard(text: string) {
-  return card([{ tag: "markdown", content: clip(chartsToTables(text), 4000) }]);
+  return card([{ tag: "markdown", content: clip(chartsToTables(albumsToText(text)), 4000) }]);
 }
 
 // ---------- 命令结果 ----------

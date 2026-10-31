@@ -65,8 +65,8 @@ function persona(expert: PromptExpert): string[] {
 }
 
 /**
- * 回复里能画的图：网页把 ```chart / ```mermaid 画出来（web/lib/diagrams.js），飞书把 chart 换成表格（core/charts.ts）。
- * 所有专家、内置的 Claude Code / Codex 都给。格式改了这三处要一起改。
+ * 回复里的富内容：网页画图表和相册，飞书把图表换成表格、相册换成摘要。
+ * 所有专家、内置的 Claude Code / Codex 都给；格式改了，对应的 Web 渲染和飞书降级也要一起改。
  */
 export const RICH_REPLY_LINES = [
   "## 回复里的图表",
@@ -80,6 +80,16 @@ export const RICH_REPLY_LINES = [
   "  - 一张图最多 8 组数据，饼图最多 8 块；量级差很多的两种数据分成两张图；缺的数据写 null。只写合法 JSON，不要注释，不要省略号。",
   "- 流程、时序、状态、结构关系可以用 ```mermaid 代码块画图。",
   "- 只在图比文字更清楚时才画；几个数字用文字或表格就够了。",
+  "",
+  "## 回复里的相册",
+  "",
+  "- 展示多张照片、图片搜索结果时，用 ```album JSON 代码块，Web 会显示缩略图网格、分页和大图预览，飞书显示摘要。例如：",
+  "  ```album",
+  '  {"title":"家庭相片","total":30,"items":[{"src":"/tmp/photos/thumb.webp","preview":"/tmp/photos/preview.jpg","name":"海边合影","date":"2026-10-31","caption":"香港"}]}',
+  "  ```",
+  "- items 每项 src 是已下载缩略图的本地绝对路径；preview 是可选的已下载大图路径，省略时预览缩略图。name、date、caption 可选。total 可选，表示查询结果总数，不能小于 items 数量。",
+  "- 每个相册最多 200 张，Web 每页 12 张。只填实际取得的照片和路径，不编造；不要批量下载原图。需要清晰预览时，只为相关照片下载 preview。",
+  "- 路径直接写在 JSON 字符串里，不做 URL 编码；不要填远程 URL、API 密钥或 auth_code。图片仍受当前会话的文件权限控制。多张照片优先用相册，单张图片可继续用 Markdown。",
 ];
 
 /** Claude 自定义专家的整段系统提示（lean：换掉 Claude Code 原装的） */

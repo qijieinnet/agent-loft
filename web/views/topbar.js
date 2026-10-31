@@ -146,6 +146,8 @@ function topMenuItems() {
   const items = [];
   if (!S.view) {
     items.push({ id: "schedule", label: "定时发送", icon: "clock", onclick: () => openSchedule() });
+    const actions = convMenuItems(S.current);
+    if (actions.length) items.push("sep", ...actions);
   }
   return items;
 }
@@ -163,7 +165,7 @@ function openTopMore(anchor) {
         ? h("div", { class: "sep" })
         : h(
             "button",
-            { class: `pop-item${it.checked ? " on" : ""}`, onclick: () => (closeMenu(), it.onclick()) },
+            { class: `pop-item${it.checked ? " on" : ""}${it.danger ? " danger" : ""}`, onclick: () => (closeMenu(), it.onclick()) },
             icon(it.icon),
             h("span", { class: "grow" }, it.label),
             it.checked ? h("span", { class: "check" }, "✓") : null,
@@ -473,13 +475,15 @@ export function updateCtxVisibility() {
   if (ui.ctxBar) ui.ctxBar.hidden = !!S.current && (S.items.length > 0 || sentKeys.has(S.current));
 }
 
-/** 侧栏会话的右键菜单：分叉 / 重命名 / 删除 */
-export function openConvContextMenu(key, at) {
+/** 顶栏和侧栏共用的会话操作，显示条件和行为保持一致。 */
+function convMenuItems(key) {
   const c = S.convs.get(key);
-  if (!c) return;
-  showMenu(at, [
+  if (!c) return [];
+  return [
     {
+      id: "fork",
       label: "分叉",
+      icon: "fork",
       onclick: async () => {
         if (c.canFork) return forkConversation(undefined, key);
         // 不支持另开一条的：只能在原对话里分叉，先切过去
@@ -487,10 +491,16 @@ export function openConvContextMenu(key, at) {
         await doAction("fork");
       },
     },
-    { label: "重命名", onclick: () => renameConv(key) },
-    ...(c.channel === "web" && S.bots.length > 0 ? [{ label: "在飞书继续…", onclick: () => continueInFeishu(key) }] : []),
-    ...(c.channel === "web" ? [{ label: "删除", danger: true, onclick: () => deleteConv(key) }] : []),
-  ]);
+    { id: "rename", label: "重命名", icon: "edit", onclick: () => renameConv(key) },
+    ...(c.channel === "web" && S.bots.length > 0 ? [{ id: "feishu", label: "在飞书继续", icon: "feishu", onclick: () => continueInFeishu(key) }] : []),
+    ...(c.channel === "web" ? [{ id: "delete", label: "删除", icon: "trash", danger: true, onclick: () => deleteConv(key) }] : []),
+  ];
+}
+
+/** 侧栏会话的右键菜单 */
+export function openConvContextMenu(key, at) {
+  const items = convMenuItems(key);
+  if (items.length) showMenu(at, items);
 }
 
 /**

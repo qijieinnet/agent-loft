@@ -5,6 +5,7 @@ import { h, icon, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { renderMarkdown } from "../lib/markdown.js";
 import { S } from "../state.js";
+import { mountAlbums } from "../lib/albums.js";
 
 const fileUrl = (key, p, extra = "") =>
   `/api/conversations/${encodeURIComponent(key)}/file?path=${encodeURIComponent(p)}${extra}`;
@@ -80,11 +81,13 @@ function fileLink(key, p, ...children) {
 }
 
 /** patchMarkdown 的 enhance：把一块回复里的文件路径（链接、行内代码、正文里的绝对路径、图片）变成能点开的 */
-export function linkReplyFiles(box) {
+export function linkReplyFiles(box, { final = true } = {}) {
   const key = S.current;
   if (!key) return;
+  mountAlbums(box, key, final);
   embedVisualizations(box, key);
   for (const a of box.querySelectorAll("a[href]")) {
+    if (a.closest(".photo-album")) continue;
     const p = hrefPath(a.getAttribute("href"));
     if (!p) continue;
     a.replaceWith(fileLink(key, p, ...a.childNodes));
@@ -95,6 +98,7 @@ export function linkReplyFiles(box) {
     if (p) code.replaceWith(fileLink(key, p, code.cloneNode(true)));
   }
   for (const img of box.querySelectorAll("img[src]")) {
+    if (img.closest(".photo-album")) continue;
     const p = hrefPath(img.getAttribute("src"));
     if (!p) continue;
     const alt = img.getAttribute("alt") || p.split("/").pop();
@@ -110,7 +114,7 @@ export function linkReplyFiles(box) {
 
 function linkTextPaths(box, key) {
   const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => (n.parentElement?.closest("pre, code, a") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    acceptNode: (n) => (n.parentElement?.closest("pre, code, a, .photo-album") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   });
   const nodes = [];
   for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.nodeValue.includes("/")) nodes.push(n);

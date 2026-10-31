@@ -77,7 +77,80 @@ async function fixture(t, viewport) {
   return page;
 }
 
+test("相册：流式半段 JSON 不加载图片，完整后渲染；预览失败回退，删除块关闭弹层，错误格式保留源码", async (t) => {
+  const page = await fixture(t, { width: 1280, height: 800 });
+  await page.route("**/api/conversations/*/file?*", (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("path") === "/tmp/preview.jpg") return route.fulfill({ status: 404, body: "gone" });
+    return route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=", "base64") });
+  });
+  await page.evaluate(async () => {
+    const { renderMarkdown, patchMarkdown } = await import("/lib/markdown.js");
+    const { linkReplyFiles } = await import("/views/file-preview.js");
+    window.patchAlbum = (text, live = false) => patchMarkdown(window.albumBox, text, { live, enhance: linkReplyFiles });
+    window.albumBox = renderMarkdown('```album\n{"items":[', { live: true, enhance: linkReplyFiles });
+    window.ui.msgInner.append(window.albumBox);
+  });
+  const box = page.locator(".md").filter({ has: page.locator(".album-pending") });
+  assert.equal(await box.locator("img").count(), 0);
+  assert.equal(await page.locator(".album-pending").textContent(), "正在整理相册…");
+  await page.evaluate(() => window.patchAlbum('```album\n' + JSON.stringify({ title: '<img src=x onerror="alert(1)">', items: [{ src: "/tmp/thumb.webp", preview: "/tmp/preview.jpg", name: "照片" }] }) + '\n```'));
+  assert.equal(await page.locator(".album-grid img").count(), 1);
+  assert.equal(await page.locator(".album-head img").count(), 0, "标题作为文字显示");
+  await page.getByRole("button", { name: "查看第 1 张：照片", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".photo-status")?.textContent === "预览不可用，显示缩略图");
+  assert.equal(new URL(await page.locator(".photo-stage img").getAttribute("src"), page.url()).searchParams.get("path"), "/tmp/thumb.webp");
+  await page.evaluate(() => window.patchAlbum("改为普通文字"));
+  assert.equal(await page.locator(".photo-viewer").count(), 0);
+  await page.evaluate(() => window.patchAlbum('```album\n{"items":[{"src":"https://remote.example/photo.jpg"}]}\n```'));
+  assert.equal(await page.locator(".album-grid").count(), 0);
+  assert.equal(await page.locator(".album-error").textContent(), "相册图片需要使用已下载的本地绝对路径");
+  assert.match(await page.locator("pre code.language-album").textContent(), /remote\.example/);
+  await page.evaluate(() => window.patchAlbum('```album\n{"items":[]}\n```'));
+  assert.equal(await page.locator(".album-empty").textContent(), "没有照片");
+});
+
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`${viewport.width}px：相册分页、懒加载、预览方向键和关闭，后续文字更新保留当前页`, async (t) => {
+    const page = await fixture(t, viewport);
+    await page.route("**/api/conversations/*/file?*", (route) => route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=", "base64"),
+    }));
+    await page.evaluate(() => {
+      const items = Array.from({ length: 29 }, (_, i) => ({ src: `/tmp/家庭 ${i}.webp`, preview: `/tmp/预览 ${i}.jpg`, name: `家庭相片 ${i + 1} 非常长的名字`, date: "2026-10-31", caption: "香港" }));
+      window.albumItem = window.messages.addItem({ type: "ai", steps: [], committed: '```album\n' + JSON.stringify({ title: "家庭相片", total: 120, items }) + '\n```', partial: "", done: true });
+    });
+    const album = page.locator(".photo-album");
+    const tiles = album.locator(".album-tile");
+    assert.equal(await tiles.count(), 12);
+    assert.equal(await album.getByText("已载入 29 / 共 120 张").isVisible(), true);
+    assert.equal(await album.locator("img").first().getAttribute("loading"), "lazy");
+    const source = new URL(await album.locator("img").first().getAttribute("src"), page.url());
+    assert.equal(source.pathname, "/api/conversations/web%3A1/file");
+    assert.equal(source.searchParams.get("path"), "/tmp/家庭 0.webp");
+    await album.getByRole("button", { name: "相册下一页" }).click();
+    assert.match(await tiles.first().getAttribute("aria-label"), /第 13 张/);
+    await page.evaluate(() => { window.albumItem.committed += "\n\n这是相册之后的新文字。"; window.messages.updateItem(window.albumItem); });
+    await page.getByText("这是相册之后的新文字。", { exact: true }).waitFor();
+    assert.match(await tiles.first().getAttribute("aria-label"), /第 13 张/);
+    await tiles.first().click();
+    const viewer = page.getByRole("dialog", { name: "照片预览" });
+    assert.equal(await viewer.locator(".photo-count").textContent(), "13 / 29");
+    assert.equal(new URL(await viewer.locator("img").getAttribute("src"), page.url()).searchParams.get("path"), "/tmp/预览 12.jpg");
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await viewer.locator(".photo-count").textContent(), "14 / 29");
+    await page.keyboard.press("ArrowLeft");
+    assert.equal(await viewer.locator(".photo-count").textContent(), "13 / 29");
+    await page.keyboard.press("Escape");
+    await viewer.waitFor({ state: "detached" });
+    assert.equal(await tiles.first().evaluate((el) => document.activeElement === el), true);
+    await album.getByRole("button", { name: "相册下一页" }).click();
+    assert.equal(await tiles.count(), 5);
+    assert.equal(await album.getByRole("button", { name: "相册下一页" }).isDisabled(), true);
+    assert.ok(await album.evaluate((el) => el.scrollWidth <= el.clientWidth), "窄屏相册不横向溢出");
+  });
+
   test(`${viewport.width}px：排队保持当前轮定位，回复继续跟随，开始下一轮才切换`, async (t) => {
     const page = await fixture(t, viewport);
     assert.ok(Math.abs(await page.evaluate(() => window.position("active"))) < 3);

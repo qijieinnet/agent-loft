@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { home } from "../home.js";
 import { uploadsRoot } from "./uploads.js";
+import { albumReferences } from "./albums.js";
 
 /** 路径里出现这些目录名就不给看（私钥、云凭据、密码库…） */
 const SENSITIVE_DIRS = new Set([".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", ".gcloud"]);
@@ -100,7 +101,9 @@ const PATH_CHAR = /[\p{L}\p{N}_\-./~@+]/u;
 export function mentions(text: string, p: string): boolean {
   const needle = p.trim();
   if (!needle) return false;
-  const hay = withDecoded(text);
+  const refs = albumReferences(text);
+  if (refs.paths.includes(needle)) return true;
+  const hay = withDecoded(refs.text);
   for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
     const before = hay[i - 1];
     const after = hay[i + needle.length];

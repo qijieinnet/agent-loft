@@ -18,7 +18,7 @@ export function renderMarkdown(text, opts) {
  * 把 div 里的 markdown 更新成 text，只重画变了的块（段落、列表、代码块…）。
  * 流式输出时前面的块不再变，每帧只需重画最后一两块；选中的文字、代码块的横向滚动也不会被冲掉。
  * live = 还在输出：最后一块随时会变，先不高亮，等它定下来再高亮。
- * enhance(box)：每块画好后再加工一下（比如把回复里的文件路径变成能点开的）。
+ * enhance(box, { final })：每块画好后再加工一下（比如把文件路径变成链接、完整相册块变成网格）。
  * 按块拼起来和整段解析的结果一样（marked 的 parser 本来就是逐块拼接的）。
  */
 export function patchMarkdown(div, text, { live = false, enhance } = {}) {
@@ -55,7 +55,7 @@ export function patchMarkdown(div, text, { live = false, enhance } = {}) {
     const box = document.createElement("div");
     box.innerHTML = DOMPurify.sanitize(marked.parser(chunk), { ADD_ATTR: ["target"] });
     decorate(box, final);
-    enhance?.(box);
+    enhance?.(box, { final });
     const nodes = [...box.childNodes];
     div.append(...nodes);
     blocks.push({ raw: raws[i], final, nodes });
@@ -76,7 +76,7 @@ function decorate(root, highlight) {
     pre.prepend(h("div", { class: "code-head" }, h("span", {}, lang || "code"), copy));
     const diagram = diagramLang(code);
     if (diagram) mountDiagram(pre, code, diagram, highlight);
-    else if (highlight) lazyHighlight.observe(code);
+    else if (highlight && lang !== "album") lazyHighlight.observe(code);
   }
 }
 
