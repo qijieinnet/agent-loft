@@ -54,7 +54,7 @@ export function closeMenu() {
   removeEventListener("blur", closeMenu);
 }
 
-/** beforeClose：点 × 或点外面关闭前先问它，返回（或 resolve 成）false 就不关。返回的 close 不问，直接关 */
+/** 弹窗只通过按钮关闭，点击遮罩不关闭。beforeClose：点 × 前先问它，false 就不关。返回的 close 直接关 */
 export function modal({ title, body, foot, wide, tall, className = "", beforeClose }) {
   const close = () => overlay.remove();
   const tryClose = async () => {
@@ -62,11 +62,11 @@ export function modal({ title, body, foot, wide, tall, className = "", beforeClo
   };
   const overlay = h(
     "div",
-    { class: "overlay", onclick: (e) => e.target === overlay && void tryClose() },
+    { class: "overlay" },
     h(
       "div",
       { class: `modal${wide ? " wide" : ""}${tall ? " tall" : ""}${className ? ` ${className}` : ""}` },
-      h("div", { class: "modal-head" }, h("h3", {}, title), h("button", { class: "icon-btn", onclick: () => void tryClose() }, icon("x"))),
+      h("div", { class: "modal-head" }, h("h3", {}, title), h("button", { class: "icon-btn", "aria-label": "关闭", onclick: () => void tryClose() }, icon("x"))),
       body,
       foot ?? null,
     ),
@@ -110,7 +110,7 @@ export function placePopover(pop, anchor) {
 
 /**
  * 确认弹窗（替代浏览器自带的 confirm），样式和重命名弹窗一致。
- * 回车确认、Esc / 点外面取消；resolve 成 true / false
+ * 回车确认，点击取消按钮取消；resolve 成 true / false
  */
 /** altText：给了就多一个按钮，点它返回 "alt"（确定返回 true，取消返回 false） */
 export function confirmDialog({ title, message, sub, confirmText = "确定", danger = false, altText }) {
@@ -125,10 +125,7 @@ export function confirmDialog({ title, message, sub, confirmText = "确定", dan
       resolve(v);
     };
     const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        done(false);
-      } else if (e.key === "Enter" && !e.isComposing) {
+      if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
         done(true);
       }
@@ -137,7 +134,7 @@ export function confirmDialog({ title, message, sub, confirmText = "确定", dan
     cancel.onclick = () => done(false);
     const overlay = h(
       "div",
-      { class: "overlay dialog-overlay", onclick: (e) => e.target === overlay && done(false) },
+      { class: "overlay dialog-overlay" },
       h(
         "div",
         { class: "dialog confirm-dialog" },

@@ -15,7 +15,7 @@ const vendor = {
 };
 const defaults = ["search", "tasks", "library", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
 
-async function fixture(t, { mobile = false, colorScheme = "light" } = {}) {
+async function fixture(t, { mobile = false, colorScheme = "light", feishu = false } = {}) {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -35,18 +35,37 @@ async function fixture(t, { mobile = false, colorScheme = "light" } = {}) {
   let saves = 0;
   let failSave = false;
   const conv = { key: "web:1", channel: "web", channelId: "web", agent: "claude", title: "Test", cwd: "/workspace", activeAt: 1, busy: false };
+  const botConvs = Array.from({ length: 17 }, (_, i) => ({ ...conv, key: `feishu:bot:${i}`, channel: "feishu", channelId: "bot", title: `飞书聊天 ${i}`, activeAt: 100 - i, cwd: "/workspace/feishu", agent: "codex", expert: { id: "e_helper", name: "助手", engine: "codex" } }));
+  let botLoads = 0;
+  let failBotLoad = false;
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.startsWith("/api/")) {
       let data = { ok: true };
       if (url.pathname === "/api/me") data = { authed: true, user: { id: "u1", role: "admin" } };
       if (url.pathname === "/api/bootstrap") data = {
-        user: { id: "u1", role: "admin" }, agents: [], bots: [], pending: [], conversations: [conv],
+        user: { id: "u1", role: "admin" }, agents: feishu ? [{ id: "claude", enabled: true, available: true }, { id: "codex", enabled: true, available: true }] : [],
+        experts: feishu ? [botConvs[0].expert] : [],
+        bots: feishu ? [{ id: "bot", name: "阿奇", agents: ["codex"] }, { id: "empty", name: "空机器人", agents: ["claude"] }] : [], pending: [],
+        conversations: feishu ? [...new Map([conv, botConvs[0], botConvs.find((c) => c.key === url.searchParams.get("current"))].filter(Boolean).map((c) => [c.key, c])).values()] : [conv],
         workspaceRoot: "/workspace", quotaEnabled: false, sidebarNav: saved,
         remote: { allowed: true, terminal: { allowed: true, available: true } },
         sidebar: { recent: { next: null }, dirs: [{ dir: "/workspace", at: 1, next: null }] },
       };
-      if (url.pathname.endsWith("/history")) data = { info: conv, allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
+      if (url.pathname.endsWith("/history")) {
+        const key = decodeURIComponent(url.pathname.split("/")[3]);
+        data = { info: [conv, ...botConvs].find((c) => c.key === key), allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
+      }
+      if (url.pathname.startsWith("/api/agents/")) data = { models: [] };
+      if (url.pathname === "/api/conversations/page" && url.searchParams.get("scope") === "bot") {
+        botLoads++;
+        if (failBotLoad) return route.fulfill({ status: 500, json: { error: "测试加载失败" } });
+        const list = url.searchParams.get("bot") === "bot" ? botConvs : [];
+        const start = url.searchParams.has("key") ? list.findIndex((c) => c.key === url.searchParams.get("key")) + 1 : 0;
+        const items = list.slice(start, start + Number(url.searchParams.get("limit") || 200));
+        const last = items.at(-1);
+        data = { conversations: items, next: last && start + items.length < list.length ? { at: last.activeAt, key: last.key } : null };
+      }
       if (url.pathname === "/api/ui/sidebar-nav") {
         saves++;
         if (failSave) return route.fulfill({ status: 500, json: { error: "测试保存失败" } });
@@ -67,8 +86,79 @@ async function fixture(t, { mobile = false, colorScheme = "light" } = {}) {
   await page.goto("https://sidebar.example.test/#web%3A1");
   await page.waitForFunction(() => window.booted);
   if (mobile) await page.locator(".topbar .menu-btn").click();
-  return { page, getSaved: () => saved, getSaves: () => saves, failSave: (value = true) => { failSave = value; } };
+  return { page, getSaved: () => saved, getSaves: () => saves, failSave: (value = true) => { failSave = value; }, getBotLoads: () => botLoads, failBotLoad: (value = true) => { failBotLoad = value; } };
 }
+
+for (const mobile of [false, true]) {
+  test(`${mobile ? "触屏" : "桌面"}：飞书分组展开、分页、记住折叠状态，加号继承专家和目录`, async (t) => {
+    const { page, getBotLoads } = await fixture(t, { mobile, feishu: true });
+    const bot = page.locator('[data-bot="bot"]');
+    const header = bot.locator(".conv-item.proj");
+    const chats = page.locator('.conv-list [data-key^="feishu:bot:"]');
+    assert.equal(getBotLoads(), 0);
+    assert.equal(await header.getAttribute("aria-expanded"), "false");
+    assert.equal(await bot.locator(".feishu-mark").isVisible(), !mobile);
+    assert.equal(await bot.locator(".bot-plus").isVisible(), mobile);
+    if (!mobile) {
+      await header.hover();
+      assert.equal(await bot.locator(".feishu-mark").isVisible(), false);
+      assert.equal(await bot.locator(".bot-plus").isVisible(), true);
+      await page.mouse.move(1000, 100);
+      assert.equal(await bot.locator(".feishu-mark").isVisible(), true);
+      await bot.locator(".bot-new").focus();
+      assert.equal(await bot.locator(".bot-plus").isVisible(), true);
+    }
+    await header.click();
+    await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
+    assert.equal(await chats.first().locator(".title").textContent(), "飞书聊天 0");
+    assert.equal(getBotLoads(), 1);
+    await page.locator(".sub-more .conv-more").getByText("展开显示", { exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 15);
+    await page.locator(".sub-more .conv-more").getByText("展开显示", { exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 17);
+    await page.locator(".sub-more .conv-more").getByText("收起", { exact: true }).click();
+    assert.equal(await chats.count(), 5);
+    await header.click();
+    assert.equal(await chats.count(), 0);
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await header.getAttribute("aria-expanded"), "false");
+    await header.click();
+    await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
+    await chats.nth(2).click();
+    await page.waitForFunction(() => S.current === "feishu:bot:2");
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await chats.nth(2).evaluate((el) => el.classList.contains("active")), true);
+    await header.click();
+    assert.equal(await chats.count(), 0, "当前会话所在分组也能折叠");
+    await bot.locator(".bot-new").click();
+    assert.deepEqual(await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]), [null, "e_helper", "codex", "/workspace/feishu", true]);
+    assert.equal(await page.locator(".modal").count(), 0);
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    await page.locator('[data-bot="empty"] .conv-item.proj').click();
+    await page.getByText("还没有会话", { exact: true }).waitFor();
+  });
+}
+
+test("飞书分组：加载失败可重试，刷新后补齐展开的列表，直达会话自动展开", async (t) => {
+  const { page, failBotLoad } = await fixture(t, { feishu: true });
+  const header = page.locator('[data-bot="bot"] .conv-item.proj');
+  failBotLoad();
+  await header.click();
+  await page.getByRole("button", { name: "加载失败，点击重试", exact: true }).waitFor();
+  failBotLoad(false);
+  await page.getByRole("button", { name: "加载失败，点击重试", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
+  await page.reload();
+  await page.waitForFunction(() => window.booted && document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
+  await header.click();
+  await page.goto("https://sidebar.example.test/#feishu%3Abot%3A2");
+  await page.reload();
+  await page.waitForFunction(() => window.booted && document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
+  assert.equal(await header.getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator('[data-key="feishu:bot:2"]').evaluate((el) => el.classList.contains("active")), true);
+});
 
 async function openEditor(page, mobile = false) {
   const more = page.locator("#sidebar-more");
@@ -156,6 +246,10 @@ test("编辑：取消不保存；保存失败保留编辑；支持键盘排序�
   let dialog = page.getByRole("dialog", { name: "编辑侧边栏", exact: true });
   await dialog.getByRole("checkbox", { name: "搜索", exact: true }).uncheck();
   await page.keyboard.press("Escape");
+  await page.locator(".overlay").click({ position: { x: 1, y: 1 } });
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(await dialog.getByRole("checkbox", { name: "搜索", exact: true }).isChecked(), false);
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(getSaves(), 0);
   assert.equal(await page.locator('.sidebar-nav [data-nav="search"]').isVisible(), true);
   await openEditor(page);

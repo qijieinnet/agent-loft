@@ -546,7 +546,7 @@ async function continueInFeishu(key) {
   );
 }
 
-/** 飞书机器人的历史会话：这个机器人的所有聊天（侧栏只拿了最近的一条，这里去服务端拉全），按活跃时间排，点一下打开 */
+/** 飞书机器人的历史会话：独立于侧栏分页拉取，按活跃时间排，点一下打开 */
 export async function openBotConversations(botId) {
   const bot = S.bots.find((b) => b.id === botId);
   const body = h("div", { class: "modal-body" }, h("span", { class: "spinner" }));

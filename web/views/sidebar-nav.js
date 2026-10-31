@@ -248,10 +248,6 @@ function editSidebar() {
       }
       return;
     }
-    if (e.key !== "Escape") return;
-    e.preventDefault();
-    e.stopPropagation();
-    close();
   };
   const done = h("button", {
     class: "btn primary",

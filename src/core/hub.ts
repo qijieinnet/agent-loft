@@ -632,6 +632,32 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       .sort((a, b) => b.activeAt - a.activeAt);
   }
 
+  /** 旧版飞书会话没有自动命名；只为当前要显示的会话从已有记录补首条消息。 */
+  async backfillFeishuTitles(list: ConversationInfo[]): Promise<ConversationInfo[]> {
+    return Promise.all(list.map(async (info) => {
+      const conv = getConversation(info.key);
+      if (!conv || conv.channel !== "feishu" || conv.title || conv.titleAuto === false) return info;
+      const { agent, cwd } = conv;
+      const sessionId = agentBinding(conv).sessionId;
+      const driver = this.enabledAgents().find((d) => d.id === agent);
+      if (!sessionId || !driver) return info;
+      try {
+        const messages = await withTimeout(driver.readHistory(sessionId, cwd), "读取会话标题", 3000);
+        const first = messages.find((m) => m.role === "user" && m.text.trim());
+        const now = getConversation(info.key);
+        // 读记录期间用户可能改名、切专家或切目录，不能把旧标题写进新会话。
+        if (first && now && !now.title && now.titleAuto !== false && now.agent === agent && now.cwd === cwd && agentBinding(now).sessionId === sessionId) {
+          updateConversation(info.key, { title: first.text.trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
+          this.emitEvent(info.key, { type: "meta" });
+          this.syncTitle(info.key, agent);
+        }
+      } catch (err) {
+        console.warn(`[${agent}] 补齐飞书会话标题失败:`, err instanceof Error ? err.message : err);
+      }
+      return this.info(info.key) ?? info;
+    }));
+  }
+
   /** 取活着的 agent 会话，没有就按绑定拉起（默认续用上次的会话）。 */
   session(key: string, opts: { resumeId?: string; fork?: boolean } = {}): AgentSession {
     const conv = getConversation(key);
@@ -1016,7 +1042,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 闲置过期要按这次说话之前的活跃时间判断，所以先记下、后 touch
     const lastActive = conv.activeAt;
     touchConversation(key);
-    if (!conv.title && conv.channel === "web" && shown.text.trim()) {
+    if (!conv.title && conv.titleAuto !== false && (conv.channel === "web" || conv.channel === "feishu") && shown.text.trim()) {
       // 先用首条消息占位，第一轮结束后换成 agent 自己生成的短标题（syncTitle）
       updateConversation(key, { title: shown.text.trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
       this.emitEvent(key, { type: "meta" });

@@ -255,6 +255,40 @@ button.conv-group:hover {
   display: grid;
 }
 
+/* 飞书分组的同一位置：平时显示飞书，悬停或键盘聚焦时显示新建加号。 */
+.bot-row .conv-item.proj {
+  padding-right: 36px;
+}
+
+.bot-new {
+  display: grid;
+}
+
+.bot-new .feishu-mark,
+.bot-new .bot-plus {
+  grid-area: 1 / 1;
+}
+
+.bot-new .feishu-mark,
+.bot-new .feishu-mark svg {
+  width: 14px;
+  height: 14px;
+}
+
+.bot-new .bot-plus {
+  visibility: hidden;
+}
+
+.bot-row:hover .bot-new .feishu-mark,
+.bot-row:focus-within .bot-new .feishu-mark {
+  visibility: hidden;
+}
+
+.bot-row:hover .bot-new .bot-plus,
+.bot-row:focus-within .bot-new .bot-plus {
+  visibility: visible;
+}
+
 /* 鼠标挪到右边的加号上时，整行的 hover 底色还留着 */
 .proj-row:hover .conv-item.proj {
   padding-right: 36px;
@@ -265,6 +299,14 @@ button.conv-group:hover {
 @media (pointer: coarse) {
   .proj-new {
     display: grid;
+  }
+
+  .bot-new .bot-plus {
+    visibility: visible;
+  }
+
+  .bot-new .feishu-mark {
+    visibility: hidden;
   }
 }
 

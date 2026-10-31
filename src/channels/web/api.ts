@@ -694,7 +694,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
       quotaEnabled: config().web.quotaEnabled,
-      conversations: [...keep.values()],
+      conversations: await hub.backfillFeishuTitles([...keep.values()]),
       sidebar: {
         recent: { next: recent.next },
         // 展开着的目录带上翻页游标（没带 next 的目录前端还没拉过）
@@ -813,13 +813,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
 
   // ----- 会话 -----
-  // 侧栏按页拉：scope=recent（最近）/ dir（某个项目目录）按树分页；bot（某个飞书机器人的全部聊天）平铺
+  // 侧栏按页拉：recent / dir / bot 按树分页；bot 不传 limit 时保留历史弹窗的平铺列表。
   if (p === "/api/conversations/page" && method === "GET") {
     const all = hub.list(visible).filter((c) => !c.hidden);
     const scope = url.searchParams.get("scope");
     if (scope === "bot") {
       const bot = url.searchParams.get("bot") ?? "";
-      sendJson(res, 200, { conversations: all.filter((c) => c.channel === "feishu" && c.channelId === bot).slice(0, 200), next: null });
+      const list = all.filter((c) => c.channel === "feishu" && c.channelId === bot);
+      const before = parseCursor(url.searchParams.get("at"), url.searchParams.get("key"));
+      const page = url.searchParams.has("limit")
+        ? pageOf(list, before, clampLimit(url.searchParams.get("limit"), 5))
+        : { conversations: list.slice(0, 200), next: null };
+      page.conversations = await hub.backfillFeishuTitles(page.conversations);
+      sendJson(res, 200, page);
       return;
     }
     if (scope !== "recent" && scope !== "dir") throw new HttpError(400, "scope 只能是 recent / dir / bot");

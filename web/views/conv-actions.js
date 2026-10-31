@@ -396,7 +396,7 @@ export async function changeCwd(pick) {
   await load(startRel);
 }
 
-/** 重命名：小弹窗，回车保存、Esc 取消，打开时全选原名 */
+/** 重命名：小弹窗，回车保存、按钮取消，打开时全选原名 */
 export function renameConv(key = S.current) {
   const c = S.convs.get(key);
   if (!c) return;
@@ -424,10 +424,7 @@ export function renameConv(key = S.current) {
     }
   };
   const onKey = (e) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-    } else if (e.key === "Enter" && !e.isComposing && document.activeElement === input) {
+    if (e.key === "Enter" && !e.isComposing && document.activeElement === input) {
       e.preventDefault();
       void submit();
     }
@@ -436,7 +433,7 @@ export function renameConv(key = S.current) {
   cancel.onclick = close;
   const overlay = h(
     "div",
-    { class: "overlay dialog-overlay", onclick: (e) => e.target === overlay && close() },
+    { class: "overlay dialog-overlay" },
     h(
       "div",
       { class: "dialog" },

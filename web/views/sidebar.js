@@ -240,8 +240,8 @@ function agentShort(id) {
   return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
 }
 
-/** 侧栏里展开 / 收起的状态：哪些项目目录展开了、哪些分组折叠了、哪些主对话的分叉折叠了、目录的顺序（more 是老版本的，不再用） */
-export const sideState = { open: [], more: [], folded: [], forkFolded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
+/** 侧栏状态：展开的项目和机器人、折叠的分组和分叉、目录顺序（more 是老版本的，不再用） */
+export const sideState = { open: [], botOpen: [], more: [], folded: [], forkFolded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
 
 /**
  * 「项目」目录的顺序固定按 sideState.order，新消息不会把目录顶到前面。
@@ -334,11 +334,17 @@ const MORE_STEP = 10;
 // next：下一页的游标；null = 没有更多了；undefined = 这个目录还没拉过。
 
 /** full：老版本服务端一次给了全部，不用再拉 */
-const pages = { recent: { show: RECENT_LIMIT, next: null, loading: false }, dirs: new Map(), dirAt: new Map(), full: false };
+const pages = { recent: { show: RECENT_LIMIT, next: null, loading: false }, dirs: new Map(), bots: new Map(), dirAt: new Map(), full: false };
 
 function dirState(dir) {
   let st = pages.dirs.get(dir);
   if (!st) pages.dirs.set(dir, (st = { show: PROJECT_LIMIT, next: pages.full ? null : undefined, loading: false }));
+  return st;
+}
+
+function botState(id) {
+  let st = pages.bots.get(id);
+  if (!st) pages.bots.set(id, (st = { show: PROJECT_LIMIT, next: pages.full ? null : undefined, loading: false }));
   return st;
 }
 
@@ -355,6 +361,11 @@ export function applyBootstrap(data) {
   S.sidebarNav = data.sidebarNav ?? null;
   S.convs = new Map(data.conversations.map((c) => [c.key, c]));
   pages.full = !data.sidebar;
+  // bootstrap 只带每个机器人最近的一条；展开的列表需要重新补齐。
+  for (const st of pages.bots.values()) {
+    st.next = pages.full ? null : undefined;
+    st.failed = false;
+  }
   pages.recent.next = data.sidebar?.recent.next ?? null;
   pages.dirAt = new Map((data.sidebar?.dirs ?? []).map((d) => [d.dir, d.at]));
   const fetched = new Map((data.sidebar?.dirs ?? []).filter((d) => "next" in d).map((d) => [d.dir, d.next]));
@@ -480,27 +491,70 @@ export function renderSidebar() {
     );
 
   const nodes = [];
-  // 飞书机器人独立显示在文件夹后面，点击打开它最近活跃的聊天
+  // 飞书机器人和项目一样展开会话，独立显示在文件夹后面。
+  if (cur?.channel === "feishu" && cur.key !== autoOpenedFor) {
+    autoOpenedFor = cur.key;
+    if (!sideState.botOpen.includes(cur.channelId)) {
+      sideState.botOpen.push(cur.channelId);
+      saveSideState();
+    }
+  }
   const botRows = [];
   for (const bot of S.bots) {
     const convs = visible.filter((c) => c.channel === "feishu" && c.channelId === bot.id);
     if (bot.enabled === false && convs.length === 0) continue;
     const latest = convs[0];
-    botRows.push({
-      at: latest?.activeAt ?? 0,
-      el: h(
+    const expanded = sideState.botOpen.includes(bot.id);
+    const rows = [h(
+      "div",
+      { class: "proj-row bot-row", "data-bot": bot.id },
+      h(
         "button",
         {
-          class: `conv-item${!S.view && cur?.channel === "feishu" && cur.channelId === bot.id ? " active" : ""}`,
-          "data-bot": bot.id,
-          title: latest ? `飞书 · ${bot.name}\n${agentLabel(latest.agent)} · ${latest.cwd}` : `飞书 · ${bot.name}\n还没有会话`,
-          onclick: () => (latest ? open(latest.key) : toast("这个机器人还没有会话，先在飞书里给它发条消息")),
+          class: "conv-item proj",
+          title: `飞书 · ${bot.name}`,
+          "aria-expanded": String(expanded),
+          onclick: () => toggleSide("botOpen", bot.id),
         },
         h("span", { class: "title" }, bot.name),
-        status(convs.map((c) => c.key)),
-        convExpertMark(latest),
-        h("span", { class: "brand-icon feishu-mark", title: "飞书", html: ICON.feishu }),
+        caret(!expanded),
+        expanded ? null : status(convs.map((c) => c.key)),
       ),
+      h(
+        "button",
+        {
+          class: "proj-new bot-new",
+          title: `使用 ${bot.name} 的专家和工作目录开新对话`,
+          "aria-label": `使用 ${bot.name} 的专家和工作目录开新对话`,
+          onclick: () => {
+            S.draftCwd = latest?.cwd && latest.cwd !== S.workspaceRoot ? latest.cwd : null;
+            S.draftCwdPicked = true;
+            const expert = latest?.expert?.id ?? latest?.agent ?? bot.agents?.[0];
+            if (expert) setDraftExpert(expert);
+            newDraft();
+            closeSide();
+          },
+        },
+        h("span", { class: "brand-icon feishu-mark", html: ICON.feishu, "aria-hidden": "true" }),
+        h("span", { class: "bot-plus", "aria-hidden": "true" }, icon("plus")),
+      ),
+    )];
+    if (expanded) {
+      const st = botState(bot.id);
+      const load = (limit) => fetchPage(st, { scope: "bot", bot: bot.id, limit: String(limit) });
+      if (st.next === undefined && !st.loading && !st.failed) void load(st.show);
+      const forest = loadedPrefix(st, forkForest(convs));
+      for (const node of forest.slice(0, st.show)) {
+        rows.push(renderForkNode(node, (c, orphan, fold) => convRow(c, " sub", `${agentLabel(c.agent)} · ${c.cwd}`, orphan, fold)));
+      }
+      if (!convs.length && !st.loading && !st.failed) rows.push(h("div", { class: "conv-empty sub" }, "还没有会话"));
+      if (st.failed) rows.push(h("button", { class: "conv-more", onclick: () => { void load(st.show); renderSidebar(); } }, "加载失败，点击重试"));
+      const btn = moreButton(st, forest.length, PROJECT_LIMIT, load);
+      if (btn) rows.push(h("div", { class: "sub-more" }, btn));
+    }
+    botRows.push({
+      at: latest?.activeAt ?? 0,
+      rows,
     });
   }
 
@@ -636,7 +690,7 @@ export function renderSidebar() {
       if (btn) nodes.push(h("div", { class: "sub-more" }, btn));
     }
   }
-  nodes.push(...botRows.sort((a, b) => b.at - a.at).map((r) => r.el));
+  nodes.push(...botRows.sort((a, b) => b.at - a.at).flatMap((r) => r.rows));
   if (!nodes.length) nodes.push(h("div", { class: "conv-empty" }, "还没有会话"));
   paintList(nodes, askKeys.size);
 }

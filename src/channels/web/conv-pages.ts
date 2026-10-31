@@ -9,7 +9,7 @@ export type Cursor = { at: number; key: string };
 export type Page = { conversations: ConversationInfo[]; next: Cursor | null };
 type Tree = { root: ConversationInfo; convs: ConversationInfo[]; at: number };
 
-/** 最近：飞书以外的会话（飞书按机器人各占一行，另外给） */
+/** 最近：飞书以外的会话（飞书单独按机器人分组） */
 export const inRecent = (c: ConversationInfo): boolean => c.channel !== "feishu";
 /** 项目：Web 会话按工作目录分组 */
 export const inDir = (dir: string) => (c: ConversationInfo): boolean => c.channel === "web" && c.cwd === dir;

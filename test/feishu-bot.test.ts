@@ -135,6 +135,8 @@ test("主人说话：默认 agent 回复，以卡片发出", async () => {
   const reply = sent.find((s) => s.kind === "card" && cardText(s.body).includes("codex 收到：你好"));
   assert.ok(reply, `没收到回复：${JSON.stringify(sent).slice(0, 500)}`);
   assert.equal(hub.conversation("feishu:b1:oc_chat")?.perAgent.codex?.sessionId, "codex-session");
+  assert.equal(hub.info("feishu:b1:oc_chat")?.title, "你好");
+  assert.equal(hub.conversation("feishu:b1:oc_chat")?.titleAuto, true);
 });
 
 test("/expert 弹选择卡，/claude 换过去开新会话，换回来也是新会话", async () => {
