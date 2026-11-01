@@ -349,6 +349,10 @@
   color: var(--fg-soft);
 }
 
+.top-menu .pop-item.danger svg {
+  color: inherit;
+}
+
 /* 分布的四种颜色：固定顺序（输入、缓存写入、缓存读取、输出），深色模式用为深色底挑的那一档 */
 .usage {
   --usage-input: #2a78d6;

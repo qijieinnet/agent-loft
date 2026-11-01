@@ -13,7 +13,7 @@ import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
 import { scheduleNav } from "./msg-nav.js";
 import { linkReplyFiles } from "./file-preview.js";
 import { setTodos } from "./todos.js";
-import { expertIcon, findExpert } from "./experts.js";
+import { expertIcon, findExpert, setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
 
 // ---------- 打开会话 ----------
@@ -27,7 +27,20 @@ function leaveTasksView() {
   document.dispatchEvent(new Event("aim:leave-view"));
 }
 
-export function newDraft() {
+export function latestConversation() {
+  return [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
+}
+
+export function newDraft({ inheritLatest = false } = {}) {
+  if (inheritLatest) {
+    const latest = latestConversation();
+    if (latest) {
+      // 目录和专家一起继承，根目录也显式保留，避免创建时退回专家的默认目录。
+      S.draftCwd = latest.cwd || S.workspaceRoot || null;
+      S.draftCwdPicked = true;
+      setDraftExpert(latest.expert?.id ?? latest.agent);
+    }
+  }
   leaveTasksView();
   if (S.current) WS.raw({ t: "unsub", key: S.current });
   S.current = null;
@@ -41,7 +54,7 @@ export function newDraft() {
   setTodos(null);
   setBusy(false);
   renderScheduled();
-  history.replaceState(history.state, "", location.pathname);
+  history.replaceState(history.state, "", "#new");
   WS.presence();
   renderTopbar();
   renderEmpty();

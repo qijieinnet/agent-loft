@@ -15,7 +15,7 @@ const vendor = {
 };
 const defaults = ["search", "tasks", "library", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
 
-async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null } = {}) {
+async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null, bootstrap = {} } = {}) {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -54,10 +54,11 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
         remote: { allowed: true, terminal: { allowed: true, available: true } },
         dirOrder,
         sidebar: { recent: { next: null }, dirs: [conv, ...projectConvs].map((c) => ({ dir: c.cwd, at: c.activeAt, next: null })) },
+        ...bootstrap,
       };
       if (url.pathname.endsWith("/history")) {
         const key = decodeURIComponent(url.pathname.split("/")[3]);
-        data = { info: [conv, ...botConvs].find((c) => c.key === key), allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
+        data = { info: [...(bootstrap.conversations ?? []), conv, ...botConvs].find((c) => c.key === key), allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
       }
       if (url.pathname.startsWith("/api/agents/")) data = { models: [] };
       if (url.pathname === "/api/conversations/page" && url.searchParams.get("scope") === "bot") {
@@ -98,6 +99,79 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
 }
 
 const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.bot ? `feishu:${row.dataset.bot}` : row.dataset.dir));
+
+for (const mobile of [false, true]) {
+  test(`${mobile ? "触屏" : "桌面"}：顶部新建与刷新沿用最近活跃会话的专家和目录`, async (t) => {
+    const expert = { id: "e_helper", name: "助手", engine: "codex", cwd: "/workspace/expert-default" };
+    const latest = { key: "web:latest", channel: "web", channelId: "web", agent: "codex", expert, cwd: "/workspace/recent", activeAt: 100, title: "最近会话", busy: false };
+    const bootstrap = { experts: [expert], conversations: [
+      latest,
+      { ...latest, key: "web:hidden", hidden: true, activeAt: 200, cwd: "/workspace/hidden" },
+      { ...latest, key: "web:1", agent: "claude", expert: undefined, cwd: "/workspace/older", activeAt: 1 },
+    ] };
+    const { page } = await fixture(t, { mobile, feishu: true, bootstrap });
+    await page.evaluate(() => {
+      S.draftExpert = "claude";
+      S.draftAgent = "claude";
+      S.draftCwd = "/workspace/stale";
+      S.draftCwdPicked = true;
+    });
+    await page.locator(".side-top .new-chat").click();
+    const selection = () => page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked, location.hash]);
+    assert.deepEqual(await selection(), [null, "e_helper", "codex", "/workspace/recent", true, "#new"]);
+    assert.equal(await page.locator(".hero-dir").textContent(), "recent");
+
+    // 刷新重新读取服务端最近会话，放弃未发送草稿里临时改过的选择。
+    bootstrap.conversations[0] = { ...latest, cwd: "/workspace", activeAt: 300 };
+    await page.evaluate(() => {
+      S.draftCwd = "/workspace/unsent";
+      localStorage.setItem("aim.expert", "claude");
+      localStorage.setItem("aim.agent", "claude");
+    });
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    assert.deepEqual(await selection(), [null, "e_helper", "codex", "/workspace", true, "#new"]);
+    assert.equal(await page.locator(".hero-dir").textContent(), "workspace");
+
+    // 根目录必须明确提交，不能落到这个专家的默认目录。
+    let created;
+    await page.route("**/api/conversations", async (route) => {
+      created = route.request().postDataJSON();
+      const info = { ...latest, key: "web:created", cwd: created.cwd };
+      bootstrap.conversations.push(info);
+      await route.fulfill({ json: info });
+    });
+    await page.evaluate(async () => {
+      const { ensureConversation } = await import("/views/composer.js");
+      await ensureConversation();
+    });
+    assert.deepEqual(created, { expert: "e_helper", cwd: "/workspace" });
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    assert.equal(await page.evaluate(() => S.current), "web:created", "创建后刷新仍打开该会话");
+  });
+}
+
+test("顶部新建：旧会话沿用内置专家，不可用专家回退；没有历史会话时仍可刷新", async (t) => {
+  const { page } = await fixture(t, { feishu: true });
+  await page.evaluate(() => {
+    S.convs.clear();
+    S.convs.set("web:legacy", { key: "web:legacy", agent: "codex", cwd: "/workspace/legacy", activeAt: 1 });
+  });
+  await page.locator(".side-top .new-chat").click();
+  assert.deepEqual(await page.evaluate(() => [S.draftExpert, S.draftAgent, S.draftCwd]), ["codex", "codex", "/workspace/legacy"]);
+  await page.evaluate(() => {
+    S.convs.get("web:legacy").expert = { id: "deleted-expert" };
+  });
+  await page.locator(".side-top .new-chat").click();
+  assert.deepEqual(await page.evaluate(() => [S.draftExpert, S.draftCwd]), ["claude", "/workspace/legacy"]);
+
+  const empty = await fixture(t, { feishu: true, bootstrap: { conversations: [] } });
+  await empty.page.locator(".side-top .new-chat").click();
+  await empty.page.reload();
+  await empty.page.waitForFunction(() => window.booted);
+  assert.deepEqual(await empty.page.evaluate(() => [S.current, S.draftExpert, S.draftCwd, location.hash]), [null, "claude", null, "#new"]);
+});
 
 test("飞书与项目混合拖拽：置于项目前和项目之间，整组会话跟随，刷新及新设备保留顺序", async (t) => {
   const initial = ["/workspace/project-a", "/workspace", "/workspace/project-b"];

@@ -24,7 +24,7 @@ import { openBotConversations, openConvContextMenu, runDesktopMenu } from "./top
 import { syncDraftExpert } from "./experts.js";
 import { confirmDialog, showMenu } from "../lib/overlay.js";
 import { applyShellInfo, handleAllowEmbed, HOME, mountSwitcher, refreshShellPush, routeToServer, shellBooted, switchServer } from "../lib/shell.js";
-import { bindScrollWatch, newDraft, openConversation, scrollToBottom } from "./messages.js";
+import { bindScrollWatch, latestConversation, newDraft, openConversation, scrollToBottom } from "./messages.js";
 import { bindFileDrop, renderComposer } from "./composer.js";
 import { openSearch } from "./conv-search.js";
 import { createNav } from "./msg-nav.js";
@@ -165,9 +165,10 @@ export async function boot() {
   if (srv && srv !== HOME) routeToServer(srv, decodeURIComponent(landing.hash.slice(1)));
   const fromHash = decodeURIComponent(location.hash.slice(1));
   // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
-  const latest = [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
+  const latest = latestConversation();
   if (fromHash === "tasks") openTasksView();
   else if (fromHash === "library") openLibraryView();
+  else if (fromHash === "new") newDraft({ inheritLatest: true });
   else if (fromHash.startsWith("remote") && remoteTabs().length) {
     // 刷新前在远程控制里：底下先放上最近的对话，切回对话时就是它
     if (latest) await openConversation(latest.key);
@@ -272,7 +273,7 @@ function renderLayout() {
     h(
       "div",
       { class: "side-top" },
-      h("button", { class: "btn new-chat", onclick: () => (newDraft(), closeSide()) }, icon("plus"), "新建"),
+      h("button", { class: "btn new-chat", onclick: () => (newDraft({ inheritLatest: true }), closeSide()) }, icon("plus"), "新建"),
     ),
     createSidebarNav({ search: openSearch, tasks: openTasksView, library: openLibraryView, remote: openRemoteView, settings: openSettings }),
     ui.convList,
