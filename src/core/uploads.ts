@@ -1,5 +1,5 @@
 // 附件落盘：每条会话一个上传目录。发出去的附件收进资料库（见 library.ts），开新会话也不删；
-// 对话没了、或者上传了一直没发的，启动时清掉（library.ts 的 tidyLibrary）。
+// 删除对话时立即清理；对话已不存在、或者上传了一直没发的，启动时补清（library.ts 的 tidyLibrary）。
 //
 // 放在家目录下而不是项目目录里，免得弄脏用户的仓库。agent 需要能直接读这些文件：
 // Claude 通过 additionalDirectories 放行，Codex 的沙箱本来就允许读。

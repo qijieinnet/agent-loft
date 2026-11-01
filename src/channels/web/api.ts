@@ -72,7 +72,7 @@ import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor, searchConvs }
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleLibraryApi } from "./library-api.js";
-import { attachToConversation, canSeeFile, getLibraryFile } from "../../core/library.js";
+import { attachToConversation, canSeeFile, deleteConversationFiles, getLibraryFile } from "../../core/library.js";
 import { handleSkillsApi } from "./skills-api.js";
 import { handleExpertsApi } from "./experts-api.js";
 import { availableExperts, canUseExpert, getExpert, isBuiltin } from "../../core/experts.js";
@@ -922,9 +922,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     if (!sub && method === "DELETE") {
-      // 只是从列表里藏起来：agent 侧的会话记录还在，随时能从「历史会话」恢复
+      // agent 侧的文字记录保留；托管附件和资料库文件立即清理，恢复会话也不会恢复文件。
       await hub.drop(key, "会话已删除");
       updateConversation(key, { hidden: true });
+      deleteConversationFiles(key);
+      for (const [id, entry] of uploads) if (entry.key === key) uploads.delete(id);
       clearScheduled(key);
       hub.emitEvent(key, { type: "meta" });
       sendJson(res, 200, { ok: true });
@@ -1033,6 +1035,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
     if (sub === "upload" && method === "POST") {
       const data = await readBody(req, 50 * 1024 * 1024);
+      if (getConversation(key)?.hidden) throw new HttpError(404, "会话已删除");
       const name = url.searchParams.get("name") ?? undefined;
       const type = req.headers["content-type"];
       const id = crypto.randomBytes(8).toString("hex");
@@ -1050,6 +1053,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     // 从资料库拿来用：{ ids: [...] }，放进这条对话的上传目录，和刚上传的一样领个编号，发消息时认领
     if (sub === "attach" && method === "POST") {
       const body = await readJsonBody<{ ids?: unknown }>(req);
+      if (getConversation(key)?.hidden) throw new HttpError(404, "会话已删除");
       if (!Array.isArray(body.ids) || body.ids.length === 0) throw new HttpError(400, "要给出用哪些文件");
       const out = body.ids.slice(0, 20).map((fid) => {
         const file = typeof fid === "string" ? getLibraryFile(fid) : undefined;

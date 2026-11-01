@@ -19,7 +19,7 @@ import { sql, transaction } from "./db.js";
 import { hub } from "./hub.js";
 import { replyFileType, resolveReplyFile } from "./reply-files.js";
 import { getConversation } from "./store.js";
-import { ensureUploadsDir, kindOf, safeName, sniff, uploadsRoot } from "./uploads.js";
+import { ensureUploadsDir, kindOf, safeName, sniff, uploadsDirFor, uploadsRoot } from "./uploads.js";
 import { listUsers, ownedBy, type User } from "./users.js";
 
 type Viewer = Pick<User, "id" | "role">;
@@ -158,6 +158,13 @@ export function deleteLibraryFile(file: LibraryFile): void {
   sql("DELETE FROM files WHERE id = ? OR origin = ?").run(file.id, file.id);
 }
 
+/** 删除会话的全部托管文件，包括未发送的上传；资料库原件的副本沿用删除原件的规则。 */
+export function deleteConversationFiles(key: string): void {
+  const rows = sql(`SELECT ${COLUMNS} FROM files WHERE conv_key = ?`).all(key) as Row[];
+  for (const row of rows) deleteLibraryFile(toFile(row));
+  fs.rmSync(uploadsDirFor(key), { recursive: true, force: true });
+}
+
 /** 往上删空目录，到上传目录的根为止 */
 function removeEmptyDirs(dir: string): void {
   const root = path.resolve(uploadsRoot);
@@ -232,11 +239,15 @@ function within(file: string, dir: string): boolean {
  */
 export async function captureAgentFiles(key: string, text: string, since: number): Promise<number> {
   const conv = getConversation(key);
-  if (!conv) return 0;
+  if (!conv || conv.hidden) return 0;
+  const active = () => {
+    const current = getConversation(key);
+    return current && !current.hidden;
+  };
   const seen = new Set<string>();
   let n = 0;
   for (const p of deliverablePaths(text)) {
-    if (n >= AGENT_FILES_PER_TURN) break;
+    if (n >= AGENT_FILES_PER_TURN || !active()) break;
     const real = resolveReplyFile(p, conv.cwd);
     if (!real || seen.has(real) || within(real, uploadsRoot)) continue;
     seen.add(real);
@@ -254,8 +265,17 @@ export async function captureAgentFiles(key: string, text: string, since: number
       await fs.promises.mkdir(dir, { recursive: true });
       await fs.promises.copyFile(real, target);
     } catch (err) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      removeEmptyDirs(path.dirname(dir));
+      if (!active()) break;
       console.warn(`[资料库] 收录 ${real} 失败:`, err instanceof Error ? err.message : err);
       continue;
+    }
+    // 复制期间可能删除了会话：不能把刚清掉的文件和索引又收回来。
+    if (!active()) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      removeEmptyDirs(path.dirname(dir));
+      break;
     }
     recordFile({ owner: conv.owner, convKey: key, path: target, name: path.basename(target), kind: kindOfFile(target), size: stat.size, source: "agent" });
     n++;

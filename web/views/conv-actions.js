@@ -455,7 +455,7 @@ export async function deleteConv(key = S.current) {
   const sure = await confirmDialog({
     title: "删除会话？",
     sub: c ? [agentIcon(c.agent), h("span", {}, `${convTitle(c)} · ${baseName(c.cwd)}`)] : null,
-    message: "只从列表里移除，agent 那边的会话记录还在。",
+    message: "会话中的附件和资料库文件会一并删除，包括复用到其他会话的副本，无法恢复。agent 那边的会话记录仍会保留。",
     confirmText: "删除",
     danger: true,
   });

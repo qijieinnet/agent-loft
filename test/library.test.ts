@@ -137,3 +137,64 @@ test("启动时收拾：对话没了的整个删、文件没了的索引删、�
   assert.equal(library.listLibrary(bob, { kind: "image" }).files[0]?.name, "以前的.png");
   assert.equal(library.backfillLibrary(), 0, "只做一次");
 });
+
+test("删除会话立即清理上传、生成文件、未发送文件和资料库副本，不影响无关文件", () => {
+  const key = "web:delete-files", other = "web:keep-files";
+  conv(key, alice.id); conv(other, alice.id);
+  const original = send(key, "删除.png", PNG);
+  const file = library.listLibrary(alice).files.find((f) => f.path === original.path)!;
+  const copy = library.attachToConversation(file, other);
+  const unsent = uploads.saveBuffer({ key, name: "未发送.txt", data: Buffer.from("draft") });
+  const generated = uploads.saveBuffer({ key, subdir: "agent-test", name: "生成.pdf", data: Buffer.from("pdf") });
+  library.recordFile({ convKey: key, owner: alice.id, ...generated, source: "agent" });
+  const keep = send(other, "保留.png", PNG);
+
+  store.updateConversation(key, { hidden: true });
+  library.deleteConversationFiles(key);
+  for (const p of [original.path, copy.path, unsent.path, generated.path, uploads.uploadsDirFor(key)]) assert.equal(fs.existsSync(p), false, p);
+  assert.equal(library.getLibraryFile(file.id), undefined);
+  assert.equal(library.listLibrary(alice).files.some((f) => f.convKey === key), false);
+  assert.equal(fs.existsSync(keep.path), true);
+  assert.doesNotThrow(() => library.deleteConversationFiles(key), "重复删除也能成功");
+});
+
+test("删除只包含资料库副本的会话，不删除原件和其他会话的副本", () => {
+  const key = "web:delete-copy", source = "web:copy-source", other = "web:keep-copy";
+  for (const k of [key, source, other]) conv(k, alice.id);
+  const original = send(source, "原件.png", PNG);
+  const file = library.listLibrary(alice).files.find((f) => f.path === original.path)!;
+  const copy = library.attachToConversation(file, key);
+  const keep = library.attachToConversation(file, other);
+  store.updateConversation(key, { hidden: true });
+  library.deleteConversationFiles(key);
+  assert.equal(fs.existsSync(copy.path), false);
+  assert.equal(fs.existsSync(original.path), true);
+  assert.equal(fs.existsSync(keep.path), true);
+  assert.ok(library.getLibraryFile(file.id));
+});
+
+test("删除会话时仍在收录的 agent 文件不会重新出现在磁盘和资料库中", async (t) => {
+  const key = "web:delete-capture";
+  conv(key, alice.id);
+  const original = path.join(workspace, "pending.png");
+  fs.writeFileSync(original, PNG);
+  const copyFile = fs.promises.copyFile.bind(fs.promises);
+  let release!: () => void, started!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const copying = new Promise<void>((resolve) => { started = resolve; });
+  t.mock.method(fs.promises, "copyFile", async (src: string, dest: string) => {
+    await copyFile(src, dest);
+    started();
+    await blocked;
+  });
+  const capture = library.captureAgentFiles(key, original, Date.now() - 1000);
+  await copying;
+  store.updateConversation(key, { hidden: true });
+  library.deleteConversationFiles(key);
+  release();
+  assert.equal(await capture, 0);
+  assert.equal(await library.captureAgentFiles(key, original, Date.now() - 1000), 0);
+  assert.equal(fs.existsSync(uploads.uploadsDirFor(key)), false);
+  assert.equal(library.listLibrary(alice).files.some((f) => f.convKey === key), false);
+  assert.equal(fs.existsSync(original), true, "工作区原文件不属于托管附件，保留");
+});
