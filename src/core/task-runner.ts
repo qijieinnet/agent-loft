@@ -9,7 +9,7 @@ import crypto from "node:crypto";
 import { resolveWorkspacePath } from "./config.js";
 import { canUseExpert, getExpert } from "./experts.js";
 import { hub, type TaskTurnEnd } from "./hub.js";
-import { interactions } from "./interactions.js";
+import { interactions, isDetached } from "./interactions.js";
 import { memoryOwnerOf } from "./personal.js";
 import { getConversation, updateAgentBinding, updateConversation, type Conversation } from "./store.js";
 import { formatDateTime } from "./task-schedule.js";
@@ -130,7 +130,7 @@ function fire(task: Task, manual: boolean, now = Date.now()): string | undefined
     return `${hub.label(conv.agent)} 没有启用`;
   }
   // 刚点过停止的也当忙：被打断的那一轮可能还会晚到一个出错，别让它算到这次运行头上
-  if (hub.isBusy(key) || hub.recentlyStopped(key) || interactions.listPending(key).length > 0) {
+  if (hub.isBusy(key) || hub.recentlyStopped(key) || interactions.listPending(key).some((i) => !isDetached(i))) {
     if (manual) return "这条对话正在回复或者在等你处理授权，等它结束再试";
     const since = waiting.get(task.id)?.since ?? now;
     if (now - since > WAIT_MAX_MS) {

@@ -8,6 +8,7 @@ process.env.AGENT_LOFT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-core-")
 // 待处理项的计时器是 unref 的（不该把进程钉住），测试里得自己保持事件循环
 const keepAlive = setInterval(() => {}, 1000);
 after(() => clearInterval(keepAlive));
+import type { InteractionOutcome, InteractionSpec } from "../src/core/types.js";
 const { interactions, answerTextOf } = await import("../src/core/interactions.js");
 const { parseCommand } = await import("../src/core/commands.js");
 const { agentEnvironment } = await import("../src/core/agent-env.js");
@@ -302,6 +303,68 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
   hub.send(key, { text: "下载附件期间被停止", attachments: [] }, origin, gen);
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(sent.length, n);
+});
+
+test("不阻塞的提问：点选后作为用户消息发出；直接发消息则撤卡，消息不被吃掉", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const sent: string[] = [];
+  let ask!: (spec: InteractionSpec) => Promise<InteractionOutcome>;
+  let followUp!: (text: string) => void;
+  hub.registerDriver({
+    id: "claude",
+    label: "Fake",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (_opts, events, host) => {
+      ask = host;
+      followUp = (t) => events.onFollowUp?.(t);
+      return {
+        sessionId: undefined,
+        send: (input) => {
+          sent.push(input.text);
+          events.onResult({ text: "ok", durationMs: 1 });
+        },
+        interrupt: async () => {},
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: async () => {},
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    catalog: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  const key = "web:detached";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const origin = { channel: "web", channelId: "web" };
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  hub.send(key, { text: "开始", attachments: [] }, origin);
+  await tick();
+  const card = { ...question(false), detached: true };
+
+  // 点选：卡收束，答案走正常发送
+  const clicked = ask(card);
+  const clickedId = interactions.listPending(key)[0]!.id;
+  assert.equal(interactions.findQuestion(key), undefined, "不阻塞的提问不接管普通消息");
+  interactions.select(clickedId, 0, 0, true, "me");
+  const outcome = await clicked;
+  assert.equal(outcome.settlement, "answered");
+  followUp(outcome.answers.a![0]!);
+  await tick();
+  assert.deepEqual(sent, ["开始", "x"]);
+
+  // 直接发消息：撤卡，消息照常到 agent，且不会再发一次答案
+  const typed = ask(card);
+  hub.send(key, { text: "我再想想", attachments: [] }, origin);
+  assert.equal((await typed).settlement, "skipped");
+  await tick();
+  assert.deepEqual(sent, ["开始", "x", "我再想想"]);
 });
 
 test("登录限流：同一 IP 的额度同步扣减，并发请求也绕不过", async () => {

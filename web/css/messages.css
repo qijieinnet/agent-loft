@@ -699,6 +699,7 @@ a.att-file:hover {
 
 .ix-q .q-text {
   font-size: 15px;
+  white-space: pre-wrap;
   margin-top: -4px;
 }
 

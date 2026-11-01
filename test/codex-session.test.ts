@@ -508,3 +508,56 @@ test("分叉失败后重试仍然分叉，不会续写原会话", async () => {
   assert.equal(calls.some((c) => c.method === "thread/fork"), false);
   assert.equal(take("turn/start").params.threadId, "forked");
 });
+
+test("request_user_input_async 弹不阻塞的提问卡，不当正文；答了才发下一条消息", async () => {
+  calls.length = 0;
+  const specs: InteractionSpec[] = [];
+  let answer!: (o: { settlement: Settlement; answers: Record<string, string[]> }) => void;
+  const { session, log, events } = makeSession({}, (spec: InteractionSpec) => {
+    specs.push(spec);
+    return new Promise((r) => (answer = r));
+  });
+  const followUps: string[] = [];
+  events.onFollowUp = (t) => followUps.push(t);
+  session.send({ text: "记一笔", attachments: [] });
+  const { threadId, turnId } = await startTurn();
+  const item = {
+    type: "agentMessage", id: "call_1", text: "确认吗？\n- 确认登记\n- 暂不登记", phase: "final_answer", delivery: "async",
+    questions: [{ title: "确认吗？", options: ["确认登记", "暂不登记"] }],
+  };
+  notify("item/completed", { threadId, item });
+  notify("item/completed", { threadId, item: { type: "agentMessage", id: "m2", text: "选一下", phase: "final_answer" } });
+  notify("turn/completed", { threadId, turn: { id: turnId, status: "completed", durationMs: 1 } });
+  await tick();
+
+  assert.equal(specs.length, 1);
+  const spec = specs[0]!;
+  assert.ok(spec.kind === "question" && spec.detached);
+  assert.deepEqual(spec.questions[0]!.options.map((o) => o.label), ["确认登记", "暂不登记"]);
+  // 一轮不等提问卡，正文里也没有那份列表
+  assert.deepEqual(log, ["text:选一下", "result:选一下"]);
+  assert.deepEqual(followUps, []);
+
+  answer({ settlement: "answered", answers: { q0: ["确认登记"] } });
+  await tick();
+  assert.deepEqual(followUps, ["确认登记"]);
+  void session.dispose();
+});
+
+test("async 提问跳过 / 超时不发消息；没有问题的 async 消息仍是普通正文", async () => {
+  calls.length = 0;
+  let answer!: (o: { settlement: Settlement; answers: Record<string, string[]> }) => void;
+  const { session, log, events } = makeSession({}, () => new Promise((r) => (answer = r)));
+  const followUps: string[] = [];
+  events.onFollowUp = (t) => followUps.push(t);
+  session.send({ text: "问", attachments: [] });
+  const { threadId } = await startTurn();
+  notify("item/completed", { threadId, item: { type: "agentMessage", id: "a", text: "顺便说一句", phase: "final_answer", delivery: "async", questions: null } });
+  notify("item/completed", { threadId, item: { type: "agentMessage", id: "b", text: "问题", phase: "final_answer", delivery: "async", questions: [{ title: "问题", options: null }] } });
+  await tick();
+  assert.deepEqual(log, ["text:顺便说一句"]);
+  answer({ settlement: "skipped", answers: {} });
+  await tick();
+  assert.deepEqual(followUps, []);
+  void session.dispose();
+});

@@ -222,6 +222,38 @@ type TokenBreakdown = {
   reasoningOutputTokens?: number;
 };
 
+/** request_user_input_async 的问题：只有标题和选项文字，且没有 id */
+function parseAsyncQuestions(raw: unknown): QuestionSpec[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const specs: QuestionSpec[] = [];
+  for (const [i, item] of raw.entries()) {
+    const rec = (typeof item === "object" && item !== null ? item : {}) as { title?: unknown; options?: unknown };
+    const question = typeof rec.title === "string" ? rec.title.trim() : "";
+    if (!question) return null;
+    const labels = Array.isArray(rec.options) ? rec.options : [];
+    const options = labels.flatMap((o) => (typeof o === "string" && o.trim() ? [{ label: o.trim() }] : []));
+    specs.push({
+      id: `q${i}`,
+      header: options.length > 0 ? "选择" : "回答",
+      question,
+      options,
+      multiSelect: false,
+      allowOther: true,
+    });
+  }
+  return specs;
+}
+
+/** 提问卡的答案写成用户消息：一问就是答案本身，多问要带上问的是什么 */
+function answersAsMessage(questions: QuestionSpec[], answers: Record<string, string[]>): string {
+  const answered = questions.flatMap((q) => {
+    const picked = answers[q.id];
+    return picked?.length ? [{ q, text: picked.join("、") }] : [];
+  });
+  if (questions.length === 1) return answered[0]?.text ?? "";
+  return answered.map(({ q, text }) => `${q.question}\n答：${text}`).join("\n\n");
+}
+
 function parseQuestions(raw: unknown): ParsedQuestion[] | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const specs: ParsedQuestion[] = [];
@@ -707,6 +739,17 @@ export class CodexSession implements AgentSession {
     return outcome;
   }
 
+  /** 不阻塞的提问：这一轮不等它（Codex 已经告诉模型 accepted），用户答了再作为下一条消息发出 */
+  private askDetached(questions: QuestionSpec[]): void {
+    void this.host({ kind: "question", title: "Codex 想确认一下", questions, detached: true })
+      .then((outcome) => {
+        if (outcome.settlement !== "answered" || this.disposed) return;
+        const text = answersAsMessage(questions, outcome.answers);
+        if (text) this.events.onFollowUp?.(text);
+      })
+      .catch((err) => console.warn("[codex] 不阻塞的提问没能弹出：", err));
+  }
+
   /**
    * 每一条都**必须**返回点什么 —— 漏回一次，Codex 那一轮就永远挂在等审批上。
    * 未知方法也要按它自己的协议结构明确拒绝。
@@ -955,7 +998,15 @@ export class CodexSession implements AgentSession {
       case "agentMessage": {
         const message = item as Extract<ThreadItem, { type: "agentMessage" }>;
         if (message.phase === "commentary") this.commentaryItems.add(message.id);
-        if (phase !== "completed" || !message.text.trim()) return;
+        if (phase !== "completed") return;
+        if (message.delivery === "async") {
+          const questions = parseAsyncQuestions(message.questions);
+          if (questions) {
+            this.askDetached(questions);
+            return;
+          }
+        }
+        if (!message.text.trim()) return;
         // commentary 是 Codex 边干边说的旁白，属于过程；正文才是要给人看的回复
         if (message.phase === "commentary") {
           this.events.onStep("note", `💬 ${summarize(message.text)}`);

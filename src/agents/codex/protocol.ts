@@ -209,9 +209,19 @@ export type ToolRequestUserInputResponse = {
 
 // ---------- 服务端 → 客户端：通知 ----------
 
+export type AsyncUserInputQuestion = { title: string; options: string[] | null };
+
 export type ThreadItem =
   | { type: "userMessage"; id: string }
-  | { type: "agentMessage"; id: string; text: string; phase?: string | null }
+  | {
+      type: "agentMessage";
+      id: string;
+      text: string;
+      phase?: string | null;
+      /** async + questions：模型调了 request_user_input_async，提问混在普通消息里发出，不走 item/tool/requestUserInput */
+      delivery?: string | null;
+      questions?: AsyncUserInputQuestion[] | null;
+    }
   | { type: "reasoning"; id: string; summary?: string[]; content?: string[] }
   | { type: "plan"; id: string; text: string }
   | {

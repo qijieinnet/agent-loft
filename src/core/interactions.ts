@@ -177,10 +177,17 @@ class InteractionCenter extends EventEmitter<InteractionEvents> {
   findQuestion(convKey: string): Interaction | undefined {
     let oldest: Entry | undefined;
     for (const entry of this.pending.values()) {
-      if (entry.spec.kind !== "question" || entry.convKey !== convKey) continue;
+      if (entry.spec.kind !== "question" || entry.spec.detached || entry.convKey !== convKey) continue;
       if (!oldest || entry.createdAt < oldest.createdAt) oldest = entry;
     }
     return oldest ? publicView(oldest) : undefined;
+  }
+
+  /** 用户发了新消息：不阻塞的提问不再需要回答，撤掉。 */
+  dismissDetached(convKey: string, note: string): void {
+    for (const entry of [...this.pending.values()]) {
+      if (entry.convKey === convKey && isDetached(entry)) this.settle(entry.id, "skipped", note);
+    }
   }
 
   /** 取消某会话上所有挂着的请求。中断、切目录、开新会话时必须调用。 */
@@ -222,6 +229,10 @@ function publicView(entry: Entry | Interaction): Interaction {
     ...(settled ? { settled } : {}),
     ...(owner !== undefined ? { owner } : {}),
   };
+}
+
+export function isDetached(interaction: Interaction): boolean {
+  return interaction.spec.kind === "question" && !!interaction.spec.detached;
 }
 
 export function unansweredCount(entry: Interaction): number {

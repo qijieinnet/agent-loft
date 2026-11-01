@@ -60,7 +60,16 @@ export type InteractionSpec =
       /** 给了就显示「本会话全部允许」按钮。只有 agent 能真正兑现时才给 */
       allowSession?: boolean;
     }
-  | { kind: "question"; title: string; questions: QuestionSpec[] };
+  | {
+      kind: "question";
+      title: string;
+      questions: QuestionSpec[];
+      /**
+       * 发起方不等这张卡：那一轮照常结束，答案作为下一条用户消息发出（Codex 的 request_user_input_async）。
+       * 普通消息不算作答，而是撤掉这张卡、照常发给 agent。
+       */
+      detached?: boolean;
+    };
 
 export type InteractionOutcome = {
   settlement: Settlement;
@@ -98,6 +107,8 @@ export type AgentEvents = {
   onTextDelta: (delta: string) => void;
   /** 一段完整的回复正文 */
   onText: (text: string) => void;
+  /** 用户回答了不阻塞的提问（detached）：把答案当下一条用户消息发出 */
+  onFollowUp?: (text: string) => void;
   onResult: (result: TurnResult) => void;
   onError: (err: unknown) => void;
   /** 拿到 / 更新了 agent 侧的会话 id，持久化后用于 resume */

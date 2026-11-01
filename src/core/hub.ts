@@ -733,6 +733,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         onTodos: (todos) => alive() && this.emitEvent(key, { type: "todos", todos }),
         onTextDelta: (text) => alive() && this.emitEvent(key, { type: "delta", text }),
         onText: (text) => alive() && this.emitEvent(key, { type: "text", text }),
+        onFollowUp: (text) => {
+          if (!alive()) return;
+          try {
+            this.send(key, { text, attachments: [] }, { channel: "card", channelId: "card", name: "提问卡" });
+          } catch (err) {
+            this.emitEvent(key, { type: "notice", text: `你的回答没有发出（${err instanceof Error ? err.message : err}），请重新发送。` });
+          }
+        },
         onResult: (result) => {
           if (!alive()) return;
           const parts = [`用时 ${formatDuration(result.durationMs)}`];
@@ -1017,6 +1025,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     };
     input = { ...input, id: shown.id };
     const by = `${origin.name ?? "用户"}以消息作答`;
+    // 不阻塞的提问不等这条消息：用户另外说了话，卡就不用再答了（这条消息照常发给 agent）
+    if (!task) interactions.dismissDetached(key, "已改为发消息");
 
     /**
      * 拿这条消息回答挂着的提问。条件：提问属于当前活着的会话进程、这条消息收到后
