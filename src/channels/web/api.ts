@@ -42,6 +42,7 @@ import {
   type CurateSettings,
 } from "../../core/memory.js";
 import { createLinkCode, listLinks, unlink, unlinkUser } from "../../core/feishu-links.js";
+import { getWeixinAccount, removeWeixinAccount } from "../../core/weixin-accounts.js";
 import { purgeUserData } from "../../core/personal.js";
 import { countRecords, purgeHistory, readMeta, searchHistory, writeMeta } from "../../core/chat-history.js";
 import { curateNow, pendingCount } from "../../core/memory-curator.js";
@@ -50,6 +51,8 @@ import { isPermissionLevel, type PermissionLevel } from "../../core/permission.j
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
+import { weixinStatus } from "../weixin/index.js";
+import { cancelWeixinLogin, startWeixinLogin, submitWeixinVerifyCode, weixinLoginStatus } from "../weixin/login.js";
 import { fromThisMachine, isLoopbackHost, lanAddresses, listening, rebind } from "./listen.js";
 import { beginRegistration, initRegistration, pollRegistration, qrSvg } from "../feishu/register.js";
 import { FeishuClient } from "../feishu/client.js";
@@ -531,6 +534,19 @@ function feishuLinksOf(userId: string) {
   }));
 }
 
+/** 给设置页看的绑定情况：不带 token、令牌，微信号也只露一点 */
+function weixinAccountView(userId: string) {
+  const account = getWeixinAccount(userId);
+  if (!account) return { linked: false };
+  return {
+    linked: true,
+    wechatShort: maskOpenId(account.ilinkUserId),
+    boundAt: account.boundAt,
+    lastInboundAt: account.lastInboundAt,
+    status: weixinStatus(userId) ?? { state: "stopped", since: account.boundAt },
+  };
+}
+
 /**
  * 解除绑定后，那个人和机器人的私聊立刻不再是他的：交还给管理员的地盘，旧会话不带过去
  * （见 hub.reassignOwner）。不等他下次发消息 —— 万一他再也不发，那条对话就一直挂在他名下。
@@ -664,7 +680,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         bots.add(c.channelId);
         keep.set(c.key, c);
       }
-      if (c.busy || asking.has(c.key)) keep.set(c.key, c);
+      // 微信不在「最近」的分页里，但侧栏上总要有它那一行
+      if (c.busy || asking.has(c.key) || c.channel === "weixin") keep.set(c.key, c);
     }
     // 正开着的会话（可能是后面几页里的，重连时页面上还显示着它）
     const current = byKey.get(url.searchParams.get("current") ?? "");
@@ -1401,6 +1418,48 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (ok) releaseFeishuChats(user.id, botId);
     sendJson(res, 200, { ok, links: feishuLinksOf(user.id) });
     return;
+  }
+
+  // ----- 我的微信 ClawBot -----
+  if (p === "/api/account/weixin" && method === "GET") {
+    sendJson(res, 200, weixinAccountView(user.id));
+    return;
+  }
+  if (p === "/api/account/weixin" && method === "DELETE") {
+    removeWeixinAccount(user.id);
+    sendJson(res, 200, weixinAccountView(user.id));
+    return;
+  }
+  if (p === "/api/account/weixin/login" && method === "POST") {
+    try {
+      sendJson(res, 200, await startWeixinLogin(user.id));
+    } catch (err) {
+      throw new HttpError(502, `连接微信失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  const weixinLogin = /^\/api\/account\/weixin\/login\/([a-f0-9]+)(\/verify)?$/.exec(p);
+  if (weixinLogin) {
+    const id = weixinLogin[1]!;
+    if (weixinLogin[2] && method === "POST") {
+      const body = await readJsonBody<{ code?: unknown }>(req);
+      const code = String(body.code ?? "").trim();
+      if (!/^\d{1,12}$/.test(code)) throw new HttpError(400, "请输入手机微信上显示的数字");
+      if (!submitWeixinVerifyCode(id, user.id, code)) throw new HttpError(409, "现在不需要输入数字，或者这次连接已经结束");
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (!weixinLogin[2] && method === "GET") {
+      const login = weixinLoginStatus(id, user.id);
+      if (!login) throw new HttpError(404, "这次连接已结束，请重新开始");
+      sendJson(res, 200, login);
+      return;
+    }
+    if (!weixinLogin[2] && method === "DELETE") {
+      cancelWeixinLogin(id, user.id);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
   }
 
   // 修改自己的登录名：只允许改名称，沿用现有设备和会话归属。

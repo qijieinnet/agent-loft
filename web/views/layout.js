@@ -33,6 +33,7 @@ import { clearCommandCache, preloadCommands } from "./slash.js";
 import { releaseForeignPushSub } from "../lib/push.js";
 import { createSidebarNav } from "./sidebar-nav.js";
 import { bindSidebarGestures } from "./sidebar-gestures.js";
+import "../lib/keyboard.js";
 
 // ---------- 主界面 ----------
 

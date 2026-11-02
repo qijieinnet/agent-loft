@@ -2,7 +2,8 @@
 
 .layout {
   display: flex;
-  height: 100%;
+  /* 键盘只缩小可见视口时，整块界面一起避让；原生已缩小页面的浏览器补偿为 0。 */
+  height: calc(100% - var(--kb-inset, 0px));
   overflow: hidden;
   position: relative;
 }

@@ -5,6 +5,7 @@ import { copyText } from "../lib/markdown.js";
 import { isAdmin, S } from "../state.js";
 import { dropPushSub } from "../lib/push.js";
 import { field, saveButton } from "./common.js";
+import { weixinLinkSection } from "./weixin.js";
 
 /** 设置 → 账号：我是谁、改密码、绑定飞书、我登录着的设备。别人的设备在 管理 →「用户」里 */
 export async function accountTab(page) {
@@ -64,6 +65,7 @@ export async function accountTab(page) {
       ),
     ),
     feishuLinkSection(),
+    weixinLinkSection(),
     devicesBox,
   );
   const loadDevices = async () => {

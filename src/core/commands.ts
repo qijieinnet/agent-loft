@@ -106,12 +106,15 @@ export function helpText(agents: string[], channel?: string): string {
   return [
     "直接说话即可，会自动接着上次的会话。闲置太久会自动开新会话。",
     "",
-    "Agent 给选项时会发一张提问卡，点按钮作答；都不合适就直接发消息，那条消息会被当成你的回答。",
+    channel === "weixin"
+      ? "Agent 要授权或提问时会发一条消息，回复里面的数字作答；提问的选项都不合适就直接发文字。"
+      : "Agent 给选项时会发一张提问卡，点按钮作答；都不合适就直接发消息，那条消息会被当成你的回答。",
     "",
     "**命令**（需整条消息只有命令；只发一个 `/` 可以列出命令；agent 自己的命令默认不在列表里，可以在设置 → 命令里勾选，没勾的照样可以直接发）",
     "",
     ...BUILTIN_COMMANDS.filter((c) => !c.multiAgentOnly || multi)
       .filter((c) => !c.feishuOnly || channel === "feishu")
+      .filter((c) => !c.chatOnly || channel === "feishu" || channel === "weixin")
       .filter((c) => !["claude", "codex"].includes(c.name))
       .map((c) =>
         c.name === "expert"

@@ -36,12 +36,6 @@
   margin-top: calc(52px + env(safe-area-inset-top));
 }
 
-/* 软键盘盖住的高度（views/remote.js），iOS 上才不为 0 */
-.remote-pane,
-.main > .term-dock {
-  padding-bottom: var(--kb-inset, 0px);
-}
-
 .remote-pane[hidden] {
   display: none;
 }

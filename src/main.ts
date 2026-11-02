@@ -7,6 +7,7 @@ import { ClaudeDriver } from "./agents/claude/driver.js";
 import { CodexDriver } from "./agents/codex/driver.js";
 import { agentHealth } from "./agents/health.js";
 import { startFeishu, stopFeishu } from "./channels/feishu/index.js";
+import { startWeixin, stopWeixin } from "./channels/weixin/index.js";
 import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
 import { startMemoryCurator } from "./core/memory-curator.js";
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
   startMemoryCurator();
 
   startFeishu();
+  startWeixin();
   if (config().web.enabled) await startWeb();
   // 定时发送：等 agent 和渠道都起来了再开始，服务停着时到点的这时补发
   startScheduler((m) => {
@@ -82,6 +84,7 @@ async function main(): Promise<void> {
     force.unref();
     stopScheduler();
     stopFeishu();
+    stopWeixin();
     await stopWeb();
     await hub.shutdown().catch(() => {});
     // hub 收尾时会把正在跑的定时任务记成中断，所以放在它后面

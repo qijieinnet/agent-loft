@@ -70,6 +70,8 @@ export const ICON = {
   restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>',
   laptop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>',
   logo: '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 8.5a8 8 0 0 1 13.2 0 8 8 0 0 1 9 9.4 8 8 0 0 1 0 12.2 8 8 0 0 1-9 9.4 8 8 0 0 1-13.2 0 8 8 0 0 1-9-9.4 8 8 0 0 1 0-12.2 8 8 0 0 1 9-9.4Z"/><path d="m17 18 5 5-5 5M25 30h7"/></svg>',
+  weixin:
+    '<svg viewBox="0 0 24 24"><path fill="#07C160" d="M9.5 4C5.4 4 2 6.8 2 10.3c0 2 1.1 3.8 2.9 5l-.7 2.2 2.5-1.3c.9.3 1.8.4 2.8.4h.5a5.6 5.6 0 0 1-.2-1.5c0-3.3 3.1-6 7-6h.5C16.2 6.1 13.1 4 9.5 4zM7 8.1a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zm5 0a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8z"/><path fill="#07C160" d="M22 14.6c0-2.8-2.7-5-6-5s-6 2.2-6 5 2.7 5 6 5c.7 0 1.4-.1 2-.3l1.9 1-.5-1.7c1.6-1 2.6-2.4 2.6-4zm-8-.9a.8.8 0 1 1 0-1.6.8.8 0 0 1 0 1.6zm4 0a.8.8 0 1 1 0-1.6.8.8 0 0 1 0 1.6z"/></svg>',
   feishu:
     '<svg viewBox="2 4 44 40"><path fill="#00D6B9" d="M11.6 7H27.6C30.9 9.9 32.8 14.7 33.6 17C30.9 18.3 29 20.6 27 24C22.6 16.4 15.6 11 11.6 7Z"/><path fill="#133C9A" d="M17 29C21 29 25 26.9 28 23.4C36 14 41.4 16.8 44 18C38.5 21 40.5 29.6 33 36C27.5 34.8 21.8 32.2 17 29Z"/><path fill="#3370FF" d="M4 16.2C7.2 20.8 12.4 26 17.4 29.4C23 33.2 28.6 35.7 34 35.2C28.9 39.8 23.8 41 19 41C12.5 41 6.9 37.8 4 35.4Z"/></svg>',
 };

@@ -102,7 +102,7 @@ export function openSearch() {
       ...results.map(({ conv, snippet }, i) => {
         // 本地有就用本地的（标题是最新的）
         const c = S.convs.get(conv.key) ?? conv;
-        const where = c.channel === "feishu" ? "飞书" : baseName(c.cwd);
+        const where = c.channel === "feishu" ? "飞书" : c.channel === "weixin" ? "微信" : baseName(c.cwd);
         return h(
           "button",
           {

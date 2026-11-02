@@ -145,7 +145,7 @@
   }
 
   .composer-wrap {
-    padding: 0 10px calc(8px + env(safe-area-inset-bottom));
+    padding: 0 10px calc(8px + max(0px, env(safe-area-inset-bottom) - var(--kb-inset, 0px)));
   }
 
   .composer-hint {

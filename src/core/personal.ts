@@ -2,6 +2,7 @@
 import { deleteMemory, memoryPrompt, readMemory } from "./memory.js";
 import { purgeHistory } from "./chat-history.js";
 import { unlinkUser } from "./feishu-links.js";
+import { removeWeixinAccount } from "./weixin-accounts.js";
 import { deleteUserTasks } from "./tasks.js";
 import { purgeUserSkills } from "./skills.js";
 import { purgeUserExperts } from "./experts.js";
@@ -42,11 +43,12 @@ export function sessionMemory(
   };
 }
 
-/** 删用户时一起删掉的个人数据：记忆、聊天记录索引、飞书绑定、定时任务、技能（他建的技能，装了的人也就没了）、专家和 MCP */
+/** 删用户时一起删掉的个人数据：记忆、聊天记录索引、飞书和微信绑定、定时任务、技能（他建的技能，装了的人也就没了）、专家和 MCP */
 export function purgeUserData(userId: string): void {
   deleteMemory(userId);
   purgeHistory(userId);
   unlinkUser(userId);
+  removeWeixinAccount(userId);
   deleteUserTasks(userId);
   purgeUserSkills(userId);
   purgeUserExperts(userId);

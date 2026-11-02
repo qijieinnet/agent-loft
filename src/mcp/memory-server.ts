@@ -70,7 +70,7 @@ function search(query: string, limit: number) {
   });
   if (hits.length === 0) return text(`以前的聊天里没找到「${query}」相关的内容。可以换个说法再搜。`);
   const blocks = hits.map((h, i) => {
-    const title = convs.get(h.key)?.title ?? (h.key.startsWith("feishu:") ? "飞书私聊" : "未命名对话");
+    const title = convs.get(h.key)?.title ?? (h.key.startsWith("feishu:") ? "飞书私聊" : h.key.startsWith("weixin:") ? "微信" : "未命名对话");
     return [
       `[${i + 1}] ${localDate(h.ts)} · 「${title}」`,
       ...(h.user ? [`用户：${h.user}`] : []),

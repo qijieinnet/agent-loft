@@ -1,7 +1,8 @@
 /* ---------- 输入框 ---------- */
 
 .composer-wrap {
-  padding: 0 16px calc(12px + env(safe-area-inset-bottom));
+  padding: 0 16px calc(12px + max(0px, env(safe-area-inset-bottom) - var(--kb-inset, 0px)));
+  flex-shrink: 0;
   position: relative;
   z-index: 2;
 }
@@ -182,7 +183,7 @@ button.ctx-item:hover {
   background: transparent;
   resize: none;
   padding: 14px 16px 4px;
-  max-height: 40vh;
+  max-height: min(40vh, var(--keyboard-input-max-height, 40vh));
   min-height: 50px;
   line-height: 1.5;
   font-size: 16px; /* iOS 小于 16px 会自动放大页面 */

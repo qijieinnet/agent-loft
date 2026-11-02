@@ -37,7 +37,7 @@ const downloadUrl = (f) => `${f.url}&download=1`;
 
 function convLabel(f) {
   if (f.conv.hidden) return "已删除的对话";
-  return f.conv.title || (f.conv.key.startsWith("feishu:") ? "飞书对话" : "未命名对话");
+  return f.conv.title || (f.conv.key.startsWith("feishu:") ? "飞书对话" : f.conv.key.startsWith("weixin:") ? "微信" : "未命名对话");
 }
 
 /**

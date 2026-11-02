@@ -14,6 +14,8 @@ export type BuiltinSpec = {
   multiAgentOnly?: boolean;
   /** 只在飞书里有意义（挂到 Web 会话上 / 退回来），Web 的补全里不列 */
   feishuOnly?: boolean;
+  /** 网页上不能用（对话中途不能换专家），飞书、微信能用 */
+  chatOnly?: boolean;
 };
 
 // 按常用程度排：这也是设置 → 命令、「/」列表和 /help 里的默认顺序
@@ -30,10 +32,10 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "fork", description: "从当前会话分叉，原会话保留" },
   { name: "permission", args: "[ask|edit|full|default]", description: "查看 / 切换本对话的权限级别（逐次询问、自动改文件、完全允许）" },
   { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（等于 /permission edit）" },
-  // 网页上的对话中途不能换专家（新建对话时选），这几个只在飞书里有
-  { name: "expert", args: "[名称]", description: "查看 / 换专家（换了会开新会话）", feishuOnly: true },
-  { name: "claude", description: "换成 Claude Code 专家（开新会话）", multiAgentOnly: true, feishuOnly: true },
-  { name: "codex", description: "换成 Codex 专家（开新会话）", multiAgentOnly: true, feishuOnly: true },
+  // 网页上的对话中途不能换专家（新建对话时选），这几个只在飞书、微信里有
+  { name: "expert", args: "[名称]", description: "查看 / 换专家（换了会开新会话）", chatOnly: true },
+  { name: "claude", description: "换成 Claude Code 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
+  { name: "codex", description: "换成 Codex 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
   { name: "web", description: "接上一条 Web 会话，在飞书里查看和回复", feishuOnly: true },
   { name: "detach", description: "不再接着 Web 会话，回到这个聊天自己的会话", feishuOnly: true },
   { name: "bind", args: "<绑定码>", description: "把这个飞书账号绑定到你的 agent-loft 用户（绑定码在 Web 的「设置 → 账号」里生成）", feishuOnly: true },
@@ -151,7 +153,7 @@ export function buildCatalog(params: {
   allowedAgents: string[];
   native: AgentCommand[];
   prefs: CommandPrefs | undefined;
-  /** 给哪个渠道看：不是飞书就不列飞书专用的命令。不给就全列（设置页排序用） */
+  /** 给哪个渠道看：不是飞书就不列飞书专用的命令，网页上不列换专家。不给就全列（设置页排序用） */
   channel?: string;
 }): CommandEntry[] {
   const multi = params.allowedAgents.length > 1;
@@ -159,6 +161,7 @@ export function buildCatalog(params: {
     (c) =>
       (!c.multiAgentOnly || multi) &&
       (!c.feishuOnly || params.channel === undefined || params.channel === "feishu") &&
+      (!c.chatOnly || params.channel !== "web") &&
       // /claude /codex 只在这个渠道能用对应 agent 时才有意义
       (!["claude", "codex"].includes(c.name) || params.allowedAgents.includes(c.name)),
   ).map((c) => ({

@@ -12,6 +12,7 @@ import { config, onConfigChange } from "../../core/config.js";
 import { parseCommand } from "../../core/commands.js";
 import { GLOBAL_ALWAYS_DENIED, hub, type EventEnvelope } from "../../core/hub.js";
 import { interactions, type Interaction } from "../../core/interactions.js";
+import { weixinEvents } from "../weixin/events.js";
 import { getConversation } from "../../core/store.js";
 import { taskEvents } from "../../core/tasks.js";
 import { skillEvents } from "../../core/skills.js";
@@ -309,6 +310,10 @@ type Notice = { title: string; body: string; tag: string };
  */
 function notify(key: string, notice: Notice): void {
   if (!isWebConv(key)) return;
+  deliverNotice(key, notice);
+}
+
+function deliverNotice(key: string, notice: Notice): void {
   for (const client of clients) if (canSeeKey(client.user, key)) send(client, { t: "notice", key, ...notice });
   if (!hasSubscriptions() || watching(key)) return;
   // 只推给这条会话的主人（没记主人的订阅算迁移出来的那个管理员的）
@@ -317,6 +322,10 @@ function notify(key: string, notice: Notice): void {
     const u = getUser(owner ?? legacy);
     return !!u && !u.disabled && canSeeKey(u, key);
   }, (endpoint, owner) => !foregroundDevice(endpoint, owner ?? legacy));
+}
+
+function onWeixinUndelivered({ key, body }: { key: string; body: string }): void {
+  deliverNotice(key, { title: "微信 · 消息没发出去", body: plainPreview(body), tag: `weixin:${key}` });
 }
 
 function pushEvent(env: EventEnvelope): void {
@@ -581,6 +590,8 @@ export async function startWeb(): Promise<void> {
   expertEvents.on("changed", broadcastExperts);
   terminalEvents.on("changed", broadcastTerminals);
   userEvents.on("changed", broadcastUsersChanged);
+  // 微信发不出去的提醒：微信会话平时不走推送（微信自己会响），只有这时才推
+  weixinEvents.on("undelivered", onWeixinUndelivered);
   watchTerminalAccess();
   // 设置里关了远程桌面 / 换了桌面来源：连着的断开，自己起的 x11vnc 停掉（下次连时按新设置起）
   stopWatchingRemote = onConfigChange((next, prev) => {
@@ -630,6 +641,7 @@ export async function stopWeb(): Promise<void> {
   expertEvents.off("changed", broadcastExperts);
   terminalEvents.off("changed", broadcastTerminals);
   userEvents.off("changed", broadcastUsersChanged);
+  weixinEvents.off("undelivered", onWeixinUndelivered);
   stopWatchingRemote?.();
   stopWatchingRemote = null;
   closeTerminalClients();

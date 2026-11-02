@@ -222,6 +222,7 @@ export function convTitle(c) {
   if (!c) return "新对话";
   if (c.title) return c.title;
   if (c.channel === "feishu") return `飞书会话 ${c.key.split(":")[2]?.slice(-6) ?? ""}`;
+  if (c.channel === "weixin") return "微信";
   return "新对话";
 }
 
@@ -609,6 +610,14 @@ export function renderSidebar() {
       at: latest?.activeAt ?? 0,
       rows,
     });
+  }
+
+  // 微信：每个人一条对话，没有分组，一行就够。和项目、飞书一起排序
+  for (const c of visible.filter((c) => c.channel === "weixin")) {
+    const id = `weixin:${c.key}`;
+    const row = convRow(c, "", `微信 · ${agentLabel(c.agent)} · ${c.cwd}`);
+    row.prepend(h("span", { class: "brand-icon lead", html: ICON.weixin, "aria-hidden": "true" }));
+    botRows.push({ id, at: c.activeAt, rows: [h("div", { class: "proj-row", ...groupDragAttrs(id) }, row)] });
   }
 
   // ---- Web 会话直接按工作目录分组，目录按用户排的顺序（见 orderSidebarGroups） ----

@@ -1,4 +1,4 @@
-import { fill, h, icon, isTouch, toast } from "../lib/dom.js";
+import { fill, h, icon, toast } from "../lib/dom.js";
 import { remoteTabs, S, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { closeSide, renderSidebar } from "./sidebar.js";
@@ -104,30 +104,6 @@ export function leaveRemote() {
   renderTopbar();
   renderSidebar();
   WS.presence();
-}
-
-// iOS 弹出软键盘时页面不会变矮（不认 interactive-widget），键盘会盖住下面那排快捷键：
-// 量出被盖住的高度，远程控制页和对话下面的终端面板垫高这么多（css/remote.css 的 --kb-inset）
-// 只在触屏设备上算：电脑上双指缩放网页、出了滚动条时 visualViewport 也会变小，不是键盘
-const vv = window.visualViewport;
-if (vv && isTouch) {
-  let last = 0;
-  const inset = () => {
-    const covered = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-    document.documentElement.style.setProperty("--kb-inset", `${covered}px`);
-    // 键盘弹出时 iOS 会把页面（和溢出隐藏的容器）往上推，收起后不一定推回来：
-    // 横屏全屏时整页只剩顶上露一截按键。键盘收起时统统滚回原位
-    if (last > 0 && covered === 0) {
-      window.scrollTo(0, 0);
-      for (const el of [document.scrollingElement, ...document.querySelectorAll("#app, .layout, .main, .remote-pane, .remote-body")]) {
-        if (el && el.scrollTop) el.scrollTop = 0;
-      }
-    }
-    last = covered;
-  };
-  vv.addEventListener("resize", inset);
-  vv.addEventListener("scroll", inset);
-  inset();
 }
 
 // 打开了对话、新聊天、定时任务：这一页让开，连接留着

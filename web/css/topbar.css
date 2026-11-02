@@ -190,6 +190,13 @@
   height: 18px;
 }
 
+/* 上传图片包含背景，按头像尺寸显示，避免主体缩在引擎图标的 18px 方框里。 */
+.topbar .conv-expert-icon .expert-avatar,
+.topbar .conv-expert-icon .expert-avatar img {
+  width: 28px;
+  height: 28px;
+}
+
 .topbar .conv-expert-icon .expert-emoji {
   font-size: 16px;
 }
