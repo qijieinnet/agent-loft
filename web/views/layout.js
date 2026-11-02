@@ -32,6 +32,7 @@ import { renameConv } from "./conv-actions.js";
 import { clearCommandCache, preloadCommands } from "./slash.js";
 import { releaseForeignPushSub } from "../lib/push.js";
 import { createSidebarNav } from "./sidebar-nav.js";
+import { bindSidebarGestures } from "./sidebar-gestures.js";
 
 // ---------- 主界面 ----------
 
@@ -296,6 +297,7 @@ function renderLayout() {
   ui.main = h("main", { class: "main" }, ui.topbar, ui.messages, createNav(), ui.composerWrap);
   bindFileDrop(ui.main);
   ui.layout = h("div", { class: "layout" }, ui.sidebar, h("div", { class: "scrim", onclick: closeSide }), ui.main);
+  bindSidebarGestures(ui.layout, ui.sidebar);
   fill($app, ui.layout, h("div", { class: "edge-strip", "aria-hidden": "true" }));
   renderComposer();
   renderSidebar();

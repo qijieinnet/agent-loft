@@ -155,8 +155,14 @@
   gap: 2px;
 }
 
-/* 标题前的专家头像：点一下 / 鼠标停上去弹出专家信息卡 */
-.top-title .conv-expert-icon {
+/* 桌面保留标题前的头像；移动端把头像和更多放进右侧按钮组。 */
+.top-actions {
+  display: contents;
+}
+
+.topbar .conv-expert-icon {
+  order: -1;
+  margin-right: -4px;
   display: inline-grid;
   place-items: center;
   flex-shrink: 0;
@@ -168,21 +174,21 @@
   color: var(--fg-soft);
 }
 
-.top-title .conv-expert-icon .agent-icon {
+.topbar .conv-expert-icon .agent-icon {
   display: inline-grid;
   place-items: center;
   width: 18px;
   height: 18px;
 }
 
-.top-title .conv-expert-icon svg,
-.top-title .conv-expert-icon img {
+.topbar .conv-expert-icon svg,
+.topbar .conv-expert-icon img {
   display: block;
   width: 18px;
   height: 18px;
 }
 
-.top-title .conv-expert-icon .expert-emoji {
+.topbar .conv-expert-icon .expert-emoji {
   font-size: 16px;
 }
 

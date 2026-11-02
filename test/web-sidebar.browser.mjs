@@ -19,7 +19,8 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
-    args: ["--no-sandbox"],
+    // 验证页面手势时关闭 Chromium 自身的横滑历史导航。
+    args: ["--no-sandbox", "--disable-features=TouchpadOverscrollHistoryNavigation,OverscrollHistoryNavigation", "--overscroll-history-navigation=0"],
   });
   t.after(() => browser.close());
   const context = await browser.newContext({
@@ -99,6 +100,98 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
 }
 
 const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.bot ? `feishu:${row.dataset.bot}` : row.dataset.dir));
+
+async function touchInput(page) {
+  const client = await page.context().newCDPSession(page);
+  const point = (x, y, id = 0) => ({ x, y, id });
+  const dispatch = (type, touchPoints = []) => client.send("Input.dispatchTouchEvent", { type, touchPoints });
+  return {
+    start: (x, y) => dispatch("touchStart", [point(x, y)]),
+    move: (x, y) => dispatch("touchMove", [point(x, y)]),
+    end: () => dispatch("touchEnd"),
+    cancel: () => dispatch("touchCancel"),
+    multi: (x, y) => dispatch("touchStart", [point(x, y), point(x + 30, y, 1)]),
+  };
+}
+
+test("侧栏手势：左边缘右滑跟手展开，左滑收起，短滑回弹且不点击起点按钮", async (t) => {
+  const { page } = await fixture(t, { mobile: true });
+  const touch = await touchInput(page);
+  const isOpen = () => page.locator(".layout").evaluate((el) => el.classList.contains("side-open"));
+  await page.evaluate(async () => (await import("/views/sidebar.js")).closeSide());
+  await page.waitForFunction(() => ui.sidebar.getBoundingClientRect().right <= 0);
+  assert.equal(await page.locator(".sidebar").evaluate((el) => getComputedStyle(el).boxShadow), "none", "收起时无左边缘残留投影");
+
+  await touch.start(20, 420);
+  await touch.move(120, 420);
+  assert.equal(await page.locator(".layout").evaluate((el) => el.classList.contains("side-dragging")), true);
+  const drag = await page.evaluate(() => ({ right: ui.sidebar.getBoundingClientRect().right, opacity: Number(getComputedStyle(document.querySelector(".scrim")).opacity) }));
+  assert.ok(Math.abs(drag.right - 100) < 2, "侧栏随手指移动 100px");
+  assert.ok(drag.opacity > 0 && drag.opacity < 1, "遮罩随展开程度变化");
+  await touch.end();
+  assert.equal(await isOpen(), true);
+  await page.waitForFunction(() => ui.sidebar.getBoundingClientRect().left === 0);
+
+  // 从新建按钮上左滑，不能误触新建会话。
+  const button = await page.locator(".side-top .new-chat").boundingBox();
+  const y = button.y + button.height / 2;
+  await touch.start(200, y);
+  await touch.move(90, y);
+  await touch.move(40, y);
+  await touch.end();
+  assert.equal(await isOpen(), false);
+  assert.equal(await page.evaluate(() => S.current), "web:1");
+  await page.waitForFunction(() => ui.sidebar.getBoundingClientRect().right <= 0);
+
+  await touch.start(20, 420);
+  await touch.move(36, 420);
+  await touch.end();
+  assert.equal(await isOpen(), false, "短滑恢复收起状态");
+  await page.locator(".menu-btn").tap();
+  assert.equal(await isOpen(), true, "横滑后的下一次点击仍然可用");
+});
+
+test("侧栏手势：非边缘、纵向滚动、横向内容和多指取消均不误开", async (t) => {
+  const { page } = await fixture(t, { mobile: true });
+  const touch = await touchInput(page);
+  await page.evaluate(async () => (await import("/views/sidebar.js")).closeSide());
+  await page.waitForFunction(() => ui.sidebar.getBoundingClientRect().right <= 0);
+  const assertClosed = async () => {
+    assert.equal(await page.locator(".layout").evaluate((el) => el.classList.contains("side-open") || el.classList.contains("side-dragging")), false);
+  };
+  await touch.start(100, 420);
+  await touch.move(220, 420);
+  await touch.end();
+  await assertClosed();
+
+  await page.evaluate(() => { ui.msgInner.style.minHeight = "2400px"; ui.messages.scrollTop = 100; });
+  await touch.start(20, 600);
+  await touch.move(22, 560);
+  await touch.move(24, 450);
+  await touch.end();
+  await assertClosed();
+  assert.ok(await page.locator(".messages").evaluate((el) => el.scrollTop > 100), "纵向聊天滚动仍生效");
+
+  await page.evaluate(() => {
+    ui.messages.scrollTop = 0;
+    const scroller = document.createElement("div");
+    scroller.id = "horizontal-fixture";
+    scroller.style.cssText = "position:absolute;left:0;top:300px;width:200px;height:80px;overflow-x:auto;z-index:6";
+    scroller.innerHTML = '<div style="width:800px;height:60px">横向内容</div>';
+    ui.main.append(scroller);
+  });
+  await touch.start(20, 340);
+  await touch.move(150, 340);
+  await touch.end();
+  await assertClosed();
+
+  await touch.start(20, 500);
+  await touch.move(110, 500);
+  await touch.multi(110, 500);
+  await touch.cancel();
+  await assertClosed();
+  assert.equal(await page.locator(".layout").evaluate((el) => el.style.getPropertyValue("--side-reveal")), "");
+});
 
 for (const mobile of [false, true]) {
   test(`${mobile ? "触屏" : "桌面"}：顶部新建与刷新沿用最近活跃会话的专家和目录`, async (t) => {

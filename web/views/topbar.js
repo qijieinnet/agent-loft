@@ -16,6 +16,9 @@ export function renderTopbar() {
   const tasks = S.view === "tasks";
   const remote = S.view === "remote";
   const library = S.view === "library";
+  const showExpert = c && !tasks && !remote && !library;
+  // 老版本桌面端把菜单放在窗口顶栏；菜单没有内容时也不放。
+  const showMore = !desktopMenu && (topMenuItems().length || usageSummary());
   fill(ui.topbar,
     h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
     h(
@@ -24,17 +27,15 @@ export function renderTopbar() {
       tasks || remote || library
         ? h("span", { class: "conv-name" }, tasks ? "定时任务" : library ? "资料库" : "远程控制")
         : c
-          ? [
-              // 标题前面是专家的头像：点一下或鼠标停上去，看专家的信息和工作目录
-              expertAvatarButton(c),
-              h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c)),
-            ]
+          ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c))
           : null,
     ),
-    // 老版本桌面端把这个菜单放到它顶栏的「更多」里了；菜单里什么都没有时（桌面端里的任务页）也不放
-    desktopMenu || (!topMenuItems().length && !usageSummary())
-      ? null
-      : h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")),
+    showExpert || showMore
+      ? h("div", { class: "top-actions", role: "group", "aria-label": "会话操作" },
+          showExpert ? expertAvatarButton(c) : null,
+          showMore ? h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")) : null,
+        )
+      : null,
   );
   renderContext();
   syncDesktopMenu();
