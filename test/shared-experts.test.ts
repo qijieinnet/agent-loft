@@ -219,7 +219,7 @@ test("HTTP：共享专家可选，设定只读；个人工具接口不返回他�
   const wx = await import("../src/core/weixin-accounts.js");
   const { ensureWeixinConversation } = await import("../src/channels/weixin/conversation.js");
   const wxUrl = "/api/account/weixin";
-  const wxKey = wx.weixinKey(family.id);
+  let wxKey = wx.weixinKey(family.id);
   assert.equal((await request(wxUrl, "PATCH", { expert: shared.id })).status, 409);
   wx.bindWeixinAccount({ userId: family.id, botId: "family-wx", botToken: "weixin-secret", baseUrl: "http://127.0.0.1", ilinkUserId: "family@im.wechat" });
   t.after(() => { wx.removeWeixinAccount(family.id); });
@@ -245,7 +245,11 @@ test("HTTP：共享专家可选，设定只读；个人工具接口不返回他�
   assert.equal(switched.status, 200);
   assert.equal((await switched.json() as { expert: string }).expert, "claude");
   assert.equal(wxRunning.disposed, true, "切换结束当前运行的会话");
-  assert.deepEqual(getConversation(wxKey)?.perAgent, {}, "切换清空旧会话绑定");
+  const oldWxKey = wxKey;
+  wxKey = wx.weixinKey(family.id);
+  assert.notEqual(wxKey, oldWxKey, "切换专家创建独立的微信会话");
+  assert.equal(getConversation(oldWxKey)?.expert, shared.id, "保留旧会话的专家");
+  assert.deepEqual(getConversation(wxKey)?.perAgent, {}, "新会话不沿用旧会话绑定");
   assert.equal((await hub.command(wxKey, { kind: "agent", agent: shared.id }, { allowedAgents: ["claude"], by: "test", channel: "weixin" })).type, "text");
   assert.equal((await (await request(wxUrl)).json() as { expert: string }).expert, shared.id, "微信命令的选择在设置里可见");
   users.updateUser(family.id, { permissions: { agents: [], experts: [] } });

@@ -21,6 +21,7 @@ import {
   getConversation,
   isExpired,
   listConversations,
+  putConversation,
   recordSessionOwner,
   touchConversation,
   updateAgentBinding,
@@ -58,6 +59,7 @@ import { mcpEvents } from "./mcp.js";
 import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
 import { skillEvents } from "./skills.js";
 import { isSilentReply } from "./task-prompt.js";
+import { patchWeixinAccount } from "./weixin-accounts.js";
 
 // ---------- 事件 ----------
 
@@ -1067,7 +1069,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 闲置过期要按这次说话之前的活跃时间判断，所以先记下、后 touch
     const lastActive = conv.activeAt;
     touchConversation(key);
-    if (!conv.title && conv.titleAuto !== false && (conv.channel === "web" || conv.channel === "feishu") && shown.text.trim()) {
+    if (!conv.title && conv.titleAuto !== false && ["web", "feishu", "weixin"].includes(conv.channel) && shown.text.trim()) {
       // 先用首条消息占位，第一轮结束后换成 agent 自己生成的短标题（syncTitle）
       updateConversation(key, { title: shown.text.trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
       this.emitEvent(key, { type: "meta" });
@@ -1229,14 +1231,33 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
 
+  /** 微信的聊天入口与列表记录分开：切换上下文时新建记录，历史、附件和索引留在旧 key。 */
+  private nextWeixinConversation(conv: Conversation, patch: Partial<Conversation> = {}): Conversation {
+    if (conv.channel !== "weixin") return conv;
+    const now = Math.max(Date.now(), conv.createdAt + 1);
+    const next: Conversation = {
+      key: `weixin:${conv.channelId}:${crypto.randomUUID()}`,
+      channel: "weixin", channelId: conv.channelId,
+      agent: conv.agent, expert: conv.expert, owner: conv.owner,
+      cwd: conv.cwd, cwdExplicit: conv.cwdExplicit,
+      ...(requestedPermission(conv) === "edit" ? { permission: "edit" } : {}),
+      perAgent: {}, createdAt: now, activeAt: now,
+      ...patch,
+    };
+    putConversation(next);
+    patchWeixinAccount(conv.channelId, { conversationKey: next.key });
+    return next;
+  }
+
   private async newSessionNow(key: string, model: string | undefined, op: SwitchOp): Promise<string> {
     const conv = getConversation(key)!;
     await this.drop(key, "已开新会话");
     this.markSwitched(key, op.seq);
-    this.clearFullPermission(key);
-    updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
-    this.emitEvent(key, { type: "meta" });
-    const runtime = await this.runtimeNow(key);
+    const next = this.nextWeixinConversation(conv);
+    this.clearFullPermission(next.key);
+    updateAgentBinding(next.key, next.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
+    this.emitEvent(next.key, { type: "meta" });
+    const runtime = await this.runtimeNow(next.key);
     return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
       runtime.effort ? `，思考 ${runtime.effort}` : ""
     }）。`;
@@ -1249,11 +1270,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     if (!current) return "当前还没有可分叉的会话。";
     await this.drop(key, "已分叉会话");
     this.markSwitched(key, op.seq);
-    this.clearFullPermission(key);
+    const next = this.nextWeixinConversation(conv, { forkOf: key, perAgent: { [conv.agent]: { ...binding } } });
+    this.clearFullPermission(next.key);
     // 只记下意图，下一条消息时才真正分叉（见 session() 里的 pendingFork）
-    updateAgentBinding(key, conv.agent, { forkFrom: current });
-    touchConversation(key);
-    this.emitEvent(key, { type: "meta" });
+    updateAgentBinding(next.key, conv.agent, { forkFrom: current });
+    touchConversation(next.key);
+    this.emitEvent(next.key, { type: "meta" });
     return "已分叉，原会话保留。下一条消息起在分叉出来的新会话里继续。";
   }
 
@@ -1265,11 +1287,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     }
     await this.drop(key, "会话已切换");
     this.markSwitched(key, op.seq);
-    updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
+    const next = this.nextWeixinConversation(conv, { perAgent: { [conv.agent]: { ...agentBinding(conv) } } });
+    updateAgentBinding(next.key, conv.agent, { sessionId, forkFrom: undefined });
     // 显式恢复 = 用户要接着它聊：刷新活跃时间，否则下一条消息会按恢复前的闲置时间判成过期
-    touchConversation(key);
-    this.session(key, { resumeId: sessionId });
-    this.emitEvent(key, { type: "meta" });
+    touchConversation(next.key);
+    this.session(next.key, { resumeId: sessionId });
+    this.emitEvent(next.key, { type: "meta" });
     const note =
       originCwd && originCwd !== conv.cwd
         ? `\n\n注意：这条会话原本在 \`${originCwd}\`，恢复后会在 \`${conv.cwd}\` 里继续 —— 上下文都在，但读写范围跟着当前工作目录走。`
@@ -1535,10 +1558,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     if (expertIdOf(conv) === hit.id) return `当前已经是 ${hit.label}。`;
     await this.drop(key, `已换成 ${hit.label}`);
     this.markSwitched(key, op.seq);
+    const hasHistory = Object.values(conv.perAgent).some((b) => b.sessionId || b.forkFrom)
+      || this.buffers.get(key)?.some(({ ev }) => ev.type === "user" || ev.type === "result");
+    const next = hasHistory ? this.nextWeixinConversation(conv) : conv;
     // 新会话：所有 agent 的旧会话都不接着用（专家换了，上下文里的人设、权限都不对了）
-    updateConversation(key, { agent: hit.engine, expert: isBuiltin(hit.id) ? undefined : hit.id, perAgent: {} });
-    this.clearFullPermission(key);
-    this.emitEvent(key, { type: "meta" });
+    updateConversation(next.key, { agent: hit.engine, expert: isBuiltin(hit.id) ? undefined : hit.id, perAgent: {} });
+    this.clearFullPermission(next.key);
+    this.emitEvent(next.key, { type: "meta" });
     return `已换成专家「${hit.label}」，开了新会话。`;
   }
 
@@ -1697,8 +1723,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const perAgent = Object.fromEntries(
       Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
     );
-    updateConversation(key, { cwd: resolved, cwdExplicit: true, perAgent });
-    this.emitEvent(key, { type: "meta" });
+    const next = this.nextWeixinConversation(conv);
+    updateConversation(next.key, { cwd: resolved, cwdExplicit: true, perAgent });
+    this.emitEvent(next.key, { type: "meta" });
     return `工作目录已切换到 ${resolved}，下条消息将开新会话。`;
   }
 

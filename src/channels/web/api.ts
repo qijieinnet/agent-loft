@@ -657,7 +657,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   // ----- 总览 -----
   if (p === "/api/bootstrap" && method === "GET") {
     // 会话只给侧栏第一屏要的（见 conv-pages.ts）：「最近」的前 recent 棵树、展开着的目录各自的前几棵，
-    // 每个飞书机器人最近的一条，再加上正在跑的、等你处理的（侧栏要显示状态）。其余点「展开显示」再拉
+    // 每个 IM 分组最近的一条（微信另含当前会话），再加上正在跑的、等你处理的。其余展开后分页拉取。
     const all = hub.list(visible).filter((c) => !c.hidden);
     const pending = interactions.listPending().filter((i) => visible(getConversation(i.convKey)));
     const recent = pageOf(all.filter(inRecent), null, clampLimit(url.searchParams.get("recent"), 10));
@@ -679,14 +679,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     for (const page of dirPages.values()) for (const c of page.conversations) keep.set(c.key, c);
     const asking = new Set(pending.map((i) => i.convKey));
     const bots = new Set<string>();
+    const weixinUsers = new Set<string>();
     for (const c of all) {
       // all 已按活跃时间从新到旧：每个机器人遇到的第一条就是它最近的
       if (c.channel === "feishu" && !bots.has(c.channelId)) {
         bots.add(c.channelId);
         keep.set(c.key, c);
       }
-      // 微信不在「最近」的分页里，但侧栏上总要有它那一行
-      if (c.busy || asking.has(c.key) || c.channel === "weixin") keep.set(c.key, c);
+      if (c.channel === "weixin" && !weixinUsers.has(c.channelId)) {
+        weixinUsers.add(c.channelId);
+        keep.set(c.key, c);
+        const active = byKey.get(weixinKey(c.channelId));
+        if (active) keep.set(active.key, active);
+      }
+      if (c.busy || asking.has(c.key)) keep.set(c.key, c);
     }
     // 正开着的会话（可能是后面几页里的，重连时页面上还显示着它）
     const current = byKey.get(url.searchParams.get("current") ?? "");
@@ -837,10 +843,17 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
 
   // ----- 会话 -----
-  // 侧栏按页拉：recent / dir / bot 按树分页；bot 不传 limit 时保留历史弹窗的平铺列表。
+  // 侧栏按页拉：recent / dir / bot / weixin 按树分页；bot 不传 limit 时保留历史弹窗的平铺列表。
   if (p === "/api/conversations/page" && method === "GET") {
     const all = hub.list(visible).filter((c) => !c.hidden);
     const scope = url.searchParams.get("scope");
+    if (scope === "weixin") {
+      const owner = url.searchParams.get("user") ?? user.id;
+      const list = all.filter((c) => c.channel === "weixin" && c.channelId === owner);
+      const before = parseCursor(url.searchParams.get("at"), url.searchParams.get("key"));
+      sendJson(res, 200, pageOf(list, before, clampLimit(url.searchParams.get("limit"), 5)));
+      return;
+    }
     if (scope === "bot") {
       const bot = url.searchParams.get("bot") ?? "";
       const list = all.filter((c) => c.channel === "feishu" && c.channelId === bot);
@@ -852,7 +865,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, page);
       return;
     }
-    if (scope !== "recent" && scope !== "dir") throw new HttpError(400, "scope 只能是 recent / dir / bot");
+    if (scope !== "recent" && scope !== "dir") throw new HttpError(400, "scope 只能是 recent / dir / bot / weixin");
     const list = scope === "recent" ? all.filter(inRecent) : all.filter(inDir(url.searchParams.get("dir") ?? ""));
     const before = parseCursor(url.searchParams.get("at"), url.searchParams.get("key"));
     sendJson(res, 200, pageOf(list, before, clampLimit(url.searchParams.get("limit"), 10)));
@@ -1145,6 +1158,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (sub === "action" && method === "POST") {
       const body = await readJsonBody<{ action?: string; value?: string; cwd?: string }>(req);
       const value = String(body.value ?? "");
+      const previousWeixinKey = conv.channel === "weixin" ? weixinKey(conv.channelId) : undefined;
       let text: string;
       switch (body.action) {
         case "new":
@@ -1186,9 +1200,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         default:
           throw new HttpError(400, "未知操作");
       }
-      // 飞书会话上的操作，在飞书里也说一声
-      if (conv.channel !== "web") hub.notice(key, `💻 Web：${text}`);
-      sendJson(res, 200, { text, info: hub.info(key) });
+      const currentWeixinKey = previousWeixinKey ? weixinKey(conv.channelId) : undefined;
+      const nextKey = currentWeixinKey && currentWeixinKey !== previousWeixinKey ? currentWeixinKey : key;
+      // IM 会话上的操作，在对应渠道里也说一声。
+      if (conv.channel !== "web") hub.notice(nextKey, `💻 Web：${text}`);
+      sendJson(res, 200, { text, info: hub.info(nextKey) });
       return;
     }
   }

@@ -1,4 +1,4 @@
-// 一个微信绑定 = 一条长轮询 + 一条会话（weixin:<用户 id>）。
+// 一个微信绑定 = 一条长轮询 + 一条当前会话；历史会话保留在同一用户的微信分组。
 //
 // 和飞书的差别都来自微信的限制，别按飞书的习惯改回去：
 //   - 消息发出去不能改，所以不发过程，只显示「正在输入」，一轮结束发一次结果；
@@ -60,7 +60,8 @@ export type WeixinStatus = {
 
 export class WeixinBot {
   readonly client: IlinkClient;
-  readonly key: string;
+  get key(): string { return weixinKey(this.account.userId); }
+  private eventKey: string | undefined;
   status: WeixinStatus = { state: "stopped", since: Date.now() };
   private dedup = new Dedup();
   private stop_ = new AbortController();
@@ -86,7 +87,6 @@ export class WeixinBot {
 
   constructor(readonly account: WeixinAccount) {
     this.client = new IlinkClient(account.baseUrl, account.botToken);
-    this.key = weixinKey(account.userId);
   }
 
   private get user(): User | undefined {
@@ -108,7 +108,14 @@ export class WeixinBot {
 
   start(): void {
     const onEvent = (env: EventEnvelope) => {
-      if (env.key === this.key) this.onHubEvent(env);
+      if (env.key !== this.key) return;
+      if (this.eventKey !== env.key) {
+        this.eventKey = env.key;
+        this.lastOrigin = undefined;
+        this.shown = undefined;
+        this.pendingChunks = [];
+      }
+      this.onHubEvent(env);
     };
     hub.on("event", onEvent);
     this.offs.push(() => hub.off("event", onEvent));

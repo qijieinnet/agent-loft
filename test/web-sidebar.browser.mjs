@@ -71,6 +71,13 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
         const last = items.at(-1);
         data = { conversations: items, next: last && start + items.length < list.length ? { at: last.activeAt, key: last.key } : null };
       }
+      if (url.pathname === "/api/conversations/page" && url.searchParams.get("scope") === "weixin") {
+        const list = (bootstrap.conversations ?? []).filter((c) => c.channel === "weixin" && c.channelId === url.searchParams.get("user")).sort((a, b) => b.activeAt - a.activeAt);
+        const start = url.searchParams.has("key") ? list.findIndex((c) => c.key === url.searchParams.get("key")) + 1 : 0;
+        const items = list.slice(start, start + Number(url.searchParams.get("limit") || 5));
+        const last = items.at(-1);
+        data = { conversations: items, next: last && start + items.length < list.length ? { at: last.activeAt, key: last.key } : null };
+      }
       if (url.pathname === "/api/ui/sidebar-nav") {
         saves++;
         if (failSave) return route.fulfill({ status: 500, json: { error: "测试保存失败" } });
@@ -194,6 +201,31 @@ test("侧栏手势：非边缘、纵向滚动、横向内容和多指取消均�
 });
 
 for (const mobile of [false, true]) {
+  test(`${mobile ? "触屏" : "桌面"}：多条微信会话归为同组、分页、刷新恢复并可打开旧会话`, async (t) => {
+    const convs = Array.from({ length: 17 }, (_, i) => ({ key: `weixin:u1:${i}`, channel: "weixin", channelId: "u1", agent: "claude", cwd: "/workspace", title: `微信话题 ${i}`, activeAt: 100 - i }));
+    const { page } = await fixture(t, { mobile, bootstrap: { conversations: [{ key: "web:1", channel: "web", channelId: "web", agent: "claude", cwd: "/workspace", activeAt: 1 }, ...convs] } });
+    const group = page.locator('[data-group="weixin:weixin:u1"]');
+    const header = group.locator(".conv-item.proj");
+    const chats = page.locator('.conv-list [data-key^="weixin:"]');
+    assert.equal(await group.count(), 1, "新 key 按账号归组，不会一条对话一个分组");
+    await header.click();
+    await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="weixin:"]').length === 5);
+    await page.locator(".sub-more .conv-more").getByText("展开显示", { exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="weixin:"]').length === 15);
+    await page.locator(".sub-more .conv-more").getByText("展开显示", { exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="weixin:"]').length === 17);
+    await page.reload();
+    await page.waitForFunction(() => window.booted && document.querySelectorAll('.conv-list [data-key^="weixin:"]').length === 5);
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    await chats.nth(2).click();
+    await page.waitForFunction(() => S.current === "weixin:u1:2");
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await header.getAttribute("aria-expanded"), "true");
+    assert.equal(await chats.nth(2).evaluate((el) => el.classList.contains("active")), true);
+    await header.click();
+    assert.equal(await chats.count(), 0);
+  });
+
   test(`${mobile ? "触屏" : "桌面"}：顶部新建与刷新沿用最近活跃会话的专家和目录`, async (t) => {
     const expert = { id: "e_helper", name: "助手", engine: "codex", cwd: "/workspace/expert-default" };
     const latest = { key: "web:latest", channel: "web", channelId: "web", agent: "codex", expert, cwd: "/workspace/recent", activeAt: 100, title: "最近会话", busy: false };

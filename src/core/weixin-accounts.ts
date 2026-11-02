@@ -3,12 +3,13 @@
 // 和飞书不一样，这里没有「机器人」和「绑定码」：用户登录 Web 后自己扫码，扫码的人就是这个账号的主人，
 // 这条微信对话也只认扫码的这个微信号（ClawBot 本身只能由账号所有者私聊使用）。
 //
-// 重新扫码后 iLink 的 bot id 会变，所以会话键跟着 agent-loft 用户走，不跟 bot 走。
+// 重新扫码后 iLink 的 bot id 会变，所以当前会话指向跟着 agent-loft 用户保存，不跟 bot 走。
 //
 // 这个文件里有 bot token，权限 0600，也不进 config.json（配置接口要给管理员看，token 是个人的）。
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
+import { listConversations } from "./store.js";
 
 export type WeixinAccount = {
   /** agent-loft 用户 */
@@ -26,6 +27,8 @@ export type WeixinAccount = {
   lastInboundAt?: number;
   /** 上一条入站消息之后发出去了多少条（微信限制每条入站之后能发的条数） */
   sentSinceInbound: number;
+  /** 当前接收微信消息的对话；旧绑定未设置时沿用 weixin:<用户 id>。 */
+  conversationKey?: string;
 };
 
 const storePath = path.join(dataDir, "weixin-accounts.json");
@@ -44,8 +47,12 @@ function save(): void {
 /** changed：绑定多了、少了或者换了凭据。游标、令牌这些运行时字段变化不发 */
 export const weixinAccountEvents = new EventEmitter<{ changed: [] }>();
 
-/** 这个用户的微信对话的会话键 */
-export const weixinKey = (userId: string): string => `weixin:${userId}`;
+/** 这个用户当前的微信对话。旧对话保留原 key，开新会话只更换这个指向。 */
+export function weixinKey(userId: string): string {
+  return load()[userId]?.conversationKey
+    ?? listConversations().filter((c) => c.channel === "weixin" && c.channelId === userId).sort((a, b) => b.createdAt - a.createdAt)[0]?.key
+    ?? `weixin:${userId}`;
+}
 
 export function getWeixinAccount(userId: string): WeixinAccount | undefined {
   return load()[userId];
@@ -64,14 +71,15 @@ export function bindWeixinAccount(params: { userId: string; botId: string; botTo
   for (const [userId, account] of Object.entries(all)) {
     if (userId !== params.userId && account.ilinkUserId === params.ilinkUserId) delete all[userId];
   }
-  const account: WeixinAccount = { ...params, boundAt: Date.now(), cursor: "", sentSinceInbound: 0 };
+  const conversationKey = all[params.userId]?.conversationKey;
+  const account: WeixinAccount = { ...params, boundAt: Date.now(), cursor: "", sentSinceInbound: 0, ...(conversationKey ? { conversationKey } : {}) };
   all[params.userId] = account;
   save();
   weixinAccountEvents.emit("changed");
   return account;
 }
 
-export function patchWeixinAccount(userId: string, patch: Partial<Pick<WeixinAccount, "cursor" | "contextToken" | "lastInboundAt" | "sentSinceInbound">>): void {
+export function patchWeixinAccount(userId: string, patch: Partial<Pick<WeixinAccount, "cursor" | "contextToken" | "lastInboundAt" | "sentSinceInbound" | "conversationKey">>): void {
   const account = load()[userId];
   if (!account) return;
   Object.assign(account, patch);

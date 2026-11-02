@@ -72,4 +72,29 @@ test("飞书侧栏分页：按机器人隔离、分叉跟随主会话、保留�
   assert.equal(legacy.next, null);
   assert.deepEqual(await get("&limit=5", cookie(member.id)), { conversations: [], next: null });
   assert.equal((await fetch(`${base}/api/conversations/page?scope=bot&bot=bot&limit=5`)).status, 401);
+
+  // 微信的当前与历史记录按账号分页，成员和其他管理员的记录不能互相读取。
+  for (let i = 0; i < 7; i++) {
+    const key = `weixin:${member.id}:${i}`;
+    hub.ensure({ key, channel: "weixin", channelId: member.id, defaultAgent: "claude", owner: member.id });
+    updateConversation(key, { activeAt: 100 - i, createdAt: 100 - i, title: `话题 ${i}` });
+  }
+  const other = createUser({ name: "other-wx", password: "password-3" });
+  hub.ensure({ key: `weixin:${other.id}`, channel: "weixin", channelId: other.id, defaultAgent: "claude", owner: other.id });
+  const memberCookie = cookie(member.id);
+  const wxPage = async (query = "", auth = memberCookie) => {
+    const res = await fetch(`${base}/api/conversations/page?scope=weixin&user=${member.id}&limit=5${query}`, { headers: { Cookie: auth } });
+    assert.equal(res.status, 200);
+    return await res.json() as Page;
+  };
+  const wxFirst = await wxPage();
+  assert.equal(wxFirst.conversations.length, 5);
+  assert.ok(wxFirst.conversations.every((c) => c.channelId === member.id));
+  const wxSecond = await wxPage(`&at=${wxFirst.next!.at}&key=${encodeURIComponent(wxFirst.next!.key)}`);
+  assert.equal(wxSecond.conversations.length, 2);
+  assert.equal(wxSecond.next, null);
+  assert.deepEqual(await wxPage("", cookie(other.id)), { conversations: [], next: null });
+  assert.deepEqual(await wxPage("", adminCookie), { conversations: [], next: null });
+  const wxBootstrap = await (await fetch(`${base}/api/bootstrap`, { headers: { Cookie: memberCookie } })).json() as { conversations: Page["conversations"] };
+  assert.equal(wxBootstrap.conversations.filter((c) => c.channel === "weixin").length, 1, "启动只加载最近一条，展开时再分页");
 });

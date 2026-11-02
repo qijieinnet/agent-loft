@@ -389,7 +389,7 @@ const MORE_STEP = 10;
 // next：下一页的游标；null = 没有更多了；undefined = 这个目录还没拉过。
 
 /** full：老版本服务端一次给了全部，不用再拉 */
-const pages = { recent: { show: RECENT_LIMIT, next: null, loading: false }, dirs: new Map(), bots: new Map(), dirAt: new Map(), full: false };
+const pages = { recent: { show: RECENT_LIMIT, next: null, loading: false }, dirs: new Map(), bots: new Map(), weixin: new Map(), dirAt: new Map(), full: false };
 
 function dirState(dir) {
   let st = pages.dirs.get(dir);
@@ -400,6 +400,12 @@ function dirState(dir) {
 function botState(id) {
   let st = pages.bots.get(id);
   if (!st) pages.bots.set(id, (st = { show: PROJECT_LIMIT, next: pages.full ? null : undefined, loading: false }));
+  return st;
+}
+
+function weixinState(id) {
+  let st = pages.weixin.get(id);
+  if (!st) pages.weixin.set(id, (st = { show: PROJECT_LIMIT, next: pages.full ? null : undefined, loading: false }));
   return st;
 }
 
@@ -416,8 +422,8 @@ export function applyBootstrap(data) {
   S.sidebarNav = data.sidebarNav ?? null;
   S.convs = new Map(data.conversations.map((c) => [c.key, c]));
   pages.full = !data.sidebar;
-  // bootstrap 只带每个机器人最近的一条；展开的列表需要重新补齐。
-  for (const st of pages.bots.values()) {
+  // bootstrap 只带 IM 分组最近/当前的一条；展开的列表需要重新补齐。
+  for (const st of [...pages.bots.values(), ...pages.weixin.values()]) {
     st.next = pages.full ? null : undefined;
     st.failed = false;
   }
@@ -549,7 +555,7 @@ export function renderSidebar() {
   if ((cur?.channel === "feishu" || cur?.channel === "weixin") && cur.key !== autoOpenedFor) {
     autoOpenedFor = cur.key;
     const list = cur.channel === "feishu" ? sideState.botOpen : sideState.weixinOpen;
-    const id = cur.channel === "feishu" ? cur.channelId : cur.key;
+    const id = cur.channel === "feishu" ? cur.channelId : `weixin:${cur.channelId}`;
     if (!list.includes(id)) {
       list.push(id);
       saveSideState();
@@ -624,16 +630,32 @@ export function renderSidebar() {
     });
   }
 
-  // 微信每个人一条对话，也使用 IM 分组；沿用旧排序键，升级后位置不变。
+  // 微信按账号归组，当前及历史对话共用一个分组；排序键沿用旧版单条会话的位置。
+  const weixinGroups = new Map();
   for (const c of visible.filter((c) => c.channel === "weixin")) {
-    const id = `weixin:${c.key}`;
-    const expanded = sideState.weixinOpen.includes(c.key);
+    if (!weixinGroups.has(c.channelId)) weixinGroups.set(c.channelId, []);
+    weixinGroups.get(c.channelId).push(c);
+  }
+  for (const [user, convs] of weixinGroups) {
+    const id = `weixin:weixin:${user}`;
+    const expanded = sideState.weixinOpen.includes(`weixin:${user}`);
     const rows = [imGroupRow({
-      id, channel: "weixin", name: "微信", convs: [c], expanded,
-      toggle: () => toggleSide("weixinOpen", c.key),
+      id, channel: "weixin", name: "微信", convs, expanded,
+      toggle: () => toggleSide("weixinOpen", `weixin:${user}`),
     })];
-    if (expanded) rows.push(convRow(c, " sub", `微信 · ${agentLabel(c.agent)} · ${c.cwd}`));
-    botRows.push({ id, at: c.activeAt, rows });
+    if (expanded) {
+      const st = weixinState(user);
+      const load = (limit) => fetchPage(st, { scope: "weixin", user, limit: String(limit) });
+      if (st.next === undefined && !st.loading && !st.failed) void load(st.show);
+      const forest = loadedPrefix(st, forkForest(convs));
+      for (const node of forest.slice(0, st.show)) {
+        rows.push(renderForkNode(node, (c, orphan, fold) => convRow(c, " sub", `微信 · ${agentLabel(c.agent)} · ${c.cwd}`, orphan, fold)));
+      }
+      if (st.failed) rows.push(h("button", { class: "conv-more", onclick: () => { void load(st.show); renderSidebar(); } }, "加载失败，点击重试"));
+      const btn = moreButton(st, forest.length, PROJECT_LIMIT, load);
+      if (btn) rows.push(h("div", { class: "sub-more" }, btn));
+    }
+    botRows.push({ id, at: convs[0].activeAt, rows });
   }
 
   // ---- Web 会话直接按工作目录分组，目录按用户排的顺序（见 orderSidebarGroups） ----

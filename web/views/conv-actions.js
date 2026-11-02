@@ -22,7 +22,7 @@ export async function doAction(action, value, extra = {}) {
     S.convs.set(res.info.key, res.info);
     renderTopbar();
     toast(res.text);
-    if (["new", "fork", "resume", "agent", "cd"].includes(action)) await openConversation(S.current);
+    if (["new", "fork", "resume", "agent", "cd"].includes(action)) await openConversation(res.info.key);
     return res;
   } catch (err) {
     toast(err.message);

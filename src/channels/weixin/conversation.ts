@@ -1,4 +1,4 @@
-// 设置页和微信入站共用同一条会话、同一份专家选择。
+// 设置页和微信入站共用当前会话、同一份专家选择；切换后保留旧对话。
 import { hub } from "../../core/hub.js";
 import { getConversation } from "../../core/store.js";
 import { weixinKey } from "../../core/weixin-accounts.js";
@@ -23,7 +23,6 @@ export async function ensureWeixinConversation(userId: string): Promise<string[]
       defaultAgent: first.engine,
       expert: first.id,
       owner: userId,
-      title: "微信",
     });
   } else if (!choices.some((e) => e.id === (existed.expert ?? existed.agent))) {
     await hub.setExpert(key, first.id, allowed);

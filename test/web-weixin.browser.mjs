@@ -100,11 +100,14 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
   const helper = await created.json();
   const account = async () => (await ctx.request.get(`${base}/api/account/weixin`)).json();
   const sends = () => reqs.filter((r) => r.p.endsWith("sendmessage"));
+  let settingsVisit = 0;
   const openSettings = async () => {
-    await page.goto(base);
-    await page.waitForTimeout(1000);
-    await page.evaluate(() => document.dispatchEvent(new CustomEvent("aim:open-settings", { detail: "账号" })));
-    await page.locator(".settings-page").waitFor({ timeout: 8000 });
+    await page.goto(`${base}/?settingsVisit=${++settingsVisit}#new`);
+    await page.locator(".side-top .new-chat").waitFor({ timeout: 8000 });
+    await page.evaluate(async () => (await import("/views/layout.js")).openSettings("账号"));
+    await page.locator(".settings-page").waitFor({ timeout: 8000 }).catch(async (err) => {
+      throw new Error(`${err.message}\n页面：${await page.locator("#app").innerText()}`);
+    });
   };
 
   assert.equal((await account()).linked, false);
@@ -164,6 +167,14 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
   assert.equal((await account()).expert, "claude");
   assert.equal(await expertPicker.isEnabled(), true);
 
+  // 在真服务上从微信连续开两条新会话，Web 应实时出现三条独立记录。
+  const beforeNew = sends().length;
+  inbox.push({ message_id: "4", from_user_id: "me@im.wechat", message_type: 1, context_token: "c4", item_list: [{ type: 1, text_item: { text: "/new" } }] });
+  await wait(() => sends().length > beforeNew, "第一条新会话");
+  const secondNew = sends().length;
+  inbox.push({ message_id: "5", from_user_id: "me@im.wechat", message_type: 1, context_token: "c5", item_list: [{ type: 1, text_item: { text: "/new" } }] });
+  await wait(() => sends().length > secondNew, "第二条新会话");
+
   await page.goto(base);
   const wxHeader = page.locator('.proj-row[data-group^="weixin:"] .conv-item.proj');
   await wxHeader.waitFor({ timeout: 8000 });
@@ -171,10 +182,23 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
   assert.equal(await wxHeader.getAttribute("aria-expanded"), "false");
   await wxHeader.click();
   const row = page.locator('.conv-item[data-key^="weixin:"]');
-  await row.waitFor({ timeout: 8000 });
-  assert.equal((await row.locator(".title").innerText()).trim(), "微信");
-  await row.click();
+  await wait(async () => await row.count() === 3, "同一微信分组包含三条会话");
+  assert.equal(await page.locator('.proj-row[data-group^="weixin:"]').count(), 1);
+  const keys = await row.evaluateAll((rows) => rows.map((el) => el.dataset.key));
+  assert.equal(new Set(keys).size, 3);
+  assert.equal((await row.first().locator(".title").innerText()).trim(), "微信");
+  inbox.push({ message_id: "6", from_user_id: "me@im.wechat", message_type: 1, context_token: "c6", item_list: [{ type: 1, text_item: { text: "/new" } }] });
+  await wait(async () => await row.count() === 4, "微信中新建会话实时出现在 Web，不必刷新");
+  await row.last().click();
   await page.waitForTimeout(500);
+  assert.equal(decodeURIComponent(new URL(page.url()).hash.slice(1)), keys.at(-1), "旧微信会话可以单独打开");
+  const invalidCd = await ctx.request.post(`${base}/api/conversations/${encodeURIComponent(keys.at(-1))}/action`, { data: { action: "cd", value: "/nonexistent-weixin-directory" } });
+  assert.equal((await invalidCd.json()).info.key, keys.at(-1), "无效操作不会跳到另一条会话");
+  const activeKey = await row.first().getAttribute("data-key");
+  const fromWeb = await ctx.request.post(`${base}/api/conversations/${encodeURIComponent(activeKey)}/action`, { data: { action: "new" } });
+  assert.ok(fromWeb.ok());
+  assert.notEqual((await fromWeb.json()).info.key, activeKey, "Web 新建返回新记录，供页面切换");
+  await wait(async () => await row.count() === 5, "Web 新建也保留原记录");
 
   await openSettings();
   await page.getByRole("button", { name: "断开" }).click();

@@ -79,6 +79,8 @@ loadConfig();
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 const outcomes: InteractionOutcome[] = [];
 const LONG = Array.from({ length: 6 }, (_, i) => `第${i}段`.padEnd(3700, "字")).join("\n");
+let sessionSeq = 0;
+const histories = new Map<string, import("../src/core/types.js").HistoryMessage[]>();
 
 function fakeDriver(): AgentDriver {
   return {
@@ -87,14 +89,17 @@ function fakeDriver(): AgentDriver {
     capabilities: { effort: true, fork: true, cost: false, streaming: true },
     start: async () => {},
     stop: async () => {},
-    createSession(_opts, events: AgentEvents, host: InteractionHost) {
+    createSession(opts, events: AgentEvents, host: InteractionHost) {
+      const sessionId = opts.resumeId ?? `s${++sessionSeq}`;
+      if (!histories.has(sessionId)) histories.set(sessionId, []);
       // 和真 agent 一样一轮一轮来：授权挂着时，后面的消息排队
       let queue: Promise<void> = Promise.resolve();
       return {
         sessionId: undefined,
         send(input) {
           queue = queue.then(async () => {
-            events.onSessionId("s1");
+            events.onSessionId(sessionId);
+            histories.get(sessionId)!.push({ role: "user", text: input.text });
             events.onStep("tool", "🔧 做点什么");
             if (input.text.includes("授权")) {
               outcomes.push(await host({ kind: "approval", title: "需要授权：Bash", detail: "rm -rf x", alwaysLabel: "总是允许", alwaysGlobal: true }));
@@ -111,6 +116,7 @@ function fakeDriver(): AgentDriver {
             if (input.text.includes("慢")) await tick(150);
             const text = input.text.includes("长回复") ? LONG : input.text.includes("二十段") ? "x\n".repeat(30000) : `收到：${input.text}`;
             events.onText(text);
+            histories.get(sessionId)!.push({ role: "assistant", text });
             events.onResult({ text, durationMs: 1 });
           });
         },
@@ -122,7 +128,7 @@ function fakeDriver(): AgentDriver {
     },
     listSessions: async () => [],
     sessionExists: async () => true,
-    readHistory: async () => [],
+    readHistory: async (id) => structuredClone(histories.get(id) ?? []),
     listModels: async () => [{ id: "m1", label: "M1" }],
     catalog: async () => [{ id: "m1", label: "M1" }],
     defaults: async () => ({}),
@@ -133,7 +139,7 @@ function fakeDriver(): AgentDriver {
 hub.registerDriver(fakeDriver());
 
 const admin = createUser({ name: "owner", password: "password1", role: "admin" });
-const key = accounts.weixinKey(admin.id);
+let key = accounts.weixinKey(admin.id);
 const WX = "owner@im.wechat";
 
 async function until(fn: () => boolean, what: string, ms = 3000): Promise<void> {
@@ -267,6 +273,78 @@ test("收到消息就回复：带上最新令牌和协议字段，会话归扫�
   assert.equal(hub.conversation(key)?.channel, "weixin");
   await until(() => accounts.getWeixinAccount(admin.id)!.cursor.startsWith("buf"), "游标落盘");
   assert.ok(sentTexts().every((t) => !t.includes("做点什么")), "过程不发到微信");
+});
+
+test("微信 /new 新建独立记录：旧历史保留，紧接着的消息进入新会话，旧会话的 Web 消息不发到微信", async () => {
+  const oldKey = key;
+  const oldSession = hub.info(oldKey)!.sessionId;
+  const oldHistory = await hub.history(oldKey);
+  const before = hub.list().filter((c) => c.channel === "weixin" && c.channelId === admin.id).length;
+  say("/new");
+  say("新话题");
+  await until(() => sentTexts().at(-1) === "收到：新话题", "新会话回复");
+  key = accounts.weixinKey(admin.id);
+  assert.notEqual(key, oldKey);
+  assert.notEqual(hub.info(key)?.sessionId, oldSession);
+  assert.equal(hub.info(oldKey)?.sessionId, oldSession);
+  assert.deepEqual(await hub.history(oldKey), oldHistory);
+  assert.equal(hub.list().filter((c) => c.channel === "weixin" && c.channelId === admin.id).length, before + 1);
+  assert.equal(hub.info(key)?.title, "新话题");
+  assert.deepEqual((await hub.history(key)).map((m) => m.text), ["新话题", "收到：新话题"]);
+  assert.ok(!(hub.eventsSince(key, 0) ?? []).some(({ ev }) => ev.type === "user" && ev.text === "你好"));
+  const saved = JSON.parse(fs.readFileSync(path.join(home, "data", "weixin-accounts.json"), "utf8"));
+  assert.equal(saved[admin.id].conversationKey, key, "当前指向已落盘，重启可恢复");
+  const sent = sends().length;
+  hub.send(oldKey, { text: "在旧会话继续", attachments: [] }, { channel: "web", channelId: "web" });
+  await tick(100);
+  assert.equal(sends().length, sent, "历史对话的 Web 回复不发到当前微信");
+  assert.equal(accounts.weixinKey(admin.id), key, "查看和续聊旧会话不切换微信入口");
+});
+
+test("微信切换专家也保留旧会话；重复选择同一专家不增加记录", async () => {
+  const { createExpert } = await import("../src/core/experts.js");
+  const helper = createExpert(admin.id, { name: "第二位助手", engine: "claude", access: "exec", prompt: "帮忙" });
+  const oldKey = key;
+  const oldSession = hub.info(oldKey)?.sessionId;
+  await turn(`/expert ${helper.id}`);
+  key = accounts.weixinKey(admin.id);
+  assert.notEqual(key, oldKey);
+  assert.equal(hub.info(oldKey)?.sessionId, oldSession);
+  assert.equal(hub.conversation(oldKey)?.expert, undefined);
+  assert.equal(hub.conversation(key)?.expert, helper.id);
+  await turn(`/expert ${helper.id}`);
+  assert.equal(accounts.weixinKey(admin.id), key);
+  await turn("/expert claude");
+  key = accounts.weixinKey(admin.id);
+});
+
+test("微信分叉、恢复及切目录保留原记录，完全允许不带入新会话", async () => {
+  await turn("分叉前的话题");
+  const source = key;
+  const sessionId = hub.info(source)!.sessionId!;
+  await hub.setPermission(source, "full", true);
+  await turn("/fork");
+  key = accounts.weixinKey(admin.id);
+  assert.notEqual(key, source);
+  assert.equal(hub.info(source)?.sessionId, sessionId);
+  assert.equal(hub.conversation(key)?.forkOf, source);
+  assert.notEqual(hub.info(key)?.permission, "full");
+  const forked = key;
+  await turn(`/resume ${sessionId}`);
+  key = accounts.weixinKey(admin.id);
+  assert.notEqual(key, forked);
+  assert.ok(hub.conversation(forked));
+  assert.equal(hub.info(key)?.sessionId, sessionId);
+  const resumed = key;
+  const dir = path.join(workspace, "new-dir");
+  fs.mkdirSync(dir);
+  await turn(`/cd ${dir}`);
+  key = accounts.weixinKey(admin.id);
+  assert.notEqual(key, resumed);
+  assert.equal(hub.conversation(resumed)?.cwd, workspace);
+  assert.equal(hub.conversation(key)?.cwd, dir);
+  await turn(`/cd ${workspace}`);
+  key = accounts.weixinKey(admin.id);
 });
 
 test("处理得久时显示正在输入，结束时取消，都带 typing_ticket", async () => {
@@ -489,6 +567,7 @@ test("重新扫码换新 token 时重建连接；已连接的微信重复扫码�
   const fresh = await login.startWeixinLogin(admin.id);
   await until(() => login.weixinLoginStatus(fresh.id, admin.id)?.state === "confirmed", "确认", 5000);
   await until(() => requests.at(-1)!.headers.authorization === "Bearer tok-new", "用上新 token");
+  assert.equal(accounts.weixinKey(admin.id), key, "重新扫码仍接着当前会话");
   assert.equal(accounts.getWeixinAccount(admin.id)!.cursor, "", "新绑定从头收");
 
   assert.equal(accounts.removeWeixinAccount(admin.id), true);
