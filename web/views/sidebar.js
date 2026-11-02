@@ -389,7 +389,33 @@ const MORE_STEP = 10;
 // next：下一页的游标；null = 没有更多了；undefined = 这个目录还没拉过。
 
 /** full：老版本服务端一次给了全部，不用再拉 */
-const pages = { recent: { show: RECENT_LIMIT, next: null, loading: false }, dirs: new Map(), bots: new Map(), weixin: new Map(), dirAt: new Map(), full: false };
+const pages = { recent: { show: RECENT_LIMIT, next: null, loading: false }, dirs: new Map(), bots: new Map(), weixin: new Map(), dirAt: new Map(), full: false, revision: 0 };
+
+/** 项目删除后清掉分页目录、折叠和排序缓存，其他设备也通过 WebSocket 调用。 */
+export function forgetProject(dir, keys) {
+  const within = (value) => value === dir || value?.startsWith(`${dir}/`) || value?.startsWith(`${dir}\\`);
+  const removed = new Set(keys);
+  pages.revision++;
+  for (const key of pages.dirAt.keys()) if (within(key)) pages.dirAt.delete(key);
+  for (const key of pages.dirs.keys()) if (within(key)) pages.dirs.delete(key);
+  for (const list of ["open", "more", "folded", "order"]) sideState[list] = sideState[list].filter((value) => !within(value));
+  sideState.forkFolded = sideState.forkFolded.filter((key) => !removed.has(key));
+  saveSideState();
+  for (const key of removed) {
+    const c = S.convs.get(key);
+    if (c) c.hidden = true;
+  }
+  const resetDraft = within(S.draftCwd);
+  if (resetDraft) {
+    S.draftCwd = null;
+    S.draftCwdPicked = false;
+  }
+  if (removed.has(S.current) || (!S.current && resetDraft)) {
+    S.loadToken++;
+    newDraft();
+  } else renderSidebar();
+  reportDesktop();
+}
 
 function dirState(dir) {
   let st = pages.dirs.get(dir);
@@ -453,6 +479,7 @@ async function fetchPage(st, params) {
   if (st.loading) return;
   st.loading = true;
   st.failed = false;
+  const revision = pages.revision;
   try {
     const q = new URLSearchParams(params);
     if (st.next) {
@@ -460,6 +487,7 @@ async function fetchPage(st, params) {
       q.set("key", st.next.key);
     }
     const data = await api(`/api/conversations/page?${q}`);
+    if (revision !== pages.revision) return;
     for (const c of data.conversations) S.convs.set(c.key, c);
     st.next = data.next;
   } catch (err) {
@@ -681,7 +709,7 @@ export function renderSidebar() {
           { class: "proj-row", "data-dir": dir, ...groupDragAttrs(dir) },
           h(
             "button",
-            { class: "conv-item proj", title: `${dir}\n拖动可调整顺序，右键可置顶`, onclick: () => toggleSide("open", dir) },
+            { class: "conv-item proj", title: `${dir}\n拖动可调整顺序，右键更多操作`, onclick: () => toggleSide("open", dir) },
             h("span", { class: "title" }, baseName(dir)),
             caret(!expanded),
             expanded ? null : status(convs.map((c) => c.key)),

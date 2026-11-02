@@ -226,7 +226,7 @@ function withTimeout<T>(p: Promise<T>, what: string, ms = QUERY_TIMEOUT_MS): Pro
 
 type Live = { id: number; agent: string; cwd: string; session: AgentSession };
 
-class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> {
+class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "project-deleted": [{ owner: string; path: string; keys: string[] }] }> {
   private drivers = new Map<string, AgentDriver>();
   private live = new Map<string, Live>();
   /**

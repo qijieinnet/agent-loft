@@ -12,6 +12,9 @@ const vendor = {
   "/vendor/hljs.js": "node_modules/@highlightjs/cdn-assets/es/highlight.min.js",
   "/vendor/hljs-light.css": "node_modules/@highlightjs/cdn-assets/styles/github.min.css",
   "/vendor/hljs-dark.css": "node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css",
+  "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.mjs",
+  "/vendor/xterm-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.mjs",
+  "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
 };
 const defaults = ["search", "tasks", "library", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
 
@@ -31,7 +34,15 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   t.after(() => assert.deepEqual(errors, []));
-  await page.addInitScript(() => { window.WebSocket = class { readyState = 0; close() {} send() {} }; });
+  await page.addInitScript(() => {
+    window.termConnections = [];
+    window.WebSocket = class {
+      readyState = 0;
+      constructor(url) { if (url.includes("/ws/term?")) window.termConnections.push(url); }
+      close() {}
+      send() {}
+    };
+  });
   let saved = structuredClone(defaults);
   let saves = 0;
   let failSave = false;
@@ -41,6 +52,10 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
   let failBotLoad = false;
   let dirOrder = order;
   const projectConvs = projects ? ["a", "b"].map((id, i) => ({ ...conv, key: `web:${id}`, title: `项目 ${id}`, cwd: `/workspace/project-${id}`, activeAt: i + 2 })) : [];
+  const deletedProjects = [];
+  let deletes = 0;
+  let failDelete = false;
+  const inProject = (cwd, dir) => cwd === dir || cwd.startsWith(`${dir}/`);
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.startsWith("/api/")) {
@@ -57,9 +72,26 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
         sidebar: { recent: { next: null }, dirs: [conv, ...projectConvs].map((c) => ({ dir: c.cwd, at: c.activeAt, next: null })) },
         ...bootstrap,
       };
+      if (url.pathname === "/api/bootstrap") {
+        data.conversations = data.conversations.filter((c) => !deletedProjects.some((dir) => inProject(c.cwd, dir)));
+        data.sidebar.dirs = data.sidebar.dirs.filter((d) => !deletedProjects.some((dir) => inProject(d.dir, dir)));
+      }
+      if (url.pathname === "/api/dirs") {
+        const input = url.searchParams.get("path") || "/workspace";
+        const dir = input.startsWith("/") ? input : `/workspace/${input}`;
+        data = { root: "/workspace", path: dir, rel: dir === "/workspace" ? "" : dir.slice(11), dirs: dir === "/workspace" && !deletedProjects.includes("/workspace/empty") ? [{ name: "empty", hidden: false }] : [] };
+        if (route.request().method() === "DELETE") {
+          deletes++;
+          if (failDelete) return route.fulfill({ status: 403, json: { error: "测试删除失败" } });
+          const dir = route.request().postDataJSON().path;
+          deletedProjects.push(dir);
+          data = { path: dir, keys: [conv, ...projectConvs, ...botConvs, ...(bootstrap.conversations ?? [])].filter((c) => inProject(c.cwd, dir)).map((c) => c.key) };
+          dirOrder = (dirOrder ?? []).filter((d) => !inProject(d, dir));
+        }
+      }
       if (url.pathname.endsWith("/history")) {
         const key = decodeURIComponent(url.pathname.split("/")[3]);
-        data = { info: [...(bootstrap.conversations ?? []), conv, ...botConvs].find((c) => c.key === key), allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
+        data = { info: [...(bootstrap.conversations ?? []), conv, ...projectConvs, ...botConvs].find((c) => c.key === key), allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
       }
       if (url.pathname.startsWith("/api/agents/")) data = { models: [] };
       if (url.pathname === "/api/conversations/page" && url.searchParams.get("scope") === "bot") {
@@ -103,10 +135,57 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
   await page.goto("https://sidebar.example.test/#web%3A1");
   await page.waitForFunction(() => window.booted);
   if (mobile) await page.locator(".topbar .menu-btn").click();
-  return { page, getSaved: () => saved, getSaves: () => saves, failSave: (value = true) => { failSave = value; }, getBotLoads: () => botLoads, failBotLoad: (value = true) => { failBotLoad = value; }, getOrder: () => dirOrder };
+  return { page, getSaved: () => saved, getSaves: () => saves, failSave: (value = true) => { failSave = value; }, getBotLoads: () => botLoads, failBotLoad: (value = true) => { failBotLoad = value; }, getOrder: () => dirOrder, getDeletes: () => deletes, failDelete: (value = true) => { failDelete = value; } };
 }
 
 const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.group));
+
+for (const mobile of [false, true]) {
+  for (const existing of [false, true]) {
+    test(`${mobile ? "触屏" : "桌面"}终端${existing ? "有后台会话" : "无后台会话"}：进入和刷新不连接，点击后连接，切回保留`, async (t) => {
+      const { page } = await fixture(t, { mobile });
+      page.setDefaultTimeout(8000);
+      const terminals = existing ? [{ id: "t_existing", cwd: "/workspace" }] : [];
+      let created = 0;
+      await page.route("**/api/terminals", async (route) => {
+        if (route.request().method() === "POST") {
+          const info = { id: `t_new_${++created}`, cwd: "/workspace" };
+          terminals.push(info);
+          return route.fulfill({ json: info });
+        }
+        return route.fulfill({ json: { enabled: true, allowed: true, available: true, terminals } });
+      });
+      const open = () => page.evaluate(async () => { await (await import("/views/remote.js")).openRemote("terminal"); });
+      await open();
+      await page.getByRole("button", { name: "连接终端", exact: true }).waitFor();
+      await open();
+      assert.equal(created, 0);
+      assert.deepEqual(await page.evaluate(() => window.termConnections), []);
+      assert.equal(await page.locator(".term-tab").count(), 0);
+      // 后台终端列表变化也不能在尚未手动连接时接入。
+      const synced = page.waitForResponse("**/api/terminals");
+      await page.evaluate(async () => { (await import("/views/terminal.js")).syncTerminals(); });
+      await synced;
+      await page.getByRole("button", { name: "连接终端", exact: true }).waitFor();
+      assert.deepEqual(await page.evaluate(() => window.termConnections), []);
+      await page.getByRole("button", { name: "连接终端", exact: true }).click();
+      await page.waitForFunction(() => window.termConnections.length === 1);
+      assert.equal(created, existing ? 0 : 1);
+      assert.equal(await page.locator(".term-tab").count(), 1);
+      await page.evaluate(async () => { (await import("/views/remote.js")).leaveRemote(); });
+      await open();
+      assert.equal(await page.evaluate(() => window.termConnections.length), 1);
+      await page.reload();
+      await page.waitForFunction(() => window.booted);
+      await page.getByRole("button", { name: "连接终端", exact: true }).waitFor();
+      assert.deepEqual(await page.evaluate(() => window.termConnections), []);
+      assert.equal(created, existing ? 0 : 1);
+      await page.getByRole("button", { name: "新建终端", exact: true }).click();
+      await page.waitForFunction(() => window.termConnections.length === 1);
+      assert.equal(created, existing ? 1 : 2);
+    });
+  }
+}
 
 async function touchInput(page) {
   const client = await page.context().newCDPSession(page);
@@ -336,11 +415,72 @@ test("飞书与项目混合拖拽：置于项目前和项目之间，整组会�
   assert.deepEqual(await groupOrder(page), expected, "仅从账号配置恢复混合顺序");
 });
 
-test("触屏分组菜单：飞书与项目可互相置顶、上下移动，保留历史会话入口", async (t) => {
+for (const mobile of [false, true]) {
+  test(`${mobile ? "触屏" : "桌面"}：项目删除需确认，取消不发送，失败可重试，删除当前项目后进入新对话`, async (t) => {
+    const { page, getDeletes, failDelete } = await fixture(t, { mobile, projects: true });
+    const project = page.locator('[data-dir="/workspace/project-a"]');
+    await project.locator(".conv-item.proj").click();
+    await page.locator('[data-key="web:a"]').click();
+    await page.waitForFunction(() => S.current === "web:a");
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    const openDelete = async () => {
+      await project.click({ button: "right" });
+      await page.getByText("删除项目…", { exact: true }).click();
+      await page.locator(".confirm-dialog").waitFor();
+    };
+    await openDelete();
+    assert.equal(getDeletes(), 0);
+    assert.match(await page.locator(".confirm-dialog").textContent(), /全部文件、子目录/);
+    assert.match(await page.locator(".dialog-sub").textContent(), /\/workspace\/project-a/);
+    await page.locator(".confirm-dialog").getByRole("button", { name: "取消", exact: true }).click();
+    await page.locator(".confirm-dialog").waitFor({ state: "detached" });
+    assert.equal(getDeletes(), 0);
+    assert.equal(await project.isVisible(), true);
+    failDelete();
+    await openDelete();
+    await page.locator(".confirm-dialog").getByRole("button", { name: "删除项目", exact: true }).click();
+    await page.getByText("删除项目失败：测试删除失败", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => S.current), "web:a");
+    assert.equal(await project.isVisible(), true);
+    await page.locator(".confirm-dialog").waitFor({ state: "detached" });
+    failDelete(false);
+    await page.evaluate(() => { S.draftCwd = "/workspace/project-a/nested"; S.draftCwdPicked = true; });
+    await openDelete();
+    await page.locator(".confirm-dialog").getByRole("button", { name: "删除项目", exact: true }).click();
+    await project.waitFor({ state: "detached" });
+    assert.equal(getDeletes(), 2);
+    assert.deepEqual(await page.evaluate(() => [S.current, S.draftCwd, S.draftCwdPicked]), [null, null, false]);
+    assert.equal(await page.locator('[data-key="web:a"]').count(), 0);
+    assert.equal(await page.locator('[data-dir="/workspace/project-b"]').isVisible(), true);
+    assert.equal(await page.locator('[data-dir="/workspace"]').isVisible(), true);
+    await page.locator('[data-dir="/workspace"]').click({ button: "right" });
+    assert.equal(await page.getByText("删除项目…", { exact: true }).count(), 0);
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    assert.equal(await project.count(), 0, "刷新后项目不会重新出现");
+  });
+}
+
+test("目录选择器：空文件夹可确认删除，根目录没有删除入口", async (t) => {
+  const { page, getDeletes } = await fixture(t);
+  await page.evaluate(async () => { await (await import("/views/conv-actions.js")).changeCwd(); });
+  const picker = page.locator(".dir-picker");
+  assert.equal(await picker.getByRole("button", { name: "删除文件夹…", exact: true }).isVisible(), false);
+  await picker.locator(".dir-item").filter({ hasText: "empty" }).click();
+  await picker.getByRole("button", { name: "删除文件夹…", exact: true }).click();
+  assert.equal(getDeletes(), 0);
+  await page.locator(".confirm-dialog").getByRole("button", { name: "删除项目", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".dir-picker .dir-item").length === 0);
+  assert.equal(getDeletes(), 1);
+  assert.equal(await picker.getByRole("button", { name: "删除文件夹…", exact: true }).isVisible(), false);
+});
+
+test("触屏分组菜单：飞书与项目可互相置顶、上下移动，移除历史会话入口", async (t) => {
   const { page } = await fixture(t, { mobile: true, feishu: true, projects: true });
   const bot = page.locator('[data-bot="bot"]');
   await bot.click({ button: "right" });
-  assert.equal(await page.getByText("历史会话…", { exact: true }).isVisible(), true);
+  assert.equal(await page.getByText("历史会话…", { exact: true }).count(), 0);
+  assert.equal(await page.getByText("删除项目…", { exact: true }).count(), 0);
   await page.getByText("置顶", { exact: true }).click();
   assert.equal((await groupOrder(page))[0], "feishu:bot");
   await bot.click({ button: "right" });

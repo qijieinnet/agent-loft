@@ -26,7 +26,7 @@ const driver: AgentDriver = {
 };
 hub.registerDriver(driver);
 
-test("飞书侧栏分页：按机器人隔离、分叉跟随主会话、保留历史弹窗及权限", { timeout: 20000 }, async (t) => {
+test("飞书侧栏分页：按机器人隔离、分叉跟随主会话及权限", { timeout: 20000 }, async (t) => {
   const probe = net.createServer();
   await new Promise<void>((resolve, reject) => probe.once("error", reject).listen(0, "127.0.0.1", resolve));
   const port = (probe.address() as net.AddressInfo).port;
@@ -67,9 +67,8 @@ test("飞书侧栏分页：按机器人隔离、分叉跟随主会话、保留�
   const second = await get(`&limit=5&at=${first.next!.at}&key=${encodeURIComponent(first.next!.key)}`);
   assert.deepEqual(second.conversations.map((c) => c.key), ["feishu:bot:5", "feishu:bot:6"]);
   assert.equal(second.next, null);
-  const legacy = await get("");
-  assert.equal(legacy.conversations.length, 8);
-  assert.equal(legacy.next, null);
+  const defaultPage = await get("");
+  assert.deepEqual(defaultPage, first, "未指定条数时也使用侧栏分页");
   assert.deepEqual(await get("&limit=5", cookie(member.id)), { conversations: [], next: null });
   assert.equal((await fetch(`${base}/api/conversations/page?scope=bot&bot=bot&limit=5`)).status, 401);
 

@@ -312,6 +312,10 @@ function broadcastTasks(owner: string): void {
   for (const client of clients) if (client.user.id === owner) send(client, { t: "tasks" });
 }
 
+function broadcastProjectDeleted(project: { owner: string; path: string; keys: string[] }): void {
+  for (const client of clients) if (client.user.id === project.owner) send(client, { t: "project-deleted", path: project.path, keys: project.keys });
+}
+
 /** 某人的终端开了 / 结束了：他开着的页面重新拉终端列表（别的设备上开的也能接上） */
 function broadcastTerminals(owner: string): void {
   for (const client of clients) if (client.user.id === owner) send(client, { t: "remote" });
@@ -659,6 +663,7 @@ export async function startWeb(): Promise<void> {
   heartbeat.unref();
 
   hub.on("event", broadcastEvent);
+  hub.on("project-deleted", broadcastProjectDeleted);
   hub.on("event", pushEvent);
   interactions.on("created", broadcastInteraction);
   interactions.on("created", pushInteraction);
@@ -710,6 +715,7 @@ function onRevoked(): void {
 export async function stopWeb(): Promise<void> {
   authEvents.off("revoked", onRevoked);
   hub.off("event", broadcastEvent);
+  hub.off("project-deleted", broadcastProjectDeleted);
   hub.off("event", pushEvent);
   interactions.off("created", broadcastInteraction);
   interactions.off("created", pushInteraction);

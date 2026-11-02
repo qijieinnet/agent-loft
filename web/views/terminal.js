@@ -12,7 +12,8 @@ import { attachTermTouch } from "./terminal-touch.js";
 // ---------- 网页终端 ----------
 // shell 跑在服务端（core/terminals.ts），这里每个标签一条 /ws/term 连接。
 // 两种摆法：放在远程控制页里（embed），或者对话下面的底部面板（dock，Ctrl+`）。是同一块面板，挪个地方而已。
-// 离开远程控制页、关掉面板、刷新页面都不结束 shell，下次打开时按服务端的列表接上；点标签上的 × 才结束。
+// 进来时不自动连接，点「连接终端」后按服务端列表接上，没有现成的才新建。
+// 离开远程控制页、关掉面板、刷新页面都不结束 shell；刷新后仍需手动连接，点标签上的 × 才结束。
 
 const T = {
   /** closed：藏起来（shell 照常跑）/ dock：底部面板 / embed：在远程控制页里 */
@@ -23,6 +24,8 @@ const T = {
   ctrl: false,
   alt: false,
   loaded: false,
+  want: false,
+  connecting: false,
 };
 
 const narrow = () => matchMedia("(max-width: 768px)").matches;
@@ -179,7 +182,12 @@ function renderEmptyPane() {
       { class: "term-empty" },
       status.available === false
         ? h("div", { class: "error-text" }, status.reason ?? "这台服务器上终端用不了")
-        : [h("div", { class: "muted" }, "没有开着的终端"), h("button", { class: "btn", onclick: () => void newTab() }, icon("plus"), "新建终端")],
+        : [
+            h("div", { class: "muted" }, T.want ? "没有开着的终端" : "终端未连接"),
+            T.want && !T.connecting
+              ? h("button", { class: "btn", onclick: () => void newTab() }, icon("plus"), "新建终端")
+              : h("button", { class: "btn primary", disabled: T.connecting, onclick: () => void connectTerminals() }, icon("plug"), T.connecting ? "连接中…" : "连接终端"),
+          ],
     ),
   );
 }
@@ -228,8 +236,21 @@ export function hide() {
 
 // ---------- 标签 ----------
 
+async function connectTerminals() {
+  if (T.connecting) return;
+  T.want = true;
+  T.connecting = true;
+  renderEmptyPane();
+  try {
+    await loadTabs({ create: true });
+  } finally {
+    T.connecting = false;
+    renderEmptyPane();
+  }
+}
+
 /** 按服务端的列表对一下：别的设备开的接上，已经结束的标出来 */
-async function loadTabs() {
+async function loadTabs({ create = false } = {}) {
   let data;
   try {
     data = await api("/api/terminals");
@@ -239,16 +260,16 @@ async function loadTabs() {
   }
   if (S.remote) S.remote.terminal = { enabled: data.enabled, allowed: data.allowed, available: data.available, reason: data.reason, keepAliveMin: data.keepAliveMin };
   if (!data.allowed) return revoked();
+  T.loaded = true;
+  if (!T.want) return renderEmptyPane();
   const ids = new Set(data.terminals.map((t) => t.id));
   for (const tab of T.tabs) if (!ids.has(tab.id) && !tab.ended) ended(tab, "已经结束了");
   for (const t of data.terminals) if (!T.tabs.some((tab) => tab.id === t.id)) addTab(t, false);
-  // 第一次打开、一个都没有：直接开一个
-  if (!T.loaded && T.tabs.length === 0 && data.available) {
-    T.loaded = true;
+  // 用户手动连接、一个都没有：开一个；打开页面和同步列表不新建。
+  if (create && T.tabs.length === 0 && data.available) {
     await newTab();
     return;
   }
-  T.loaded = true;
   if (!T.active && T.tabs.length) select(T.tabs[T.tabs.length - 1]);
   renderHead();
   renderEmptyPane();
@@ -256,6 +277,7 @@ async function loadTabs() {
 
 async function newTab() {
   ensureDock();
+  T.want = true;
   // 先按面板现在的大小算好行列，shell 一开始就是对的宽度
   const probe = T.active?.fit.proposeDimensions();
   let info;
@@ -265,6 +287,7 @@ async function newTab() {
     toast(err.message);
     return;
   }
+  T.loaded = true;
   if (T.mode === "closed") {
     if (narrow()) return void openRemote("terminal");
     setMode("dock");

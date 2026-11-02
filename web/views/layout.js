@@ -19,7 +19,7 @@ import {
   stopMarquee,
 } from "./sidebar.js";
 import { applyDesktopQuota, loadQuota, renderQuota } from "./quota.js";
-import { openBotConversations, openConvContextMenu, runDesktopMenu } from "./topbar.js";
+import { openConvContextMenu, runDesktopMenu } from "./topbar.js";
 import { syncDraftExpert } from "./experts.js";
 import { confirmDialog, showMenu } from "../lib/overlay.js";
 import { applyShellInfo, handleAllowEmbed, HOME, mountSwitcher, refreshShellPush, routeToServer, shellBooted, switchServer } from "../lib/shell.js";
@@ -27,7 +27,7 @@ import { bindScrollWatch, latestConversation, newDraft, openConversation, scroll
 import { bindFileDrop, renderComposer } from "./composer.js";
 import { openSearch } from "./conv-search.js";
 import { createNav } from "./msg-nav.js";
-import { renameConv } from "./conv-actions.js";
+import { deleteProject, renameConv } from "./conv-actions.js";
 import { clearCommandCache, preloadCommands } from "./slash.js";
 import { releaseForeignPushSub } from "../lib/push.js";
 import { createSidebarNav } from "./sidebar-nav.js";
@@ -236,7 +236,7 @@ function renderLayout() {
   });
   ui.convList.addEventListener("contextmenu", (e) => {
     // 项目和 IM 分组共用移动菜单；触屏也可以通过长按调整混合顺序。
-    const bot = e.target.closest?.("[data-bot]")?.dataset.bot;
+    const dir = e.target.closest?.("[data-dir]")?.dataset.dir;
     const group = e.target.closest?.("[data-group]")?.dataset.group;
     if (group) {
       const i = sidebarGroups.indexOf(group);
@@ -246,7 +246,7 @@ function renderLayout() {
       ];
       const reset = sidebarGroups.length > 1 ? [{ label: "按最近活跃重排", onclick: resetSidebarGroupOrder }] : [];
       const items = moves.length && reset.length ? [...moves, "sep", ...reset] : [...moves, ...reset];
-      if (bot) items.push(...(items.length ? ["sep"] : []), { label: "历史会话…", onclick: () => openBotConversations(bot) });
+      if (dir && dir !== S.workspaceRoot) items.push(...(items.length ? ["sep"] : []), { label: "删除项目…", danger: true, onclick: () => deleteProject(dir) });
       if (!items.length) return;
       e.preventDefault();
       showMenu({ x: e.clientX, y: e.clientY }, items);

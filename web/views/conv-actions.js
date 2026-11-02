@@ -2,7 +2,7 @@ import { agentIcon, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { S, ui } from "../state.js";
-import { agentLabel, convTitle, renderSidebar } from "./sidebar.js";
+import { agentLabel, convTitle, forgetProject, renderSidebar } from "./sidebar.js";
 import { agentCatalog, baseName, catalogDefaults, draftPick, modelName, renderContext, renderTopbar, saveDraftPick, visibleModels } from "./topbar.js";
 import { closeMenu, confirmDialog, modal, placePopover, showPopover } from "../lib/overlay.js";
 import { newDraft, openConversation, renderEmpty } from "./messages.js";
@@ -246,6 +246,7 @@ export async function changeCwd(pick) {
   let seq = 0;
   let loading = false;
   let creating = false;
+  let deleting = false;
 
   const crumbs = h("div", { class: "dir-crumbs" });
   const list = h("div", { class: "dir-list" });
@@ -280,12 +281,27 @@ export async function changeCwd(pick) {
       folderName.focus();
     },
   }, icon("plus"), "新建文件夹");
+  const removeFolder = h("button", {
+    type: "button", class: "btn danger small", hidden: true,
+    onclick: async () => {
+      if (!listing || loading || creating || deleting) return;
+      const parent = listing.rel.split(/[\\/]/).slice(0, -1).join("/");
+      deleting = true;
+      syncActions();
+      try {
+        if (await deleteProject(listing.path)) await load(parent);
+      } finally {
+        deleting = false;
+        syncActions();
+      }
+    },
+  }, "删除文件夹…");
   const body = h(
     "div",
     { class: "modal-body" },
     crumbs,
     manual,
-    h("div", { class: "dir-actions" }, h("label", { class: "check" }, hiddenBox, "显示隐藏"), newFolder),
+    h("div", { class: "dir-actions" }, h("label", { class: "check" }, hiddenBox, "显示隐藏"), newFolder, removeFolder),
     createForm,
     list,
   );
@@ -299,13 +315,13 @@ export async function changeCwd(pick) {
   });
 
   go.onclick = async () => {
-    if (!listing || loading || creating) return;
+    if (!listing || loading || creating || deleting) return;
     close();
     if (pick) {
       pick.onPick(listing.path);
       return;
     }
-    if (draft) {
+    if (draft || !S.current) {
       S.draftCwd = listing.path === listing.root ? null : listing.path;
       S.draftCwdPicked = true;
       preloadCommands();
@@ -316,9 +332,11 @@ export async function changeCwd(pick) {
   };
 
   function syncActions() {
-    go.disabled = loading || creating || !listing || listing.path === current;
-    newFolder.disabled = loading || creating || !listing;
-    create.disabled = loading || creating;
+    go.disabled = loading || creating || deleting || !listing || listing.path === current;
+    newFolder.disabled = loading || creating || deleting || !listing;
+    removeFolder.hidden = !listing?.rel;
+    removeFolder.disabled = loading || creating || deleting || !listing;
+    create.disabled = loading || creating || deleting;
     cancelCreate.disabled = creating;
     folderName.disabled = creating;
     create.textContent = creating ? "创建中…" : "创建";
@@ -326,7 +344,7 @@ export async function changeCwd(pick) {
 
   async function createFolder() {
     const name = folderName.value.trim();
-    if (!listing || loading || creating || !name) return;
+    if (!listing || loading || creating || deleting || !name) return;
     const my = seq;
     const parent = listing.path;
     creating = true;
@@ -500,5 +518,30 @@ export async function deleteConv(key = S.current) {
     else renderSidebar();
   } catch (err) {
     toast(err.message);
+  }
+}
+
+const deletingProjects = new Set();
+
+export async function deleteProject(dir) {
+  if (!dir || dir === S.workspaceRoot || deletingProjects.has(dir)) return false;
+  deletingProjects.add(dir);
+  try {
+    const sure = await confirmDialog({
+      title: "删除项目？",
+      sub: dir,
+      message: "将删除此文件夹及全部文件、子目录，同时删除其中的所有会话、附件、资料库文件和定时发送，包括尚未展开的会话及复用到其他会话的文件副本，无法恢复。agent 自己保存的会话记录仍会保留。",
+      confirmText: "删除项目",
+      danger: true,
+    });
+    if (!sure) return false;
+    const data = await api("/api/dirs", { method: "DELETE", body: { path: dir } });
+    forgetProject(data.path, data.keys);
+    return true;
+  } catch (err) {
+    toast(`删除项目失败：${err.message}`);
+    return false;
+  } finally {
+    deletingProjects.delete(dir);
   }
 }

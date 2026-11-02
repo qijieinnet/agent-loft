@@ -104,6 +104,15 @@ const startedAt = Date.now();
 /** 上传后先存着，发消息时用 id 认领。一小时没人认领就作废 */
 const uploads = new Map<string, { key: string; attachment: SavedAttachment; at: number }>();
 
+/** 单条删除和项目批量删除共用清理规则，保留 agent 自己的文字记录。 */
+function hideConversation(key: string): void {
+  updateConversation(key, { hidden: true });
+  deleteConversationFiles(key);
+  for (const [id, entry] of uploads) if (entry.key === key) uploads.delete(id);
+  clearScheduled(key);
+  hub.emitEvent(key, { type: "meta" });
+}
+
 /**
  * 认领上传的附件。有任何一个已失效（id 不认识、不属于这条会话、文件已被删 —— 比如
  * 另一个浏览器在这期间开了新会话、清掉了上传目录）就整条拒绝，让前端提示重新上传，
@@ -817,7 +826,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p.startsWith("/api/terminals") && (await handleTerminalApi(req, res, p, user))) return;
   if ((p === "/api/remote" || p.startsWith("/api/desktop/")) && (await handleDesktopApi(req, res, p, user))) return;
 
-  // ----- 目录选择器：列出或新建工作区内的子目录 -----
+  // ----- 工作区目录 -----
   if (p === "/api/dirs" && method === "GET") {
     const listing = listWorkspaceDirs(url.searchParams.get("path") ?? "");
     if (!listing) throw new HttpError(404, `目录不存在，或不在 ${config().workspaceRoot} 之内`);
@@ -845,9 +854,51 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 201, { path: target });
     return;
   }
+  if (p === "/api/dirs" && method === "DELETE") {
+    const body = await readJsonBody<{ path?: unknown }>(req);
+    if (typeof body.path !== "string" || !body.path.trim()) throw new HttpError(400, "请指定要删除的项目目录");
+    const target = resolveWorkspacePath(body.path);
+    if (!target) throw new HttpError(404, "目录不存在，或不在工作区之内");
+    if (target === path.resolve(config().workspaceRoot)) throw new HttpError(403, "不能删除工作区根目录");
+    // 不把「删除链接」变成删除它指向的整个项目；工作区根目录本身可以是链接。
+    if (target !== path.resolve(config().workspaceRoot, body.path)) throw new HttpError(400, "请从实际项目目录删除，不能通过符号链接删除项目");
+    const within = (dir: string) => dir === target || dir.startsWith(target + path.sep);
+    const affected = () => listConversations().filter((c) => within(resolveWorkspacePath(c.cwd) ?? c.cwd));
+    const convs = affected();
+    if (convs.some((c) => !visible(c))) throw new HttpError(403, "此目录下有其他用户的会话，不能删除项目");
+    const realTarget = fs.realpathSync(target);
+    const identity = fs.statSync(target);
+    const keys = convs.map((c) => c.key);
+    const keySet = new Set(keys);
+    const activity = new Map(convs.map((c) => [c.key, c.activeAt]));
+    await Promise.all(convs.map((c) => hub.drop(c.key, "项目已删除")));
+    // 等待运行中的会话退出后，再核对目录和会话，避免删除等待期间新建的会话。
+    const current = affected();
+    const changed = current.length !== convs.length || current.some((c) =>
+      !keySet.has(c.key) || !visible(c) || c.activeAt !== activity.get(c.key) || hub.liveSessionId(c.key) !== undefined,
+    );
+    if (resolveWorkspacePath(body.path) !== target || fs.realpathSync(target) !== realTarget || changed) {
+      throw new HttpError(409, "项目内容已变化，请重新确认后删除");
+    }
+    const now = fs.statSync(target);
+    if (identity.dev !== now.dev || identity.ino !== now.ino) {
+      throw new HttpError(409, "项目内容已变化，请重新确认后删除");
+    }
+    try {
+      fs.rmSync(target, { recursive: true });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      throw new HttpError(code === "EACCES" || code === "EPERM" ? 403 : 400, "无法删除项目文件夹，请检查目录权限后重试");
+    }
+    for (const c of convs) hideConversation(c.key);
+    const dirOrder = setDirOrder(user.id, (getDirOrder(user.id) ?? []).filter((dir) => !within(dir)));
+    hub.emit("project-deleted", { owner: user.id, path: target, keys });
+    sendJson(res, 200, { path: target, keys, dirOrder });
+    return;
+  }
 
   // ----- 会话 -----
-  // 侧栏按页拉：recent / dir / bot / weixin 按树分页；bot 不传 limit 时保留历史弹窗的平铺列表。
+  // 侧栏按页拉：recent / dir / bot / weixin 按树分页。
   if (p === "/api/conversations/page" && method === "GET") {
     const all = hub.list(visible).filter((c) => !c.hidden);
     const scope = url.searchParams.get("scope");
@@ -862,9 +913,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const bot = url.searchParams.get("bot") ?? "";
       const list = all.filter((c) => c.channel === "feishu" && c.channelId === bot);
       const before = parseCursor(url.searchParams.get("at"), url.searchParams.get("key"));
-      const page = url.searchParams.has("limit")
-        ? pageOf(list, before, clampLimit(url.searchParams.get("limit"), 5))
-        : { conversations: list.slice(0, 200), next: null };
+      const page = pageOf(list, before, clampLimit(url.searchParams.get("limit"), 5));
       page.conversations = await hub.backfillFeishuTitles(page.conversations);
       sendJson(res, 200, page);
       return;
@@ -977,11 +1026,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (!sub && method === "DELETE") {
       // agent 侧的文字记录保留；托管附件和资料库文件立即清理，恢复会话也不会恢复文件。
       await hub.drop(key, "会话已删除");
-      updateConversation(key, { hidden: true });
-      deleteConversationFiles(key);
-      for (const [id, entry] of uploads) if (entry.key === key) uploads.delete(id);
-      clearScheduled(key);
-      hub.emitEvent(key, { type: "meta" });
+      hideConversation(key);
       sendJson(res, 200, { ok: true });
       return;
     }

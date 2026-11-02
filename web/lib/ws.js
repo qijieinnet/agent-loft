@@ -2,7 +2,7 @@ import { h } from "./dom.js";
 import { api } from "./api.js";
 import { desktop, framed, S, ui } from "../state.js";
 import { showAuth } from "../views/auth.js";
-import { applyBootstrap, bootstrapQuery, renderSidebar, scheduleSidebar } from "../views/sidebar.js";
+import { applyBootstrap, bootstrapQuery, forgetProject, renderSidebar, scheduleSidebar } from "../views/sidebar.js";
 import { scheduleQuota } from "../views/quota.js";
 import { renderTopbar } from "../views/topbar.js";
 import { applyEvent, openConversation, renderIdleNotice } from "../views/messages.js";
@@ -260,6 +260,9 @@ function onWsMessage(msg) {
       }
       for (const ix of msg.pending) upsertInteraction(ix);
       setBusy(msg.busy);
+      return;
+    case "project-deleted":
+      forgetProject(msg.path, msg.keys);
       return;
     case "conv":
       if (S.convs.get(msg.info.key)?.busy && !msg.info.busy) scheduleQuota();
