@@ -268,7 +268,7 @@ function layout() {
   if (!win || win.isDestroyed() || !shellView) return;
   const { width, height } = win.getContentBounds();
   shellView.setBounds({ x: 0, y: 0, width, height });
-  const want = !managing && activeId && store.server(activeId) && !rt(activeId).loadFailed ? viewFor(activeId) : null;
+  const want = !managing && activeId && store.server(activeId) && !rt(activeId).loadFailed && !rt(activeId).connecting ? viewFor(activeId) : null;
   for (const child of win.contentView.children) {
     if (child !== shellView && child !== want) win.contentView.removeChildView(child);
   }
@@ -399,6 +399,12 @@ function rebuildMenu() {
   if (signature === menuSignature) return;
   menuSignature = signature;
   const activeWc = () => (activeId && !managing ? viewFor(activeId).webContents : shellView?.webContents);
+  const settingsItem = {
+    id: "desktop-settings",
+    label: "设置…",
+    accelerator: "CmdOrCtrl+,",
+    click: () => showManage(),
+  };
   const checkUpdateItem = {
     label: "检查更新…",
     click: () => {
@@ -409,6 +415,8 @@ function rebuildMenu() {
   const viewMenu = {
     label: "显示",
     submenu: [
+      { id: "usage-summary", label: "用量汇总", accelerator: "CmdOrCtrl+Shift+U", click: () => showUsage() },
+      { type: "separator" },
       { label: "重新加载", accelerator: "CmdOrCtrl+R", click: () => (activeId && !managing ? refreshPage(activeId) : activeWc()?.reload()) },
       { label: "开发者工具", accelerator: isMac ? "Alt+Command+I" : "Ctrl+Shift+I", click: () => activeWc()?.toggleDevTools() },
       { type: "separator" },
@@ -441,7 +449,7 @@ function rebuildMenu() {
         {
           label: "文件",
           submenu: [
-            { label: "设置…", accelerator: "Ctrl+,", click: () => showManage() },
+            settingsItem,
             checkUpdateItem,
             { type: "separator" },
             { label: "退出 Agent Loft", accelerator: "Ctrl+Q", click: quit },
@@ -483,7 +491,7 @@ function rebuildMenu() {
           { role: "about", label: "关于 Agent Loft" },
           checkUpdateItem,
           { type: "separator" },
-          { label: "设置…", accelerator: "Command+,", click: () => showManage() },
+          settingsItem,
           { type: "separator" },
           { role: "hide", label: "隐藏 Agent Loft" },
           { role: "hideOthers", label: "隐藏其他" },

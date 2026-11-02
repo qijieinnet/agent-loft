@@ -176,6 +176,11 @@ html:not(.os-darwin) .topbar {
   background: var(--badge-orange);
 }
 
+/* macOS 从系统菜单打开用量汇总和设置；Windows / Linux 保留顶栏入口。 */
+html.os-darwin .bar-btn {
+  display: none;
+}
+
 /* 顶栏的用量汇总、设置：轻量的图标按钮 */
 .bar-btn {
   position: relative;

@@ -1,4 +1,4 @@
-// 顶栏（服务器标签、用量汇总、设置）+ 下面的面板（服务器管理、用量汇总、连不上、证书确认）。
+// 顶栏（服务器标签；Windows / Linux 还有用量汇总、设置）+ 下面的面板（服务器管理、用量汇总、连不上、证书确认）。
 // 当前服务器正常时，面板被服务器自己的页面盖住，看不到。
 
 let state = null;
@@ -84,7 +84,16 @@ function renderPanel() {
     renderManage();
     return;
   }
-  mode = `server:${active.id}:${active.loadFailed ? "failed" : "ok"}:${active.cert ? "cert" : ""}`;
+  mode = `server:${active.id}:${active.connecting ? "connecting" : active.loadFailed ? "failed" : "ok"}:${active.cert ? "cert" : ""}`;
+  if (active.connecting) {
+    $panel.replaceChildren(h("div", { class: "panel-inner notice" },
+      serverIcon(active, "big-avatar"),
+      h("h1", {}, `正在连接「${active.name}」`),
+      h("p", { class: "muted" }, active.url),
+      h("p", { class: "hint" }, "正在等待服务端响应，连接失败时会在一分钟内自动重试。"),
+    ));
+    return;
+  }
   if (!active.loadFailed) {
     $panel.replaceChildren();
     return;

@@ -331,11 +331,12 @@ export function bindScrollWatch() {
   ro.observe(ui.msgInner);
 }
 
-/** 只有最后一条回复默认显示底部操作栏，前面的在桌面 hover、触屏点击时显示 */
+/** 最后一条完整回复之后没有用户消息时才默认显示操作栏，其余在桌面 hover、触屏点击时显示 */
 function markLatestAi() {
   let latest = null;
   for (let i = S.items.length - 1; i >= 0; i--) {
     const it = S.items[i];
+    if (it.type === "user") break;
     if (it.type === "ai" && it.done && !it.segment) {
       latest = it;
       break;
@@ -780,6 +781,7 @@ export function applyEvent(env) {
         it.el.remove();
         S.items = S.items.filter((item) => item !== it);
         if (ui.pinEl === it.el) ui.pinEl = null;
+        markLatestAi();
         scheduleNav();
         afterLayout();
         return;

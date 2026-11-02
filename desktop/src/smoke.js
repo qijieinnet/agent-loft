@@ -3,8 +3,9 @@
 // 用临时配置目录启动，检查自己的几个界面真的画得出来、没有脚本报错：
 // 首次启动向导 → 点「只连接其他服务器」→ 设置页的各个区块 → 用量汇总 → 菜单栏面板。
 // 这些界面是普通脚本拼的，没有类型检查，改坏了只会表现成「一片空白、点什么都没反应」。
-import { app, webContents } from "electron";
+import { app, BaseWindow, Menu, webContents } from "electron";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -58,6 +59,12 @@ export async function runSmoke({ openPopover }) {
   try {
     const shell = await until(() => webContents.getAllWebContents().find((w) => w.getURL().endsWith("shell/index.html")), "侧栏页面");
     const js = (code) => shell.executeJavaScript(code);
+    const isMac = process.platform === "darwin";
+    const clickMenu = (id) => {
+      const item = Menu.getApplicationMenu()?.getMenuItemById(id);
+      if (!item || !item.enabled || !item.visible) throw new Error(`系统菜单入口不可用：${id}`);
+      item.click();
+    };
 
     await until(() => js(`document.querySelectorAll(".choice").length === 2`), "首次启动向导的两个选项");
     await js(`[...document.querySelectorAll(".choice")].find((b) => b.textContent.includes("只连接其他服务器")).click()`);
@@ -132,24 +139,36 @@ export async function runSmoke({ openPopover }) {
     await until(() => js(`window.loft.state().then((s) => !s.managing && s.servers.find((x) => x.id === s.activeId)?.name === "排序二")`), "点标签切换到「排序二」", 3000);
     await js(`window.loft.call("manage")`);
 
-    // 用量汇总：点顶栏的用量按钮打开。三台都连不上，画得出来并注明哪几台没算进去；翻到上个月也正常
-    await js(`document.getElementById("usage").click()`);
+    // macOS 的顶栏只留服务器标签，用量汇总、设置从系统菜单打开；其他平台仍用按钮。
+    if (isMac && !(await js(`["usage", "settings"].every((id) => document.getElementById(id).getClientRects().length === 0)`))) {
+      return fail("macOS 顶栏仍然显示用量汇总或设置按钮");
+    }
+    // 三台都连不上，注明哪几台没算进去；翻到上个月也正常。
+    if (isMac) clickMenu("usage-summary");
+    else await js(`document.getElementById("usage").click()`);
     await until(() => js(`document.querySelector(".usage-stats")?.innerText.includes("没算进去")`), "用量汇总页");
-    if (!(await js(`document.getElementById("usage").classList.contains("on") && !document.getElementById("settings").classList.contains("on")`))) {
+    if (!(await js(`window.loft.state().then((s) => s.managing && s.panel === "usage")`))) return fail("用量汇总菜单没有切换面板");
+    if (!isMac && !(await js(`document.getElementById("usage").classList.contains("on") && !document.getElementById("settings").classList.contains("on")`))) {
       return fail("用量汇总打开了，顶栏的用量按钮没有亮");
     }
     await js(`document.querySelector('.us-nav [aria-label="上一个"]').click()`);
     await until(() => js(`document.querySelector(".usage-stats")?.innerText.includes("没算进去")`), "用量汇总翻到上个月");
     junk = junkIn(await js(`document.getElementById("panel").innerText`));
     if (junk) return fail(`用量汇总里有渲染残渣：「${junk}」`);
-    // 再点一下：回到当前服务器
-    await js(`document.getElementById("usage").click()`);
+    // 系统菜单里的服务器选项能从汇总页切回服务器；其他平台再点用量按钮返回。
+    if (isMac) {
+      const name = await js(`window.loft.state().then((s) => s.servers.find((x) => x.id === s.activeId).name)`);
+      const item = Menu.getApplicationMenu()?.items.find((m) => m.label === "服务器")?.submenu?.items.find((m) => m.label === name);
+      if (!item) return fail("系统菜单中没有当前服务器");
+      item.click();
+    } else await js(`document.getElementById("usage").click()`);
     await until(() => js(`window.loft.state().then((s) => !s.managing && !!s.activeId)`), "再点用量按钮回到服务器", 3000);
-    // 设置按钮：直接打开桌面端设置（不弹菜单），按钮亮起
-    await js(`document.getElementById("settings").click()`);
+    // 设置菜单（macOS）或设置按钮（其他平台）打开桌面端设置。
+    if (isMac) clickMenu("desktop-settings");
+    else await js(`document.getElementById("settings").click()`);
     await until(
-      () => js(`window.loft.state().then((s) => s.managing && s.panel === "manage" && document.getElementById("settings").classList.contains("on"))`),
-      "设置按钮打开桌面端设置",
+      () => js(`window.loft.state().then((s) => s.managing && s.panel === "manage" && !!document.getElementById("p-keepAwake"))`),
+      "打开桌面端设置",
       3000,
     );
 
@@ -158,9 +177,39 @@ export async function runSmoke({ openPopover }) {
     junk = junkIn(await pop.executeJavaScript("document.body.innerText"));
     if (junk) return fail(`菜单栏面板里有渲染残渣：「${junk}」`);
 
+    // 冷启动：页面先连一个还没监听的端口，服务稍后启动，应该自动恢复并挂回窗口。
+    const delayed = http.createServer((req, res) => {
+      if (req.url === "/api/me") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ authed: false }));
+      } else {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.end('<!doctype html><meta charset="utf-8"><title>启动重试测试</title><p>服务端已启动</p>');
+      }
+    });
+    await new Promise((resolve, reject) => delayed.once("error", reject).listen(0, "127.0.0.1", resolve));
+    const delayedPort = delayed.address().port;
+    await new Promise((resolve) => delayed.close(resolve));
+    const delayedUrl = `http://127.0.0.1:${delayedPort}`;
+    const delayedId = await js(`window.loft.call("addServer", "启动重试测试", ${JSON.stringify(delayedUrl)})`);
+    const connection = () => js(`window.loft.state().then((s) => s.servers.find((x) => x.id === ${JSON.stringify(delayedId)}))`);
+    await until(() => js(`document.getElementById("panel").innerText.includes("正在连接「启动重试测试」")`), "服务未启动时的连接中提示");
+    await sleep(2500); // 至少经历一次真正的 ERR_CONNECTION_REFUSED 和自动重试。
+    const waiting = await connection();
+    if (!waiting.connecting || waiting.loadFailed || waiting.status === "offline") return fail("服务启动前提前显示了连接失败");
+    await new Promise((resolve, reject) => delayed.once("error", reject).listen(delayedPort, "127.0.0.1", resolve));
+    await until(async () => {
+      const s = await connection();
+      return !s.connecting && !s.loadFailed && s.status === "login";
+    }, "服务启动后自动连接成功");
+    const loaded = webContents.getAllWebContents().find((wc) => wc.getURL() === `${delayedUrl}/`);
+    if (!loaded || !(await loaded.executeJavaScript('document.body.innerText.includes("服务端已启动")'))) return fail("自动重试后没有加载服务端页面");
+    if (!BaseWindow.getAllWindows().some((w) => w.contentView.children.some((v) => v.webContents === loaded))) return fail("自动重试成功后页面没有显示在窗口里");
+    delayed.close();
+
     await sleep(500);
     if (errors.length) return fail("界面里有脚本报错");
-    console.log("冒烟测试通过：向导、设置页、菜单栏面板都正常");
+    console.log("冒烟测试通过：向导、设置页、菜单栏面板、服务端冷启动重试都正常");
     app.exit(0);
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));

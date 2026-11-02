@@ -14,6 +14,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { store } from "./store.js";
+import { createPageLoader } from "./page-loader.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PAGE_PRELOAD = path.join(here, "preload-page.cjs");
@@ -30,6 +31,7 @@ const CF_LOGIN_HOST = /(^|\.)cloudflareaccess\.com$/i;
  *   error?: string,
  *   access?: { kind: "cloudflare" | "gateway", url: string },
  *   loadFailed?: { code: number, message: string },
+ *   connecting?: boolean,
  *   cert?: { fingerprint: string, subject: string, issuer: string, error: string },
  *   quotas?: any[], quotaAt?: number, quotaFullAt?: number, quotaError?: string,
  *   server?: { at: number, unsupported?: boolean, version?: string, latest?: string | null, updateAvailable?: boolean,
@@ -53,6 +55,7 @@ const runtimes = new Map();
 /** webContents.id → 服务器 id：页面通过 preload 发来的消息靠它认是哪台 */
 const viewOwner = new Map();
 const configuredSessions = new WeakSet();
+const pageLoaders = new WeakMap();
 
 let changeQueued = false;
 function changed() {
@@ -285,21 +288,23 @@ export function viewFor(id) {
       // 不管
     }
   });
-  wc.on("did-fail-load", (_e, code, message, _url, isMainFrame) => {
-    // -3 是被新的导航打断，不算失败
-    if (!isMainFrame || code === -3) return;
-    patch(id, { loadFailed: { code, message }, status: "offline", error: message });
+  const loader = createPageLoader(wc, {
+    url: `${server.url}/`,
+    canRetry: (url) => !r.cert && ownOrigin(url),
+    onConnecting: () => patch(id, { connecting: true, status: "unknown", loadFailed: undefined, error: undefined }),
+    onFailure: (loadFailed) => patch(id, { connecting: false, loadFailed, status: "offline", error: loadFailed.message }),
+    onLoaded: () => {
+      patch(id, { connecting: false, loadFailed: undefined });
+      void probe(id);
+    },
   });
-  wc.on("did-finish-load", () => {
-    if (rt(id).loadFailed) return;
-    void probe(id);
-  });
+  pageLoaders.set(wc, loader);
   wc.on("render-process-gone", (_e, details) => {
     if (details.reason !== "clean-exit") setTimeout(() => !wc.isDestroyed() && wc.reload(), 1000);
   });
   wc.once("destroyed", () => viewOwner.delete(wc.id));
 
-  void wc.loadURL(`${server.url}/`);
+  loader.start();
   return view;
 }
 
@@ -311,8 +316,8 @@ export function reload(id) {
   r.loadFailed = undefined;
   r.cert = undefined;
   changed();
-  const view = viewFor(id);
-  void view.webContents.loadURL(`${server.url}/`);
+  if (r.view && !r.view.webContents.isDestroyed()) pageLoaders.get(r.view.webContents).start();
+  else viewFor(id);
 }
 
 /**
@@ -325,7 +330,7 @@ export function refreshPage(id) {
   const server = store.server(id);
   if (!server) return;
   const wc = r.view?.webContents;
-  if (r.loadFailed || r.cert || !wc || wc.isDestroyed() || !wc.getURL().startsWith(server.url)) return reload(id);
+  if (r.connecting || r.loadFailed || r.cert || !wc || wc.isDestroyed() || !wc.getURL().startsWith(server.url)) return reload(id);
   wc.reloadIgnoringCache();
 }
 
@@ -557,6 +562,8 @@ export async function probe(id) {
     const info = rt(id).server;
     if (status === "online" && !rt(id).upgrading && (!info || Date.now() - info.at > 6 * 3600_000)) void refreshServerVersion(id);
   } catch (err) {
+    // 页面仍在自动重试时保留「连接中」，避免并行探测抢先显示「连不上」。
+    if (rt(id).connecting) return;
     patch(id, { status: "offline", error: err instanceof Error ? err.message : String(err) });
   }
 }
