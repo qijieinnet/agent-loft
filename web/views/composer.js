@@ -81,6 +81,7 @@ export function renderComposer() {
     : null;
   ui.ctxBar = h("div", { class: "ctx-bar" });
   ui.modelSlot = h("span", { class: "model-slot" });
+  ui.permSlot = h("span", { class: "perm-slot" });
   ui.ctxRing = h("span", { class: "ctx-ring-slot" });
   ui.chips = h("div", { class: "chips" });
   ui.schedBar = h("div", { class: "sched-bar", hidden: true });
@@ -97,6 +98,7 @@ export function renderComposer() {
       { class: "composer-row" },
       h("button", { class: "icon-btn add-btn", title: "上传文件", onclick: () => ui.fileInput.click() }, icon("plus")),
       ui.fileInput,
+      ui.permSlot,
       h("span", { class: "spacer" }),
       ui.ctxRing,
       ui.modelSlot,
@@ -223,14 +225,17 @@ export async function ensureConversation() {
   }
   S.draftCwdPicked = false;
   // 新对话里选过模型 / 思考程度：建好会话后先切过去再发消息
-  const pick = { ...draftPick() };
-  for (const [action, value] of [["model", pick.model], ["effort", pick.effort]]) {
+  // 权限只对这一条新对话有效，不留给下一条（不放进按专家记住的 draftPick）
+  const pick = { ...draftPick(), permission: S.draftPermission };
+  S.draftPermission = null;
+  const FAILED = { model: "切换模型", effort: "切换思考程度", permission: "设置权限" };
+  for (const [action, value] of [["model", pick.model], ["effort", pick.effort], ["permission", pick.permission]]) {
     if (!value) continue;
     try {
       const res = await api(`/api/conversations/${encodeURIComponent(info.key)}/action`, { method: "POST", body: { action, value } });
       info = res.info;
     } catch (err) {
-      toast(`${action === "model" ? "切换模型" : "切换思考程度"}失败：${err.message}`);
+      toast(`${FAILED[action]}失败：${err.message}`);
     }
   }
   S.convs.set(info.key, info);

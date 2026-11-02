@@ -46,6 +46,7 @@ import { purgeUserData } from "../../core/personal.js";
 import { countRecords, purgeHistory, readMeta, searchHistory, writeMeta } from "../../core/chat-history.js";
 import { curateNow, pendingCount } from "../../core/memory-curator.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
+import { isPermissionLevel, type PermissionLevel } from "../../core/permission.js";
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
@@ -1128,6 +1129,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         case "effort":
           text = await hub.setEffort(key, value);
           break;
+        case "permission": {
+          if (value && !isPermissionLevel(value)) throw new HttpError(400, "权限级别不对");
+          text = await hub.setPermission(key, value ? (value as PermissionLevel) : undefined, admin);
+          break;
+        }
         // 换专家（开新会话）：只有飞书的对话能换，网页上的 hub 会拒绝
         case "agent":
           text = await hub.setExpert(key, value, allowedAgentsFor(key));
@@ -1461,6 +1467,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       );
       // 管理员在用户列表里重置了自己的密码：当前这台换个新登录态，别把自己踢出去
       if (id === user.id && typeof body.password === "string") newSession(req, res, user.id);
+      // 降级、停用：他活着的会话不能带着旧权限继续，空闲下来按新身份重新拉起
+      if (body.role !== undefined || body.disabled !== undefined) hub.memoryChanged(id);
       sendJson(res, 200, updated);
       return;
     }

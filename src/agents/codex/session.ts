@@ -9,6 +9,7 @@ import { contextBlock } from "../../core/expert-prompt.js";
 import { ACCESS_LEVELS, type ExpertAccess, type ExpertRuntime } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import { SKILLS_MCP_NAME, skillsMcpSpawn, TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import type { PermissionLevel } from "../../core/permission.js";
 import { codexSkillLines } from "../../core/skill-runtime.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
@@ -155,6 +156,7 @@ export function codexMcp(mcp: ExpertRuntime["mcp"], ask: readonly string[] = [])
 }
 
 const SANDBOX_RANK = ["read-only", "workspace-write", "danger-full-access"];
+const PERMISSION_SANDBOX: Record<PermissionLevel, string> = { ask: "read-only", edit: "workspace-write", full: "danger-full-access" };
 
 /** 用户自己配的 MCP 服务（config.toml 里的 mcp_servers）。名字因人而异，只能读出来再逐个关 */
 let userMcpCache: { names: string[]; at: number } | null = null;
@@ -313,7 +315,7 @@ export class CodexSession implements AgentSession {
   private opening: Promise<string> | null = null;
   private detached = false;
   private runtime: RuntimeInfo = {};
-  /** 用户点过「本会话全部允许」。只在内存里，会话对象一换就重新逐条询问。 */
+  /** 全部放行：对话选了「完全允许」，或者用户点过「本会话全部允许」（点出来的只在内存里，会话对象一换就重新逐条询问）。 */
   private allowAll = false;
   private replyText = "";
   /** 本轮所有模型请求的用量，和会话汇总使用相同的输入 / 缓存 / 输出口径。 */
@@ -334,7 +336,9 @@ export class CodexSession implements AgentSession {
     private readonly opts: SessionOptions,
     private readonly events: AgentEvents,
     private readonly host: InteractionHost,
-  ) {}
+  ) {
+    this.allowAll = opts.permission === "full";
+  }
 
   get sessionId(): string | undefined {
     return this.threadId;
@@ -424,13 +428,23 @@ export class CodexSession implements AgentSession {
   }
 
   /**
-   * 沙箱：只能联网、能读文件的专家一律只读（只能联网的本来就没有执行命令的工具，这是第二道保险）；
-   * 能改文件的最多到 workspace-write；能跑命令的和内置专家一样按设置里的。设置里本来更严就按设置的
+   * 沙箱：这条对话选了权限级别就按级别，没选就按设置里的（选了级别的上限 hub 已经按主人核过，见 permissionMax）。
+   * 再按专家封顶：只能联网、能读文件的专家一律只读（只能联网的本来就没有执行命令的工具，这是第二道保险）；
+   * 能改文件的最多到 workspace-write；能跑命令的和内置专家不封顶。
    */
   private get sandboxMode(): string {
-    const configured = config().agents.codex.sandbox;
-    const cap = this.access === "exec" ? configured : this.access === "edit" ? "workspace-write" : "read-only";
-    return SANDBOX_RANK.indexOf(cap) < SANDBOX_RANK.indexOf(configured) ? cap : configured;
+    const wanted = this.opts.permission ? PERMISSION_SANDBOX[this.opts.permission] : config().agents.codex.sandbox;
+    const cap = this.access === "exec" ? "danger-full-access" : this.access === "edit" ? "workspace-write" : "read-only";
+    return SANDBOX_RANK.indexOf(cap) < SANDBOX_RANK.indexOf(wanted) ? cap : wanted;
+  }
+
+  /**
+   * 下一轮生效：turn/start 每轮都显式带沙箱（实测同一条 thread 可以来回切）。
+   * 显式换级别时，之前点的「本会话全部允许」也作废。
+   */
+  async setPermission(level: PermissionLevel | undefined): Promise<void> {
+    this.opts.permission = level;
+    this.allowAll = level === "full";
   }
 
   /**
@@ -731,7 +745,7 @@ export class CodexSession implements AgentSession {
 
   /** 审批都走这里：带上「本会话全部允许」按钮，点了就记住。 */
   private async ask(spec: Extract<InteractionSpec, { kind: "approval" }>): Promise<InteractionOutcome> {
-    const outcome = await this.host({ ...spec, allowSession: true });
+    const outcome = await this.host({ ...spec, ...(this.opts.noSessionGrant ? {} : { allowSession: true }) });
     if (outcome.settlement === "allow-session") {
       if (!this.allowAll) this.events.onStep("warning", "🔓 本会话内后续操作不再询问（/new 或切换会话后恢复逐条确认）");
       this.allowAll = true;
@@ -770,7 +784,8 @@ export class CodexSession implements AgentSession {
 
       case "item/commandExecution/requestApproval": {
         const req = params as CommandExecutionApprovalParams;
-        if (this.allowAll) return { decision: "acceptForSession" };
+        // 全部放行只批这一次：acceptForSession 记在 thread 上（实测 resume 后还在），调低权限后收不回来
+        if (this.allowAll) return { decision: "accept" };
         const amendment = req.proposedExecpolicyAmendment ?? null;
         const outcome = await this.ask({
           kind: "approval",
@@ -796,7 +811,7 @@ export class CodexSession implements AgentSession {
 
       case "item/fileChange/requestApproval": {
         const req = params as FileChangeApprovalParams;
-        if (this.allowAll) return { decision: "acceptForSession" };
+        if (this.allowAll) return { decision: "accept" };
         const outcome = await this.ask({
           kind: "approval",
           title: "需要授权：改动文件",
@@ -812,7 +827,7 @@ export class CodexSession implements AgentSession {
 
       case "item/permissions/requestApproval": {
         const req = params as PermissionsApprovalParams;
-        if (this.allowAll) return { permissions: req.permissions ?? {}, scope: "session" };
+        if (this.allowAll) return { permissions: req.permissions ?? {}, scope: "turn" };
         const outcome = await this.ask({
           kind: "approval",
           title: "需要授权：额外权限",

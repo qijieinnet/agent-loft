@@ -6,6 +6,7 @@
 import path from "node:path";
 import { config } from "./config.js";
 import { sql, transaction } from "./db.js";
+import type { PermissionLevel } from "./permission.js";
 
 export type AgentBinding = {
   /** agent 侧的会话 id（Claude 的 sessionId / Codex 的 threadId） */
@@ -46,7 +47,12 @@ export type Conversation = {
   createdAt: number;
   /** Web 列表里隐藏（Web 上删除的会话只是隐藏，agent 侧的历史还在） */
   hidden?: boolean;
-  /** /autoedit：这条对话里 agent 在工作目录内改文件不再询问（跨 /new 保留，属于对话不属于某个会话） */
+  /**
+   * 权限级别（见 permission.ts），属于对话不属于某个会话。没选过就没有。
+   * 「自动改文件」跨 /new 保留，「完全允许」开新会话时清掉。实际生效的还要封顶，见 hub.permissionMax。
+   */
+  permission?: PermissionLevel;
+  /** 以前 /autoedit 记的，只读不写（Claude 下等于 permission: "edit"）；选过级别就清掉 */
   autoEdit?: boolean;
   /** 从哪条对话分叉出来的（对话 key），列表里据此显示关联 */
   forkOf?: string;
@@ -156,6 +162,11 @@ function reconcileCwd(conv: Conversation): Conversation {
   }
   persist();
   return conv;
+}
+
+/** 这条对话选的权限级别，兼容以前 /autoedit 记的。没选过就是 undefined */
+export function requestedPermission(conv: Pick<Conversation, "permission" | "autoEdit" | "agent">): PermissionLevel | undefined {
+  return conv.permission ?? (conv.autoEdit && conv.agent === "claude" ? "edit" : undefined);
 }
 
 export function getConversation(key: string): Conversation | undefined {

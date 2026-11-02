@@ -28,7 +28,8 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "cd", args: "<相对目录>", description: "切换工作目录（限 workspace 内）" },
   { name: "pwd", description: "显示当前工作目录" },
   { name: "fork", description: "从当前会话分叉，原会话保留" },
-  { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（Bash 仍询问）" },
+  { name: "permission", args: "[ask|edit|full|default]", description: "查看 / 切换本对话的权限级别（逐次询问、自动改文件、完全允许）" },
+  { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（等于 /permission edit）" },
   // 网页上的对话中途不能换专家（新建对话时选），这几个只在飞书里有
   { name: "expert", args: "[名称]", description: "查看 / 换专家（换了会开新会话）", feishuOnly: true },
   { name: "claude", description: "换成 Claude Code 专家（开新会话）", multiAgentOnly: true, feishuOnly: true },

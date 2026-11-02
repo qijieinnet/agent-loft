@@ -708,6 +708,8 @@ export class FeishuBot {
           channel: "feishu",
           // 别人的 agent 会话、挂着的请求，这个聊天里都碰不到
           ...this.commandScope(ownKey),
+          // 群里谁都能发命令：完全允许只认私聊里绑定了管理员账号的本人
+          allowFullAccess: p2p && linkedUser(this.cfg.id, operator)?.role === "admin",
         });
         await this.renderReply(key, chatId, reply);
       } catch (err) {

@@ -423,6 +423,7 @@ function handleClientMessage(client: Client, raw: string): void {
               })(),
               convVisible: (k) => canSeeKey(user, k),
               allowGlobalAlways: isAdmin(user),
+              allowFullAccess: isAdmin(user),
             })
             .then((reply) => ack(true, { reply, info: hub.info(key) }))
             .catch((err) => ack(false, { error: err instanceof Error ? err.message : String(err) }));

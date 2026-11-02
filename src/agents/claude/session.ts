@@ -22,6 +22,7 @@ import { expertAppend, expertSystemPrompt, RICH_REPLY_LINES, searchLabel } from 
 import { ACCESS_LEVELS, type ExpertAccess } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import type { PermissionLevel } from "../../core/permission.js";
 import { PLUGIN_NAME, projectCommandNames } from "../../core/skill-runtime.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
@@ -305,8 +306,8 @@ export class ClaudeSession implements AgentSession {
   private turnBusy = false;
   private pending: UserInput[] = [];
   /**
-   * 用户点过「本会话全部允许」。只在内存里：这个对象一换（/new、切目录、切 agent、
-   * 恢复历史、进程重启），就重新逐条询问。
+   * 全部放行：对话选了「完全允许」（构造时就是 true），或者用户点过「本会话全部允许」。
+   * 点出来的只在内存里：这个对象一换（/new、切目录、切 agent、恢复历史、进程重启），就重新逐条询问。
    */
   private allowAll = false;
   /**
@@ -324,6 +325,7 @@ export class ClaudeSession implements AgentSession {
     private readonly events: AgentEvents,
     private readonly host: InteractionHost,
   ) {
+    this.allowAll = opts.permission === "full";
     this.costSoFar = opts.resumeId ? undefined : 0;
     const previousUsage = usageOf(opts.resumeId);
     this.tokensSoFar = previousUsage
@@ -361,9 +363,9 @@ export class ClaudeSession implements AgentSession {
           ...(this.access === "web" ? {} : { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }),
           ...(this.access === "exec" ? (this.opts.skills?.env ?? {}) : {}),
         },
-        // 只能是 default 或 acceptEdits：bypassPermissions 会让 canUseTool 变成死代码。
+        // 只能是 default 或 acceptEdits：bypassPermissions 会让 canUseTool 变成死代码（「完全允许」也在 canUseTool 里放行）。
         // acceptEdits 只放行工作目录（含附件目录）内的改文件，其它照样走 canUseTool
-        permissionMode: this.opts.autoEdit ? "acceptEdits" : "default",
+        permissionMode: this.opts.permission === "edit" ? "acceptEdits" : "default",
         // 逐字输出给 Web 用；飞书渠道直接忽略这些片段
         includePartialMessages: true,
         ...(this.opts.model ? { model: this.opts.model } : {}),
@@ -545,21 +547,24 @@ export class ClaudeSession implements AgentSession {
       if (answered) return answered;
     }
 
-    // 提问、批准计划这类不是「安全确认」，而是要用户真的做决定，全部允许也照样问
-    const sessionable = isRememberable(toolName);
+    // 提问、批准计划这类不是「安全确认」，而是要用户真的做决定，全部允许也照样问。
+    // 标了「调用前询问」的 MCP 是用户特意要每次把关的：全部允许、总是允许都不算数（和 Codex 一致）
+    const asksFirst = this.mcpAsksFirst(toolName);
+    const sessionable = isRememberable(toolName) && !asksFirst;
     if (sessionable && this.allowAll) return { behavior: "allow", updatedInput: input };
 
     const signature = signatureOf(toolName, input);
-    if (isPreApproved(toolName, signature)) return { behavior: "allow", updatedInput: input };
+    const rememberable = !asksFirst && isRememberableSignature(toolName, signature);
+    if (!asksFirst && isPreApproved(toolName, signature)) return { behavior: "allow", updatedInput: input };
 
     const outcome = await this.host({
       kind: "approval",
       title: `需要授权：${toolName}`,
       detail: describeToolCall(toolName, input),
-      ...(isRememberableSignature(toolName, signature) ? { alwaysLabel: alwaysLabelOf(toolName, signature), alwaysGlobal: true } : {}),
-      ...(sessionable ? { allowSession: true } : {}),
+      ...(rememberable ? { alwaysLabel: alwaysLabelOf(toolName, signature), alwaysGlobal: true } : {}),
+      ...(sessionable && !this.opts.noSessionGrant ? { allowSession: true } : {}),
     });
-    if (outcome.settlement === "allow-always" && isRememberableSignature(toolName, signature)) rememberAlways(signature);
+    if (outcome.settlement === "allow-always" && rememberable) rememberAlways(signature);
     if (outcome.settlement === "allow-session") {
       if (!this.allowAll) this.events.onStep("warning", "🔓 本会话内后续操作不再询问（/new 或切换会话后恢复逐条确认）");
       this.allowAll = true;
@@ -583,6 +588,13 @@ export class ClaudeSession implements AgentSession {
     const config = e ?? this.opts.builtinMcp;
     const m = /^mcp__(.+?)__/.exec(toolName);
     return !!config && !!m && m[1]! in config.mcp && !config.askMcp.includes(m[1]!);
+  }
+
+  /** 配置里标了「调用前询问」的 MCP 工具 */
+  private mcpAsksFirst(toolName: string): boolean {
+    const config = this.opts.expert ?? this.opts.builtinMcp;
+    const m = /^mcp__(.+?)__/.exec(toolName);
+    return !!config && !!m && m[1]! in config.mcp && config.askMcp.includes(m[1]!);
   }
 
   /** 内置专家算能跑命令 */
@@ -667,10 +679,12 @@ export class ClaudeSession implements AgentSession {
     return toModelInfo(await this.q!.supportedModels());
   }
 
-  async setAutoEdit(on: boolean): Promise<void> {
-    this.opts.autoEdit = on;
+  /** 显式换级别时，之前点的「本会话全部允许」也作废：以这次选的为准 */
+  async setPermission(level: PermissionLevel | undefined): Promise<void> {
+    this.opts.permission = level;
+    this.allowAll = level === "full";
     // 还没起 CLI 就不用管：下次拉起时按 opts 来
-    if (this.q) await this.q.setPermissionMode(on ? "acceptEdits" : "default");
+    if (this.q) await this.q.setPermissionMode(level === "edit" ? "acceptEdits" : "default");
   }
 
   async setModel(model?: string, effort?: string): Promise<void> {

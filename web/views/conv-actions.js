@@ -8,6 +8,7 @@ import { closeMenu, confirmDialog, modal, placePopover, showPopover } from "../l
 import { newDraft, openConversation, renderEmpty } from "./messages.js";
 import { setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
+import { FULL_WARNING, PERMISSIONS, permissionsUpTo } from "../lib/permission.js";
 
 // ---------- 会话操作 ----------
 
@@ -142,6 +143,38 @@ export async function openModelPicker(anchor = ui.modelSlot) {
     placePopover(pop, anchor);
   }
   render();
+}
+
+/** 权限级别：已有对话直接切，新对话先记下，建好对话后带过去。max、current 由输入框上的按钮算好传进来 */
+export function openPermissionPicker(anchor, { current, max }) {
+  if (ui.menu?.dataset.for === "permission") return closeMenu();
+  const pop = showPopover(anchor, { align: "left" });
+  pop.dataset.for = "permission";
+  pop.classList.add("perm-pop");
+  const choose = async (level) => {
+    closeMenu();
+    if (level === current) return;
+    if (level === "full" && !(await confirmDialog(FULL_WARNING))) return;
+    if (S.current) {
+      await doAction("permission", level);
+    } else {
+      S.draftPermission = level;
+      renderContext();
+    }
+  };
+  fill(
+    pop,
+    h("div", { class: "pop-head" }, "权限"),
+    permissionsUpTo(max).map((level) =>
+      h(
+        "button",
+        { class: `pop-item${level === current ? " on" : ""}`, onclick: () => void choose(level) },
+        h("span", { class: "grow" }, h("span", { class: "t" }, PERMISSIONS[level].label), h("span", { class: "s" }, PERMISSIONS[level].desc)),
+        level === current ? h("span", { class: "check" }, "✓") : null,
+      ),
+    ),
+  );
+  placePopover(pop, anchor);
 }
 
 export async function openSessions(all) {

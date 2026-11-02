@@ -561,3 +561,98 @@ test("async 提问跳过 / 超时不发消息；没有问题的 async 消息仍�
   assert.deepEqual(followUps, []);
   void session.dispose();
 });
+
+/** dispose 会依次等 turn/interrupt、thread/unsubscribe：假的 app-server 不回就一直挂着 */
+async function disposeRunning(session: InstanceType<typeof CodexSession>) {
+  let finished = false;
+  const done = session.dispose().finally(() => { finished = true; });
+  while (!finished) {
+    await tick();
+    for (const c of calls.splice(0)) c.resolve({});
+  }
+  await done;
+}
+
+test("权限级别：沙箱按级别走，专家封顶；同一条 thread 下一轮就换", async () => {
+  const expects: [Partial<SessionOptions>, string, unknown][] = [
+    [{ permission: "ask" }, "read-only", { type: "readOnly", networkAccess: false }],
+    [{ permission: "edit" }, "workspace-write", "workspaceWrite"],
+    [{ permission: "full" }, "danger-full-access", { type: "dangerFullAccess" }],
+    [{}, "workspace-write", "workspaceWrite"],
+    [{ permission: "full", expert: { ...expert(), access: "edit" } }, "workspace-write", "workspaceWrite"],
+    [{ permission: "full", expert: { ...expert(), access: "read" } }, "read-only", { type: "readOnly", networkAccess: false }],
+  ];
+  (appServer as any).call = (method: string, params: any) => {
+    if (method === "config/read") return Promise.resolve({ config: {} });
+    return new Promise((resolve, reject) => calls.push({ method, params, resolve, reject }));
+  };
+  for (const [opts, sandbox, policy] of expects) {
+    const { session } = makeSession(opts);
+    session.send({ text: "hi", attachments: [] });
+    await tick();
+    const start = take("thread/start");
+    assert.equal(start.params.sandbox, sandbox);
+    assert.equal(start.params.approvalPolicy, "on-request", "不能用 never：MCP 审批要走这条路");
+    start.resolve({ thread: { id: `perm-${Math.random()}` } });
+    await tick();
+    const turn = take("turn/start");
+    if (typeof policy === "string") assert.equal(turn.params.sandboxPolicy.type, policy);
+    else assert.deepEqual(turn.params.sandboxPolicy, policy);
+    turn.resolve({ turn: { id: `t-${Math.random()}` } });
+    await tick();
+    await disposeRunning(session);
+  }
+
+  const { session } = makeSession({ permission: "full" });
+  const threadId = `perm-${Math.random()}`;
+  session.send({ text: "1", attachments: [] });
+  await tick();
+  take("thread/start").resolve({ thread: { id: threadId } });
+  await tick();
+  const first = take("turn/start");
+  assert.equal(first.params.sandboxPolicy.type, "dangerFullAccess");
+  first.resolve({ turn: { id: "t1" } });
+  await tick();
+  await session.setPermission!("ask");
+  // 排队的下一条：这一轮收尾后开，要带上新沙箱
+  session.send({ text: "2", attachments: [] });
+  await tick();
+  notify("turn/completed", { threadId, turn: { id: "t1", status: "completed" } });
+  await tick();
+  const second = take("turn/start");
+  assert.deepEqual(second.params.sandboxPolicy, { type: "readOnly", networkAccess: false });
+  second.resolve({ turn: { id: "t2" } });
+  await tick();
+  await disposeRunning(session);
+});
+
+test("全部放行只批这一次：acceptForSession 记在 thread 上，调低后收不回来", async () => {
+  const seen: InteractionSpec[] = [];
+  const { session } = makeSession({ permission: "full" }, async (spec) => {
+    seen.push(spec);
+    return { settlement: "deny", answers: {} };
+  });
+  const command = { threadId: "t", turnId: "u", itemId: "i", command: "ls", cwd: "/tmp" };
+  const file = { threadId: "t", turnId: "u", itemId: "i", changes: [] };
+  const permissions = { threadId: "t", turnId: "u", itemId: "i", permissions: { network: {} } };
+  assert.deepEqual(await session.handleServerRequest("item/commandExecution/requestApproval", command), { decision: "accept" });
+  assert.deepEqual(await session.handleServerRequest("item/fileChange/requestApproval", file), { decision: "accept" });
+  assert.deepEqual(await session.handleServerRequest("item/permissions/requestApproval", permissions), { permissions: { network: {} }, scope: "turn" });
+  assert.equal(seen.length, 0);
+
+  await session.setPermission!("ask");
+  assert.deepEqual(await session.handleServerRequest("item/commandExecution/requestApproval", command), { decision: "decline" });
+  assert.equal(seen.length, 1, "调低后马上恢复询问");
+  await session.dispose();
+});
+
+test("成员的对话不给「本会话全部允许」按钮", async () => {
+  const seen: InteractionSpec[] = [];
+  const { session } = makeSession({ noSessionGrant: true }, async (spec) => {
+    seen.push(spec);
+    return { settlement: "deny", answers: {} };
+  });
+  await session.handleServerRequest("item/commandExecution/requestApproval", { threadId: "t", turnId: "u", itemId: "i", command: "ls", cwd: "/tmp" });
+  assert.ok(seen[0]!.kind === "approval" && !seen[0]!.allowSession);
+  await session.dispose();
+});

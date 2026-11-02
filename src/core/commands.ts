@@ -3,6 +3,7 @@
 // 只有「整条消息就是一个命令」时才当命令处理，参数对不上就退化成普通聊天 ——
 // 避免把正常对话误当指令执行。
 import { BUILTIN_COMMANDS, usageOf } from "./command-catalog.js";
+import type { PermissionLevel } from "./permission.js";
 import type { ApprovalDecision } from "./types.js";
 
 export type ParsedCommand =
@@ -18,11 +19,20 @@ export type ParsedCommand =
   | { kind: "status" }
   | { kind: "pwd" }
   | { kind: "autoedit"; on?: boolean }
+  /** default：恢复默认；不给就是看当前级别 */
+  | { kind: "permission"; level?: PermissionLevel | "default" }
   | { kind: "help" }
   /** 只发了一个「/」：列出可用命令 */
   | { kind: "commands" }
   | { kind: "approve"; requestId: string; decision: ApprovalDecision }
   | { kind: "chat"; text: string };
+
+const PERMISSION_ARGS: Record<string, PermissionLevel | "default"> = {
+  ask: "ask", 询问: "ask", 逐次询问: "ask",
+  edit: "edit", 自动改文件: "edit",
+  full: "full", 完全允许: "full",
+  default: "default", 默认: "default",
+};
 
 const DECISIONS: ApprovalDecision[] = ["allow-once", "allow-always", "allow-session", "deny"];
 
@@ -70,6 +80,11 @@ export function parseCommand(raw: string): ParsedCommand {
       if (["on", "开", "1", "true"].includes(v)) return { kind: "autoedit", on: true };
       if (["off", "关", "0", "false"].includes(v)) return { kind: "autoedit", on: false };
       return { kind: "chat", text };
+    }
+    case "permission": {
+      if (!arg) return { kind: "permission" };
+      const level = Object.hasOwn(PERMISSION_ARGS, arg.toLowerCase()) ? PERMISSION_ARGS[arg.toLowerCase()] : undefined;
+      return level ? { kind: "permission", level } : { kind: "chat", text };
     }
     case "help":
       return { kind: "help" };

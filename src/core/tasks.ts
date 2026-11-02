@@ -11,6 +11,7 @@ import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { describeSchedule, nextRun, normalizeSchedule, type TaskSchedule } from "./task-schedule.js";
 import { canUseExpert, getExpert, isBuiltin } from "./experts.js";
+import { isPermissionLevel, type PermissionLevel } from "./permission.js";
 
 /**
  * 结果回到哪：
@@ -48,6 +49,8 @@ export type Task = {
   cwd?: string;
   model?: string;
   effort?: string;
+  /** 专用对话的权限级别（见 permission.ts）：只有用户在页面上能设。没有就是引擎默认 */
+  permission?: PermissionLevel;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
@@ -140,6 +143,8 @@ export type TaskInput = {
   cwd?: unknown;
   model?: unknown;
   effort?: unknown;
+  /** 只有网页接口会给：agent 的工具（tasks-bridge.ts）不开放这个参数，免得 agent 给自己提权 */
+  permission?: unknown;
   enabled?: unknown;
 };
 
@@ -165,6 +170,13 @@ function cleanExpert(owner: string, v: unknown): { agent: string; expert?: strin
   return { agent: getExpert(id)!.engine, expert: id };
 }
 
+function cleanPermission(v: unknown): PermissionLevel | undefined {
+  const s = str(v);
+  if (!s) return undefined;
+  if (!isPermissionLevel(s)) throw new Error("权限级别不对");
+  return s;
+}
+
 function cleanTarget(v: unknown, prev?: TaskTarget): TaskTarget {
   const r = (v ?? {}) as Record<string, unknown>;
   if (r.kind === "conv" && typeof r.key === "string" && r.key) return { kind: "conv", key: r.key };
@@ -177,6 +189,8 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
   const prompt = cleanPrompt(input.prompt);
   const schedule = normalizeSchedule(input.schedule, now);
   const picked = cleanExpert(owner, input.expert ?? input.agent);
+  // agent 建的一律从默认开始：要放宽得用户自己到页面上改
+  const permission = by === "user" ? cleanPermission(input.permission) : undefined;
   const task: Task = {
     id: `t_${crypto.randomBytes(5).toString("hex")}`,
     owner,
@@ -189,6 +203,7 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
     ...(str(input.cwd) ? { cwd: str(input.cwd) } : {}),
     ...(str(input.model) ? { model: str(input.model) } : {}),
     ...(str(input.effort) ? { effort: str(input.effort) } : {}),
+    ...(permission ? { permission } : {}),
     enabled: input.enabled !== false,
     createdAt: now,
     updatedAt: now,
@@ -226,6 +241,11 @@ export function updateTask(owner: string, id: string, patch: TaskInput, now = Da
     if (patch[k] === undefined) continue;
     if (str(patch[k])) next[k] = str(patch[k]);
     else delete next[k];
+  }
+  if (patch.permission !== undefined) {
+    const permission = cleanPermission(patch.permission);
+    if (permission) next.permission = permission;
+    else delete next.permission;
   }
   if (patch.enabled !== undefined) next.enabled = patch.enabled !== false;
   // 专用对话的专家 / 目录变了：旧的那条对话对不上了（对话中途不能换专家），下次新开一条

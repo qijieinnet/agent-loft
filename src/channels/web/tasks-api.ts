@@ -3,9 +3,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { config, resolveWorkspacePath } from "../../core/config.js";
 import { canUseExpert, getExpert, isBuiltin } from "../../core/experts.js";
 import { hub } from "../../core/hub.js";
+import { exceedsPermission, isPermissionLevel, PERMISSION_LABEL, permissionCapOfAccess } from "../../core/permission.js";
 import { memoryOwnerOf } from "../../core/personal.js";
 import { getConversation } from "../../core/store.js";
-import { forgetTask, isTaskRunning, runTaskNow } from "../../core/task-runner.js";
+import { forgetTask, isTaskRunning, releaseTaskConv, runTaskNow } from "../../core/task-runner.js";
 import { serverTimeZone } from "../../core/task-schedule.js";
 import { createTask, deleteTask, getTask, listTasks, updateTask, viewOf, type Task, type TaskInput } from "../../core/tasks.js";
 import type { User } from "../../core/users.js";
@@ -18,7 +19,7 @@ function view(task: Task) {
     ...viewOf(task),
     running: isTaskRunning(task.id),
     // 结果在哪条对话里看（专用对话第一次运行前还没有）
-    ...(conv && !conv.hidden ? { convKey: conv.key, convTitle: conv.title ?? "" } : {}),
+    ...(conv && !conv.hidden ? { convKey: conv.key, convTitle: conv.title ?? "", convPermission: hub.permissionOf(conv) } : {}),
   };
 }
 
@@ -36,6 +37,15 @@ function checkInput(user: User, body: TaskInput): TaskInput {
     const cwd = resolveWorkspacePath(body.cwd.trim());
     if (!cwd) throw new HttpError(400, `目录必须存在，且在 ${config().workspaceRoot} 之内`);
     out.cwd = cwd === config().workspaceRoot ? "" : cwd;
+  }
+  // 完全允许和对话里的规则一样只给管理员。到点时还会按当时的主人和专家再封顶一次（见 task-runner.ts）
+  if (isPermissionLevel(body.permission)) {
+    if (body.permission === "full" && user.role !== "admin") throw new HttpError(403, "只有管理员能选「完全允许」");
+    const id = pick === undefined ? undefined : String(pick);
+    const access = id && !isBuiltin(id) ? getExpert(id)?.access : undefined;
+    if (access && exceedsPermission(body.permission, permissionCapOfAccess(access))) {
+      throw new HttpError(400, `这个专家的权限最高只能到「${PERMISSION_LABEL[permissionCapOfAccess(access)]}」`);
+    }
   }
   const target = body.target as { kind?: string; key?: string } | undefined;
   if (target?.kind === "conv") {
@@ -80,11 +90,17 @@ export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, 
   if (!m[2] && method === "PATCH") {
     const body = await readJsonBody<TaskInput>(req);
     let updated: Task;
+    // updateTask 是就地改的：先记下原来的专用对话
+    const before = task.target.kind === "dedicated" ? task.target.key : undefined;
     try {
       updated = updateTask(user.id, task.id, checkInput(user, body));
     } catch (err) {
       throw bad(err);
     }
+    // 换了对话：旧的那条收回权限。还是这条：马上按新级别来，调低不能等到下次运行
+    const now = updated.target.kind === "dedicated" ? updated.target.key : undefined;
+    if (before && before !== now) releaseTaskConv(updated.id, before);
+    if (now) hub.applyTaskPermission(now, updated.permission);
     sendJson(res, 200, view(updated));
     return true;
   }

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ModelUsage } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentEvents, SessionOptions, TokenUsage, TurnResult } from "../src/core/types.js";
+import type { AgentEvents, InteractionSpec, SessionOptions, TokenUsage, TurnResult } from "../src/core/types.js";
 
 process.env.AGENT_LOFT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aim-claude-session-"));
 const { ClaudeSession } = await import("../src/agents/claude/session.js");
@@ -94,4 +94,62 @@ test("空用量不显示虚假的零值，错误结果有用量时也更新起�
   assert.equal(s.results[3]?.tokens, undefined);
   assert.equal(s.errors.length, 2);
   assert.equal(s.usages.length, 4);
+});
+
+function permissionSession(opts: Partial<SessionOptions> = {}, settlement: "deny" | "allow-session" | "allow-once" = "deny") {
+  const asked: InteractionSpec[] = [];
+  const events: AgentEvents = { onStep: () => {}, onTextDelta: () => {}, onText: () => {}, onSessionId: () => {}, onResult: () => {}, onError: () => {} };
+  const session = new ClaudeSession({ cwd: "/tmp", uploadsDir: "/tmp", ...opts }, events, async (spec) => {
+    asked.push(spec);
+    return { settlement, answers: spec.kind === "question" ? { [spec.questions[0]!.id]: ["甲"] } : {} };
+  }) as any;
+  return { session, asked, use: (tool: string, input: Record<string, unknown> = {}) => session.canUseTool(tool, input) as Promise<{ behavior: string }> };
+}
+
+const askMcpConfig = { mcp: { guarded: { type: "http" as const, url: "https://x.example", headers: {} } }, askMcp: ["guarded"], machineMcp: [], inheritMachine: false };
+
+test("完全允许：不弹授权；提问和标了「调用前询问」的 MCP 照常问", async () => {
+  const s = permissionSession({ permission: "full", builtinMcp: askMcpConfig }, "deny");
+  assert.equal((await s.use("Bash", { command: "rm -rf /tmp/x" })).behavior, "allow");
+  assert.equal((await s.use("Write", { file_path: "/etc/x" })).behavior, "allow");
+  assert.equal(s.asked.length, 0);
+  assert.equal((await s.use("mcp__guarded__run")).behavior, "deny");
+  assert.equal(s.asked.length, 1);
+  const questions = [{ question: "选哪个", options: [{ label: "甲" }] }];
+  assert.equal((await s.use("AskUserQuestion", { questions })).behavior, "allow");
+  assert.equal(s.asked[1]!.kind, "question");
+});
+
+test("「调用前询问」的 MCP：点过全部允许也问，也不给全部允许、总是允许的按钮", async () => {
+  const s = permissionSession({ builtinMcp: askMcpConfig }, "allow-session");
+  assert.equal((await s.use("Bash", { command: "npm test" })).behavior, "allow");
+  s.asked.length = 0;
+  assert.equal((await s.use("Bash", { command: "npm run other" })).behavior, "allow");
+  assert.equal(s.asked.length, 0, "点过全部允许，普通工具不再问");
+  await s.use("mcp__guarded__run");
+  assert.equal(s.asked.length, 1);
+  const spec = s.asked[0]!;
+  assert.ok(spec.kind === "approval" && !spec.allowSession && !spec.alwaysLabel);
+});
+
+test("成员的对话不给「本会话全部允许」按钮", async () => {
+  const s = permissionSession({ noSessionGrant: true }, "allow-once");
+  await s.use("Bash", { command: "npm test" });
+  const spec = s.asked[0]!;
+  assert.ok(spec.kind === "approval" && !spec.allowSession);
+});
+
+test("切换级别：调低后马上恢复询问，点过的全部允许也作废；调高马上放行", async () => {
+  const s = permissionSession({ permission: "full" }, "deny");
+  assert.equal((await s.use("Bash", { command: "a" })).behavior, "allow");
+  await s.session.setPermission("ask");
+  assert.equal((await s.use("Bash", { command: "a" })).behavior, "deny");
+  await s.session.setPermission("full");
+  assert.equal((await s.use("Bash", { command: "a" })).behavior, "allow");
+
+  const clicked = permissionSession({}, "allow-session");
+  await clicked.use("Bash", { command: "a" });
+  assert.equal(clicked.session.allowAll, true);
+  await clicked.session.setPermission("edit");
+  assert.equal(clicked.session.allowAll, false);
 });

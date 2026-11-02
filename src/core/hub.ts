@@ -26,9 +26,11 @@ import {
   updateAgentBinding,
   updateConversation,
   type Conversation,
+  requestedPermission,
 } from "./store.js";
 import { attachmentInfo, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import { memoryOwnerOf, sessionMemory } from "./personal.js";
+import { exceedsPermission, minPermission, PERMISSION_LABEL, permissionCapOfAccess, permissionOfSandbox, type PermissionLevel } from "./permission.js";
 import { readMemory } from "./memory.js";
 import { getUser, userEvents } from "./users.js";
 import type {
@@ -170,6 +172,10 @@ export type ConversationInfo = {
   forkOf?: string;
   /** 当前 agent 能不能从某条回复处分叉成新对话 */
   canFork?: boolean;
+  /** 这条对话实际的权限级别（没选过就是引擎默认对应的那一级） */
+  permission: PermissionLevel;
+  /** 这条对话最高能选到哪一级 */
+  permissionMax: PermissionLevel;
   /** 这条对话的专家 */
   expert: ExpertBadge;
   /** 这条对话有主人、会用上主人的记忆（主人自己关了记忆的话实际不会注入，见 personal.ts） */
@@ -616,6 +622,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       ...(conv.hidden ? { hidden: true } : {}),
       ...(conv.forkOf ? { forkOf: conv.forkOf } : {}),
       ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
+      permission: this.permissionOf(conv),
+      permissionMax: this.permissionMax(conv),
       expert: this.expertBadge(conv),
       ...(memoryOwnerOf(conv) ? { personal: true } : {}),
       ...(conv.taskId ? { taskId: conv.taskId } : {}),
@@ -705,6 +713,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     // 自定义专家只给它选中的
     const builtin = !expert && isBuiltin(agent) ? builtinAgentSession(taskOwner, agent) : {};
     const skills = expert ? sessionSkills(taskOwner, expert.skills) : builtin.skills;
+    const permission = this.effectivePermission(conv);
     const session = driver.createSession(
       {
         cwd: conv.cwd,
@@ -713,7 +722,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         ...(effort ? { effort } : {}),
         ...(resumeId ? { resumeId } : {}),
         ...(fork ? { fork: true } : {}),
-        ...(conv.autoEdit ? { autoEdit: true } : {}),
+        ...(permission ? { permission } : {}),
+        ...(taskOwner && getUser(taskOwner)?.role !== "admin" ? { noSessionGrant: true } : {}),
         ...(expert ? { expert } : {}),
         ...(memory ? { memory } : {}),
         ...(taskOwner ? { tasks: { userId: taskOwner, convKey: key } } : {}),
@@ -1220,6 +1230,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     const conv = getConversation(key)!;
     await this.drop(key, "已开新会话");
     this.markSwitched(key, op.seq);
+    this.clearFullPermission(key);
     updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
     this.emitEvent(key, { type: "meta" });
     const runtime = await this.runtimeNow(key);
@@ -1235,6 +1246,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     if (!current) return "当前还没有可分叉的会话。";
     await this.drop(key, "已分叉会话");
     this.markSwitched(key, op.seq);
+    this.clearFullPermission(key);
     // 只记下意图，下一条消息时才真正分叉（见 session() 里的 pendingFork）
     updateAgentBinding(key, conv.agent, { forkFrom: current });
     touchConversation(key);
@@ -1322,26 +1334,121 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     return `思考程度已切换为 ${effort}。`;
   }
 
-  /** /autoedit：on 不给就是切换。只影响正在跑的会话和以后新建的，不追溯已经弹出的授权。 */
-  private async setAutoEditNow(key: string, on: boolean | undefined): Promise<string> {
+  // ---------- 权限级别 ----------
+
+  /**
+   * 这条对话最高能到哪一级。谁发的都一样，看的是对话的主人和专家：
+   *   - 完全允许只给主人是管理员的对话。飞书群聊、没绑定的私聊没有主人（群里谁都能说话），最高自动改文件；
+   *   - 不超过专家的权限（专家被删了按最低算）；
+   *   - 不是管理员的话，Codex 也不能超过设置里的沙箱：管理员收紧了沙箱，成员不能自己放开。
+   */
+  permissionMax(conv: Conversation): PermissionLevel {
+    const owner = memoryOwnerOf(conv);
+    const admin = !!owner && getUser(owner)?.role === "admin";
+    const access = conv.expert ? (getExpert(conv.expert)?.access ?? "web") : "exec";
+    const max = minPermission(admin ? "full" : "edit", permissionCapOfAccess(access));
+    return !admin && conv.agent === "codex" ? minPermission(max, permissionOfSandbox(config().agents.codex.sandbox)) : max;
+  }
+
+  /** 交给 session 的级别：选过的按上限封顶；没选过就是 undefined，走引擎默认 */
+  private effectivePermission(conv: Conversation): PermissionLevel | undefined {
+    const wanted = requestedPermission(conv);
+    return wanted ? minPermission(wanted, this.permissionMax(conv)) : undefined;
+  }
+
+  /** 给人看的级别：没选过就换算引擎默认（Claude 逐次询问，Codex 看设置里的沙箱，不超过专家） */
+  permissionOf(conv: Conversation): PermissionLevel {
+    const effective = this.effectivePermission(conv);
+    if (effective) return effective;
+    if (conv.agent !== "codex") return "ask";
+    const access = conv.expert ? (getExpert(conv.expert)?.access ?? "web") : "exec";
+    return minPermission(permissionOfSandbox(config().agents.codex.sandbox), permissionCapOfAccess(access));
+  }
+
+  /**
+   * 记下级别并告诉活着的会话，同步完成（定时任务到点时紧接着就要发消息）。
+   * 不追溯已经弹出的授权：授权卡里还有新建定时任务这类不属于这个开关的确认。
+   */
+  private applyPermission(key: string, level: PermissionLevel | undefined): void {
+    updateConversation(key, { permission: level, autoEdit: undefined });
     const conv = getConversation(key)!;
-    const next = on ?? !conv.autoEdit;
     const live = this.live.get(key);
-    if (live?.session.setAutoEdit) await withTimeout(live.session.setAutoEdit(next), "切换自动改文件");
-    updateConversation(key, { autoEdit: next });
+    live?.session.setPermission?.(this.effectivePermission(conv))?.catch((err) => {
+      // 切换没生效（比如调低时 CLI 没响应）：不能让它带着旧权限继续，空闲下来就按新级别重新拉起
+      console.warn(`[${conv.agent}] ${key} 切换权限失败：`, err instanceof Error ? err.message : err);
+      this.staleLive.add(live.id);
+      this.dropIfStale(key);
+    });
     this.emitEvent(key, { type: "meta" });
-    const driver = this.requireDriver(conv.agent);
-    const note =
-      conv.agent === "codex"
-        ? `\n\n注意：${driver.label} 改文件由沙箱控制（设置 → Agent → 沙箱），这个开关只对 Claude 生效。`
-        : "";
-    return next
-      ? `已开启：这条对话里 Claude 修改工作目录（${conv.cwd}）内的文件不再询问；目录外的文件、Bash 命令照常询问。发 /autoedit off 关闭。${note}`
-      : `已关闭：改文件恢复逐次询问。${note}`;
+  }
+
+  /** 开新会话时「完全允许」不留：放手是对那一次任务说的，不是对这条对话以后所有的事 */
+  private clearFullPermission(key: string): void {
+    const conv = getConversation(key);
+    if (conv && requestedPermission(conv) === "full") updateConversation(key, { permission: undefined });
+  }
+
+  /**
+   * 定时任务的专用对话：级别以任务为准（到点时、改了任务、任务不再用这条对话时调）。
+   * 返回封顶后实际生效的级别。
+   */
+  applyTaskPermission(key: string, level: PermissionLevel | undefined): PermissionLevel | undefined {
+    const conv = getConversation(key);
+    if (!conv) return undefined;
+    if (requestedPermission(conv) !== level) this.applyPermission(key, level);
+    return this.effectivePermission(getConversation(key)!);
+  }
+
+  private describePermission(key: string): string {
+    const conv = getConversation(key)!;
+    return [
+      `当前权限：${PERMISSION_LABEL[this.permissionOf(conv)]}。`,
+      "",
+      "- `/permission ask`：逐次询问",
+      "- `/permission edit`：自动改文件",
+      "- `/permission full`：完全允许",
+      "- `/permission default`：恢复默认",
+      "",
+      `这条对话最高能到「${PERMISSION_LABEL[this.permissionMax(conv)]}」。`,
+    ].join("\n");
+  }
+
+  private permissionDone(conv: Conversation, level: PermissionLevel | undefined): string {
+    const nextTurn = conv.agent === "codex" ? "下一轮起生效。" : "";
+    if (!level) return `已恢复默认：${PERMISSION_LABEL[this.permissionOf(conv)]}。${nextTurn}`;
+    if (level === "full") {
+      return `⚠️ 已切换为「完全允许」：agent 的操作不再询问，可以跑任意命令、改任意文件。提问和标了「调用前询问」的 MCP 照常询问；开新会话后恢复默认。${nextTurn}`;
+    }
+    if (level === "ask") return `已切换为「逐次询问」：改文件、跑命令都要先问你。${nextTurn}`;
+    return conv.agent === "codex"
+      ? `已切换为「自动改文件」：工作目录（${conv.cwd}）内可以直接改文件、跑命令，超出沙箱的要先问你。${nextTurn}`
+      : `已切换为「自动改文件」：修改工作目录（${conv.cwd}）内的文件不再询问；目录外的文件、Bash 命令照常询问。`;
+  }
+
+  private setPermissionNow(key: string, level: PermissionLevel | undefined, allowFull: boolean): string {
+    const conv = getConversation(key)!;
+    if (conv.taskId) return "这是定时任务的专用对话，权限跟着任务走。到定时任务页面编辑这个任务来改。";
+    if (level === "full" && !allowFull) return "只有管理员本人能选「完全允许」。飞书上要在私聊里、并且绑定了管理员账号。";
+    const max = this.permissionMax(conv);
+    if (level && exceedsPermission(level, max)) return `这条对话最高只能到「${PERMISSION_LABEL[max]}」（看对话的主人和专家的权限）。`;
+    this.applyPermission(key, level);
+    return this.permissionDone(getConversation(key)!, level);
+  }
+
+  /** level 不给就是恢复默认。allowFull：操作的人是不是管理员本人（渠道核过的） */
+  setPermission(key: string, level: PermissionLevel | undefined, allowFull: boolean): Promise<string> {
+    return this.serial(key, async () => this.setPermissionNow(key, level, allowFull));
+  }
+
+  /** /autoedit：on 不给就是切换。「自动改文件」的旧叫法，关掉就是恢复默认 */
+  private setAutoEditNow(key: string, on: boolean | undefined): string {
+    const conv = getConversation(key)!;
+    const next = on ?? requestedPermission(conv) !== "edit";
+    return this.setPermissionNow(key, next ? "edit" : undefined, false);
   }
 
   setAutoEdit(key: string, on?: boolean): Promise<string> {
-    return this.serial(key, () => this.setAutoEditNow(key, on));
+    return this.serial(key, async () => this.setAutoEditNow(key, on));
   }
 
   // ---------- 记忆变了 / 主人变了 ----------
@@ -1427,6 +1534,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
     this.markSwitched(key, op.seq);
     // 新会话：所有 agent 的旧会话都不接着用（专家换了，上下文里的人设、权限都不对了）
     updateConversation(key, { agent: hit.engine, expert: isBuiltin(hit.id) ? undefined : hit.id, perAgent: {} });
+    this.clearFullPermission(key);
     this.emitEvent(key, { type: "meta" });
     return `已换成专家「${hit.label}」，开了新会话。`;
   }
@@ -1612,7 +1720,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       `目录：${conv.cwd}`,
       `模型：${runtime.model ?? "默认"}`,
       ...(runtime.effort ? [`思考程度：${runtime.effort}`] : []),
-      ...(conv.autoEdit ? ["自动允许改文件：开（/autoedit off 关闭）"] : []),
+      `权限：${PERMISSION_LABEL[this.permissionOf(conv)]}（/permission 切换）`,
       ...(extra.length > 0 ? ["", ...extra] : []),
     ].join("\n");
   }
@@ -1669,7 +1777,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       title: `${conv.title ?? "会话"} · 分叉`.slice(0, 80),
       cwd: conv.cwd,
       ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
-      ...(conv.autoEdit ? { autoEdit: true } : {}),
+      // 「完全允许」不跟着分叉过去
+      ...(requestedPermission(conv) === "edit" ? { permission: "edit" as const } : {}),
       ...(conv.expert ? { expert: conv.expert } : {}),
       forkOf: key,
       perAgent: {
@@ -1732,6 +1841,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       convVisible?: (convKey: string) => boolean;
       /** 多用户：false = 不能点会落盘的「总是允许」（见 InteractionSpec.alwaysGlobal） */
       allowGlobalAlways?: boolean;
+      /** 发命令的人能不能把对话调成「完全允许」。不给就是不能：只有确认是管理员本人的渠道才给 */
+      allowFullAccess?: boolean;
     },
   ): Promise<CommandReply> {
     const text = (t: string): CommandReply => ({ type: "text", text: t });
@@ -1754,6 +1865,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
         return text(getConversation(key)!.cwd);
       case "autoedit":
         return text(await this.setAutoEdit(key, cmd.on));
+      case "permission":
+        return text(cmd.level ? await this.setPermission(key, cmd.level === "default" ? undefined : cmd.level, ctx.allowFullAccess === true) : this.describePermission(key));
       case "status":
         return text(await this.status(key));
       case "cd":

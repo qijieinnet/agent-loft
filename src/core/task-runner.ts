@@ -10,6 +10,7 @@ import { resolveWorkspacePath } from "./config.js";
 import { canUseExpert, getExpert } from "./experts.js";
 import { hub, type TaskTurnEnd } from "./hub.js";
 import { interactions, isDetached } from "./interactions.js";
+import { PERMISSION_LABEL } from "./permission.js";
 import { memoryOwnerOf } from "./personal.js";
 import { getConversation, updateAgentBinding, updateConversation, type Conversation } from "./store.js";
 import { formatDateTime } from "./task-schedule.js";
@@ -142,7 +143,12 @@ function fire(task: Task, manual: boolean, now = Date.now()): string | undefined
     return undefined;
   }
   waiting.delete(task.id);
-  const run = pushRun(task, { id: runId(), at: now, status: "running", convKey: key, ...(manual ? { note: "手动运行" } : {}) });
+  // 专用对话的权限以任务为准；发到已有对话的跟着那条对话，不动它。
+  // 每次都核一遍：主人被降级、专家权限改了，就按新的上限跑，并在运行记录里说一声
+  const permission = task.target.kind === "dedicated" ? hub.applyTaskPermission(key, task.permission) : undefined;
+  const capped = task.target.kind === "dedicated" && task.permission && permission !== task.permission ? `权限只能到「${PERMISSION_LABEL[permission ?? "ask"]}」，按这一级运行` : "";
+  const note = [manual ? "手动运行" : "", capped].filter(Boolean).join("；");
+  const run = pushRun(task, { id: runId(), at: now, status: "running", convKey: key, ...(note ? { note } : {}) });
   running.set(task.id, { runId: run.id, key, at: now });
   console.log(`[定时任务] ${task.id}「${task.title}」${manual ? "手动运行" : "到点运行"}，发到 ${key}`);
   hub.send(
@@ -201,17 +207,20 @@ export function isTaskRunning(id: string): boolean {
   return running.has(id) || waiting.has(id);
 }
 
+/** 对话不再是这个任务的专用对话：历史留着，任务给的权限收回（不能留一条完全允许的普通对话） */
+export function releaseTaskConv(taskId: string, key: string): void {
+  const conv = getConversation(key);
+  if (conv?.taskId !== taskId) return;
+  hub.applyTaskPermission(key, undefined);
+  updateConversation(key, { taskId: undefined });
+  hub.emitEvent(key, { type: "meta" });
+}
+
 /** 任务删了：它的专用对话留着（里面有历史），只是不再是谁的专用对话 */
 export function forgetTask(task: Task): void {
   waiting.delete(task.id);
   running.delete(task.id);
-  if (task.target.kind === "dedicated" && task.target.key) {
-    const conv = getConversation(task.target.key);
-    if (conv?.taskId === task.id) {
-      updateConversation(conv.key, { taskId: undefined });
-      hub.emitEvent(conv.key, { type: "meta" });
-    }
-  }
+  if (task.target.kind === "dedicated" && task.target.key) releaseTaskConv(task.id, task.target.key);
 }
 
 export function startTaskRunner(): void {

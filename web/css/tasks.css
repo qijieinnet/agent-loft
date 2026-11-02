@@ -503,3 +503,7 @@ button.task-run:hover {
     font-size: 21px;
   }
 }
+
+.task-perm-full {
+  color: var(--danger);
+}

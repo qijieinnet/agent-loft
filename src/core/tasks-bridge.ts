@@ -11,6 +11,7 @@ import net from "node:net";
 import path from "node:path";
 import { config } from "./config.js";
 import { hub } from "./hub.js";
+import { PERMISSION_LABEL, type PermissionLevel } from "./permission.js";
 import { interactions } from "./interactions.js";
 import { memoryOwnerOf } from "./personal.js";
 import { expertIdOf, getConversation } from "./store.js";
@@ -66,7 +67,19 @@ async function confirm(convKey: string, title: string, detail: string): Promise<
   return outcome.settlement === "allow-once" || outcome.settlement === "allow-always" || outcome.settlement === "allow-session";
 }
 
-function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string; expert?: string; prompt?: string; enabled?: boolean }, now: number): string {
+/** 这个任务跑起来是什么权限；完全允许要明说：改提示词、重新启用，等于让 agent 下次无人值守地做这些事 */
+function permissionLine(level: PermissionLevel | undefined, follow: boolean): string {
+  if (level === "full") return `⚠️ 这个任务${follow ? "跟随的对话现在是" : "以"}「完全允许」${follow ? "，到点运行时" : "运行，"}不会再询问任何操作`;
+  return follow && level ? `跟随对话（现在是「${PERMISSION_LABEL[level]}」）` : level ? PERMISSION_LABEL[level] : "默认";
+}
+
+function taskPermissionLine(task: Task): string {
+  if (task.target.kind === "dedicated") return permissionLine(task.permission, false);
+  const conv = getConversation(task.target.key);
+  return permissionLine(conv ? hub.permissionOf(conv) : undefined, true);
+}
+
+function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string; expert?: string; permission?: string; prompt?: string; enabled?: boolean }, now: number): string {
   const lines: string[] = [];
   if (fields.schedule) {
     const next = nextRun(fields.schedule, now);
@@ -76,6 +89,7 @@ function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string
   if (fields.notify) lines.push(`**提醒**：${fields.notify === "always" ? "每次都提醒" : "有需要才提醒（由 agent 判断）"}`);
   if (fields.where) lines.push(`**结果发到**：${fields.where}`);
   if (fields.expert) lines.push(`**专家**：${fields.expert}`);
+  if (fields.permission) lines.push(`**权限**：${fields.permission}`);
   if (fields.enabled !== undefined) lines.push(`**状态**：${fields.enabled ? "恢复运行" : "暂停"}`);
   if (fields.prompt) lines.push("", "**到点要做的事**：", "", ...fields.prompt.split("\n").map((l) => `> ${l}`));
   return lines.join("\n");
@@ -126,7 +140,18 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
     const ok = await confirm(
       convKey,
       `新建定时任务「${title}」`,
-      card({ schedule, notify: String(input.notify), where: dedicated ? "单独开一条对话" : "这条对话", ...(dedicated ? { expert: expertName } : {}), prompt }, now),
+      card(
+        {
+          schedule,
+          notify: String(input.notify),
+          where: dedicated ? "单独开一条对话" : "这条对话",
+          ...(dedicated ? { expert: expertName } : {}),
+          // agent 建的专用对话任务一律从默认开始，要放宽只能用户到页面上改
+          permission: dedicated ? "默认（要放宽到定时任务页面上改）" : permissionLine(hub.permissionOf(conv), true),
+          prompt,
+        },
+        now,
+      ),
     );
     if (!ok) return fail("用户没有同意，任务没有建。");
     try {
@@ -179,6 +204,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
           {
             ...(patch.schedule ? { schedule: patch.schedule as TaskSchedule } : {}),
             ...(patch.notify !== undefined ? { notify: String(patch.notify) } : {}),
+            permission: taskPermissionLine(task),
             ...(patch.enabled !== undefined ? { enabled: patch.enabled === true } : {}),
             ...(patch.prompt !== undefined ? { prompt: String(patch.prompt) } : {}),
           },

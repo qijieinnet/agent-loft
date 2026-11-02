@@ -479,3 +479,49 @@ textarea.sending {
   color: var(--fg-soft);
   margin-left: 6px;
 }
+
+/* 权限按钮：完全允许要一眼看得出来 */
+.perm-slot {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.perm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.perm-pill:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.perm-pill svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.perm-pill.danger,
+.perm-pill.danger:hover {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.popover.perm-pop {
+  min-width: 260px;
+}
+
+@media (max-width: 480px) {
+  /* 窄屏只留盾牌，把地方让给模型按钮；完全允许仍然保留文字 */
+  .perm-pill:not(.danger) .perm-name {
+    display: none;
+  }
+}

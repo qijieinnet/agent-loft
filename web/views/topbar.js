@@ -1,13 +1,14 @@
 import { fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
-import { desktop, desktopMenu, S, ui } from "../state.js";
+import { desktop, desktopMenu, isAdmin, S, ui } from "../state.js";
 import { agentLabel, convTitle, openSide } from "./sidebar.js";
 import { convExpert, expertChoices, expertIcon, findExpert } from "./experts.js";
 import { closeMenu, modal, placePopover, showMenu, showPopover } from "../lib/overlay.js";
 import { openConversation } from "./messages.js";
 import { openSchedule } from "./schedule.js";
-import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, renameConv, switchAgent } from "./conv-actions.js";
+import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
+import { capOfAccess, minPermission, PERMISSION_ORDER, PERMISSIONS } from "../lib/permission.js";
 
 // ---------- 顶栏 ----------
 
@@ -419,6 +420,7 @@ export function renderContext() {
     effort = (c ? (c.runtimeEffort ?? c.effort) : (pick.effort ?? (draft?.effort || undefined))) ?? defaults.effort;
   }
   renderCtxRing();
+  renderPermission(c, expert);
   fill(
     ui.modelSlot,
     model
@@ -430,6 +432,31 @@ export function renderContext() {
           icon("down"),
         )
       : null,
+  );
+}
+
+/** 输入框里的权限按钮。只有一级可选（只能联网、只能读文件的专家）时不显示 */
+function renderPermission(c, expert) {
+  if (!ui.permSlot) return;
+  const max = c ? c.permissionMax : minPermission(isAdmin() ? "full" : "edit", capOfAccess(expert?.access));
+  // 新对话选好后换了个权限低的专家：选的不再算数
+  if (!c && S.draftPermission && PERMISSION_ORDER.indexOf(S.draftPermission) > PERMISSION_ORDER.indexOf(max)) S.draftPermission = null;
+  const current = c ? c.permission : S.draftPermission;
+  if (max === "ask" && (!current || current === "ask")) return fill(ui.permSlot);
+  const locked = !!c?.taskId;
+  fill(
+    ui.permSlot,
+    h(
+      "button",
+      {
+        class: `perm-pill${current === "full" ? " danger" : ""}`,
+        title: locked ? "定时任务的专用对话：权限在任务设置里改" : `权限：${current ? PERMISSIONS[current].label : "默认"}，点击切换`,
+        onclick: (e) => (locked ? toast("这是定时任务的专用对话，权限在任务设置里改") : openPermissionPicker(e.currentTarget, { current, max })),
+      },
+      icon("shield"),
+      h("span", { class: "perm-name" }, current ? PERMISSIONS[current].short : "默认权限"),
+      locked ? null : icon("down"),
+    ),
   );
 }
 

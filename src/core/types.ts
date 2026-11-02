@@ -2,6 +2,7 @@
 // 之间只通过这里的类型说话。渠道不认识 Claude，agent 不认识飞书。
 import type { AgentCommand } from "./command-catalog.js";
 import type { ExpertRuntime } from "./experts.js";
+import type { PermissionLevel } from "./permission.js";
 
 // ---------- 用户输入 ----------
 
@@ -207,8 +208,10 @@ export type SessionOptions = {
   fork?: boolean;
   /** 附件所在目录，agent 需要能直接读 */
   uploadsDir: string;
-  /** 工作目录内改文件不再询问（/autoedit）。Bash 等照常询问 */
-  autoEdit?: boolean;
+  /** 权限级别（见 core/permission.ts），已按主人和专家封顶。不给 = 老行为：Claude 逐次询问，Codex 按设置里的沙箱 */
+  permission?: PermissionLevel | undefined;
+  /** 不给「本会话全部允许」按钮：有主人的对话，主人不是管理员 */
+  noSessionGrant?: boolean;
   /**
    * 自定义专家（core/experts.ts）：提示词、权限、技能、MCP、子智能体都按它来。
    * 不给就是内置专家：原装提示词和工具，技能与 MCP 按账号的内置默认配置加载。
@@ -267,8 +270,8 @@ export interface AgentSession {
   /** 手上已知的模型 / 思考程度，同步返回：不拉起进程、不发请求 */
   peekRuntime?(): RuntimeInfo;
   dispose(): Promise<void>;
-  /** 运行中切换「自动允许改文件」；不支持的 agent 不实现 */
-  setAutoEdit?(on: boolean): Promise<void>;
+  /** 运行中切换权限级别。不追溯已经弹出的授权 */
+  setPermission?(level: PermissionLevel | undefined): Promise<void>;
 }
 
 export type Diagnosis = {

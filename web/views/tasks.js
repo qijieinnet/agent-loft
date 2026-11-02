@@ -2,13 +2,14 @@ import { fill, h, icon, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { clockTime } from "../lib/time.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
-import { S, ui } from "../state.js";
+import { isAdmin, S, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { agentLabel, closeSide, renderSidebar } from "./sidebar.js";
 import { baseName, renderTopbar } from "./topbar.js";
 import { openConversation } from "./messages.js";
 import { changeCwd } from "./conv-actions.js";
 import { expertChoices, findExpert } from "./experts.js";
+import { capOfAccess, minPermission, PERMISSIONS, permissionsUpTo } from "../lib/permission.js";
 
 // ---------- 定时任务页 ----------
 // 到点让 agent 按提示词干活，结果回到一条对话里；「有需要才提醒」时由 agent 判断这次要不要打扰你。
@@ -237,6 +238,8 @@ function taskCard(t) {
       h("span", {}, state),
       h("span", {}, t.notify === "smart" ? "有需要才提醒" : "每次都提醒"),
       h("span", {}, where),
+      t.target.kind === "dedicated" && t.permission ? h("span", { class: t.permission === "full" ? "task-perm-full" : "" }, PERMISSIONS[t.permission].label) : null,
+      t.target.kind === "conv" && t.convPermission === "full" ? h("span", { class: "task-perm-full" }, "跟随对话：完全允许") : null,
     ),
     h("div", { class: "task-prompt" }, t.prompt),
     last ? runLine(last) : h("div", { class: "task-run muted" }, "还没有运行过"),
@@ -394,13 +397,43 @@ export function openTaskForm(task, preset) {
         showCwd();
       },
     });
-  const cwdField = field("工作目录", cwdBtn, "专家在这个目录里干活。需要授权时会推送给你，没人处理就按拒绝。没选就用专家默认的目录。");
-  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField);
+  const cwdField = field("工作目录", cwdBtn, "专家在这个目录里干活。没选就用专家默认的目录。");
+  // ---- 权限（只有专用对话有：发到已有对话的跟着那条对话）----
+  const permission = h("select", {});
+  const permissionHint = h("small", {});
+  const permissionField = h("div", { class: "field" }, h("span", {}, "权限"), permission, permissionHint);
+  let permissionValue = src.permission ?? "";
+  const syncPermission = () => {
+    const max = minPermission(isAdmin() ? "full" : "edit", capOfAccess(findExpert(expert.value)?.access));
+    const levels = permissionsUpTo(max);
+    // 已经存着的级别高过现在的上限（被降级了、换了专家）：不留着，免得显示的和实际跑的不一样
+    if (permissionValue && !levels.includes(permissionValue)) permissionValue = "";
+    fill(
+      permission,
+      h("option", { value: "", selected: !permissionValue }, "默认（Claude 逐次询问，Codex 按沙箱设置）"),
+      levels.map((l) => h("option", { value: l, selected: l === permissionValue }, `${PERMISSIONS[l].label}：${PERMISSIONS[l].desc}`)),
+    );
+    permissionHint.textContent =
+      permission.value === "full" ? "⚠️ 到点无人值守地执行，不会询问任何操作。提示词要写清楚，只给信得过的任务用。" : "需要授权时会推送给你，没人处理就按拒绝。";
+    permissionHint.classList.toggle("task-perm-full", permission.value === "full");
+  };
+  permission.onchange = () => {
+    permissionValue = permission.value;
+    syncPermission();
+  };
+  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField, permissionField);
+  const followField = convTarget
+    ? field("权限", h("div", { class: "task-static" }, `跟随这条对话（现在是「${task.convPermission ? PERMISSIONS[task.convPermission].label : "默认"}」）`), "要单独设权限，把结果改发到专用对话。")
+    : null;
   const syncVisibility = () => {
     const dedicated = !target || target.value === "dedicated";
     dedicatedBox.hidden = !dedicated;
+    if (followField) followField.hidden = dedicated;
     // 只能联网的专家不碰目录
-    cwdField.hidden = findExpert(expert.value)?.access === "web";
+    const access = findExpert(expert.value)?.access;
+    cwdField.hidden = access === "web";
+    syncPermission();
+    permissionField.hidden = capOfAccess(access) === "ask";
   };
   expert.onchange = syncVisibility;
   if (target) target.onchange = syncVisibility;
@@ -415,6 +448,7 @@ export function openTaskForm(task, preset) {
     field("执行时间", freqBox, freqHint),
     field("提醒", notify),
     target ? field("结果发到", target) : field("结果发到", h("div", { class: "task-static" }, task?.convKey ? `专用对话「${task.convTitle || "对话"}」` : "专用对话（第一次运行时新建，之后都发到这条）")),
+    followField,
     dedicatedBox,
   );
   const save = h("button", { class: "btn primary" }, task ? "保存" : "创建");
@@ -439,13 +473,21 @@ export function openTaskForm(task, preset) {
     if (schedule.kind === "weekly" && !schedule.days.length) return toast("至少选择一个执行星期");
     const dedicated = !target || target.value === "dedicated";
     if (dedicated && !expert.value) return toast("选一个专家");
+    const level = dedicated && !permissionField.hidden ? permission.value : "";
+    if (
+      level === "full" &&
+      task?.permission !== "full" &&
+      !(await confirmDialog({ title: "让这个任务以「完全允许」运行？", sub: "到点无人值守地执行，不会询问任何操作：可以跑任意命令、改写或删除这台机器上的任意文件。", message: "只给信得过的任务用，并把提示词写清楚。", confirmText: "完全允许", danger: true }))
+    ) {
+      return;
+    }
     const payload = {
       title: title.value,
       prompt: prompt.value,
       schedule,
       notify: notify.value,
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: task.target.key },
-      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd } : {}),
+      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level } : {}),
     };
     save.disabled = true;
     try {

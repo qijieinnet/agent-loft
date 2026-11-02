@@ -225,9 +225,10 @@
   height: 24px;
 }
 
-.ec-avatar img {
-  width: 40px;
-  height: 40px;
+/* 压过后加载的 .expert-avatar img 默认尺寸，让上传头像填满信息卡圆框。 */
+.ec-avatar.expert-avatar img {
+  width: 100%;
+  height: 100%;
 }
 
 .ec-avatar.expert-emoji {
