@@ -29,6 +29,11 @@ for (const width of [390, 1280]) {
       let creates = 0;
       let patches = 0;
       let renames = 0;
+      let passwordSaves = 0;
+      let sessions = [
+        { id: "s_admin", userId: "u_admin", userAgent: "Admin browser", ip: "127.0.0.1", lastSeen: Date.now() },
+        { id: "s_member", userId: "u_member", userAgent: "Member browser", ip: "127.0.0.2", lastSeen: Date.now() },
+      ];
       await page.route("**/*", async (route) => {
         const p = new URL(route.request().url()).pathname;
         if (p === "/api/users") {
@@ -55,8 +60,19 @@ for (const width of [390, 1280]) {
           renames++;
           return route.fulfill({ json: { user: { id: "u_member", name: "新的名字", role: "member" } } });
         }
-        if (p === "/api/web-sessions") return route.fulfill({ json: [] });
-        if (p === "/api/account/feishu") return route.fulfill({ json: { bots: [], links: [] } });
+        if (p === "/api/password") {
+          assert.deepEqual(route.request().postDataJSON(), { old: "old-password", password: "new-password" });
+          passwordSaves++;
+          return route.fulfill({ json: { ok: true } });
+        }
+        if (p === "/api/web-sessions") return route.fulfill({ json: sessions });
+        if (p === "/api/web-sessions/revoke") {
+          assert.deepEqual(route.request().postDataJSON(), { id: "s_member" });
+          sessions = sessions.filter(s => s.id !== "s_member");
+          return route.fulfill({ json: { ok: true } });
+        }
+        if (p === "/api/account/feishu") return route.fulfill({ json: { bots: [{ id: "b_test", name: "飞书机器人" }], links: [{ botId: "b_test", botName: "飞书机器人", openId: "test", openIdShort: "test…", boundAt: Date.now() }] } });
+        if (p === "/api/account/weixin") return route.fulfill({ json: { linked: true, status: { state: "connected" }, wechatShort: "test…", boundAt: Date.now(), expert: "claude", experts: [{ id: "claude", label: "Claude Code" }, { id: "codex", label: "Codex" }] } });
         if (p === "/") return route.fulfill({ contentType: "text/html", body: `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${styles}
           <div id="app" style="height:100vh;overflow:auto;padding:16px"><div id="panel"></div></div><script type="module">
             import { S } from '/state.js'; import { usersTab } from '/settings/users.js'; import { accountTab } from '/settings/security.js';
@@ -72,7 +88,9 @@ for (const width of [390, 1280]) {
       });
       await page.goto("https://user-permissions.example.test/");
       if (tab === "users") {
-        const add = page.locator(".section").filter({ has: page.getByRole("heading", { name: "添加用户", exact: true }) });
+        assert.equal(await page.getByRole("textbox", { name: "用户名", exact: true }).count(), 0);
+        await page.getByRole("button", { name: "添加用户", exact: true }).click();
+        const add = page.locator(".modal").filter({ has: page.getByRole("heading", { name: "添加用户", exact: true }) });
         await add.getByLabel("用户名", { exact: true }).fill("new-member");
         await add.getByLabel(/^密码/).fill("password-new");
         await add.getByRole("combobox", { name: "共享专家范围", exact: true }).selectOption("pick");
@@ -84,6 +102,17 @@ for (const width of [390, 1280]) {
         await add.getByRole("button", { name: "添加", exact: true }).click();
         await page.waitForFunction(() => !document.querySelector('[data-dirty]'));
         assert.equal(creates, 1);
+        assert.equal(await page.getByText(/所有已登录的设备/).count(), 0);
+        const memberDevicesRow = page.locator('.user-entry').filter({ hasText: "家人" });
+        await memberDevicesRow.getByRole("button", { name: "管理 ▾" }).click();
+        await page.getByRole("button", { name: "登录设备", exact: true }).click();
+        const devices = page.locator('.modal').filter({ has: page.getByRole('heading', { name: '家人 · 登录设备', exact: true }) });
+        await devices.getByText('Member browser', { exact: true }).waitFor();
+        assert.equal(await devices.getByText('Admin browser', { exact: true }).count(), 0);
+        await devices.getByRole('button', { name: '下线', exact: true }).click();
+        await devices.getByText('已登录的设备（0）', { exact: true }).waitFor();
+        assert.equal(sessions.length, 1);
+        await devices.getByRole('button', { name: '关闭', exact: true }).click();
         const memberRow = page.locator(".list-item").filter({ hasText: "家人" });
         await memberRow.getByRole("button", { name: "使用权限", exact: true }).click();
         assert.equal(await memberRow.getByRole("checkbox", { name: "Codex", exact: true }).isChecked(), true);
@@ -99,12 +128,38 @@ for (const width of [390, 1280]) {
         assert.equal(await memberRow.getByRole("checkbox", { name: "家庭助手", exact: true }).isChecked(), false);
         assert.equal(await memberRow.getByRole("checkbox", { name: "NAS", exact: true }).isChecked(), true);
       } else {
+        await page.getByRole('button', { name: '重新扫码', exact: true }).waitFor();
+        const wxRow = page.locator('.weixin-expert-row');
+        const sizes = await wxRow.evaluate(el => [...el.children].map(child => child.getBoundingClientRect().height));
+        assert.ok(Math.abs(sizes[0] - sizes[1]) < 1, `微信下拉框与按钮同高，实际 ${sizes}`);
+        for (const name of ['再绑一个', '重新扫码']) {
+          const action = page.getByRole('button', { name, exact: true });
+          assert.equal(await action.evaluate(el => el.parentElement.tagName), 'H4', '账号绑定操作位于卡片标题最右侧');
+        }
+        await page.screenshot({ path: `/tmp/agent-loft-account-${width}.png` });
+        assert.equal(await page.getByRole("textbox", { name: /^账号名称/ }).isVisible(), false);
+        await page.getByRole("button", { name: "修改名称", exact: true }).click();
         await page.getByRole("textbox", { name: /^账号名称/ }).fill(" 新的名字 ");
         await page.getByRole("button", { name: "保存账号名称", exact: true }).click();
         await page.waitForFunction(() => window.testState.user.name === "新的名字");
         assert.equal(renames, 1);
+        assert.equal(await page.getByRole("textbox", { name: /^账号名称/ }).isVisible(), false);
+        await page.getByRole("button", { name: "修改名称", exact: true }).click();
         assert.equal(await page.getByRole("textbox", { name: /^账号名称/ }).inputValue(), "新的名字");
         assert.equal(await page.getByRole("button", { name: "保存账号名称", exact: true }).isDisabled(), true);
+        await page.getByRole('button', { name: '修改密码', exact: true }).click();
+        assert.equal(await page.getByRole('textbox', { name: /^账号名称/ }).isVisible(), false);
+        await page.getByLabel('原密码', { exact: true }).fill('old-password');
+        await page.getByLabel('新密码（至少 8 位）', { exact: true }).fill('new-password');
+        await page.getByRole('button', { name: '保存密码', exact: true }).click();
+        await page.waitForFunction(() => document.querySelector('input[autocomplete="current-password"]').value === '');
+        assert.equal(passwordSaves, 1);
+        assert.equal(await page.getByLabel('原密码', { exact: true }).isVisible(), false);
+        await page.getByRole('button', { name: '修改密码', exact: true }).click();
+        await page.getByLabel('原密码', { exact: true }).fill('cancel-this');
+        await page.locator('.account-edit').filter({ has: page.getByLabel('原密码', { exact: true }) }).getByRole('button', { name: '取消', exact: true }).click();
+        assert.equal(await page.getByLabel('原密码', { exact: true }).inputValue(), '');
+        assert.equal(passwordSaves, 1);
       }
       assert.equal(await page.locator("#panel").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false, "手机和桌面不横向溢出");
     });

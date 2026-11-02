@@ -256,40 +256,27 @@ button.conv-group:hover {
   display: grid;
 }
 
-/* IM 分组常驻渠道图标，桌面悬停或键盘聚焦时显示新建加号。 */
+/* IM 分组的渠道图标仅作标识，不提供新建操作。 */
 .bot-row .conv-item.proj {
   padding-right: 36px;
 }
 
-.bot-new {
+.bot-channel {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
   display: grid;
+  place-items: center;
+  color: var(--fg-soft);
 }
 
-.bot-new .channel-mark,
-.bot-new .bot-plus {
-  grid-area: 1 / 1;
-}
-
-.bot-new .channel-mark,
-.bot-new .channel-mark svg {
+.bot-channel .channel-mark,
+.bot-channel .channel-mark svg {
   width: 14px;
   height: 14px;
-}
-
-.bot-new .bot-plus {
-  visibility: hidden;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .bot-row:hover .bot-new .channel-mark,
-  .bot-row:focus-within .bot-new .channel-mark {
-    visibility: hidden;
-  }
-
-  .bot-row:hover .bot-new .bot-plus,
-  .bot-row:focus-within .bot-new .bot-plus {
-    visibility: visible;
-  }
 }
 
 /* 鼠标挪到右边的加号上时，整行的 hover 底色还留着 */

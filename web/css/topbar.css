@@ -226,6 +226,11 @@
   gap: 10px;
 }
 
+.expert-card .usage {
+  border-top: 1px solid var(--border);
+  padding: 10px 0 0;
+}
+
 .ec-head {
   display: flex;
   align-items: center;
@@ -370,7 +375,7 @@
   -webkit-app-region: no-drag;
 }
 
-/* ---- 右上角「更多」：菜单项 + 当前会话的 token 用量 ---- */
+/* ---- 右上角「更多」：会话操作菜单 ---- */
 .top-menu {
   min-width: 248px;
 }

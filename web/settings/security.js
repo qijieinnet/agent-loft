@@ -4,7 +4,7 @@ import { relTime } from "../lib/time.js";
 import { copyText } from "../lib/markdown.js";
 import { isAdmin, S } from "../state.js";
 import { dropPushSub } from "../lib/push.js";
-import { field, saveButton } from "./common.js";
+import { field, markClean, saveButton } from "./common.js";
 import { weixinLinkSection } from "./weixin.js";
 
 /** 设置 → 账号：我是谁、改密码、绑定飞书、我登录着的设备。别人的设备在 管理 →「用户」里 */
@@ -27,42 +27,52 @@ export async function accountTab(page) {
   const name = h("input", { value: S.user?.name ?? "", autocomplete: "username", autocapitalize: "off", spellcheck: "false", maxlength: "32" });
   const currentName = h("span", {}, S.user?.name ?? "");
   const devicesBox = h("div", { class: "section" }, h("h4", {}, "已登录的设备"), h("span", { class: "spinner" }));
+  const nameForm = h("div", { class: "account-edit", "data-form": "", hidden: true });
+  const passwordForm = h("div", { class: "account-edit", "data-form": "", hidden: true });
+  const hideForms = () => {
+    nameForm.hidden = passwordForm.hidden = true;
+    old.value = pw.value = "";
+    markClean(nameForm);
+    markClean(passwordForm);
+  };
+  const rename = h("button", { class: "btn small", onclick: () => {
+    hideForms();
+    name.value = S.user?.name ?? "";
+    nameForm.hidden = false;
+    name.focus();
+  } }, "修改名称");
+  const password = h("button", { class: "btn small", onclick: () => {
+    hideForms();
+    passwordForm.hidden = false;
+    old.focus();
+  } }, "修改密码");
+  nameForm.append(
+    field("账号名称", name, "也是登录时使用的用户名。1～32 个字符，可用文字、数字和 _ . @ -；修改后请用新名称登录。"),
+    h("div", { class: "row" }, saveButton(async () => {
+      const data = await api("/api/account", { method: "PATCH", body: { name: name.value.trim() } });
+      S.user = data.user;
+      name.value = currentName.textContent = data.user.name;
+      hideForms();
+      toast("账号名称已修改");
+    }, "保存账号名称"), h("button", { class: "btn", onclick: hideForms }, "取消")),
+  );
+  passwordForm.append(
+    field("原密码", old),
+    field("新密码（至少 8 位）", pw),
+    h("div", { class: "row" }, saveButton(async () => {
+      await api("/api/password", { method: "POST", body: { old: old.value, password: pw.value } });
+      hideForms();
+      toast("密码已修改，你的其它设备已下线");
+      void loadDevices();
+    }, "保存密码"), h("button", { class: "btn", onclick: hideForms }, "取消")),
+  );
   page.append(
-    h(
-      "div",
-      { class: "section", "data-form": "" },
-      h(
-        "h4",
-        {},
-        "当前账号",
-        h("span", { class: "grow" }),
-        logout,
-      ),
+    h("div", { class: "section" },
+      h("h4", {}, "当前账号"),
       S.user ? h("div", {}, currentName, " ", h("span", { class: "status-tag" }, S.user.role === "admin" ? "管理员" : "成员")) : null,
-      field("账号名称", name, "也是登录时使用的用户名。1～32 个字符，可用文字、数字和 _ . @ -；修改后请用新名称登录。"),
-      h("div", { class: "row" }, saveButton(async () => {
-        const data = await api("/api/account", { method: "PATCH", body: { name: name.value.trim() } });
-        S.user = data.user;
-        name.value = currentName.textContent = data.user.name;
-        toast("账号名称已修改");
-      }, "保存账号名称")),
-    ),
-    h(
-      "div",
-      { class: "section", "data-form": "" },
-      h("h4", {}, "修改登录密码"),
-      field("原密码", old),
-      field("新密码（至少 8 位）", pw),
-      h(
-        "div",
-        { class: "row" },
-        saveButton(async () => {
-          await api("/api/password", { method: "POST", body: { old: old.value, password: pw.value } });
-          toast("密码已修改，你的其它设备已下线");
-          old.value = pw.value = "";
-          void loadDevices();
-        }, "修改"),
-      ),
+      h("div", { class: "row account-actions" }, rename, password, logout),
+      nameForm,
+      passwordForm,
     ),
     feishuLinkSection(),
     weixinLinkSection(),
@@ -160,7 +170,7 @@ function feishuLinkSection() {
     };
     fill(
       box,
-      h("h4", {}, "飞书账号"),
+      h("h4", {}, "飞书账号", h("span", { class: "grow" }), gen),
       h("div", { class: "muted" }, "绑定后，你和飞书机器人的私聊就是你的个人会话：用你的记忆，/sessions 只列你的会话，/web 能接上你自己的 Web 会话。群聊不受影响。"),
       data.links.map((l) => {
         const rm = h("button", { class: "btn small danger" }, "解除绑定");
@@ -182,7 +192,6 @@ function feishuLinkSection() {
           rm,
         );
       }),
-      h("div", { class: "row" }, gen),
       codeBox,
     );
   };

@@ -561,9 +561,8 @@ export function renderSidebar() {
       saveSideState();
     }
   }
-  // 飞书和微信共用分组标题、折叠状态提示及继承专家/目录的新建入口。
-  const imGroupRow = ({ id, channel, name, convs, expanded, toggle, agent, attrs = {} }) => {
-    const latest = convs[0];
+  // 飞书和微信共用分组标题、折叠状态提示及静态渠道标识，不提供 Web 新建入口。
+  const imGroupRow = ({ id, channel, name, convs, expanded, toggle, attrs = {} }) => {
     const label = channel === "feishu" ? "飞书" : "微信";
     return h(
       "div",
@@ -581,22 +580,12 @@ export function renderSidebar() {
         expanded ? null : status(convs.map((c) => c.key)),
       ),
       h(
-        "button",
+        "span",
         {
-          class: "proj-new bot-new",
-          title: `使用 ${name} 的专家和工作目录开新对话`,
-          "aria-label": `使用 ${name} 的专家和工作目录开新对话`,
-          onclick: () => {
-            S.draftCwd = latest?.cwd && latest.cwd !== S.workspaceRoot ? latest.cwd : null;
-            S.draftCwdPicked = true;
-            const expert = latest?.expert?.id ?? latest?.agent ?? agent;
-            if (expert) setDraftExpert(expert);
-            newDraft();
-            closeSide();
-          },
+          class: "bot-channel",
+          title: label,
         },
         h("span", { class: `brand-icon channel-mark ${channel}-mark`, html: ICON[channel], "aria-hidden": "true" }),
-        h("span", { class: "bot-plus", "aria-hidden": "true" }, icon("plus")),
       ),
     );
   };
@@ -608,7 +597,7 @@ export function renderSidebar() {
     const expanded = sideState.botOpen.includes(bot.id);
     const rows = [imGroupRow({
       id: botGroupId(bot.id), channel: "feishu", name: bot.name, convs, expanded,
-      toggle: () => toggleSide("botOpen", bot.id), agent: bot.agents?.[0], attrs: { "data-bot": bot.id },
+      toggle: () => toggleSide("botOpen", bot.id), attrs: { "data-bot": bot.id },
     })];
     if (expanded) {
       const st = botState(bot.id);

@@ -22,7 +22,7 @@ for (const width of [390, 1280]) {
       page.on("pageerror", (e) => errors.push(e.message));
       t.after(() => assert.deepEqual(errors, []));
       const e = { id: "e_ab1234", name: "家庭助手", shared: true, editable, description: "全家共用的设定", engine: "claude", access: "web", prompt: "共同的提示词", skills: [], mcp: [], subagents: [], memory: true, quickPrompts: [] };
-      const data = { experts: [e], builtin: [], engines: ["claude", "codex"], access: [{ id: "web", label: "只能联网" }], skills: [{ id: "s_mine", name: "我的技能" }], mcp: [{ id: "m_mine", name: "我的日历" }] };
+      const data = { experts: [e], builtin: [], engines: ["claude", "codex"], access: [{ id: "web", label: "只能联网" }], skills: [{ id: "s_mine", name: "istoreos-openclash", description: "Connect to and manage the user router. ".repeat(30) }], mcp: [{ id: "m_mine", name: "akshare-nest", description: "个人持仓和历史交易。".repeat(30) }] };
       let toolSaves = 0;
       let definitionSaves = 0;
       await page.route("**/*", async (route) => {
@@ -42,6 +42,7 @@ for (const width of [390, 1280]) {
           Object.assign(e, payload); definitionSaves++;
           return route.fulfill({ json: e });
         }
+        if (p === "/api/mcp") return route.fulfill({ json: { servers: [{ id: "m_mine", name: "akshare-nest", type: "http", url: "https://mcp.example.test", usedBy: [] }] } });
         if (p === "/api/experts") return route.fulfill({ json: data });
         if (p === "/api/experts/brief") return route.fulfill({ json: { experts: [e] } });
         if (/\/api\/agents\/\w+\/models/.test(p)) return route.fulfill({ json: { models: [] } });
@@ -55,17 +56,23 @@ for (const width of [390, 1280]) {
         catch { return route.fulfill({ status: 404, body: "" }); }
       });
       await page.goto("https://shared-experts.example.test/");
+      const gap = await page.locator('.experts-page').evaluate(el => el.querySelector('.task-list').getBoundingClientRect().top - el.querySelector('.skills-head').getBoundingClientRect().bottom);
+      assert.ok(gap >= 12, "列表与说明之间保留间距");
       await page.getByRole("button", { name: "我的工具", exact: true }).click();
-      await page.getByRole("checkbox", { name: "我的技能", exact: true }).check();
-      await page.getByRole("checkbox", { name: "我的日历", exact: true }).check();
+      await page.getByRole("checkbox", { name: /^istoreos-openclash/ }).check();
+      await page.getByRole("checkbox", { name: /^akshare-nest/ }).check();
+      const labels = await page.locator('.tool-check-item > span').evaluateAll(els => els.map(el => ({ name: el.textContent, height: el.offsetHeight, lineHeight: parseFloat(getComputedStyle(el).lineHeight), width: el.offsetWidth, fullWidth: el.scrollWidth })));
+      assert.ok(labels.every(label => label.height < label.lineHeight * 1.5), "名称保持单行");
+      assert.ok(labels.every(label => label.width >= label.fullWidth), "正常名称优先完整显示，说明文字省略");
       assert.equal(await page.locator(".modal").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false);
+      await page.screenshot({ path: `/tmp/agent-loft-expert-tools-${width}.png` });
       await page.getByRole("button", { name: "保存我的工具", exact: true }).click();
       await page.locator(".modal").waitFor({ state: "detached" });
       assert.equal(toolSaves, 1);
       await page.reload();
       await page.getByRole("button", { name: "我的工具", exact: true }).click();
-      assert.equal(await page.getByRole("checkbox", { name: "我的技能", exact: true }).isChecked(), true);
-      assert.equal(await page.getByRole("checkbox", { name: "我的日历", exact: true }).isChecked(), true);
+      assert.equal(await page.getByRole("checkbox", { name: /^istoreos-openclash/ }).isChecked(), true);
+      assert.equal(await page.getByRole("checkbox", { name: /^akshare-nest/ }).isChecked(), true);
       await page.locator(".modal-head button").click();
       await page.getByRole("button", { name: "家庭助手", exact: true }).click();
       if (editable) {
@@ -84,6 +91,10 @@ for (const width of [390, 1280]) {
         assert.equal(definitionSaves, 0);
       }
       assert.equal(await page.locator("#panel").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false, "手机和桌面不横向溢出");
+      await page.evaluate(async () => { const { mcpTab } = await import('/settings/experts.js'); await mcpTab(document.querySelector('#panel')); });
+      await page.getByRole('button', { name: 'akshare-nest', exact: true }).waitFor();
+      const mcpGap = await page.locator('.experts-page').evaluate(el => el.querySelector('.task-list').getBoundingClientRect().top - el.querySelector('.skills-head').getBoundingClientRect().bottom);
+      assert.ok(mcpGap >= 12, "MCP 列表与说明和添加按钮保持间距");
     });
   }
 }

@@ -91,7 +91,7 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
   const page = await ctx.newPage();
   const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("pageerror", (e) => errors.push(e.stack ?? e.message));
   const base = `http://127.0.0.1:${port}`;
   const setup = await ctx.request.post(`${base}/api/setup`, { data: { token, name: "admin", password: "password123" } });
   assert.ok(setup.ok(), await setup.text());
@@ -104,7 +104,11 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
   const openSettings = async () => {
     await page.goto(`${base}/?settingsVisit=${++settingsVisit}#new`);
     await page.locator(".side-top .new-chat").waitFor({ timeout: 8000 });
-    await page.evaluate(async () => (await import("/views/layout.js")).openSettings("账号"));
+    // 跟随页面实际加载的版本目录，避免另建一套 state 和事件监听器。
+    await page.evaluate(async () => {
+      const entry = document.querySelector('script[type="module"][src]').src;
+      await (await import(new URL("views/layout.js", entry).href)).openSettings("账号");
+    });
     await page.locator(".settings-page").waitFor({ timeout: 8000 }).catch(async (err) => {
       throw new Error(`${err.message}\n页面：${await page.locator("#app").innerText()}`);
     });

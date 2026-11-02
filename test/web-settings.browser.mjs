@@ -14,7 +14,7 @@ const vendor = {
   "/vendor/hljs-dark.css": "node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css",
 };
 
-async function fixture(t, width, colorScheme) {
+async function fixture(t, width, colorScheme, role = "member") {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -35,6 +35,10 @@ async function fixture(t, width, colorScheme) {
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
+    if (url.pathname === "/api/config") return route.fulfill({ json: { web: { host: "127.0.0.1", port: 3000 } } });
+    if (url.pathname === "/api/push") return route.fulfill({ json: { subscriptions: [] } });
+    if (url.pathname === "/api/system") return route.fulfill({ json: { version: "1.0", node: "v22", uptimeMs: 1000, underSystemd: false } });
+    if (url.pathname === "/api/server/version") return route.fulfill({ json: { version: "1.0", latest: "1.0", updateAvailable: false } });
     if (url.pathname === "/api/experts") return route.fulfill({ json: { experts: [], builtin: [], engines: ["claude", "codex"], skills: [], mcp: [], machineMcp: {} } });
     if (/\/api\/agents\/\w+\/models/.test(url.pathname)) return route.fulfill({ json: { models: [] } });
     if (url.pathname === "/api/account/memory" && method === "GET") {
@@ -56,8 +60,8 @@ async function fixture(t, width, colorScheme) {
     if (url.pathname === "/api/account/history") return route.fulfill({ json: { conversations: 0, count: 0 } });
     if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `
       <meta charset="utf-8">${styles}<div id="app"></div><script type="module">
-        import { openSettings } from '/settings/index.js';
-        await openSettings('记忆');
+        import { openSettings } from '/settings/index.js'; import { S } from '/state.js';
+        S.user = { id: 'u_test', role: '${role}' }; await openSettings('记忆');
       </script>` });
     try {
       return route.fulfill({ contentType: url.pathname.endsWith(".css") ? "text/css" : "text/javascript", body: await fs.readFile(new URL(vendor[url.pathname] ?? `web${url.pathname}`, root), "utf8") });
@@ -185,6 +189,8 @@ for (const width of [1280, 390]) {
 
       let row = memories.locator(".list-item").nth(8);
       await row.getByRole("button", { name: "编辑", exact: true }).click();
+      assert.equal(await row.getByRole("button", { name: "编辑", exact: true }).isVisible(), false);
+      assert.equal(await row.getByRole("button", { name: "删除", exact: true }).isVisible(), false);
       await row.locator("textarea").fill("修改后的记忆");
       const save = row.getByRole("button", { name: "保存", exact: true });
       await save.scrollIntoViewIfNeeded();
@@ -209,6 +215,26 @@ for (const width of [1280, 390]) {
       await page.locator(".toast").filter({ hasText: "刷新失败" }).waitFor();
       assert.equal(await memories.locator(".list-item").count(), 40, "刷新失败保留当前页面");
       await checkScroll(page, before);
+    });
+  }
+}
+
+for (const width of [390, 1280]) {
+  for (const role of ["member", "admin"]) {
+    test(`${width}px ${role}：通知归入系统，保留个人设备设置且管理项按权限显示`, async (t) => {
+      const { page } = await fixture(t, width, "light", role);
+      assert.equal(await page.locator('.settings-nav').getByRole('button', { name: '通知', exact: true }).count(), 0);
+      await page.locator('.settings-nav').getByRole('button', { name: '系统', exact: true }).click();
+      await page.getByRole('heading', { name: '系统通知', exact: true }).waitFor();
+      const headings = await page.locator('.settings-page > .section > h4:first-child').allTextContents();
+      assert.deepEqual(headings, role === 'admin' ? ['服务端', '网络访问', '系统通知'] : ['系统通知']);
+      await page.getByRole('heading', { name: '已开启通知的设备', exact: true }).waitFor();
+      assert.equal(await page.locator('.settings-body').evaluate(el => el.scrollWidth > el.clientWidth + 1), false);
+      // 旧入口和已保存的「通知」标签仍能定位到系统页。
+      await page.locator('.modal-head').getByRole('button', { name: '关闭', exact: true }).click();
+      await page.evaluate(async () => { localStorage.setItem('aim.settingsTab', '通知'); await (await import('/settings/index.js')).openSettings(); });
+      await page.getByRole('heading', { name: '系统通知', exact: true }).waitFor();
+      assert.equal(await page.locator('.settings-nav button.on').textContent(), '系统');
     });
   }
 }

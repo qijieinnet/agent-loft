@@ -86,15 +86,14 @@ export function weixinLinkSection() {
           change.disabled = !expert.value || expert.value === data.expert;
         }
       };
-      rows.push(field("微信使用的专家", h("div", { class: "row" }, expert, change), "切换会结束当前会话并开启新会话，之后的微信消息使用所选专家。也可以在微信里发 /expert 切换。"));
+      rows.push(field("微信使用的专家", h("div", { class: "row weixin-expert-row" }, expert, change), "切换会结束当前会话并开启新会话，之后的微信消息使用所选专家。也可以在微信里发 /expert 切换。"));
     }
     fill(
       box,
-      h("h4", {}, "微信"),
+      h("h4", {}, "微信", h("span", { class: "grow" }), scan),
       h("div", { class: "muted" }, "连接后可以在微信的 ClawBot 里和 agent 聊天。"),
       h("ul", { class: "muted" }, NOTES.map((n) => h("li", {}, n))),
       rows,
-      h("div", { class: "row" }, scan),
     );
   };
   void load();

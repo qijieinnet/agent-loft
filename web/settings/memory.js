@@ -95,6 +95,7 @@ export async function memoryTab(panel, refresh = false) {
     const edit = h("button", { class: "btn small" }, "编辑");
     const del = h("button", { class: "btn small danger" }, "删除");
     edit.onclick = () => {
+      edit.hidden = del.hidden = true;
       const input = h("textarea", { class: "input", rows: 2, maxlength: mem.limits.item });
       input.value = it.text;
       const ok = h("button", { class: "btn small primary" }, "保存");

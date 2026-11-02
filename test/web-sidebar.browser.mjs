@@ -355,7 +355,7 @@ test("触屏分组菜单：飞书与项目可互相置顶、上下移动，保�
 });
 
 for (const mobile of [false, true]) {
-  test(`${mobile ? "触屏" : "桌面"}：微信与飞书统一分组，记住折叠、显示状态、排序并继承专家和目录`, async (t) => {
+  test(`${mobile ? "触屏" : "桌面"}：微信与飞书统一分组，记住折叠、显示状态、排序，渠道图标不可新建`, async (t) => {
     const wx = { key: "weixin:u1", channel: "weixin", channelId: "u1", agent: "codex", title: "微信里的聊天", cwd: "/workspace/weixin", activeAt: 200, busy: true, expert: { id: "e_helper", name: "助手", engine: "codex" } };
     const initial = ["/workspace", "weixin:weixin:u1", "feishu:bot", "feishu:empty"];
     const web = { key: "web:1", channel: "web", channelId: "web", agent: "claude", title: "Test", cwd: "/workspace", activeAt: 1, busy: false };
@@ -368,20 +368,16 @@ for (const mobile of [false, true]) {
     assert.equal(await chat.count(), 0);
     assert.equal(await header.locator(".conv-spin").count(), 1, "收起时仍显示运行状态");
     assert.equal(await group.locator(".weixin-mark").isVisible(), true);
+    assert.equal(await group.locator(".bot-plus").count(), 0);
+    assert.equal(await group.locator(".proj-new, .bot-new").count(), 0);
     if (!mobile) {
       await header.hover();
-      assert.equal(await group.locator(".weixin-mark").isVisible(), false);
-      assert.equal(await group.locator(".bot-plus").isVisible(), true);
+      assert.equal(await group.locator(".weixin-mark").isVisible(), true);
     }
     await header.click();
     assert.equal(await chat.locator(".title").textContent(), wx.title);
     assert.equal(await header.locator(".conv-spin").count(), 0);
     assert.equal(await chat.locator(".conv-spin").count(), 1);
-    if (mobile) {
-      await group.locator(".bot-new").focus();
-      assert.equal(await group.locator(".weixin-mark").isVisible(), true);
-      assert.equal(await group.locator(".bot-plus").isVisible(), false);
-    }
     await page.reload();
     await page.waitForFunction(() => window.booted);
     if (mobile) await page.locator(".topbar .menu-btn").click();
@@ -397,12 +393,14 @@ for (const mobile of [false, true]) {
       window.renderSidebar();
     });
     assert.equal(await header.locator(".dot.ask").count(), 1, "待处理状态汇总到分组标题");
-    await group.locator(".bot-new").click();
-    assert.deepEqual(await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]), [null, "e_helper", "codex", wx.cwd, true]);
+    const beforeIcon = await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]);
+    await group.locator(".bot-channel").click();
+    assert.deepEqual(await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]), beforeIcon, "点击渠道标识不创建草稿");
+    assert.equal(await header.getAttribute("aria-expanded"), "false", "点击渠道标识不展开分组");
     await page.reload();
     await page.waitForFunction(() => window.booted);
     if (mobile) await page.locator(".topbar .menu-btn").click();
-    assert.equal(await header.getAttribute("aria-expanded"), "false", "刷新后保留收起状态");
+    assert.equal(await header.getAttribute("aria-expanded"), "true", "刷新后自动展开仍在查看的微信会话");
     await group.click({ button: "right" });
     const savedOrder = page.waitForResponse((res) => res.url().endsWith("/api/ui/dir-order") && res.request().postDataJSON().order?.[0] === "weixin:weixin:u1" && res.ok());
     await page.getByText("置顶", { exact: true }).click();
@@ -421,7 +419,7 @@ for (const mobile of [false, true]) {
     assert.equal(await chat.evaluate((el) => el.classList.contains("active")), true);
   });
 
-  test(`${mobile ? "触屏" : "桌面"}：飞书分组展开、分页、记住折叠状态，图标按钮继承专家和目录`, async (t) => {
+  test(`${mobile ? "触屏" : "桌面"}：飞书分组展开、分页、记住折叠状态，渠道图标不可新建`, async (t) => {
     const { page, getBotLoads } = await fixture(t, { mobile, feishu: true });
     const bot = page.locator('[data-bot="bot"]');
     const header = bot.locator(".conv-item.proj");
@@ -429,22 +427,22 @@ for (const mobile of [false, true]) {
     assert.equal(getBotLoads(), 0);
     assert.equal(await header.getAttribute("aria-expanded"), "false");
     assert.equal(await bot.locator(".feishu-mark").isVisible(), true);
-    assert.equal(await bot.locator(".bot-plus").isVisible(), false);
+    assert.equal(await bot.locator(".bot-plus").count(), 0);
+    assert.equal(await page.locator(".bot-row .proj-new, .bot-row .bot-new").count(), 0);
+    assert.equal(await page.locator('[data-dir="/workspace"] .proj-new').count(), 1, "Web 项目保留新建入口");
     if (!mobile) {
       await header.hover();
-      assert.equal(await bot.locator(".feishu-mark").isVisible(), false);
-      assert.equal(await bot.locator(".bot-plus").isVisible(), true);
+      assert.equal(await bot.locator(".feishu-mark").isVisible(), true);
       await page.mouse.move(1000, 100);
       assert.equal(await bot.locator(".feishu-mark").isVisible(), true);
-      await bot.locator(".bot-new").focus();
-      assert.equal(await bot.locator(".bot-plus").isVisible(), true);
+      await header.focus();
+      assert.equal(await bot.locator(".feishu-mark").isVisible(), true);
     }
     await header.click();
     await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
     if (mobile) {
-      await bot.locator(".bot-new").focus();
+      await header.focus();
       assert.equal(await bot.locator(".feishu-mark").isVisible(), true, "触屏点击或聚焦后仍显示渠道图标");
-      assert.equal(await bot.locator(".bot-plus").isVisible(), false);
     }
     assert.equal(await chats.first().locator(".title").textContent(), "飞书聊天 0");
     assert.equal(getBotLoads(), 1);
@@ -468,10 +466,11 @@ for (const mobile of [false, true]) {
     assert.equal(await chats.nth(2).evaluate((el) => el.classList.contains("active")), true);
     await header.click();
     assert.equal(await chats.count(), 0, "当前会话所在分组也能折叠");
-    await bot.locator(".bot-new").click();
-    assert.deepEqual(await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]), [null, "e_helper", "codex", "/workspace/feishu", true]);
+    const beforeIcon = await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]);
+    await bot.locator(".bot-channel").click();
+    assert.deepEqual(await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]), beforeIcon, "点击渠道标识不创建草稿");
+    assert.equal(await header.getAttribute("aria-expanded"), "false");
     assert.equal(await page.locator(".modal").count(), 0);
-    if (mobile) await page.locator(".topbar .menu-btn").click();
     await page.locator('[data-bot="empty"] .conv-item.proj').click();
     await page.getByText("还没有会话", { exact: true }).waitFor();
   });

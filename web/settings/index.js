@@ -2,7 +2,6 @@ import { fill, h } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { isAdmin } from "../state.js";
 import { confirmDialog, modal } from "../lib/overlay.js";
-import { notifyTab } from "./notify.js";
 import { conversationTab, remoteTab } from "./general.js";
 import { commandsTab } from "./commands.js";
 import { agentsTab } from "./agents.js";
@@ -23,14 +22,13 @@ import { hasDirty, markDirty } from "./common.js";
 const LAST_TAB = "aim.settingsTab";
 
 /** 以前的标签名：外面（地址、别处的按钮）传进来的旧名字照样能打开对应的页 */
-const RENAMED = { 通用: "对话", 授权: "对话", 飞书机器人: "飞书", 我的账号: "账号" };
+const RENAMED = { 通用: "对话", 授权: "对话", 飞书机器人: "飞书", 我的账号: "账号", 通知: "系统" };
 
 function groupsFor(cfg) {
   const mine = {
     name: "我的",
     tabs: [
       ["账号", (p) => accountTab(p)],
-      ["通知", (p) => notifyTab(p)],
       ["记忆", (p) => memoryTab(p)],
       ["专家", (p) => expertsTab(p)],
       ["技能", (p) => skillsTab(p)],
@@ -38,7 +36,7 @@ function groupsFor(cfg) {
       ["用量", (p) => usageTab(p)],
     ],
   };
-  if (!cfg) return [mine, { name: "Agent", tabs: [["Agent", (p) => agentsTab(null, p)]] }];
+  if (!cfg) return [mine, { name: "Agent", tabs: [["Agent", (p) => agentsTab(null, p)]] }, { name: "系统", tabs: [["系统", (p) => systemTab(null, p)]] }];
   return [
     mine,
     {
@@ -129,6 +127,7 @@ export async function openSettings(tab) {
       nav.append(b);
     }
   }
-  const want = tab ? (RENAMED[tab] ?? tab) : localStorage.getItem(LAST_TAB);
+  const requested = tab || localStorage.getItem(LAST_TAB);
+  const want = RENAMED[requested] ?? requested;
   void select(Math.max(0, tabs.findIndex(([name]) => name === want)));
 }

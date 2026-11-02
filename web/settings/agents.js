@@ -156,18 +156,16 @@ function installCodexButton(after) {
   return h("div", {}, btn);
 }
 
-/** 内置 Agent 的个人默认项；普通成员也能设置自己的，不需要服务器管理权限。 */
-function builtinDefaultsSection() {
-  const section = h("div", { class: "section", "data-form": "" }, h("h4", {}, "内置 Agent 默认加载"), h("span", { class: "spinner" }));
+/** 个人默认工具单独保存，避免改服务器配置时覆盖尚未保存的个人选择。 */
+function builtinDefaultsSections(targets) {
   const load = async () => {
     let data;
     try {
       data = await api("/api/agents/defaults");
     } catch (err) {
-      fill(section, h("h4", {}, "内置 Agent 默认加载"), h("div", { class: "error-text" }, err.message), h("button", { class: "btn small", onclick: load }, "重试"));
+      for (const section of Object.values(targets)) fill(section, h("div", { class: "error-text" }, err.message), h("button", { class: "btn small", onclick: load }, "重试"));
       return;
     }
-    const choices = {};
     const picker = (label, items, selected, inheritLabel) => {
       const mode = h("select", { "aria-label": label },
         ...(inheritLabel ? [h("option", { value: "inherit", selected: selected === null }, inheritLabel)] : []),
@@ -176,128 +174,96 @@ function builtinDefaultsSection() {
       const missing = (selected ?? []).filter((id) => !known.has(id)).map((id) => ({ id, name: `${id}（暂不可用，可取消）` }));
       const inputs = [...items, ...missing].map((item) => ({ id: item.id, input: h("input", { type: "checkbox", checked: (selected ?? []).includes(item.id) }), item }));
       const list = h("div", { class: "check-list" }, inputs.length
-        ? inputs.map(({ input, item }) => h("label", { class: "check-item", title: item.description ?? "" }, input, h("span", {}, item.name)))
+        ? inputs.map(({ input, item }) => h("label", { class: "check-item tool-check-item", title: item.description ?? item.name }, input, h("span", {}, item.name)))
         : h("small", {}, "暂无可选项，请先在设置中添加"));
       const sync = () => { list.hidden = mode.value !== "pick"; };
       mode.addEventListener("change", sync);
       sync();
       return { el: h("div", { class: "field" }, h("span", {}, label), mode, list), value: () => mode.value === "inherit" ? null : inputs.filter((x) => x.input.checked).map((x) => x.id) };
     };
-    const panels = ["claude", "codex"].filter((engine) => data.agents[engine]).map((engine) => {
-      const label = engine === "claude" ? "Claude Code" : "Codex";
+    for (const [engine, section] of Object.entries(targets)) {
       const prefs = data.agents[engine];
+      if (!prefs) {
+        section.hidden = true;
+        if (section.parentElement?.dataset.personal) section.parentElement.hidden = true;
+        continue;
+      }
+      const label = engine === "claude" ? "Claude Code" : "Codex";
       const skills = picker(`${label} 技能`, data.skills, prefs.skills, "全部已启用的个人技能（含以后新增）");
       const machine = (data.machineMcp?.[engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, name: `${name}（本机）` }));
       const mcp = picker(`${label} MCP`, [...data.mcp, ...machine], prefs.mcp, data.machineMcp ? "沿用机器上的 MCP 配置" : null);
       const machineSkills = h("input", { type: "checkbox", checked: prefs.machineSkills });
-      choices[engine] = { skills, mcp, machineSkills };
-      return h("div", { class: "builtin-agent-defaults" }, h("h4", {}, label), skills.el,
+      fill(section, h("h4", {}, "默认加载"),
+        h("p", { class: "skill-note" }, "仅影响你当前账号使用的这个内置 Agent，自定义专家使用各自的配置。保存后，下次发消息生效。"),
+        skills.el,
         data.machineMcp ? h("label", { class: "check-item" }, machineSkills, "同时加载机器上的技能") : null,
-        mcp.el);
-    });
-    fill(section, h("h4", {}, "内置 Agent 默认加载"),
-      h("p", { class: "skill-note" }, "仅影响你当前账号使用的内置 Agent；自定义专家继续使用各自的配置。保存后，下次发消息生效，正在执行的任务不受影响。"),
-      ...panels,
-      !panels.length ? h("p", { class: "muted" }, "没有获授权的内置 Agent，请联系管理员配置使用权限。") : null,
-      h("small", {}, "技能和 MCP 可分别全部取消。记忆、定时任务、技能管理等系统工具仍按功能设置提供。"),
-      h("div", { class: "row" }, saveButton(async () => {
-        const agents = Object.fromEntries(Object.entries(choices).map(([engine, c]) => [engine, { skills: c.skills.value(), machineSkills: c.machineSkills.checked, mcp: c.mcp.value() }]));
-        await api("/api/agents/defaults", { method: "PUT", body: { agents } });
-        toast("已保存，下次发消息生效");
-      }, "保存默认加载设置")));
+        mcp.el,
+        h("small", {}, "技能和 MCP 可分别全部取消。记忆、定时任务、技能管理等系统工具仍按功能设置提供。"),
+        h("div", { class: "row" }, saveButton(async () => {
+          await api("/api/agents/defaults", { method: "PUT", body: { agents: { [engine]: { skills: skills.value(), machineSkills: machineSkills.checked, mcp: mcp.value() } } } });
+          toast("已保存，下次发消息生效");
+        }, `保存 ${label} 默认加载`)));
+    }
+    if (!Object.keys(data.agents).length) {
+      const section = Object.values(targets)[0];
+      section.hidden = false;
+      section.parentElement.hidden = false;
+      const message = h("p", { class: "muted" }, "没有获授权的内置 Agent，请联系管理员配置使用权限。");
+      if (section.parentElement.dataset.personal) fill(section.parentElement, h("h4", {}, "内置 Agent"), message);
+      else fill(section, message);
+    }
   };
   void load();
-  return section;
 }
 
 export function agentsTab(cfg, page) {
-  page.append(builtinDefaultsSection());
-  if (!cfg) return;
+  const targets = Object.fromEntries(["claude", "codex"].map((engine) => [engine, h("div", { class: "builtin-agent-defaults", "data-form": "" }, h("span", { class: "spinner" }))]));
+  if (!cfg) {
+    for (const [engine, target] of Object.entries(targets)) page.append(h("div", { class: "section", "data-personal": "true", "data-agent": engine }, h("h4", {}, engine === "claude" ? "Claude Code" : "Codex"), target));
+    builtinDefaultsSections(targets);
+    return;
+  }
   page.append(agentHealthSection());
   const a = structuredClone(cfg.agents);
-  const claudeOn = h("input", { type: "checkbox", checked: a.claude.enabled });
-  const claudePick = modelPicker("claude", a.claude.defaultModel, a.claude.defaultEffort, "跟随 Claude Code 默认");
-  const claudeModels = modelChecklist("claude", a.claude.models ?? []);
-  const codexOn = h("input", { type: "checkbox", checked: a.codex.enabled });
-  const codexPath = h("input", { value: a.codex.path });
-  const codexHome = h("input", { value: a.codex.home, placeholder: "留空用 ~/.codex" });
-  const sandbox = h(
-    "select",
-    {},
-    ["read-only", "workspace-write", "danger-full-access"].map((m) => h("option", { value: m, selected: m === a.codex.sandbox }, m)),
-  );
-  const codexPick = modelPicker("codex", a.codex.defaultModel, a.codex.defaultEffort, "跟随 config.toml");
-  const codexModels = modelChecklist("codex", a.codex.models ?? []);
-  // 自动生成会话名称：一行，勾上才显示后面的模型选择
-  const titleOn = h("input", { type: "checkbox", checked: !!a.codex.autoTitle });
-  const titlePick = modelPicker("codex", a.codex.titleModel ?? "", "", "跟随 config.toml");
-  const titleModelEl = h("div", { class: "grow field" }, titlePick.modelEl);
-  const syncTitle = () => (titleModelEl.hidden = !titleOn.checked);
-  titleOn.addEventListener("change", syncTitle);
-  syncTitle();
-  // 一组勾选框不能放进 <label>（点哪都会切到第一个），所以不用 field()
-  const checksField = (list) => h("div", { class: "field" }, h("span", {}, "输入框可选模型"), list.el);
-  // 两个 agent 一起保存：整组算一张表单
-  page.append(
-    h(
-      "div",
-      { class: "settings-stack", "data-form": "" },
-      h(
-        "div",
-        { class: "section" },
-        h("h4", {}, "Claude Code", h("span", { class: "grow" }), h("label", { class: "check" }, claudeOn, "启用")),
-        field("默认模型", claudePick.modelEl),
-        field("默认思考程度", claudePick.effortEl),
-        checksField(claudeModels),
-      ),
-      h(
-        "div",
-        { class: "section" },
-        h("h4", {}, "Codex", h("span", { class: "grow" }), h("label", { class: "check" }, codexOn, "启用")),
-        field("codex 可执行文件", codexPath, "以系统服务运行时 PATH 很短，建议写绝对路径"),
-        field("CODEX_HOME", codexHome),
-        field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"),
-        field("默认模型", codexPick.modelEl),
-        field("默认思考程度", codexPick.effortEl),
-        checksField(codexModels),
-        h("div", { class: "row title-row" }, h("label", { class: "check" }, titleOn, "自动生成会话名称"), titleModelEl),
-      ),
-      h(
-        "div",
-        { class: "row" },
-        saveButton(() => {
-          const claudeList = claudeModels.value();
-          const codexList = codexModels.value();
-          if (!claudeList || !codexList) {
-            toast(`${!claudeList ? "Claude Code" : "Codex"} 至少勾选一个模型`);
-            return false;
-          }
-          return saveConfig(cfg, {
-            agents: {
-              claude: {
-                enabled: claudeOn.checked,
-                defaultModel: claudePick.model(),
-                defaultEffort: claudePick.effort(),
-                models: claudeList,
-              },
-              codex: {
-                enabled: codexOn.checked,
-                path: codexPath.value.trim() || "codex",
-                home: codexHome.value.trim(),
-                sandbox: sandbox.value,
-                defaultModel: codexPick.model(),
-                defaultEffort: codexPick.effort(),
-                models: codexList,
-                autoTitle: titleOn.checked,
-                titleModel: titlePick.model(),
-              },
-            },
-          });
-        }, "保存 Agent 设置"),
-      ),
-    ),
-    quotaSection(cfg),
-  );
+  for (const engine of ["claude", "codex"]) {
+    const label = engine === "claude" ? "Claude Code" : "Codex";
+    const settings = a[engine];
+    const on = h("input", { type: "checkbox", checked: settings.enabled });
+    const pick = modelPicker(engine, settings.defaultModel, settings.defaultEffort, engine === "claude" ? "跟随 Claude Code 默认" : "跟随 config.toml");
+    const models = modelChecklist(engine, settings.models ?? []);
+    const config = h("div", { class: "agent-config", "data-form": "" },
+      h("h4", {}, label, h("span", { class: "grow" }), h("label", { class: "check" }, on, "启用")));
+    let codex = null;
+    if (engine === "codex") {
+      const path = h("input", { value: settings.path });
+      const home = h("input", { value: settings.home, placeholder: "留空用 ~/.codex" });
+      const sandbox = h("select", {}, ["read-only", "workspace-write", "danger-full-access"].map((mode) => h("option", { value: mode, selected: mode === settings.sandbox }, mode)));
+      const titleOn = h("input", { type: "checkbox", checked: !!settings.autoTitle });
+      const titlePick = modelPicker("codex", settings.titleModel ?? "", "", "跟随 config.toml");
+      const titleModel = h("div", { class: "grow field" }, titlePick.modelEl);
+      const syncTitle = () => { titleModel.hidden = !titleOn.checked; };
+      titleOn.addEventListener("change", syncTitle);
+      syncTitle();
+      codex = { path, home, sandbox, titleOn, titlePick, titleModel };
+      config.append(field("codex 可执行文件", path, "以系统服务运行时 PATH 很短，建议写绝对路径"), field("CODEX_HOME", home), field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"));
+    }
+    config.append(field("默认模型", pick.modelEl), field("默认思考程度", pick.effortEl), h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
+    if (codex) config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, codex.titleOn, "自动生成会话名称"), codex.titleModel));
+    config.append(h("div", { class: "row" }, saveButton(() => {
+      const selected = models.value();
+      if (!selected) {
+        toast(`${label} 至少勾选一个模型`);
+        return false;
+      }
+      return saveConfig(cfg, { agents: { [engine]: {
+        enabled: on.checked, defaultModel: pick.model(), defaultEffort: pick.effort(), models: selected,
+        ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value, autoTitle: codex.titleOn.checked, titleModel: codex.titlePick.model() } : {}),
+      } } });
+    }, `保存 ${label} 设置`)));
+    page.append(h("div", { class: "section", "data-agent": engine }, config, targets[engine]));
+  }
+  page.append(quotaSection(cfg));
+  builtinDefaultsSections(targets);
 }
 
 /** 账号额度：侧栏底部、/status、桌面端显示的 Claude / Codex 订阅额度，查不查、多久查一次 */

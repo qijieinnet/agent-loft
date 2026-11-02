@@ -56,8 +56,8 @@
     scale: 0.96;
   }
 
-  .top-actions :is(.top-more, .conv-expert-icon):active {
-    background: var(--bg-hover);
+  .top-actions :is(.top-more, .conv-expert-icon):is(:hover, :active, :focus) {
+    background: transparent;
   }
 
   .topbar :is(.menu-btn, .top-more, .conv-expert-icon):focus-visible {

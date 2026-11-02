@@ -51,7 +51,7 @@ function render(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "专家决定引擎、提示词和能力。共享给所有账号后，设定由创建者维护，每个人的记忆、技能和 MCP 仍各自独立；点「我的工具」选择自己要用的工具。内置的 Claude Code、Codex 在「设置 → Agent」里选择默认技能和 MCP。",
+        "专家决定引擎、提示词和能力。共享给所有账号后，设定由创建者维护，每个人的记忆、技能和 MCP 仍各自独立；点「我的工具」选择自己要用的工具。内置的 Claude Code、Codex 在「设置 → Agent」各自卡片的「默认加载」中选择技能和 MCP。",
       ),
       h("div", { class: "skill-head-btns" }, add),
     ),
@@ -165,7 +165,7 @@ function field(label, input, hint) {
 function checkList(items, picked, empty) {
   const boxes = items.map((it) => {
     const box = h("input", { type: "checkbox", checked: picked.includes(it.id) });
-    return { id: it.id, box, el: h("label", { class: "check-item", title: it.hint ?? "" }, box, h("span", {}, it.label), it.hint ? h("small", {}, it.hint) : null) };
+    return { id: it.id, box, el: h("label", { class: "check-item tool-check-item", title: [it.label, it.hint].filter(Boolean).join(" · ") }, box, h("span", {}, it.label), it.hint ? h("small", {}, it.hint) : null) };
   });
   return {
     el: boxes.length ? h("div", { class: "check-list" }, boxes.map((b) => b.el)) : h("div", { class: "muted" }, empty),
@@ -531,7 +531,7 @@ function renderMcp(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "MCP 服务给专家提供工具（查数据、调接口）。这里加好，再到「专家」里给专家勾上。只给你自己的专家用；内置的 Claude Code / Codex 照旧用机器上配的。",
+        "MCP 服务提供查数据、调接口等工具，只供你自己的账号使用。这里加好后，自定义专家在「专家」里勾选；内置的 Claude Code / Codex 在「Agent」各自卡片的「默认加载」中选择。",
       ),
       h("div", { class: "skill-head-btns" }, h("button", { class: "btn primary", onclick: () => openMcpEditor(null, reload) }, icon("plus"), "添加")),
     ),

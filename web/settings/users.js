@@ -1,10 +1,11 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
-import { confirmDialog, showMenu } from "../lib/overlay.js";
-import { field, saveButton } from "./common.js";
+import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
+import { field, markDirty, saveButton } from "./common.js";
 import { networkSection } from "./general.js";
 import { deviceList } from "./security.js";
+import { notifyTab } from "./notify.js";
 
 /** null 沿用全部；指定列表可以全部取消，新增资源不会自动加入。 */
 function permissionFields(resources, permissions = {}) {
@@ -36,9 +37,7 @@ function permissionFields(resources, permissions = {}) {
 
 export async function usersTab(page) {
   const box = h("div", { class: "section" }, h("h4", {}, "用户"), h("span", { class: "spinner" }));
-  const addBox = h("div", { class: "section", "data-form": "" });
-  const devicesBox = h("div", { class: "section" });
-  fill(page, box, addBox, devicesBox);
+  fill(page, box);
   const reload = () => {
     fill(page);
     void usersTab(page);
@@ -94,7 +93,7 @@ export async function usersTab(page) {
 
   /** 一个用户能做的事：常用的直接放在行上，其余收进「⋯」 */
   const actions = (u, self, extra) => {
-    const items = [{ label: "重置密码", onclick: () => resetRow(u, extra) }];
+    const items = [{ label: "登录设备", onclick: () => showDevices(u) }, { label: "重置密码", onclick: () => resetRow(u, extra) }];
     if (!self) {
       items.push({ label: u.role === "admin" ? "设为成员" : "设为管理员", onclick: act(() => patch(u, { role: u.role === "admin" ? "member" : "admin" })) });
       items.push({
@@ -183,7 +182,7 @@ export async function usersTab(page) {
 
   fill(
     box,
-    h("h4", {}, `用户（${data.users.length}）`),
+    h("h4", {}, `用户（${data.users.length}）`, h("span", { class: "grow" }), h("button", { class: "btn small", onclick: () => openAddUser() }, "添加用户")),
     h("div", { class: "muted" }, "每个人只看得到自己的对话、授权和通知。管理员能改所有设置，还能看到飞书机器人的对话。"),
     h(
       "div",
@@ -220,62 +219,68 @@ export async function usersTab(page) {
     }),
   );
 
-  const name = h("input", { autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "登录用的名字" });
-  const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: "至少 8 位" });
-  const role = h("select", {}, h("option", { value: "member" }, "成员"), h("option", { value: "admin" }, "管理员"));
-  const permissions = permissionFields(data.resources);
-  const remote = h("input", { type: "checkbox" });
-  const memberOptions = h("div", { class: "user-permissions" }, permissions.el,
-    h("div", { class: "field" }, h("span", {}, "远程权限"), h("label", { class: "check-item" }, remote, h("span", {}, "允许使用终端和桌面"))));
-  role.onchange = () => { memberOptions.hidden = role.value === "admin"; };
-  fill(
-    addBox,
-    h("h4", {}, "添加用户"),
-    field("用户名", name),
-    field("密码", pw, "告诉对方，让他登录后在 设置 →「账号」里自己改掉"),
-    field("角色", role, "成员只能用自己的对话；管理员能改所有设置、管理用户"),
-    memberOptions,
-    h(
-      "div",
-      { class: "row" },
-      saveButton(async () => {
-        if (role.value === "member" && remote.checked && !(await confirmDialog({
-          title: `给「${name.value.trim()}」开通远程控制？`,
-          message: "他能以运行 agent-loft 的系统用户直接使用终端和桌面，读写服务器上的文件、安装软件、停止服务，不经过授权卡。只开给完全信任的人。",
-          confirmText: "开通并添加", danger: true,
-        }))) return false;
-        await api("/api/users", { method: "POST", body: { name: name.value.trim(), password: pw.value, role: role.value,
-          ...(role.value === "member" ? { remote: remote.checked, permissions: permissions.value() } : {}) } });
-        toast(`已添加「${name.value.trim()}」`);
-        // 先标成已保存再刷新，免得离开提醒
-        addBox.removeAttribute("data-dirty");
-        reload();
-      }, "添加"),
-    ),
-  );
-
-  // 所有人登录着的设备：哪台不认识就让它下线
-  const loadDevices = async () => {
-    let sessions;
-    try {
-      sessions = await api("/api/web-sessions");
-    } catch (err) {
-      fill(devicesBox, h("h4", {}, "所有已登录的设备"), h("div", { class: "error-text" }, err.message));
-      return;
-    }
+  const openAddUser = () => {
+    const addBox = h("div", { class: "modal-body settings-stack", "data-form": "" });
+    for (const event of ["input", "change"]) addBox.addEventListener(event, () => markDirty(addBox));
+    const name = h("input", { autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "登录用的名字" });
+    const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: "至少 8 位" });
+    const role = h("select", {}, h("option", { value: "member" }, "成员"), h("option", { value: "admin" }, "管理员"));
+    const permissions = permissionFields(data.resources);
+    const remote = h("input", { type: "checkbox" });
+    const memberOptions = h("div", { class: "user-permissions" }, permissions.el,
+      h("div", { class: "field" }, h("span", {}, "远程权限"), h("label", { class: "check-item" }, remote, h("span", {}, "允许使用终端和桌面"))));
+    role.onchange = () => { memberOptions.hidden = role.value === "admin"; };
     fill(
-      devicesBox,
-      h("h4", {}, `所有已登录的设备（${sessions.length}）`),
-      deviceList(sessions, { showOwner: true, onChange: loadDevices }),
+      addBox,
+      field("用户名", name),
+      field("密码", pw, "告诉对方，让他登录后在 设置 →「账号」里自己改掉"),
+      field("角色", role, "成员只能用自己的对话；管理员能改所有设置、管理用户"),
+      memberOptions,
+      h(
+        "div",
+        { class: "row" },
+        saveButton(async () => {
+          if (role.value === "member" && remote.checked && !(await confirmDialog({
+            title: `给「${name.value.trim()}」开通远程控制？`,
+            message: "他能以运行 agent-loft 的系统用户直接使用终端和桌面，读写服务器上的文件、安装软件、停止服务，不经过授权卡。只开给完全信任的人。",
+            confirmText: "开通并添加", danger: true,
+          }))) return false;
+          await api("/api/users", { method: "POST", body: { name: name.value.trim(), password: pw.value, role: role.value,
+            ...(role.value === "member" ? { remote: remote.checked, permissions: permissions.value() } : {}) } });
+          toast(`已添加「${name.value.trim()}」`);
+          close();
+          reload();
+        }, "添加"),
+        h("button", { class: "btn", onclick: () => close() }, "取消"),
+      ),
     );
+
+    const close = modal({ title: "添加用户", body: addBox, wide: true });
+    name.focus();
   };
-  void loadDevices();
+
+  const showDevices = (user) => {
+    const body = h("div", { class: "modal-body settings-stack" });
+    modal({ title: `${user.name} · 登录设备`, body, wide: true });
+    const load = async () => {
+      try {
+        const sessions = await api("/api/web-sessions");
+        const mine = sessions.filter((session) => session.userId === user.id || (!session.userId && user.id === data.me));
+        fill(body, h("div", { class: "muted" }, `已登录的设备（${mine.length}）`), deviceList(mine, { onChange: load }));
+      } catch (err) {
+        fill(body, h("div", { class: "error-text" }, err.message), h("button", { class: "btn", onclick: load }, "重试"));
+      }
+    };
+    void load();
+  };
 }
 
 /** 设置 → 系统：服务端运行状态、版本和升级、重启，网络访问 */
 export async function systemTab(cfg, page) {
+  if (!cfg) return notifyTab(page);
   const sysBox = h("div", { class: "section" }, h("h4", {}, "服务端", h("span", { class: "grow" }), h("span", { class: "spinner" })));
   page.append(sysBox, networkSection(cfg));
+  void notifyTab(page);
 
   const restart = async () => {
     if (!(await confirmDialog({ title: "重启 agent-loft？", message: "进行中的对话会被中断。", confirmText: "重启", danger: true }))) return;

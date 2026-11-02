@@ -29,7 +29,7 @@ for (const width of [390, 1280]) {
       await page.route("**/*", async (route) => {
         const url = new URL(route.request().url());
         if (url.pathname === "/api/agents/defaults") {
-          if (route.request().method() === "PUT") { saves++; data.agents = route.request().postDataJSON().agents; }
+          if (route.request().method() === "PUT") { saves++; Object.assign(data.agents, route.request().postDataJSON().agents); }
           return route.fulfill({ json: data });
         }
         if (url.pathname === "/api/config") return route.fulfill({ json: { agents: { claude: { enabled: true, models: [] }, codex: { enabled: true, models: [], path: "codex", home: "", sandbox: "workspace-write" } }, web: {} } });
@@ -43,9 +43,13 @@ for (const width of [390, 1280]) {
         catch { return route.fulfill({ status: 404, body: "" }); }
       });
       await page.goto("https://agent-settings.example.test/");
-      const save = page.getByRole("button", { name: "保存默认加载设置", exact: true });
+      const save = page.getByRole("button", { name: "保存 Claude Code 默认加载", exact: true });
+      const saveCodex = page.getByRole("button", { name: "保存 Codex 默认加载", exact: true });
       await save.waitFor();
       assert.equal(await save.isEnabled(), false);
+      assert.equal(await page.getByRole("heading", { name: "内置 Agent 默认加载", exact: true }).count(), 0);
+      if (role === "admin") assert.equal(await page.locator('.settings-page > .section h4').first().textContent(), "运行环境重新检查");
+      assert.equal(await page.locator('[data-agent="claude"] .builtin-agent-defaults').count(), 1);
       const claude = page.locator(".builtin-agent-defaults").nth(0);
       const codex = page.locator(".builtin-agent-defaults").nth(1);
       await page.getByRole("combobox", { name: "Claude Code 技能", exact: true }).selectOption("pick");
@@ -57,8 +61,11 @@ for (const width of [390, 1280]) {
       if (role === "admin") await codex.getByRole("checkbox", { name: "同时加载机器上的技能" }).uncheck();
       else assert.equal(await page.getByText("同时加载机器上的技能").count(), 0);
       await save.click();
-      await page.waitForFunction(() => document.querySelector(".save-btn").disabled);
-      assert.equal(saves, 1);
+      await page.waitForFunction(() => document.querySelector('[data-agent="claude"] .builtin-agent-defaults .save-btn').disabled);
+      assert.equal(await saveCodex.isEnabled(), true, "保存 Claude 不会清除 Codex 尚未保存的个人设置");
+      await saveCodex.click();
+      await page.waitForFunction(() => document.querySelector('[data-agent="codex"] .builtin-agent-defaults .save-btn').disabled);
+      assert.equal(saves, 2);
       assert.deepEqual(data.agents.claude.skills, ["s_nas"]);
       assert.deepEqual(data.agents.claude.mcp, ["m_nas"]);
       assert.deepEqual(data.agents.codex, { skills: [], mcp: [], machineSkills: false });

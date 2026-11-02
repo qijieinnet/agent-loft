@@ -19,7 +19,7 @@ export function renderTopbar() {
   const library = S.view === "library";
   const showExpert = c && !tasks && !remote && !library;
   // 老版本桌面端把菜单放在窗口顶栏；菜单没有内容时也不放。
-  const showMore = !desktopMenu && (topMenuItems().length || usageSummary());
+  const showMore = !desktopMenu && topMenuItems().length > 0;
   fill(ui.topbar,
     h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
     h(
@@ -89,7 +89,7 @@ function scheduleCardClose() {
   }, HOVER_CLOSE_MS);
 }
 
-/** 专家信息卡：头像、名字、说明，引擎、模型、权限，当前工作目录（能读文件的才有） */
+/** 专家信息卡：头像、名字、说明，引擎、模型、权限、工作目录，以及本会话 Token 用量。 */
 function openExpertCard(anchor, key, pinned) {
   const c = S.convs.get(key);
   if (!c || !anchor.isConnected) return;
@@ -139,6 +139,7 @@ function openExpertCard(anchor, key, pinned) {
       row("能力", abilities),
       access === "web" ? null : row("工作目录", h("span", { class: "ec-cwd", title: c.cwd }, c.cwd)),
     ),
+    renderUsage(),
   );
   placePopover(pop, anchor);
 }
@@ -154,12 +155,11 @@ function topMenuItems() {
   return items;
 }
 
-/** 顶栏右上角「更多」：菜单项 + 最下面当前会话的 token 用量 */
+/** 顶栏右上角「更多」：当前会话的操作菜单。 */
 function openTopMore(anchor) {
   if (ui.menu?.anchor === anchor) return closeMenu();
   const pop = showPopover(anchor, { place: "below", align: "right" });
   pop.classList.add("top-menu");
-  const usage = renderUsage();
   fill(
     pop,
     topMenuItems().map((it) =>
@@ -173,12 +173,11 @@ function openTopMore(anchor) {
             it.checked ? h("span", { class: "check" }, "✓") : null,
           ),
     ),
-    usage ? [h("div", { class: "sep" }), usage] : null,
   );
   placePopover(pop, anchor);
 }
 
-// ---------- 当前会话的 token 用量（「更多」菜单底部） ----------
+// ---------- 当前会话的 token 用量（专家信息卡底部） ----------
 
 /** 分布的各项，顺序和颜色固定（颜色见 css/topbar.css 的 --usage-*） */
 const USAGE_PARTS = [
@@ -237,33 +236,19 @@ function renderUsage() {
   );
 }
 
-/** 桌面端原生菜单里只能放文字：用量写成几行 */
-function usageLines() {
-  const sum = usageSummary();
-  if (!sum) return [];
-  if (!sum.total) return ["本会话还没有 token 用量记录"];
-  const { total, parts, usage } = sum;
-  return [
-    `本会话 Token 共 ${fmtCount(total)}${usage.costUsd ? `（按 API 价格约 $${usage.costUsd.toFixed(2)}）` : ""}`,
-    ...parts.map(
-      (p) => `　${p.label} ${fmtCount(p.n)}　${pctText(p.n, total)}${p.key === "output" && usage.reasoning ? `（含推理 ${fmtCount(usage.reasoning)}）` : ""}`,
-    ),
-  ];
-}
-
 // ---------- 桌面端：菜单交给它的顶栏「更多」 ----------
 
 let desktopActions = new Map();
 let desktopMenuSig = "";
 
-/** 菜单（模式、用量…）变了就报给桌面端 */
+/** 会话操作菜单变了就报给桌面端。 */
 function syncDesktopMenu() {
   if (!desktopMenu) return;
   const items = topMenuItems();
   desktopActions = new Map(items.filter((it) => it !== "sep").map((it) => [it.id, it.onclick]));
   const menu = {
     items: items.map((it) => (it === "sep" ? { type: "separator" } : { id: it.id, label: it.label, ...(it.checked !== undefined ? { checked: it.checked } : {}) })),
-    usage: usageLines(),
+    usage: [],
   };
   const sig = JSON.stringify(menu);
   if (sig === desktopMenuSig) return;

@@ -16,6 +16,29 @@
 }
 
 /* 勾选列表：技能、MCP、子智能体、记忆整理选专家 */
+.experts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.tool-check-item > input {
+  flex-shrink: 0;
+}
+
+.tool-check-item > span {
+  flex: 0 0 auto;
+  max-width: calc(100% - 28px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-check-item > small {
+  flex: 1;
+}
+
 .check-list {
   display: flex;
   flex-direction: column;

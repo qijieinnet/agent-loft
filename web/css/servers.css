@@ -4,6 +4,12 @@
   padding: 10px 10px 0;
 }
 
+.server-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .side-switch[hidden],
 .auth-switch[hidden],
 .srv-pill[hidden] {
@@ -11,10 +17,11 @@
 }
 
 .server-switch {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
   min-width: 0;
   padding: 6px 8px;
   border-radius: 10px;
@@ -27,35 +34,29 @@
   background: var(--bg-hover);
 }
 
-.srv-icon {
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 7px;
-  font-size: 16px;
-  line-height: 1;
-}
-
-.srv-icon.letter {
-  background: var(--accent);
-  color: var(--accent-fg);
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .srv-name,
 .srv-item-name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.srv-name {
+  flex: 0 1 auto;
+}
+
+.srv-item-name {
+  flex: 1;
+}
+
+.server-switcher > .srv-badge {
+  flex-shrink: 0;
+}
+
 .srv-chev {
   display: inline-grid;
+  flex-shrink: 0;
   opacity: 0.55;
 }
 

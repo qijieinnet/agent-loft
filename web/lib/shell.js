@@ -56,6 +56,7 @@ const emit = (name, detail) => document.dispatchEvent(new CustomEvent(name, { de
 const mounted = new Map();
 
 export function mountSwitcher(name, el) {
+  el.classList.add("server-switcher");
   mounted.set(name, el);
   renderSwitcher(el);
   return el;
@@ -70,31 +71,23 @@ function rerender() {
 
 const currentId = () => (SH.role === "guest" ? SH.self : SH.current);
 
-function srvIcon(s, cls = "srv-icon") {
-  if (s.icon) return h("span", { class: cls }, s.icon);
-  // 没设图标：名字的第一个字
-  return h("span", { class: `${cls} letter` }, [...(s.name || "?")][0].toUpperCase());
-}
-
 function renderSwitcher(el) {
   const cur = SH.servers.find((s) => s.id === currentId());
-  el.hidden = !SH.role || SH.servers.length < 2 || !cur;
+  el.hidden = !!desktop || !SH.role || SH.servers.length < 2 || !cur;
   if (el.hidden) return fill(el);
-  // 别的服务器上有等你处理的：按钮上也标出来，不用点开才知道
+  // 别的服务器上有等你处理的：在按钮旁标出来，不用点开才知道
   const ask = SH.servers.filter((s) => s !== cur).reduce((n, s) => n + (s.pending || 0), 0);
   const btn = h(
     "button",
     { class: "server-switch", title: "切换服务器", "aria-haspopup": "menu" },
-    srvIcon(cur),
     h("span", { class: "srv-name" }, cur.name),
-    ask ? h("span", { class: "srv-badge", title: `别的服务器上有 ${ask} 项等你处理` }, ask) : null,
     h("span", { class: "srv-chev" }, icon("down")),
   );
   btn.onclick = () => {
     if (ui.menu?.anchor === btn) return closeMenu();
     openSwitchMenu(btn);
   };
-  fill(el, btn);
+  fill(el, btn, ask ? h("span", { class: "srv-badge", title: `别的服务器上有 ${ask} 项等你处理` }, ask) : null);
 }
 
 function openSwitchMenu(btn) {
@@ -102,7 +95,6 @@ function openSwitchMenu(btn) {
   const items = SH.servers.map((s) => ({
     class: `srv-item${s.id === cur ? " on" : ""}`,
     label: [
-      srvIcon(s),
       h("span", { class: "srv-item-name" }, s.name),
       s.pending
         ? h("span", { class: "srv-badge", title: `${s.pending} 项等你处理` }, s.pending)

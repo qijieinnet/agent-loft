@@ -8,7 +8,7 @@ import { WS } from "../lib/ws.js";
 export async function notifyTab(panel) {
   const support = pushSupport();
   const box = h("div", { class: "section" }, h("h4", {}, "系统通知"), h("span", { class: "spinner" }));
-  fill(panel, box);
+  panel.append(box);
   const render = async () => {
     let data = { subscriptions: [] };
     try {
