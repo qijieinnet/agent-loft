@@ -106,6 +106,8 @@
   .topbar::after {
     content: "";
     position: absolute;
+    /* 渐变留在按钮后面，避免盖住伸出顶栏下沿的阴影。 */
+    z-index: -1;
     left: 0;
     right: 0;
     top: 100%;
