@@ -74,7 +74,7 @@ import {
 } from "./auth.js";
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor, searchConvs } from "./conv-pages.js";
-import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
+import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson, setServerTiming } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleLibraryApi } from "./library-api.js";
 import { attachToConversation, canSeeFile, deleteConversationFiles, getLibraryFile } from "../../core/library.js";
@@ -658,6 +658,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p === "/api/bootstrap" && method === "GET") {
     // 会话只给侧栏第一屏要的（见 conv-pages.ts）：「最近」的前 recent 棵树、展开着的目录各自的前几棵，
     // 每个 IM 分组最近的一条（微信另含当前会话），再加上正在跑的、等你处理的。其余展开后分页拉取。
+    const startedAt = performance.now();
     const all = hub.list(visible).filter((c) => !c.hidden);
     const pending = interactions.listPending().filter((i) => visible(getConversation(i.convKey)));
     const recent = pageOf(all.filter(inRecent), null, clampLimit(url.searchParams.get("recent"), 10));
@@ -702,6 +703,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const parent = c.forkOf ? byKey.get(c.forkOf) : undefined;
       if (parent) keep.set(parent.key, parent);
     }
+    const titlesAt = performance.now();
+    const conversations = await hub.backfillFeishuTitles([...keep.values()]);
+    setServerTiming(res, { titles: performance.now() - titlesAt, total: performance.now() - startedAt });
     sendJson(res, 200, {
       agents: [...AGENT_IDS].map((id) => {
         const d = hub.driver(id);
@@ -724,7 +728,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
       quotaEnabled: config().web.quotaEnabled,
-      conversations: await hub.backfillFeishuTitles([...keep.values()]),
+      conversations,
       sidebar: {
         recent: { next: recent.next },
         // 展开着的目录带上翻页游标（没带 next 的目录前端还没拉过）
@@ -1012,13 +1016,17 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       //   b) 读之前和读之后是同一轮还在进行（快照里缺的部分由 live 事件补上）。
       // 其余情况（读的过程中有一轮结束了、或者开始了新的一轮）都重读。
       const turnStartSeq = () => hub.liveTurn(key)[0]?.seq ?? 0;
+      const startedAt = performance.now();
+      let readMs = 0;
       let messages: Awaited<ReturnType<typeof hub.history>> = [];
       let consistent = false;
       for (let i = 0; i < 5 && !consistent; i++) {
         if (i > 0) await new Promise((r) => setTimeout(r, 200));
         const before = hub.currentSeq();
         const startBefore = turnStartSeq();
+        const readAt = performance.now();
         messages = await hub.history(key);
+        readMs += performance.now() - readAt;
         const changed = (hub.eventsSince(key, before) ?? [null]).length > 0;
         const startAfter = turnStartSeq();
         consistent = !changed || (startBefore !== 0 && startBefore === startAfter);
@@ -1041,6 +1049,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           messages = messages.slice(0, lastUser);
         }
       }
+      setServerTiming(res, { read: readMs, total: performance.now() - startedAt });
       sendJson(res, 200, {
         info: hub.info(key),
         messages,

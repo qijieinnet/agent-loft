@@ -124,6 +124,11 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
   );
 }
 
+/** 接口各段耗时（毫秒）：浏览器开发者工具的 Timing 里能看到，要在 sendJson 之前调用 */
+export function setServerTiming(res: ServerResponse, parts: Record<string, number>): void {
+  res.setHeader("Server-Timing", Object.entries(parts).map(([name, ms]) => `${name};dur=${ms.toFixed(1)}`).join(", "));
+}
+
 export const SECURITY_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",

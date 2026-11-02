@@ -1,8 +1,9 @@
-// 最小的 Service Worker：让页面能「添加到主屏幕」像 App 一样打开，外加系统通知。
+// 最小的 Service Worker：只管系统通知和角标。
 // 不缓存任何东西 —— 这是一个实时操作本机的工具，离线时显示旧页面只会误导人。
+// 也不要加空的 fetch 监听：有的浏览器会让每个请求都先经过 Service Worker，白白变慢；
+// 从浏览器菜单「添加到主屏幕」不需要它。
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
-self.addEventListener("fetch", () => {});
 
 // 服务端推来的通知（回复完成、需要授权）。iOS 要求每条推送都必须弹出通知，否则会收回推送权限
 self.addEventListener("push", (event) => {

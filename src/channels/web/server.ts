@@ -25,6 +25,7 @@ import { currentUser, handleApi, takeUploads } from "./api.js";
 import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
 import { canSeeKey, sessionVisibleTo } from "./access.js";
 import { cookies } from "./http.js";
+import { assetToken, parseVersioned, stampIndex } from "./assets.js";
 import { compressedFile, compressibleExt, MIN_SIZE, pickEncoding } from "./compress.js";
 import { COOKIE } from "./api.js";
 import { HttpError, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
@@ -79,10 +80,11 @@ const MIME: Record<string, string> = {
 };
 
 /**
- * 静态文件一律 no-cache + Last-Modified：每次都向服务端确认一下，没变就回 304。
+ * 不带指纹的地址 no-cache + Last-Modified：每次都向服务端确认一下，没变就回 304。
  * 升级后前端的 js、css 和 vendor 都会变，但地址不变，带 max-age 的话刷新页面还会拿到旧的。
+ * 带最新指纹的地址（见 assets.ts）内容不会再变，immutable：下次打开不用再问。
  */
-function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: string): void {
+function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: string, immutable = false): void {
   fs.stat(file, (err, stat) => {
     if (err || !stat.isFile()) {
       res.writeHead(404, SECURITY_HEADERS);
@@ -93,10 +95,11 @@ function serveFile(req: http.IncomingMessage, res: http.ServerResponse, file: st
     const since = Date.parse(req.headers["if-modified-since"] ?? "");
     const headers = {
       ...pageHeaders(),
-      "Cache-Control": "no-cache",
+      "Cache-Control": immutable ? "max-age=31536000, immutable" : "no-cache",
       "Last-Modified": lastModified.toUTCString(),
     };
-    // 页面本身不回 304：它的 CSP（允许谁嵌、能嵌谁）跟着设置变，304 带回的新头浏览器不一定换上
+    // 页面本身不回 304：它的 CSP（允许谁嵌、能嵌谁）跟着设置变，304 带回的新头浏览器不一定换上。
+    // 平时页面走 serveIndex，这里的判断留给它出错时的退路
     if (!Number.isNaN(since) && lastModified.getTime() <= since && path.extname(file) !== ".html") {
       res.writeHead(304, headers);
       res.end();
@@ -131,18 +134,93 @@ function novncFile(pathname: string): string | undefined {
   return path.join(pkgDir("@novnc/novnc"), rel);
 }
 
+/** 指纹要盖住的 vendor 文件。noVNC 是一整个目录，看它的 package.json 就够了 */
+function vendorFiles(): string[] {
+  const files: string[] = [];
+  for (const resolve of [...Object.values(VENDOR), () => pkgFile("@novnc/novnc", "package.json")]) {
+    try {
+      files.push(resolve());
+    } catch {
+      // 没装上的包：请求它时本来就是 404
+    }
+  }
+  return files;
+}
+
+/** 最近一次算出的指纹。每次打开页面都重算；带指纹的请求只跟它比，不用每个文件都扫一遍目录 */
+let latestToken: Promise<string> | undefined;
+
+function refreshToken(): Promise<string> {
+  const job = assetToken(RUNNING_VERSION, webRoot, vendorFiles());
+  latestToken = job;
+  job.catch(() => {
+    if (latestToken === job) latestToken = undefined;
+  });
+  return job;
+}
+
+/**
+ * 页面本身：资源地址写成带指纹的。每次都重新给，不回 304（它的 CSP 跟着设置变，见 serveFile）。
+ * 指纹算失败了就退回原样的页面：地址不带指纹，慢一点但能用。
+ */
+function serveIndex(req: http.IncomingMessage, res: http.ServerResponse, file: string): void {
+  void (async () => {
+    const [token, stat] = await Promise.all([refreshToken(), fs.promises.stat(file)]);
+    const read = async () => Buffer.from(stampIndex(await fs.promises.readFile(file, "utf8"), token));
+    const encoding = stat.size >= MIN_SIZE ? pickEncoding(req.headers) : undefined;
+    const body = encoding ? await compressedFile(`${file}#${token}`, stat.mtimeMs, stat.size, encoding, read) : await read();
+    if (res.headersSent || res.destroyed) return;
+    res.writeHead(200, {
+      ...pageHeaders(),
+      "Cache-Control": "no-cache",
+      "Content-Type": MIME[".html"]!,
+      "Content-Length": body.length,
+      Vary: "Accept-Encoding",
+      ...(encoding ? { "Content-Encoding": encoding } : {}),
+    });
+    res.end(body);
+  })().catch(() => {
+    if (!res.headersSent && !res.destroyed) serveFile(req, res, file);
+  });
+}
+
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
-  if (url.pathname.startsWith("/vendor/novnc/")) {
-    const file = novncFile(url.pathname);
-    if (file) return serveFile(req, res, file);
+  const versioned = parseVersioned(url.pathname);
+  if (versioned) {
+    // 带指纹的只给资源。没有扩展名的地址不回退到页面：这种请求不会是用户打开页面
+    if (!path.extname(versioned.pathname) || path.extname(versioned.pathname) === ".html") {
+      res.writeHead(404, SECURITY_HEADERS);
+      res.end();
+      return;
+    }
+    void (latestToken ?? refreshToken())
+      .catch(() => undefined)
+      .then((token) => {
+        try {
+          servePath(req, res, versioned.pathname, token === versioned.token);
+        } catch (err) {
+          console.error("[web] 静态文件出错:", err);
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        }
+      });
+    return;
+  }
+  servePath(req, res, url.pathname, false);
+}
+
+function servePath(req: http.IncomingMessage, res: http.ServerResponse, pathname: string, immutable: boolean): void {
+  if (pathname.startsWith("/vendor/novnc/")) {
+    const file = novncFile(pathname);
+    if (file) return serveFile(req, res, file, immutable);
     res.writeHead(404, SECURITY_HEADERS);
     res.end();
     return;
   }
-  const vendor = VENDOR[url.pathname];
+  const vendor = VENDOR[pathname];
   if (vendor) {
     try {
-      serveFile(req, res, vendor());
+      serveFile(req, res, vendor(), immutable);
     } catch {
       res.writeHead(404);
       res.end();
@@ -151,7 +229,7 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: U
   }
   let rel: string;
   try {
-    rel = decodeURIComponent(url.pathname);
+    rel = decodeURIComponent(pathname);
   } catch {
     res.writeHead(400, SECURITY_HEADERS);
     res.end("bad request");
@@ -169,7 +247,8 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: U
     res.end();
     return;
   }
-  serveFile(req, res, file);
+  if (file === path.join(webRoot, "index.html")) return serveIndex(req, res, file);
+  serveFile(req, res, file, immutable);
 }
 
 // ---------- WebSocket ----------

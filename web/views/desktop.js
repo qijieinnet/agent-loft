@@ -1,4 +1,4 @@
-import RFB from "/vendor/novnc/core/rfb.js";
+import RFB from "../vendor/novnc/core/rfb.js";
 import { fill, h, icon, isTouch, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { copyText } from "../lib/markdown.js";

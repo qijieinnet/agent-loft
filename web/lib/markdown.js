@@ -1,6 +1,6 @@
-import DOMPurify from "/vendor/purify.js";
-import hljs from "/vendor/hljs.js";
-import { marked } from "/vendor/marked.js";
+import DOMPurify from "../vendor/purify.js";
+import hljs from "../vendor/hljs.js";
+import { marked } from "../vendor/marked.js";
 import { diagramLang, mountDiagram, unmountDiagrams } from "./diagrams.js";
 import { h, toast } from "./dom.js";
 

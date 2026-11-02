@@ -1,5 +1,5 @@
-import { Terminal } from "/vendor/xterm.js";
-import { FitAddon } from "/vendor/xterm-fit.js";
+import { Terminal } from "../vendor/xterm.js";
+import { FitAddon } from "../vendor/xterm-fit.js";
 import { fill, h, icon, isTouch, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { S, ui } from "../state.js";
@@ -80,7 +80,7 @@ dark.addEventListener("change", () => {
 });
 
 // xterm 的样式：第一次用到终端时才加载
-document.head.append(h("link", { rel: "stylesheet", href: "/vendor/xterm.css" }));
+document.head.append(h("link", { rel: "stylesheet", href: new URL("../vendor/xterm.css", import.meta.url).href }));
 
 // ---------- 面板 ----------
 

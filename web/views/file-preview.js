@@ -1,6 +1,6 @@
 // agent 回复里提到的文件：路径变成能点的链接，点开在弹层里预览（图片 / PDF / 音视频 / 文本代码），其它的下载。
 // 能不能看由服务端判断（只认回复里写过的路径、挡掉密钥之类的敏感文件，见 core/reply-files.ts）。
-import hljs from "/vendor/hljs.js";
+import hljs from "../vendor/hljs.js";
 import { h, icon, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { renderMarkdown } from "../lib/markdown.js";

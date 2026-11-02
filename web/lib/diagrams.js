@@ -124,7 +124,9 @@ darkQuery.addEventListener("change", () => {
 });
 
 const scripts = {};
-function loadScript(src, name) {
+/** vendor 脚本的地址：跟着当前模块走，页面用了带版本的地址（见服务端 assets.ts）这里也带上 */
+function loadScript(file, name) {
+  const src = new URL(`../vendor/${file}`, import.meta.url).href;
   return (scripts[src] ??= new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.src = src;
@@ -293,7 +295,7 @@ function chartOption(spec) {
 }
 
 async function drawChart(box) {
-  const echarts = await loadScript("/vendor/echarts.js", "echarts");
+  const echarts = await loadScript("echarts.js", "echarts");
   box._chart?.dispose();
   const chart = echarts.init(box._body, null, { renderer: "svg" });
   box._chart = chart;
@@ -340,7 +342,7 @@ let mermaidTheme;
 function drawMermaid(box) {
   // mermaid 同一时间只能画一张（共用一个全局状态），排队
   const job = mermaidQueue.then(async () => {
-    const mermaid = await loadScript("/vendor/mermaid.js", "mermaid");
+    const mermaid = await loadScript("mermaid.js", "mermaid");
     const theme = mode() === "dark" ? "dark" : "default";
     if (mermaidTheme !== theme) {
       const font = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
