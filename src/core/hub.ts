@@ -166,6 +166,8 @@ export type ConversationInfo = {
   usage?: UsageTotals;
   busy: boolean;
   activeAt: number;
+  /** 当前上下文已闲置过期；直接发消息会自动换新，打开历史本身不会续期。 */
+  idleExpired: boolean;
   createdAt: number;
   hidden?: boolean;
   /** 从哪条对话分叉出来的 */
@@ -618,6 +620,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd] }> 
       })(),
       busy: this.isBusy(key),
       activeAt: conv.activeAt,
+      idleExpired: !!(binding.sessionId || binding.forkFrom) && isExpired(conv),
       createdAt: conv.createdAt,
       ...(conv.hidden ? { hidden: true } : {}),
       ...(conv.forkOf ? { forkOf: conv.forkOf } : {}),

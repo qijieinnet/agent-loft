@@ -77,6 +77,48 @@ async function fixture(t, viewport) {
   return page;
 }
 
+for (const width of [1280, 390]) test(`闲置提示：打开历史后显示，点击继续或发送消息后撤下（${width}px）`, async (t) => {
+  const page = await fixture(t, { width, height: 800 });
+  const expired = { ...conv, sessionId: "old-context", idleExpired: true };
+  let continued = false;
+  let fail = true;
+  await page.route("**/api/conversations/*/history", (route) => route.fulfill({ json: {
+    info: { ...expired, idleExpired: !continued }, allowedAgents: [],
+    messages: [{ role: "user", text: "旧任务" }, { role: "assistant", text: "旧回复" }],
+    live: [], pending: [], seq: 10,
+  } }));
+  await page.route("**/api/conversations/*/continue", async (route) => {
+    assert.equal(route.request().method(), "POST");
+    assert.deepEqual(route.request().postDataJSON(), { agent: "claude", sessionId: "old-context" });
+    if (fail) return route.fulfill({ status: 500, json: { error: "暂时无法继续" } });
+    continued = true;
+    return route.fulfill({ json: { ...expired, idleExpired: false, activeAt: Date.now() } });
+  });
+  await page.evaluate(() => window.messages.openConversation("web:1"));
+  const notice = page.locator(".idle-session-notice");
+  assert.equal(await notice.textContent(), "当前会话闲置太久，直接发送消息将开启新会话，也可以继续当前会话");
+  assert.equal(await page.evaluate(() => window.ui.msgInner.lastElementChild.classList.contains("idle-session-notice")), true);
+  const button = notice.getByRole("button", { name: "继续当前会话", exact: true });
+  assert.match(await button.evaluate((el) => getComputedStyle(el).textDecorationLine), /underline/);
+  await button.click();
+  await page.getByText("暂时无法继续", { exact: true }).waitFor();
+  assert.equal(await button.isEnabled(), true, "失败后能重试");
+  fail = false;
+  await button.click();
+  await notice.waitFor({ state: "detached" });
+  assert.equal(await page.getByText("旧回复", { exact: true }).count(), 1, "续接不清空历史");
+  await page.evaluate(() => window.messages.openConversation("web:1"));
+  assert.equal(await notice.count(), 0, "再次打开已续期的会话不提示");
+  continued = false;
+  await page.evaluate(() => window.messages.openConversation("web:1"));
+  assert.equal(await notice.count(), 1);
+  await page.evaluate(() => window.messages.renderIdleNotice({ ...window.S.convs.get("web:1"), idleExpired: false }));
+  assert.equal(await notice.count(), 0, "其他页面续期时同步撤下提示");
+  await page.evaluate(() => window.messages.openConversation("web:1"));
+  await page.evaluate(() => window.send("直接发送"));
+  assert.equal(await notice.count(), 0, "发送消息后撤下旧提示");
+});
+
 test("相册：流式半段 JSON 不加载图片，完整后渲染；预览失败回退，删除块关闭弹层，错误格式保留源码", async (t) => {
   const page = await fixture(t, { width: 1280, height: 800 });
   await page.route("**/api/conversations/*/file?*", (route) => {

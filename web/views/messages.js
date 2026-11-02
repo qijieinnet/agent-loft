@@ -18,6 +18,42 @@ import { preloadCommands } from "./slash.js";
 
 // ---------- 打开会话 ----------
 
+let historyLoadedKey = null;
+
+/** 闲置提示只属于当前页面，不写进 Agent 历史；其他页面续期或发消息时同步撤下。 */
+export function renderIdleNotice(info = S.convs.get(S.current)) {
+  if (!info || info.key !== S.current || historyLoadedKey !== S.current) return;
+  const existing = ui.msgInner.querySelector(".idle-session-notice");
+  if (!info.idleExpired) {
+    existing?.remove();
+    return;
+  }
+  if (existing) return;
+  const button = h("button", {
+    type: "button",
+    class: "idle-session-continue",
+    onclick: async () => {
+      button.disabled = true;
+      try {
+        const next = await api(`/api/conversations/${encodeURIComponent(info.key)}/continue`, {
+          method: "POST", body: { agent: info.agent, sessionId: info.sessionId },
+        });
+        S.convs.set(info.key, next);
+        renderIdleNotice(next);
+        renderSidebar();
+        toast("已继续当前会话");
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        button.disabled = false;
+      }
+    },
+  }, "继续当前会话");
+  ui.msgInner.append(h("div", { class: "notice idle-session-notice" },
+    "当前会话闲置太久，直接发送消息将开启新会话，也可以", button,
+  ));
+}
+
 /** 从定时任务页、远程控制回到对话：把输入框放回来 */
 function leaveTasksView() {
   if (!S.view) return;
@@ -32,6 +68,7 @@ export function latestConversation() {
 }
 
 export function newDraft({ inheritLatest = false } = {}) {
+  historyLoadedKey = null;
   if (inheritLatest) {
     const latest = latestConversation();
     if (latest) {
@@ -120,6 +157,7 @@ document.addEventListener("aim:experts", () => {
 });
 
 export async function openConversation(key) {
+  historyLoadedKey = null;
   leaveTasksView();
   const token = ++S.loadToken;
   if (S.current && S.current !== key) WS.raw({ t: "unsub", key: S.current });
@@ -208,6 +246,8 @@ export async function openConversation(key) {
     );
   }
   setBusy(data.info.busy);
+  historyLoadedKey = key;
+  renderIdleNotice(data.info);
   renderTopbar();
   WS.subscribe(key, S.seq.get(key));
   renderScheduled();
@@ -751,6 +791,7 @@ export function applyEvent(env) {
     }
     case "user": {
       // 排队的消息：正在进行的那一轮照常在上面接着输出，这条等轮到它（queue 事件）再挂占位
+      ui.msgInner.querySelector(".idle-session-notice")?.remove();
       const queued = !!ev.queued;
       if (!queued && S.turnAi && !S.turnAi.done && S.turnAi.steps.length === 0 && !S.turnAi.committed) {
         // 上一个占位还空着（比如消息被当成了作答），不再多留一个

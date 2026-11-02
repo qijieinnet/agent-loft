@@ -5,7 +5,7 @@ import { showAuth } from "../views/auth.js";
 import { applyBootstrap, bootstrapQuery, renderSidebar, scheduleSidebar } from "../views/sidebar.js";
 import { scheduleQuota } from "../views/quota.js";
 import { renderTopbar } from "../views/topbar.js";
-import { applyEvent, openConversation } from "../views/messages.js";
+import { applyEvent, openConversation, renderIdleNotice } from "../views/messages.js";
 import { upsertInteraction } from "../views/interaction.js";
 import { setBusy } from "../views/composer.js";
 import { SH, shownHere } from "./shell.js";
@@ -265,6 +265,7 @@ function onWsMessage(msg) {
       if (S.convs.get(msg.info.key)?.busy && !msg.info.busy) scheduleQuota();
       S.convs.set(msg.info.key, msg.info);
       if (msg.info.key === S.current) {
+        renderIdleNotice(msg.info);
         renderTopbar();
         setBusy(msg.info.busy);
         renderScheduled();

@@ -186,6 +186,22 @@
   margin: 0;
 }
 
+.idle-session-continue {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.idle-session-continue:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
 .error-box {
   border: 1px solid var(--danger);
   color: var(--danger);

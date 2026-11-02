@@ -8,7 +8,7 @@ import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
-import { getConversation, listConversations, updateConversation } from "../../core/store.js";
+import { agentBinding, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
 import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import { mentions, replyFileType, resolveReplyFile } from "../../core/reply-files.js";
@@ -895,6 +895,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const conv = conversationOr404(key);
     // 别人的会话：当它不存在
     if (!visible(conv)) throw new HttpError(404, "会话不存在");
+
+    if (sub === "continue" && method === "POST") {
+      const body = await readJsonBody<{ agent?: unknown; sessionId?: unknown }>(req);
+      const binding = agentBinding(conv);
+      // 页面上的提示可能已经过时，不能把「继续旧上下文」用到后来切换的会话上。
+      if (body.agent !== conv.agent || body.sessionId !== binding.sessionId || !(binding.sessionId || binding.forkFrom)) {
+        throw new HttpError(409, "会话已经变化，请重新打开后重试");
+      }
+      touchConversation(key);
+      hub.emitEvent(key, { type: "meta" });
+      sendJson(res, 200, hub.info(key));
+      return;
+    }
 
     if ((sub === "cancel-queued" || sub === "rewind") && method === "POST") {
       const body = await readJsonBody<{ id?: unknown; anchor?: unknown; sessionId?: unknown }>(req);
