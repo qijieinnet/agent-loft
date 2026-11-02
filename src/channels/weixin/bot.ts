@@ -28,6 +28,7 @@ import {
   toWeixinText,
 } from "./format.js";
 import { weixinEvents } from "./events.js";
+import { ensureWeixinConversation } from "./conversation.js";
 
 /** 每条入站消息之后能发的条数（社区实测，官方没有公布） */
 export const SEND_LIMIT = 10;
@@ -234,29 +235,6 @@ export class WeixinBot {
       });
   }
 
-  /** 专家：新会话选第一个能用的，手上的专家不能用了就换掉 */
-  private async ensureConversation(user: User): Promise<string[] | undefined> {
-    const allowed = hub.enabledAgents().map((d) => d.id);
-    const choices = hub.expertChoices(user.id, allowed);
-    if (choices.length === 0) return undefined;
-    const first = choices[0]!;
-    const existed = getConversation(this.key);
-    if (!existed) {
-      hub.ensure({
-        key: this.key,
-        channel: "weixin",
-        channelId: user.id,
-        defaultAgent: first.engine,
-        expert: first.id,
-        owner: user.id,
-        title: "微信",
-      });
-    } else if (!choices.some((e) => e.id === (existed.expert ?? existed.agent))) {
-      await hub.setExpert(this.key, first.id, allowed);
-    }
-    return allowed;
-  }
-
   private async handleInbound(msg: WeixinMessage): Promise<void> {
     const user = this.user;
     if (!user) return;
@@ -267,7 +245,7 @@ export class WeixinBot {
     }
     if (!text) return;
 
-    const allowed = await this.ensureConversation(user);
+    const allowed = await ensureWeixinConversation(user.id);
     if (!allowed) {
       this.say("你现在没有可用的专家。所选专家可能已取消共享、删除，或引擎已停用。");
       return;

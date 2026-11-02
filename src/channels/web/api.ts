@@ -42,7 +42,7 @@ import {
   type CurateSettings,
 } from "../../core/memory.js";
 import { createLinkCode, listLinks, unlink, unlinkUser } from "../../core/feishu-links.js";
-import { getWeixinAccount, removeWeixinAccount } from "../../core/weixin-accounts.js";
+import { getWeixinAccount, removeWeixinAccount, weixinKey } from "../../core/weixin-accounts.js";
 import { purgeUserData } from "../../core/personal.js";
 import { countRecords, purgeHistory, readMeta, searchHistory, writeMeta } from "../../core/chat-history.js";
 import { curateNow, pendingCount } from "../../core/memory-curator.js";
@@ -52,6 +52,7 @@ import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/h
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
 import { weixinStatus } from "../weixin/index.js";
+import { ensureWeixinConversation, weixinExpertChoices } from "../weixin/conversation.js";
 import { cancelWeixinLogin, startWeixinLogin, submitWeixinVerifyCode, weixinLoginStatus } from "../weixin/login.js";
 import { fromThisMachine, isLoopbackHost, lanAddresses, listening, rebind } from "./listen.js";
 import { beginRegistration, initRegistration, pollRegistration, qrSvg } from "../feishu/register.js";
@@ -538,12 +539,16 @@ function feishuLinksOf(userId: string) {
 function weixinAccountView(userId: string) {
   const account = getWeixinAccount(userId);
   if (!account) return { linked: false };
+  const { choices } = weixinExpertChoices(userId);
+  const conv = getConversation(weixinKey(userId));
   return {
     linked: true,
     wechatShort: maskOpenId(account.ilinkUserId),
     boundAt: account.boundAt,
     lastInboundAt: account.lastInboundAt,
     status: weixinStatus(userId) ?? { state: "stopped", since: account.boundAt },
+    expert: conv ? (conv.expert ?? conv.agent) : (choices[0]?.id ?? null),
+    experts: choices.map(({ id, label }) => ({ id, label })),
   };
 }
 
@@ -1423,6 +1428,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   // ----- 我的微信 ClawBot -----
   if (p === "/api/account/weixin" && method === "GET") {
     sendJson(res, 200, weixinAccountView(user.id));
+    return;
+  }
+  if (p === "/api/account/weixin" && method === "PATCH") {
+    if (!getWeixinAccount(user.id)) throw new HttpError(409, "请先扫码连接微信");
+    const body = await readJsonBody<{ expert?: unknown }>(req);
+    const { choices } = weixinExpertChoices(user.id);
+    if (typeof body.expert !== "string" || !choices.some((e) => e.id === body.expert)) throw new HttpError(400, "请选择一个可用的专家");
+    const allowed = await ensureWeixinConversation(user.id);
+    if (!allowed) throw new HttpError(409, "你现在没有可用的专家");
+    const message = await hub.setExpert(weixinKey(user.id), body.expert, allowed);
+    const conv = getConversation(weixinKey(user.id));
+    if ((conv?.expert ?? conv?.agent) !== body.expert) throw new HttpError(409, message);
+    sendJson(res, 200, { ...weixinAccountView(user.id), message });
     return;
   }
   if (p === "/api/account/weixin" && method === "DELETE") {

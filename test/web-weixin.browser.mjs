@@ -22,7 +22,7 @@ const freePort = () =>
     });
   });
 
-test("扫码连接微信、收发消息、断开", async (t) => {
+test("扫码连接微信、在设置里切换专家、收发消息、断开", async (t) => {
   const reqs = [];
   const inbox = [];
   const qr = [{ status: "wait" }, { status: "scaned" }, { status: "need_verifycode" }, { status: "confirmed", bot_token: "tok-secret", ilink_bot_id: "b@im.bot", ilink_user_id: "me@im.wechat" }];
@@ -95,6 +95,9 @@ test("扫码连接微信、收发消息、断开", async (t) => {
   const base = `http://127.0.0.1:${port}`;
   const setup = await ctx.request.post(`${base}/api/setup`, { data: { token, name: "admin", password: "password123" } });
   assert.ok(setup.ok(), await setup.text());
+  const created = await ctx.request.post(`${base}/api/experts`, { data: { name: "微信助手", engine: "claude", access: "web", prompt: "微信助手设定" } });
+  assert.ok(created.ok(), await created.text());
+  const helper = await created.json();
   const account = async () => (await ctx.request.get(`${base}/api/account/weixin`)).json();
   const sends = () => reqs.filter((r) => r.p.endsWith("sendmessage"));
   const openSettings = async () => {
@@ -124,6 +127,18 @@ test("扫码连接微信、收发消息、断开", async (t) => {
   assert.ok(!JSON.stringify(linked).includes("tok-secret"), "接口不带 token");
   assert.equal((fs.statSync(path.join(home, "data", "weixin-accounts.json")).mode & 0o777).toString(8), "600");
 
+  const expertPicker = page.getByRole("combobox", { name: "微信专家", exact: true });
+  assert.equal(await expertPicker.inputValue(), "claude");
+  assert.equal(await page.getByRole("button", { name: "切换专家", exact: true }).isDisabled(), true);
+  await expertPicker.selectOption(helper.id);
+  await page.getByRole("button", { name: "切换专家", exact: true }).click();
+  await wait(async () => (await account()).expert === helper.id, "设置页选择专家");
+  await openSettings();
+  assert.equal(await expertPicker.inputValue(), helper.id, "刷新后保留专家选择");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator(".settings-page").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false, "手机宽度不横向溢出");
+  await page.setViewportSize({ width: 1280, height: 900 });
+
   // /pwd 不会跑真 agent
   inbox.push({ message_id: "1", from_user_id: "me@im.wechat", message_type: 1, context_token: "c1", item_list: [{ type: 1, text_item: { text: "/pwd" } }] });
   await wait(() => sends().length === 1, "微信回复");
@@ -131,9 +146,23 @@ test("扫码连接微信、收发消息、断开", async (t) => {
   assert.equal(sent.context_token, "c1");
   assert.equal(sent.to_user_id, "me@im.wechat");
   assert.ok(sent.item_list[0].text_item.text.includes(path.basename(home)));
+  assert.equal((await account()).expert, helper.id, "微信入站保留设置页选择");
   inbox.push({ message_id: "2", from_user_id: "stranger@im.wechat", message_type: 1, context_token: "c2", item_list: [{ type: 1, text_item: { text: "/pwd" } }] });
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(sends().length, 1, "陌生微信号被忽略");
+
+  inbox.push({ message_id: "3", from_user_id: "me@im.wechat", message_type: 1, context_token: "c3", item_list: [{ type: 1, text_item: { text: "/expert claude" } }] });
+  await wait(async () => (await account()).expert === "claude", "微信命令切换专家");
+  await openSettings();
+  assert.equal(await expertPicker.inputValue(), "claude", "微信里的切换同步到设置页");
+
+  // 旧页面选到刚删除的专家时应显示失败，允许重新选择。
+  await expertPicker.selectOption(helper.id);
+  assert.ok((await ctx.request.delete(`${base}/api/experts/${helper.id}`)).ok());
+  await page.getByRole("button", { name: "切换专家", exact: true }).click();
+  await page.getByText("请选择一个可用的专家", { exact: true }).waitFor();
+  assert.equal((await account()).expert, "claude");
+  assert.equal(await expertPicker.isEnabled(), true);
 
   await page.goto(base);
   const row = page.locator('.conv-item[data-key^="weixin:"]');

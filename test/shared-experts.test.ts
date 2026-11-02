@@ -215,6 +215,43 @@ test("HTTP：共享专家可选，设定只读；个人工具接口不返回他�
     assert.ok(body.includes(shared.id));
     assert.ok(!body.includes(privateExpert.id) && !body.includes("creator-secret") && !body.includes(ownMcp.id));
   }
+  // 微信设置和 /expert 共用个人会话；还未发微信消息时也能先选专家。
+  const wx = await import("../src/core/weixin-accounts.js");
+  const { ensureWeixinConversation } = await import("../src/channels/weixin/conversation.js");
+  const wxUrl = "/api/account/weixin";
+  const wxKey = wx.weixinKey(family.id);
+  assert.equal((await request(wxUrl, "PATCH", { expert: shared.id })).status, 409);
+  wx.bindWeixinAccount({ userId: family.id, botId: "family-wx", botToken: "weixin-secret", baseUrl: "http://127.0.0.1", ilinkUserId: "family@im.wechat" });
+  t.after(() => { wx.removeWeixinAccount(family.id); });
+  const wxView = await (await request(wxUrl)).json() as { expert: string; experts: { id: string }[] };
+  assert.ok(wxView.experts.some((e) => e.id === shared.id));
+  assert.ok(!JSON.stringify(wxView).includes(privateExpert.id) && !JSON.stringify(wxView).includes("weixin-secret"));
+  assert.equal(getConversation(wxKey), undefined, "查看设置不创建会话");
+  assert.equal((await request(wxUrl, "PATCH", { expert: shared.id }, "")).status, 401);
+  assert.equal((await request(wxUrl, "PATCH", { expert: shared.id }, cookie, "https://foreign.example")).status, 403);
+  for (const expert of [privateExpert.id, "missing", null, 123]) {
+    assert.equal((await request(wxUrl, "PATCH", { expert })).status, 400);
+  }
+  assert.equal(getConversation(wxKey), undefined, "无效选择不创建会话");
+  assert.equal((await request(wxUrl, "PATCH", { expert: shared.id, userId: creator.id })).status, 200);
+  assert.equal(getConversation(wxKey)?.expert, shared.id);
+  assert.equal(getConversation(wxKey)?.owner, family.id, "请求不能篡改会话归属");
+  await ensureWeixinConversation(family.id);
+  assert.equal(getConversation(wxKey)?.expert, shared.id, "下次微信入站保留设置页选择");
+  hub.send(wxKey, { text: "test wx settings", attachments: [] }, { channel: "weixin", channelId: family.id }); await tick();
+  const wxRunning = states.at(-1)!;
+  assert.equal(wxRunning.opts.expert?.id, shared.id);
+  const switched = await request(wxUrl, "PATCH", { expert: "claude" });
+  assert.equal(switched.status, 200);
+  assert.equal((await switched.json() as { expert: string }).expert, "claude");
+  assert.equal(wxRunning.disposed, true, "切换结束当前运行的会话");
+  assert.deepEqual(getConversation(wxKey)?.perAgent, {}, "切换清空旧会话绑定");
+  assert.equal((await hub.command(wxKey, { kind: "agent", agent: shared.id }, { allowedAgents: ["claude"], by: "test", channel: "weixin" })).type, "text");
+  assert.equal((await (await request(wxUrl)).json() as { expert: string }).expert, shared.id, "微信命令的选择在设置里可见");
+  users.updateUser(family.id, { permissions: { agents: [], experts: [] } });
+  assert.deepEqual((await (await request(wxUrl)).json() as { experts: unknown[] }).experts, []);
+  assert.equal((await request(wxUrl, "PATCH", { expert: shared.id })).status, 400);
+  users.updateUser(family.id, { permissions: { agents: null, experts: null } });
   const view = await (await request(`/api/experts/${shared.id}`)).json() as { editable: boolean; shared: boolean; skills: string[]; mcp: string[] };
   assert.equal(view.editable, false);
   assert.equal(view.shared, true);
