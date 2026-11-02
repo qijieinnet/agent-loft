@@ -99,7 +99,7 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
   return { page, getSaved: () => saved, getSaves: () => saves, failSave: (value = true) => { failSave = value; }, getBotLoads: () => botLoads, failBotLoad: (value = true) => { failBotLoad = value; }, getOrder: () => dirOrder };
 }
 
-const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.bot ? `feishu:${row.dataset.bot}` : row.dataset.dir));
+const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.group));
 
 async function touchInput(page) {
   const client = await page.context().newCDPSession(page);
@@ -323,6 +323,72 @@ test("触屏分组菜单：飞书与项目可互相置顶、上下移动，保�
 });
 
 for (const mobile of [false, true]) {
+  test(`${mobile ? "触屏" : "桌面"}：微信与飞书统一分组，记住折叠、显示状态、排序并继承专家和目录`, async (t) => {
+    const wx = { key: "weixin:u1", channel: "weixin", channelId: "u1", agent: "codex", title: "微信里的聊天", cwd: "/workspace/weixin", activeAt: 200, busy: true, expert: { id: "e_helper", name: "助手", engine: "codex" } };
+    const initial = ["/workspace", "weixin:weixin:u1", "feishu:bot", "feishu:empty"];
+    const web = { key: "web:1", channel: "web", channelId: "web", agent: "claude", title: "Test", cwd: "/workspace", activeAt: 1, busy: false };
+    const { page, getOrder } = await fixture(t, { mobile, feishu: true, order: initial, bootstrap: { conversations: [web, wx] } });
+    const group = page.locator('[data-group="weixin:weixin:u1"]');
+    const header = group.locator(".conv-item.proj");
+    const chat = page.locator('[data-key="weixin:u1"]');
+    assert.deepEqual(await groupOrder(page), initial, "沿用微信原来的排序键");
+    assert.equal(await header.getAttribute("aria-expanded"), "false");
+    assert.equal(await chat.count(), 0);
+    assert.equal(await header.locator(".conv-spin").count(), 1, "收起时仍显示运行状态");
+    assert.equal(await group.locator(".weixin-mark").isVisible(), true);
+    if (!mobile) {
+      await header.hover();
+      assert.equal(await group.locator(".weixin-mark").isVisible(), false);
+      assert.equal(await group.locator(".bot-plus").isVisible(), true);
+    }
+    await header.click();
+    assert.equal(await chat.locator(".title").textContent(), wx.title);
+    assert.equal(await header.locator(".conv-spin").count(), 0);
+    assert.equal(await chat.locator(".conv-spin").count(), 1);
+    if (mobile) {
+      await group.locator(".bot-new").focus();
+      assert.equal(await group.locator(".weixin-mark").isVisible(), true);
+      assert.equal(await group.locator(".bot-plus").isVisible(), false);
+    }
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await header.getAttribute("aria-expanded"), "true", "刷新后保留展开状态");
+    await chat.click();
+    await page.waitForFunction(() => S.current === "weixin:u1");
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await chat.evaluate((el) => el.classList.contains("active")), true);
+    await header.click();
+    assert.equal(await chat.count(), 0, "正在看的微信会话也能收起");
+    await page.evaluate(() => {
+      S.pending.set("wx-ask", { convKey: "weixin:u1", settled: false });
+      window.renderSidebar();
+    });
+    assert.equal(await header.locator(".dot.ask").count(), 1, "待处理状态汇总到分组标题");
+    await group.locator(".bot-new").click();
+    assert.deepEqual(await page.evaluate(() => [S.current, S.draftExpert, S.draftAgent, S.draftCwd, S.draftCwdPicked]), [null, "e_helper", "codex", wx.cwd, true]);
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await header.getAttribute("aria-expanded"), "false", "刷新后保留收起状态");
+    await group.click({ button: "right" });
+    const savedOrder = page.waitForResponse((res) => res.url().endsWith("/api/ui/dir-order") && res.request().postDataJSON().order?.[0] === "weixin:weixin:u1" && res.ok());
+    await page.getByText("置顶", { exact: true }).click();
+    assert.equal((await groupOrder(page))[0], "weixin:weixin:u1");
+    await savedOrder;
+    assert.equal(getOrder()[0], "weixin:weixin:u1");
+    if (!mobile) {
+      await group.dragTo(page.locator('[data-bot="bot"]'), { targetPosition: { x: 20, y: 2 } });
+      assert.deepEqual(await groupOrder(page), initial, "微信可拖到飞书前面");
+    }
+    await page.goto("https://sidebar.example.test/#weixin%3Au1");
+    await page.reload();
+    await page.waitForFunction(() => window.booted && S.current === "weixin:u1");
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await header.getAttribute("aria-expanded"), "true", "直达微信会话自动展开");
+    assert.equal(await chat.evaluate((el) => el.classList.contains("active")), true);
+  });
+
   test(`${mobile ? "触屏" : "桌面"}：飞书分组展开、分页、记住折叠状态，图标按钮继承专家和目录`, async (t) => {
     const { page, getBotLoads } = await fixture(t, { mobile, feishu: true });
     const bot = page.locator('[data-bot="bot"]');

@@ -201,6 +201,22 @@
   font-size: 16px;
 }
 
+/* PC 顶栏头像与 15px 会话名称等大，按钮保留原来的点击区域。 */
+@media (min-width: 769px) {
+  .topbar .conv-expert-icon .agent-icon,
+  .topbar .conv-expert-icon svg,
+  .topbar .conv-expert-icon img,
+  .topbar .conv-expert-icon .expert-avatar,
+  .topbar .conv-expert-icon .expert-avatar img {
+    width: 15px;
+    height: 15px;
+  }
+
+  .topbar .conv-expert-icon .expert-emoji {
+    font-size: 15px;
+  }
+}
+
 /* ---- 专家信息卡 ---- */
 .popover.expert-card {
   width: 300px;

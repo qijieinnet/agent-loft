@@ -8,7 +8,6 @@ import {
   bootstrapQuery,
   closeSide,
   marquee,
-  botGroupId,
   moveSidebarGroup,
   sidebarGroups,
   renderSidebar,
@@ -236,10 +235,9 @@ function renderLayout() {
     lastDown = { key, at: now };
   });
   ui.convList.addEventListener("contextmenu", (e) => {
-    // 项目和飞书共用移动菜单；触屏也可以通过长按调整混合顺序。
+    // 项目和 IM 分组共用移动菜单；触屏也可以通过长按调整混合顺序。
     const bot = e.target.closest?.("[data-bot]")?.dataset.bot;
-    const dir = e.target.closest?.("[data-dir]")?.dataset.dir;
-    const group = bot ? botGroupId(bot) : dir;
+    const group = e.target.closest?.("[data-group]")?.dataset.group;
     if (group) {
       const i = sidebarGroups.indexOf(group);
       const moves = [

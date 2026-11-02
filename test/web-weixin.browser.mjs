@@ -165,6 +165,11 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
   assert.equal(await expertPicker.isEnabled(), true);
 
   await page.goto(base);
+  const wxHeader = page.locator('.proj-row[data-group^="weixin:"] .conv-item.proj');
+  await wxHeader.waitFor({ timeout: 8000 });
+  if (await wxHeader.getAttribute("aria-expanded") === "true") await wxHeader.click();
+  assert.equal(await wxHeader.getAttribute("aria-expanded"), "false");
+  await wxHeader.click();
   const row = page.locator('.conv-item[data-key^="weixin:"]');
   await row.waitFor({ timeout: 8000 });
   assert.equal((await row.locator(".title").innerText()).trim(), "微信");

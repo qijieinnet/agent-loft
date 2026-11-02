@@ -241,11 +241,11 @@ function agentShort(id) {
   return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
 }
 
-/** 侧栏状态：order 混排目录路径和 feishu:<机器人 id>，兼容原有的目录顺序。 */
-export const sideState = { open: [], botOpen: [], more: [], folded: [], forkFolded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
+/** 侧栏状态：order 混排目录路径和渠道分组，兼容原有的顺序。 */
+export const sideState = { open: [], botOpen: [], weixinOpen: [], more: [], folded: [], forkFolded: [], order: [], ...JSON.parse(localStorage.getItem("aim.side") || "{}") };
 
 /**
- * 项目和飞书分组共用 sideState.order，新消息不会改变分组位置。
+ * 项目和 IM 分组共用 sideState.order，新消息不会改变分组位置。
  * 顺序存在服务端、跟着账号走（换设备也一样）；新出现的分组接在最后，
  * 接上之后名次也就定了
  */
@@ -329,6 +329,7 @@ function groupDragAttrs(id) {
     if (sidebarStale) renderSidebar();
   };
   return {
+    "data-group": id,
     draggable: "true",
     ondragstart: (e) => {
       groupDrag = id;
@@ -544,32 +545,32 @@ export function renderSidebar() {
       status(fold?.folded ? fold.keys : [c.key]),
     );
 
-  // 飞书和项目共用排序，展开后的会话跟随所属分组。
-  if (cur?.channel === "feishu" && cur.key !== autoOpenedFor) {
+  // 切到 IM 会话时展开所属分组一次，之后仍可手动收起。
+  if ((cur?.channel === "feishu" || cur?.channel === "weixin") && cur.key !== autoOpenedFor) {
     autoOpenedFor = cur.key;
-    if (!sideState.botOpen.includes(cur.channelId)) {
-      sideState.botOpen.push(cur.channelId);
+    const list = cur.channel === "feishu" ? sideState.botOpen : sideState.weixinOpen;
+    const id = cur.channel === "feishu" ? cur.channelId : cur.key;
+    if (!list.includes(id)) {
+      list.push(id);
       saveSideState();
     }
   }
-  const botRows = [];
-  for (const bot of S.bots) {
-    const convs = visible.filter((c) => c.channel === "feishu" && c.channelId === bot.id);
-    if (bot.enabled === false && convs.length === 0) continue;
+  // 飞书和微信共用分组标题、折叠状态提示及继承专家/目录的新建入口。
+  const imGroupRow = ({ id, channel, name, convs, expanded, toggle, agent, attrs = {} }) => {
     const latest = convs[0];
-    const expanded = sideState.botOpen.includes(bot.id);
-    const rows = [h(
+    const label = channel === "feishu" ? "飞书" : "微信";
+    return h(
       "div",
-      { class: "proj-row bot-row", "data-bot": bot.id, ...groupDragAttrs(botGroupId(bot.id)) },
+      { class: "proj-row bot-row", ...attrs, ...groupDragAttrs(id) },
       h(
         "button",
         {
           class: "conv-item proj",
-          title: `飞书 · ${bot.name}\n拖动可调整顺序，右键更多操作`,
+          title: `${label} · ${name}\n拖动可调整顺序，右键更多操作`,
           "aria-expanded": String(expanded),
-          onclick: () => toggleSide("botOpen", bot.id),
+          onclick: toggle,
         },
-        h("span", { class: "title" }, bot.name),
+        h("span", { class: "title" }, name),
         caret(!expanded),
         expanded ? null : status(convs.map((c) => c.key)),
       ),
@@ -577,21 +578,32 @@ export function renderSidebar() {
         "button",
         {
           class: "proj-new bot-new",
-          title: `使用 ${bot.name} 的专家和工作目录开新对话`,
-          "aria-label": `使用 ${bot.name} 的专家和工作目录开新对话`,
+          title: `使用 ${name} 的专家和工作目录开新对话`,
+          "aria-label": `使用 ${name} 的专家和工作目录开新对话`,
           onclick: () => {
             S.draftCwd = latest?.cwd && latest.cwd !== S.workspaceRoot ? latest.cwd : null;
             S.draftCwdPicked = true;
-            const expert = latest?.expert?.id ?? latest?.agent ?? bot.agents?.[0];
+            const expert = latest?.expert?.id ?? latest?.agent ?? agent;
             if (expert) setDraftExpert(expert);
             newDraft();
             closeSide();
           },
         },
-        h("span", { class: "brand-icon feishu-mark", html: ICON.feishu, "aria-hidden": "true" }),
+        h("span", { class: `brand-icon channel-mark ${channel}-mark`, html: ICON[channel], "aria-hidden": "true" }),
         h("span", { class: "bot-plus", "aria-hidden": "true" }, icon("plus")),
       ),
-    )];
+    );
+  };
+  const botRows = [];
+  for (const bot of S.bots) {
+    const convs = visible.filter((c) => c.channel === "feishu" && c.channelId === bot.id);
+    if (bot.enabled === false && convs.length === 0) continue;
+    const latest = convs[0];
+    const expanded = sideState.botOpen.includes(bot.id);
+    const rows = [imGroupRow({
+      id: botGroupId(bot.id), channel: "feishu", name: bot.name, convs, expanded,
+      toggle: () => toggleSide("botOpen", bot.id), agent: bot.agents?.[0], attrs: { "data-bot": bot.id },
+    })];
     if (expanded) {
       const st = botState(bot.id);
       const load = (limit) => fetchPage(st, { scope: "bot", bot: bot.id, limit: String(limit) });
@@ -612,12 +624,16 @@ export function renderSidebar() {
     });
   }
 
-  // 微信：每个人一条对话，没有分组，一行就够。和项目、飞书一起排序
+  // 微信每个人一条对话，也使用 IM 分组；沿用旧排序键，升级后位置不变。
   for (const c of visible.filter((c) => c.channel === "weixin")) {
     const id = `weixin:${c.key}`;
-    const row = convRow(c, "", `微信 · ${agentLabel(c.agent)} · ${c.cwd}`);
-    row.prepend(h("span", { class: "brand-icon lead", html: ICON.weixin, "aria-hidden": "true" }));
-    botRows.push({ id, at: c.activeAt, rows: [h("div", { class: "proj-row", ...groupDragAttrs(id) }, row)] });
+    const expanded = sideState.weixinOpen.includes(c.key);
+    const rows = [imGroupRow({
+      id, channel: "weixin", name: "微信", convs: [c], expanded,
+      toggle: () => toggleSide("weixinOpen", c.key),
+    })];
+    if (expanded) rows.push(convRow(c, " sub", `微信 · ${agentLabel(c.agent)} · ${c.cwd}`));
+    botRows.push({ id, at: c.activeAt, rows });
   }
 
   // ---- Web 会话直接按工作目录分组，目录按用户排的顺序（见 orderSidebarGroups） ----
