@@ -214,13 +214,17 @@ export async function openConversation(key) {
   // 历史一次性加进来，最后再统一排版，免得每加一条就强制排版一次
   bulk = true;
   try {
+    let todos = null;
     for (const m of data.messages) {
+      // 面板只属于最后一轮；提问卡切开的多段回复仍算同一轮。
+      if (m.role === "user") todos = null;
+      else if (m.todos) todos = m.todos;
       if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null, anchor: m.anchor });
       else if (m.role === "question") addItem({ type: "ix", id: m.question.id, ix: historyQuestion(key, m) });
       else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor, segment: m.segment });
     }
-    // 任务清单：最后改过的那一份（进行中这一轮又改了的话，下面重放 todos 事件时换成新的）
-    setTodos(data.messages.findLast((m) => m.todos)?.todos ?? null);
+    // 进行中这一轮的清单由下面重放 todos 事件恢复。
+    setTodos(todos);
     S.seq.set(key, 0);
     // 进行中这一轮弹过的卡（含已处理的）：重放到 ix 事件时放回原位
     replayCards = new Map((data.interactions ?? []).map((ix) => [ix.id, ix]));
@@ -799,7 +803,10 @@ export function applyEvent(env) {
         S.items = S.items.filter((i) => i !== S.turnAi);
         S.turnAi = null;
       }
-      if (!queued && (!S.turnAi || S.turnAi.done)) turnStartAt = env.ts;
+      if (!queued && (!S.turnAi || S.turnAi.done)) {
+        setTodos(null);
+        turnStartAt = env.ts;
+      }
       const it = addItem({ type: "user", text: ev.text, files: ev.files ?? ev.attachments, origin: ev.origin, id: ev.id, queued });
       // 这个页面刚发的：普通消息顶到最上面，排队消息等轮到它时再定位。
       if (S.pinNext && ev.origin?.channel === "web") {
@@ -834,11 +841,16 @@ export function applyEvent(env) {
       }
       // 轮到它了（上一轮刚出结果）：挂上「思考中」占位，用时从现在算。被当成提问的回答时那一轮还在跑，不用挂
       if (ev.state === "started" && (!S.turnAi || S.turnAi.done)) {
+        setTodos(null);
         turnStartAt = env.ts;
         currentAi(env.ts);
       }
       return;
     }
+    case "turn_start":
+      // 包括没有新用户消息、由后台任务触发的轮次。
+      setTodos(null);
+      return;
     case "step": {
       const ai = currentAi(env.ts);
       ai.steps.push(ev.text);

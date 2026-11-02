@@ -193,7 +193,7 @@ export class ClaudeDriver implements AgentDriver {
     };
     /** 问了、还没对上回答的：tool_use id → 那条 question */
     const asked = new Map<string, HistoryMessage>();
-    /** 任务清单：哪条回复里改过，就在那条上挂一份改完的（页面取最后一份显示进度） */
+    /** 任务清单：哪条回复里改过，就在那条上挂一份改完的（页面只恢复最后一轮的进度） */
     const todos = new TodoTracker();
     for (const msg of raw) {
       if (msg.parent_tool_use_id) continue;

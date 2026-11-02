@@ -77,6 +77,88 @@ async function fixture(t, viewport) {
   return page;
 }
 
+test("Todo 面板：新一轮清掉旧清单，排队和本轮作答保留当前进度", async (t) => {
+  const page = await fixture(t, { width: 1280, height: 800 });
+  const bar = page.locator(".todo-bar");
+  for (const status of ["pending", "in_progress", "completed"]) {
+    await page.evaluate((status) => {
+      window.emit({ type: "state", busy: true });
+      window.emit({ type: "todos", todos: [{ content: "旧任务", status }] });
+    }, status);
+    assert.equal(await bar.isVisible(), true);
+    await page.evaluate(() => {
+      window.emit({ type: "result", text: "这一轮结束", at: Date.now() });
+      window.emit({ type: "state", busy: false });
+      window.send("新问题");
+      window.emit({ type: "state", busy: true });
+    });
+    assert.equal(await bar.isVisible(), false, `${status} 的旧清单不能在新一轮显示`);
+    assert.equal(await page.evaluate(() => window.S.todos), null);
+  }
+  await page.evaluate(() => {
+    window.emit({ type: "todos", todos: [{ content: "当前任务", status: "in_progress" }] });
+    window.emit({ type: "step", text: "正在处理当前任务" });
+    window.send("排队的问题", true);
+  });
+  assert.equal(await bar.isVisible(), true, "排队时当前任务仍在处理");
+  await page.evaluate(() => {
+    window.send("本轮提问的回答");
+    window.emit({ type: "queue", id: "作答", state: "started" });
+  });
+  assert.equal(await bar.isVisible(), true, "同一轮中的作答不清空进度");
+  await page.evaluate(() => {
+    window.emit({ type: "result", text: "完成", at: Date.now() });
+    window.emit({ type: "queue", id: "排队的问题", state: "started" });
+  });
+  assert.equal(await bar.isVisible(), false, "排队消息开始新一轮时清空");
+  await page.evaluate(() => {
+    window.emit({ type: "todos", todos: [{ content: "排队任务", status: "in_progress" }] });
+    window.emit({ type: "turn_start" });
+  });
+  assert.equal(await bar.isVisible(), false, "没有用户消息的轮次也清空旧面板");
+  await page.evaluate(() => window.emit({ type: "todos", todos: [{ content: "新任务", status: "in_progress" }] }));
+  assert.equal(await bar.isVisible(), true, "本轮更新清单后重新显示");
+  assert.equal(await bar.locator(".todo-text").textContent(), "新任务");
+});
+
+test("Todo 面板：重开会话只恢复最后一轮，实时回放恢复本轮更新", async (t) => {
+  const page = await fixture(t, { width: 1280, height: 800 });
+  const oldTodos = [{ content: "旧任务", status: "in_progress" }];
+  const newTodos = [{ content: "新任务", status: "pending" }];
+  const messages = [
+    { role: "user", text: "旧问题" },
+    { role: "assistant", text: "旧回复", todos: oldTodos },
+    { role: "user", text: "新问题" },
+    { role: "assistant", text: "新回复没有清单" },
+  ];
+  const history = { info: conv, allowedAgents: [], messages, live: [], pending: [], seq: 100 };
+  await page.route("**/api/conversations/*/history", (route) => route.fulfill({ json: history }));
+  const reopen = () => page.evaluate(() => window.messages.openConversation("web:1"));
+  const bar = page.locator(".todo-bar");
+  await reopen();
+  assert.equal(await bar.isVisible(), false, "不能越过最后一条用户消息恢复旧清单");
+  messages.push({ role: "assistant", text: "开始新任务", todos: newTodos, segment: true });
+  messages.push({ role: "assistant", text: "同一轮的后半段" });
+  await reopen();
+  assert.equal(await bar.locator(".todo-text").textContent(), "新任务");
+  assert.equal(await bar.isVisible(), true, "同一轮分段的回复保留最新清单");
+  messages.push({ role: "assistant", text: "清空清单", todos: [] });
+  await reopen();
+  assert.equal(await bar.isVisible(), false);
+  messages.pop();
+  history.info = { ...conv, busy: true };
+  history.live = [
+    { key: conv.key, seq: 1, ts: Date.now(), ev: { type: "user", text: "正在处理的问题" } },
+    { key: conv.key, seq: 2, ts: Date.now(), ev: { type: "turn_start" } },
+  ];
+  await reopen();
+  assert.equal(await bar.isVisible(), false, "进行中但没有更新清单时保持隐藏");
+  history.live.push({ key: conv.key, seq: 3, ts: Date.now(), ev: { type: "todos", todos: newTodos } });
+  await reopen();
+  assert.equal(await bar.isVisible(), true);
+  assert.equal(await bar.locator(".todo-text").textContent(), "新任务");
+});
+
 for (const width of [1280, 390]) test(`闲置提示：打开历史后显示，点击继续或发送消息后撤下（${width}px）`, async (t) => {
   const page = await fixture(t, { width, height: 800 });
   const expired = { ...conv, sessionId: "old-context", idleExpired: true };

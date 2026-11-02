@@ -539,9 +539,9 @@ export function renderSidebar() {
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
       h("span", { class: "title" }, convTitle(c)),
       fold ? caret(fold.folded, fold.toggle) : null,
-      status(fold?.folded ? fold.keys : [c.key]),
       convExpertMark(c),
       c.taskId ? h("span", { class: "brand-icon task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
+      status(fold?.folded ? fold.keys : [c.key]),
     );
 
   // 飞书和项目共用排序，展开后的会话跟随所属分组。

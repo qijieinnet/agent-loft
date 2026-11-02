@@ -10,7 +10,7 @@ let open = localStorage.getItem("aim.todosOpen") !== "0";
 /** 当前这份清单点过 ×：清单再变才重新出来 */
 let dismissed = false;
 
-/** 换了一份清单（null = 清空：换会话、开新对话） */
+/** 换了一份清单（null = 清空：换会话、开始新一轮） */
 export function setTodos(list) {
   S.todos = list?.length ? list : null;
   dismissed = false;

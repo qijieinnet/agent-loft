@@ -323,15 +323,15 @@ test("触屏分组菜单：飞书与项目可互相置顶、上下移动，保�
 });
 
 for (const mobile of [false, true]) {
-  test(`${mobile ? "触屏" : "桌面"}：飞书分组展开、分页、记住折叠状态，加号继承专家和目录`, async (t) => {
+  test(`${mobile ? "触屏" : "桌面"}：飞书分组展开、分页、记住折叠状态，图标按钮继承专家和目录`, async (t) => {
     const { page, getBotLoads } = await fixture(t, { mobile, feishu: true });
     const bot = page.locator('[data-bot="bot"]');
     const header = bot.locator(".conv-item.proj");
     const chats = page.locator('.conv-list [data-key^="feishu:bot:"]');
     assert.equal(getBotLoads(), 0);
     assert.equal(await header.getAttribute("aria-expanded"), "false");
-    assert.equal(await bot.locator(".feishu-mark").isVisible(), !mobile);
-    assert.equal(await bot.locator(".bot-plus").isVisible(), mobile);
+    assert.equal(await bot.locator(".feishu-mark").isVisible(), true);
+    assert.equal(await bot.locator(".bot-plus").isVisible(), false);
     if (!mobile) {
       await header.hover();
       assert.equal(await bot.locator(".feishu-mark").isVisible(), false);
@@ -343,6 +343,11 @@ for (const mobile of [false, true]) {
     }
     await header.click();
     await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
+    if (mobile) {
+      await bot.locator(".bot-new").focus();
+      assert.equal(await bot.locator(".feishu-mark").isVisible(), true, "触屏点击或聚焦后仍显示渠道图标");
+      assert.equal(await bot.locator(".bot-plus").isVisible(), false);
+    }
     assert.equal(await chats.first().locator(".title").textContent(), "飞书聊天 0");
     assert.equal(getBotLoads(), 1);
     await page.locator(".sub-more .conv-more").getByText("展开显示", { exact: true }).click();

@@ -256,7 +256,7 @@ button.conv-group:hover {
   display: grid;
 }
 
-/* 飞书分组的同一位置：平时显示飞书，悬停或键盘聚焦时显示新建加号。 */
+/* IM 分组常驻渠道图标，桌面悬停或键盘聚焦时显示新建加号。 */
 .bot-row .conv-item.proj {
   padding-right: 36px;
 }
@@ -280,14 +280,16 @@ button.conv-group:hover {
   visibility: hidden;
 }
 
-.bot-row:hover .bot-new .feishu-mark,
-.bot-row:focus-within .bot-new .feishu-mark {
-  visibility: hidden;
-}
+@media (hover: hover) and (pointer: fine) {
+  .bot-row:hover .bot-new .feishu-mark,
+  .bot-row:focus-within .bot-new .feishu-mark {
+    visibility: hidden;
+  }
 
-.bot-row:hover .bot-new .bot-plus,
-.bot-row:focus-within .bot-new .bot-plus {
-  visibility: visible;
+  .bot-row:hover .bot-new .bot-plus,
+  .bot-row:focus-within .bot-new .bot-plus {
+    visibility: visible;
+  }
 }
 
 /* 鼠标挪到右边的加号上时，整行的 hover 底色还留着 */
@@ -300,14 +302,6 @@ button.conv-group:hover {
 @media (pointer: coarse) {
   .proj-new {
     display: grid;
-  }
-
-  .bot-new .bot-plus {
-    visibility: visible;
-  }
-
-  .bot-new .feishu-mark {
-    visibility: hidden;
   }
 }
 
@@ -411,12 +405,6 @@ button.conv-group:hover {
   color: var(--fg-soft);
 }
 
-/* 有状态点时由状态点推到右侧，专家图标紧随其后 */
-.conv-item > .dot + .expert-mark,
-.conv-item > .conv-spin + .expert-mark {
-  margin-left: 0;
-}
-
 .conv-item .task-mark,
 .conv-item .feishu-mark {
   flex-shrink: 0;
@@ -432,10 +420,9 @@ button.conv-group:hover {
   height: 14px;
 }
 
-.conv-item > .dot ~ .task-mark,
-.conv-item > .conv-spin ~ .task-mark,
-.conv-item > .dot ~ .feishu-mark,
-.conv-item > .conv-spin ~ .feishu-mark {
+/* 尾部图标共用右侧空间，状态始终排在最后。 */
+.conv-item > .task-mark ~ .dot,
+.conv-item > .task-mark ~ .conv-spin {
   margin-left: 0;
 }
 
@@ -455,6 +442,11 @@ button.conv-group:hover {
 @media (hover: hover) {
   .conv-item:hover .expert-mark {
     display: inline-grid;
+  }
+
+  .conv-item:hover > .expert-mark ~ .dot,
+  .conv-item:hover > .expert-mark ~ .conv-spin {
+    margin-left: 0;
   }
 
   .conv-item:hover .task-mark,
