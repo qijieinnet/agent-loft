@@ -51,6 +51,8 @@ export type Task = {
   effort?: string;
   /** 专用对话的权限级别（见 permission.ts）：只有用户在页面上能设。没有就是引擎默认 */
   permission?: PermissionLevel;
+  /** 专用对话每次运行都不带之前的上下文：结果还留在这条对话里，只是 agent 看不到。发到已有对话的不用它 */
+  freshContext?: boolean;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
@@ -145,6 +147,7 @@ export type TaskInput = {
   effort?: unknown;
   /** 只有网页接口会给：agent 的工具（tasks-bridge.ts）不开放这个参数，免得 agent 给自己提权 */
   permission?: unknown;
+  freshContext?: unknown;
   enabled?: unknown;
 };
 
@@ -204,6 +207,7 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
     ...(str(input.model) ? { model: str(input.model) } : {}),
     ...(str(input.effort) ? { effort: str(input.effort) } : {}),
     ...(permission ? { permission } : {}),
+    ...(input.freshContext === true ? { freshContext: true } : {}),
     enabled: input.enabled !== false,
     createdAt: now,
     updatedAt: now,
@@ -246,6 +250,10 @@ export function updateTask(owner: string, id: string, patch: TaskInput, now = Da
     const permission = cleanPermission(patch.permission);
     if (permission) next.permission = permission;
     else delete next.permission;
+  }
+  if (patch.freshContext !== undefined) {
+    if (patch.freshContext === true) next.freshContext = true;
+    else delete next.freshContext;
   }
   if (patch.enabled !== undefined) next.enabled = patch.enabled !== false;
   // 专用对话的专家 / 目录变了：旧的那条对话对不上了（对话中途不能换专家），下次新开一条

@@ -19,18 +19,20 @@ export function stripSilentMark(text: string): string {
 
 export function taskMessage(
   task: { title: string; prompt: string; notify: "smart" | "always" },
-  opts: { now?: number; manual?: boolean; version?: string } = {},
+  opts: { now?: number; manual?: boolean; version?: string; fresh?: boolean } = {},
 ): string {
   const now = opts.now ?? Date.now();
   const lines = [
     `这条消息是定时任务「${task.title}」${opts.manual ? "（用户刚才手动点了「立即运行」）" : "到点自动发来的"}，现在是 ${formatDateTime(now)}（${serverTimeZone()}）。${opts.manual ? "" : "用户此刻多半不在屏幕前，不要向他提问、等他回答。"}`,
     ...(opts.version ? [`agent-loft 服务端当前版本：${opts.version}。`] : []),
-    "按上面的要求做；这条对话里以前运行的结果可以拿来对比（比如「和上次比有没有变化」）。",
+    opts.fresh
+      ? "按上面的要求做；这个任务设置了每次运行都不带之前的上下文，你看不到以前运行的结果，不要假设有过上一次。"
+      : "按上面的要求做；这条对话里以前运行的结果可以拿来对比（比如「和上次比有没有变化」）。",
   ];
   if (task.notify === "smart") {
     lines.push(
       "",
-      `用户希望只在有需要时才被提醒：如果按上面的要求，这次没有需要告诉他的事（比如没有更新、没有变化、条件没满足），回复的第一行只写 ${SILENT_MARK}，后面用一两句话记下这次检查的结果（下次可以对比），他就不会收到通知。`,
+      `用户希望只在有需要时才被提醒：如果按上面的要求，这次没有需要告诉他的事（比如没有更新、没有变化、条件没满足），回复的第一行只写 ${SILENT_MARK}，后面用一两句话记下这次检查的结果${opts.fresh ? "" : "（下次可以对比）"}，他就不会收到通知。`,
       `有需要告诉他的事时正常回复，开头直接说结论，不要写 ${SILENT_MARK}。`,
     );
   }

@@ -238,6 +238,7 @@ function taskCard(t) {
       h("span", {}, state),
       h("span", {}, t.notify === "smart" ? "有需要才提醒" : "每次都提醒"),
       h("span", {}, where),
+      t.target.kind === "dedicated" && t.freshContext ? h("span", {}, "不带上下文") : null,
       t.target.kind === "dedicated" && t.permission ? h("span", { class: t.permission === "full" ? "task-perm-full" : "" }, PERMISSIONS[t.permission].label) : null,
       t.target.kind === "conv" && t.convPermission === "full" ? h("span", { class: "task-perm-full" }, "跟随对话：完全允许") : null,
     ),
@@ -257,6 +258,23 @@ async function runNow(t) {
   } catch (err) {
     toast(err.message);
   }
+}
+
+/** 对话页的「更多」菜单：先现拉一遍任务（这时任务页可能还没打开过），改完留在对话里 */
+export async function editTaskById(id) {
+  try {
+    const data = await api("/api/tasks");
+    T.tz = data.tz;
+    const task = data.tasks.find((t) => t.id === id);
+    if (!task) return toast("这个任务不存在了");
+    openTaskForm(task);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+export function runTaskById(id) {
+  return runNow({ id });
 }
 
 async function removeTask(t) {
@@ -421,7 +439,15 @@ export function openTaskForm(task, preset) {
     permissionValue = permission.value;
     syncPermission();
   };
-  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField, permissionField);
+  // ---- 上下文（只有专用对话有：发到已有对话的要接着你们的聊天）----
+  const context = h(
+    "select",
+    {},
+    h("option", { value: "keep", selected: !src.freshContext }, "携带（能看到之前几次运行的内容）"),
+    h("option", { value: "fresh", selected: !!src.freshContext }, "不携带（每次都从头开始）"),
+  );
+  const contextField = field("上下文", context, "不携带时结果还留在这条对话里，只是 agent 看不到，没法和上次对比，也更省 token。");
+  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField, permissionField, contextField);
   const followField = convTarget
     ? field("权限", h("div", { class: "task-static" }, `跟随这条对话（现在是「${task.convPermission ? PERMISSIONS[task.convPermission].label : "默认"}」）`), "要单独设权限，把结果改发到专用对话。")
     : null;
@@ -487,7 +513,7 @@ export function openTaskForm(task, preset) {
       schedule,
       notify: notify.value,
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: task.target.key },
-      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level } : {}),
+      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level, freshContext: context.value === "fresh" } : {}),
     };
     save.disabled = true;
     try {
@@ -496,7 +522,7 @@ export function openTaskForm(task, preset) {
       close();
       toast(task ? "已保存" : "已创建");
       if (S.view === "tasks") void reload();
-      else void openTasks();
+      else if (!task) void openTasks();
     } catch (err) {
       save.disabled = false;
       toast(err.message);

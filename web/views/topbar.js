@@ -488,11 +488,22 @@ export function updateCtxVisibility() {
   if (ui.ctxBar) ui.ctxBar.hidden = !!S.current && (S.items.length > 0 || sentKeys.has(S.current));
 }
 
+/** 定时任务页是按需加载的（见 layout.js 的 openTasksView） */
+function withTasks(fn) {
+  return import("./tasks.js").then(fn, (err) => toast(`定时任务页加载失败，刷新页面再试：${err.message}`));
+}
+
 /** 顶栏和侧栏共用的会话操作，显示条件和行为保持一致。 */
 function convMenuItems(key) {
   const c = S.convs.get(key);
   if (!c) return [];
   return [
+    ...(c.taskId
+      ? [
+          { id: "task-edit", label: "编辑定时任务", icon: "edit", onclick: () => withTasks((m) => m.editTaskById(c.taskId)) },
+          { id: "task-run", label: "立即运行", icon: "play", onclick: () => withTasks((m) => m.runTaskById(c.taskId)) },
+        ]
+      : []),
     {
       id: "fork",
       label: "分叉",

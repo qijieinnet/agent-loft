@@ -56,6 +56,7 @@ function describeTask(task: Task, convKey: string): string {
     task.enabled && task.nextRunAt ? `下次 ${formatDateTime(task.nextRunAt)}` : "已暂停",
     task.notify === "smart" ? "有需要才提醒" : "每次都提醒",
     `结果发到${whereText(task, convKey)}`,
+    ...(task.target.kind === "dedicated" && task.freshContext ? ["每次运行不带之前的上下文"] : []),
     ...(last ? [`最近一次 ${formatDateTime(last.at)} ${STATUS[last.status] ?? last.status}${last.preview ? `：${last.preview}` : last.note ? `（${last.note}）` : ""}`] : []),
   ].join(" · ") + `\n  提示词：${task.prompt.replace(/\s+/g, " ").slice(0, 200)}`;
 }

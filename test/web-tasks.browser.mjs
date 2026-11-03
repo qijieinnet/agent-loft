@@ -14,7 +14,7 @@ const vendor = {
 };
 const styles = (await fs.readFile(new URL("web/index.html", root), "utf8")).match(/<link[^>]+rel="stylesheet"[^>]*>/g).join("\n");
 
-async function fixture(t, width, colorScheme = "light") {
+async function fixture(t, width, colorScheme = "light", tasks = []) {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -39,7 +39,7 @@ async function fixture(t, width, colorScheme = "light") {
         user: { id: "u1", role: "admin" }, agents: [{ id: "claude", enabled: true, available: true }], bots: [], pending: [], conversations: [],
         workspaceRoot: "/tmp", quotaEnabled: false, sidebar: { recent: { next: null }, dirs: [] },
       };
-      if (url.pathname === "/api/tasks" && route.request().method() === "GET") data = { tasks: [], tz: "Asia/Hong_Kong" };
+      if (url.pathname === "/api/tasks" && route.request().method() === "GET") data = { tasks, tz: "Asia/Hong_Kong" };
       return route.fulfill({ json: data });
     }
     if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `
@@ -144,3 +144,46 @@ for (const width of [1280, 390]) {
     assert.equal(await page.locator('.task-form input[type="time"]').inputValue(), "18:00");
   });
 }
+
+test("定时任务的对话：右上角更多里能编辑和立即运行，改完留在对话页", async (t) => {
+  const task = {
+    id: "t_conv", title: "ETF 投资跟踪", prompt: "查一下", schedule: { kind: "daily", time: "08:00" },
+    target: { kind: "dedicated", key: "web:task" }, agent: "claude", notify: "smart", enabled: true, runs: [], freshContext: true,
+  };
+  const { page, calls } = await fixture(t, 1280, "light", [task]);
+  const menuOf = (taskId) => page.evaluate(async (taskId) => {
+    const { S } = await import("/state.js");
+    const { renderTopbar } = await import("/views/topbar.js");
+    S.view = null;
+    S.current = "web:task";
+    S.convs.set("web:task", { key: "web:task", agent: "claude", channel: "web", cwd: "/tmp", title: "ETF", ...(taskId ? { taskId } : {}) });
+    renderTopbar();
+    document.querySelector(".top-more").click();
+    const labels = [...document.querySelectorAll(".top-menu .pop-item")].map((el) => el.textContent.trim());
+    return labels;
+  }, taskId);
+
+  // 普通对话没有这两项
+  const plain = await menuOf(undefined);
+  assert.ok(!plain.includes("编辑定时任务") && !plain.includes("立即运行"));
+  await page.keyboard.press("Escape");
+  await page.mouse.click(5, 5);
+
+  const labels = await menuOf("t_conv");
+  assert.ok(labels.includes("编辑定时任务") && labels.includes("立即运行"));
+
+  await page.locator(".top-menu .pop-item", { hasText: "立即运行" }).click();
+  await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("已开始运行"));
+  assert.ok(calls.some((c) => c.path === "/api/tasks/t_conv/run" && c.method === "POST"));
+
+  await page.locator(".top-more").click();
+  await page.locator(".top-menu .pop-item", { hasText: "编辑定时任务" }).click();
+  await page.locator(".task-form").waitFor();
+  assert.equal(await page.locator(".task-form textarea").inputValue(), "查一下");
+  assert.equal(await page.locator(".task-form .task-dedicated select").last().inputValue(), "fresh", "表单回填不携带上下文");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.locator(".overlay").waitFor({ state: "detached" });
+  const patched = calls.find((c) => c.path === "/api/tasks/t_conv" && c.method === "PATCH");
+  assert.equal(patched.body.freshContext, true);
+  assert.equal(await page.evaluate(async () => (await import("/state.js")).S.view), null, "保存后还在对话页");
+});

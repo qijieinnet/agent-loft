@@ -77,6 +77,106 @@ test("提示词：说明附在后面、给人看时剥掉；静默暗号", () =>
   assert.equal(stripSilentMark("[[静默]]\n当前 0.2.30，没有更新"), "当前 0.2.30，没有更新");
 });
 
+test("提示词：不携带上下文时不提对比上次", () => {
+  const msg = taskMessage({ title: "t", prompt: "p", notify: "smart" }, { fresh: true });
+  assert.match(msg, /不带之前的上下文/);
+  assert.doesNotMatch(msg, /对比/);
+  assert.match(taskMessage({ title: "t", prompt: "p", notify: "smart" }), /对比/);
+});
+
+test("运行：不携带上下文时每次换新会话，留在同一条对话，历史接着显示", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { agentBinding, getConversation } = await import("../src/core/store.js");
+  const { createUser } = await import("../src/core/users.js");
+  const runner = await import("../src/core/task-runner.js");
+
+  const resumed: (string | undefined)[] = [];
+  let seq = 0;
+  hub.registerDriver({
+    id: "claude",
+    label: "Fake",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (opts, events) => {
+      resumed.push(opts.resumeId);
+      const id = opts.resumeId ?? `fresh-${++seq}`;
+      return {
+        sessionId: opts.resumeId,
+        send: () => {
+          setTimeout(() => {
+            events.onSessionId(id);
+            events.onResult({ text: `来自 ${id}`, durationMs: 1 });
+          }, 5);
+        },
+        interrupt: async () => {},
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: async () => {},
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async (id: string) => {
+      if (id === "fresh-1") throw new Error("读不到");
+      return [{ role: "user" as const, text: `问 ${id}`, anchor: `a-${id}` }];
+    },
+    listModels: async () => [],
+    catalog: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  const owner = createUser({ name: "fresh-owner", password: "password-123", role: "admin" });
+  runner.startTaskRunner();
+  try {
+    const task = tasks.createTask(owner.id, { title: "不带", prompt: "看看", schedule: { kind: "daily", time: "02:00" }, freshContext: true, model: "m1" }, "user");
+    for (let i = 0; i < 3; i++) {
+      assert.equal(runner.runTaskNow(task), undefined);
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(tasks.getTask(owner.id, task.id)!.runs[0]!.status, "notified");
+    }
+    const key = task.target.key!;
+    // 三次都没有 resume，还在同一条对话，任务定的模型没丢
+    assert.deepEqual(resumed, [undefined, undefined, undefined]);
+    const binding = agentBinding(getConversation(key)!);
+    assert.deepEqual(binding.pastSessions, ["fresh-1", "fresh-2"]);
+    assert.equal(binding.sessionId, "fresh-3");
+    assert.equal(binding.model, "m1");
+
+    // 旧会话接着显示、不能回退或分叉；读不到的那条跳过，不影响别的
+    assert.deepEqual(await hub.history(key), [
+      { role: "user", text: "问 fresh-2" },
+      { role: "user", text: "问 fresh-3", anchor: "a-fresh-3" },
+    ]);
+
+    // 改回携带：接着最后一次的会话
+    tasks.updateTask(owner.id, task.id, { freshContext: false });
+    assert.equal(tasks.getTask(owner.id, task.id)!.freshContext, undefined);
+    assert.equal(runner.runTaskNow(task), undefined);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(agentBinding(getConversation(key)!).sessionId, "fresh-3");
+
+    // 手动开新会话：旧记录也不再显示
+    await hub.newSession(key);
+    assert.deepEqual(await hub.history(key), []);
+
+    // 发到已有对话的不受这个选项影响：不能把用户在聊的会话换掉
+    const convTask = tasks.createTask(owner.id, { title: "原对话", prompt: "看看", schedule: { kind: "daily", time: "02:00" }, target: { kind: "conv", key }, freshContext: true }, "user");
+    hub.send(key, { text: "聊两句", attachments: [] }, { channel: "web", channelId: "web" });
+    await new Promise((r) => setTimeout(r, 60));
+    const chatting = agentBinding(getConversation(key)!).sessionId;
+    assert.ok(chatting);
+    assert.equal(runner.runTaskNow(convTask), undefined);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(agentBinding(getConversation(key)!).sessionId, chatting);
+    assert.equal(agentBinding(getConversation(key)!).pastSessions, undefined);
+  } finally {
+    runner.stopTaskRunner();
+    tasks.deleteUserTasks(owner.id);
+  }
+});
+
 test("任务按人隔离：别人的任务看不到、改不了、删不掉", () => {
   const a = tasks.createTask(ownerA!, { prompt: "每天看新闻", schedule: { kind: "daily", time: "08:00" } }, "user");
   tasks.createTask(ownerB!, { prompt: "B 的任务", schedule: { kind: "daily", time: "09:00" } }, "user");

@@ -59,6 +59,7 @@ import { mcpEvents } from "./mcp.js";
 import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
 import { skillEvents } from "./skills.js";
 import { isSilentReply } from "./task-prompt.js";
+import { findTask } from "./tasks.js";
 import { patchWeixinAccount } from "./weixin-accounts.js";
 
 // ---------- 事件 ----------
@@ -103,7 +104,11 @@ export type ConvEvent =
   | { type: "meta" };
 
 /** 定时任务发起的一轮（见 core/task-runner.ts） */
-export type TaskTurn = { taskId: string; runId: string; title: string; smart: boolean };
+/** fresh：这一轮不带之前的上下文，发出去之前先换新会话 */
+export type TaskTurn = { taskId: string; runId: string; title: string; smart: boolean; fresh?: boolean };
+
+/** 每条对话最多接着显示这么多条旧会话：每次打开对话都要全读一遍，不能无限长 */
+const PAST_SESSIONS_KEPT = 50;
 
 /** 定时任务的一轮结束了 */
 export type TaskTurnEnd = TaskTurn & { key: string; status: "notified" | "silent" | "error" | "interrupted"; text: string };
@@ -1107,6 +1112,15 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
           // 清理要等旧会话 dispose，期间可能又点了停止
           if (cancelled()) return dropped();
         }
+        if (task?.fresh) {
+          // 换会话会丢掉进行中的那一轮：到点时核对过不忙，但排队期间可能有人刚发了消息，这次就不跑了
+          if (this.isBusy(key)) return gone("对话正在回复，这次没有运行");
+          await this.drop(key, "定时任务开始新一次运行");
+          this.archiveSession(key);
+          this.emitEvent(key, { type: "meta" });
+          if (waiting.cancelled) return;
+          if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
+        }
         const blocked = await this.blockedSlash(key, input.text);
         if (waiting.cancelled) return;
         if (blocked) {
@@ -1160,11 +1174,39 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     if (!conv || !(agentBinding(conv).sessionId || agentBinding(conv).forkFrom)) return;
     console.log(`[会话] ${key} 闲置超过 ${config().sessionTtlMs / 3600000} 小时，开新会话`);
     await this.drop(key, "会话已闲置过期");
-    updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: undefined, effort: undefined });
+    // 「不携带上下文」的任务对话：运行记录要一直留在对话里，模型也是任务定的，都不能清
+    if (conv.taskId && findTask(conv.taskId)?.freshContext) this.archiveSession(key);
+    else updateAgentBinding(key, conv.agent, { sessionId: undefined, forkFrom: undefined, model: undefined, effort: undefined });
     // 不清上传目录：本次和排在后面的消息可能都带着刚上传的附件。
     // 旧附件留到 /new 或下次启动的清扫时再删。
     this.emitEvent(key, { type: "notice", text: "上次的会话闲置太久，已自动开新会话。" });
     this.emitEvent(key, { type: "meta" });
+  }
+
+  /** 当前会话不再续用，但记录留在对话里接着显示。下一条消息会开新会话 */
+  private archiveSession(key: string): void {
+    const conv = getConversation(key);
+    if (!conv) return;
+    const { sessionId, pastSessions = [] } = agentBinding(conv);
+    updateAgentBinding(key, conv.agent, {
+      sessionId: undefined,
+      forkFrom: undefined,
+      ...(sessionId ? { pastSessions: [...pastSessions, sessionId].slice(-PAST_SESSIONS_KEPT) } : {}),
+    });
+  }
+
+  /** 旧会话的记录。不带 anchor：它们已经不是当前会话，不能从这里回退或分叉 */
+  private async pastHistory(conv: Conversation): Promise<HistoryMessage[]> {
+    const driver = this.requireDriver(conv.agent);
+    const out: HistoryMessage[] = [];
+    for (const id of agentBinding(conv).pastSessions ?? []) {
+      try {
+        for (const { anchor: _anchor, ...m } of attachFooters(id, await driver.readHistory(id, conv.cwd))) out.push(m);
+      } catch (err) {
+        console.error(`[历史] 读取旧会话 ${id} 失败:`, err);
+      }
+    }
+    return out;
   }
 
   /** msg：页面上那条消息的编号和收到时是否排队（见 send 里的 shown） */
@@ -1255,7 +1297,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     this.markSwitched(key, op.seq);
     const next = this.nextWeixinConversation(conv);
     this.clearFullPermission(next.key);
-    updateAgentBinding(next.key, next.agent, { sessionId: undefined, forkFrom: undefined, model: model || undefined, effort: undefined });
+    updateAgentBinding(next.key, next.agent, { sessionId: undefined, forkFrom: undefined, pastSessions: undefined, model: model || undefined, effort: undefined });
     this.emitEvent(next.key, { type: "meta" });
     const runtime = await this.runtimeNow(next.key);
     return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
@@ -1634,6 +1676,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         if (index < 0 && !firstUnwritten) throw new Error("在会话记录里找不到这条消息，请稍后刷新重试");
         const message = index >= 0 ? history[index]! : { text: live!.type === "user" ? live!.text : "", attachments: live!.type === "user" ? live!.files : [] };
         const kept = index >= 0 ? history.slice(0, index) : [];
+        const past = await this.pastHistory(conv);
         await this.drop(key, "对话已回退");
         const sessionId = index > 0 && source && anchor ? await withTimeout(driver.rewindTo(source, conv.cwd, anchor), "回退会话") : undefined;
         this.markSwitched(key, op.seq);
@@ -1643,7 +1686,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
           for (const m of kept) if (m.footer) recordFooter(sessionId, m.text, m.footer);
         }
         const owner = memoryOwnerOf(conv);
-        if (owner) replaceConversationRecords(owner, key, kept.flatMap((m) => {
+        if (owner) replaceConversationRecords(owner, key, [...past, ...kept].flatMap((m) => {
           if (m.role === "question") return [];
           const text = [m.text, m.attachments?.length ? `（附件：${m.attachments.map((a) => a.name).join("、")}）` : ""].filter(Boolean).join("\n");
           return text.trim() ? [{ k: key, a: conv.agent, r: m.role === "user" ? "u" as const : "a" as const, t: text, ts: m.ts ?? conv.createdAt }] : [];
@@ -1758,14 +1801,16 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
   async history(key: string): Promise<HistoryMessage[]> {
     const conv = getConversation(key);
     if (!conv) return [];
-    const sessionId = agentBinding(conv).sessionId;
-    if (!sessionId) return [];
+    const { sessionId, pastSessions } = agentBinding(conv);
+    if (!sessionId && !pastSessions?.length) return [];
     const driver = this.requireDriver(conv.agent);
+    const past = await this.pastHistory(conv);
+    if (!sessionId) return past;
     try {
-      return attachFooters(sessionId, await driver.readHistory(sessionId, conv.cwd));
+      return [...past, ...attachFooters(sessionId, await driver.readHistory(sessionId, conv.cwd))];
     } catch (err) {
       console.error(`[历史] 读取 ${key} 失败:`, err);
-      return [];
+      return past;
     }
   }
 

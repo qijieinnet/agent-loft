@@ -148,15 +148,16 @@ function fire(task: Task, manual: boolean, now = Date.now()): string | undefined
   const permission = task.target.kind === "dedicated" ? hub.applyTaskPermission(key, task.permission) : undefined;
   const capped = task.target.kind === "dedicated" && task.permission && permission !== task.permission ? `权限只能到「${PERMISSION_LABEL[permission ?? "ask"]}」，按这一级运行` : "";
   const note = [manual ? "手动运行" : "", capped].filter(Boolean).join("；");
+  const fresh = task.target.kind === "dedicated" && !!task.freshContext;
   const run = pushRun(task, { id: runId(), at: now, status: "running", convKey: key, ...(note ? { note } : {}) });
   running.set(task.id, { runId: run.id, key, at: now });
   console.log(`[定时任务] ${task.id}「${task.title}」${manual ? "手动运行" : "到点运行"}，发到 ${key}`);
   hub.send(
     key,
-    { text: taskMessage(task, { now, manual, version: RUNNING_VERSION }), attachments: [] },
+    { text: taskMessage(task, { now, manual, version: RUNNING_VERSION, fresh }), attachments: [] },
     { channel: "task", channelId: task.id, name: `定时任务「${task.title}」` },
     undefined,
-    { task: { taskId: task.id, runId: run.id, title: task.title, smart: task.notify === "smart" } },
+    { task: { taskId: task.id, runId: run.id, title: task.title, smart: task.notify === "smart", ...(fresh ? { fresh } : {}) } },
   );
   return undefined;
 }

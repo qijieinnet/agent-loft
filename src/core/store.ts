@@ -20,6 +20,11 @@ export type AgentBinding = {
    * 拿到不同于它的新会话 id 后清掉。
    */
   forkFrom?: string;
+  /**
+   * 这条对话以前用过、已经不再续用的会话（旧的在前）：只用来在页面上接着显示，不进 agent 的上下文。
+   * 「不携带上下文」的定时任务每次运行都换新会话，靠它把之前的运行结果留在对话里。
+   */
+  pastSessions?: string[];
 };
 
 export type Conversation = {
