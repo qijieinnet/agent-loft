@@ -757,7 +757,7 @@ test("/new 之后的消息不会被旧会话的提问吃掉；显式恢复后第
   assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "old-session");
 });
 
-test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消息不会把刚恢复的会话判过期", async () => {
+test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消息不会把刚恢复的会话判过期", { timeout: 15_000 }, async () => {
   const { hub } = await import("../src/core/hub.js");
   const { updateConversation, getConversation } = await import("../src/core/store.js");
   type Host = (spec: unknown) => Promise<{ settlement: string }>;
@@ -765,6 +765,10 @@ test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消�
   let release!: () => void;
   let slow = new Promise<void>((r) => (release = r));
   const sent: string[] = [];
+  let onSent: (() => void) | undefined;
+  const nextSend = () => new Promise<void>((resolve) => { onSent = resolve; });
+  let onDispose!: () => void;
+  const disposalStarted = new Promise<void>((resolve) => { onDispose = resolve; });
   hub.registerDriver({
     id: "claude",
     label: "S",
@@ -778,11 +782,13 @@ test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消�
         send: (input) => {
           sent.push(`${opts.resumeId ?? "new"}:${input.text}`);
           events.onSessionId(opts.resumeId ?? "fresh");
+          onSent?.();
+          onSent = undefined;
         },
         interrupt: async () => {},
         setModel: async () => {},
         describeRuntime: async () => ({}),
-        dispose: () => slow,
+        dispose: () => { onDispose(); return slow; },
       };
     },
     listSessions: async () => [],
@@ -797,11 +803,12 @@ test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消�
   const key = "web:late";
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
   const origin = { channel: "web", channelId: "web" };
+  const firstSend = nextSend();
   hub.send(key, { text: "建立", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await firstSend;
   const oldHost = hosts.at(-1)!;
   const pendingNew = hub.newSession(key);
-  await new Promise((r) => setTimeout(r, 5));
+  await disposalStarted;
   // 旧进程在退出途中晚到一个提问
   const late = await oldHost({ kind: "question", title: "t", questions: [] });
   assert.equal(late.settlement, "cancelled");
@@ -810,15 +817,17 @@ test("被丢弃进程晚到的提问直接取消；恢复排队期间发的消�
   await pendingNew;
 
   // 会话闲置很久；发起 /resume（卡在旧会话 dispose），期间发消息
+  const freshSend = nextSend();
   hub.send(key, { text: "新进程", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await freshSend;
   slow = new Promise<void>((r) => (release = r));
   updateConversation(key, { activeAt: Date.now() - 365 * 24 * 3600 * 1000 });
   const pendingResume = hub.resume(key, "target");
+  const resumedSend = nextSend();
   hub.send(key, { text: "继续", attachments: [] }, origin);
   release();
   await pendingResume;
-  await new Promise((r) => setTimeout(r, 20));
+  await resumedSend;
   assert.equal(sent.at(-1), "target:继续");
   assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "target");
 });
