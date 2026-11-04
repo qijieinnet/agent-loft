@@ -56,7 +56,7 @@ function describeTask(task: Task, convKey: string): string {
     task.enabled && task.nextRunAt ? `下次 ${formatDateTime(task.nextRunAt)}` : "已暂停",
     task.notify === "smart" ? "有需要才提醒" : "每次都提醒",
     `结果发到${whereText(task, convKey)}`,
-    ...(task.target.kind === "dedicated" && task.freshContext ? ["每次运行不带之前的上下文"] : []),
+    ...(task.freshContext ? ["每次运行不带之前的上下文"] : []),
     ...(last ? [`最近一次 ${formatDateTime(last.at)} ${STATUS[last.status] ?? last.status}${last.preview ? `：${last.preview}` : last.note ? `（${last.note}）` : ""}`] : []),
   ].join(" · ") + `\n  提示词：${task.prompt.replace(/\s+/g, " ").slice(0, 200)}`;
 }
@@ -80,7 +80,15 @@ function taskPermissionLine(task: Task): string {
   return permissionLine(conv ? hub.permissionOf(conv) : undefined, true);
 }
 
-function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string; expert?: string; permission?: string; prompt?: string; enabled?: boolean }, now: number): string {
+/** 改回携带时要说清楚：接不回以前的内容 */
+const KEEP_CONTEXT_NOTE = "改回携带后，之前不携带时运行的内容不会恢复（对话里还看得到，agent 看不到）。";
+
+function contextLine(task: { fresh: boolean; dedicated: boolean }): string {
+  if (!task.fresh) return `携带（${task.dedicated ? "接着之前的运行" : "接着这条对话的聊天内容"}）`;
+  return task.dedicated ? "不携带（每次都从头开始）" : "不携带（每次在独立的会话里运行，看不到聊天内容，结果仍显示在这条对话）";
+}
+
+function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string; expert?: string; permission?: string; context?: string; prompt?: string; enabled?: boolean }, now: number): string {
   const lines: string[] = [];
   if (fields.schedule) {
     const next = nextRun(fields.schedule, now);
@@ -91,6 +99,7 @@ function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string
   if (fields.where) lines.push(`**结果发到**：${fields.where}`);
   if (fields.expert) lines.push(`**专家**：${fields.expert}`);
   if (fields.permission) lines.push(`**权限**：${fields.permission}`);
+  if (fields.context) lines.push(`**上下文**：${fields.context}`);
   if (fields.enabled !== undefined) lines.push(`**状态**：${fields.enabled ? "恢复运行" : "暂停"}`);
   if (fields.prompt) lines.push("", "**到点要做的事**：", "", ...fields.prompt.split("\n").map((l) => `> ${l}`));
   return lines.join("\n");
@@ -136,6 +145,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: convKey },
       expert: expertIdOf(conv),
       cwd: conv.cwd,
+      ...(args.fresh_context === true ? { freshContext: true } : {}),
     };
     const title = String(args.title ?? "").trim() || prompt.replace(/\s+/g, " ").slice(0, 60);
     const ok = await confirm(
@@ -149,6 +159,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
           ...(dedicated ? { expert: expertName } : {}),
           // agent 建的专用对话任务一律从默认开始，要放宽只能用户到页面上改
           permission: dedicated ? "默认（要放宽到定时任务页面上改）" : permissionLine(hub.permissionOf(conv), true),
+          context: contextLine({ fresh: args.fresh_context === true, dedicated }),
           prompt,
         },
         now,
@@ -194,9 +205,11 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
     if (args.prompt !== undefined) patch.prompt = args.prompt;
     if (args.notify !== undefined) patch.notify = args.notify;
     if (args.enabled !== undefined) patch.enabled = args.enabled === true;
+    if (args.fresh_context !== undefined) patch.freshContext = args.fresh_context === true;
     if (Object.keys(patch).length === 0) return fail("没有要改的字段。");
     // 只是暂停：不会让它多跑什么，不用问
     const pauseOnly = Object.keys(patch).length === 1 && patch.enabled === false;
+    const restoring = !!task.freshContext && patch.freshContext === false;
     if (!pauseOnly) {
       const ok = await confirm(
         convKey,
@@ -206,18 +219,19 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
             ...(patch.schedule ? { schedule: patch.schedule as TaskSchedule } : {}),
             ...(patch.notify !== undefined ? { notify: String(patch.notify) } : {}),
             permission: taskPermissionLine(task),
+            ...(patch.freshContext !== undefined ? { context: contextLine({ fresh: patch.freshContext === true, dedicated: task.target.kind === "dedicated" }) } : {}),
             ...(patch.enabled !== undefined ? { enabled: patch.enabled === true } : {}),
             ...(patch.prompt !== undefined ? { prompt: String(patch.prompt) } : {}),
           },
           now,
-        ) + (patch.title !== undefined ? `\n\n**新名称**：${String(patch.title)}` : ""),
+        ) + (patch.title !== undefined ? `\n\n**新名称**：${String(patch.title)}` : "") + (restoring ? `\n\n${KEEP_CONTEXT_NOTE}` : ""),
       );
       if (!ok) return fail("用户没有同意，任务没有改。");
     }
     try {
       const updated = updateTask(user.id, task.id, patch);
       return {
-        text: `已改好「${updated.title}」：${describeSchedule(updated.schedule)}，${updated.enabled && updated.nextRunAt ? `下次 ${formatDateTime(updated.nextRunAt)}` : "已暂停"}。`,
+        text: `已改好「${updated.title}」：${describeSchedule(updated.schedule)}，${updated.enabled && updated.nextRunAt ? `下次 ${formatDateTime(updated.nextRunAt)}` : "已暂停"}。${restoring ? `告诉用户：${KEEP_CONTEXT_NOTE}` : ""}`,
       };
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err));

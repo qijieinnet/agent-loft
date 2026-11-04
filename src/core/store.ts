@@ -22,9 +22,16 @@ export type AgentBinding = {
   forkFrom?: string;
   /**
    * 这条对话以前用过、已经不再续用的会话（旧的在前）：只用来在页面上接着显示，不进 agent 的上下文。
-   * 「不携带上下文」的定时任务每次运行都换新会话，靠它把之前的运行结果留在对话里。
+   * 「不携带上下文」的定时任务每次运行都用新会话，靠它把之前的运行结果留在对话里。
    */
   pastSessions?: string[];
+  /**
+   * 定时任务正在临时会话里跑（发到这条对话、不携带上下文的任务，见 hub.parkChatSession）：
+   * 聊天的会话先记在这里，跑完换回去。持久化是为了重启后也能换回去。
+   */
+  parked?: { sessionId?: string; forkFrom?: string };
+  /** 独立运行的任务结果：聊天的会话不知道它们，下一条聊天消息时带给 agent，带完就清 */
+  taskResults?: { title: string; text: string; at: number }[];
 };
 
 export type Conversation = {

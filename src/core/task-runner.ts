@@ -148,7 +148,9 @@ function fire(task: Task, manual: boolean, now = Date.now()): string | undefined
   const permission = task.target.kind === "dedicated" ? hub.applyTaskPermission(key, task.permission) : undefined;
   const capped = task.target.kind === "dedicated" && task.permission && permission !== task.permission ? `权限只能到「${PERMISSION_LABEL[permission ?? "ask"]}」，按这一级运行` : "";
   const note = [manual ? "手动运行" : "", capped].filter(Boolean).join("；");
-  const fresh = task.target.kind === "dedicated" && !!task.freshContext;
+  const fresh = !!task.freshContext;
+  // 专用对话直接换新会话；发到已有对话的还有人在聊，借临时会话跑，跑完换回去
+  const contextTag = !fresh ? {} : task.target.kind === "dedicated" ? { fresh } : { isolated: true };
   const run = pushRun(task, { id: runId(), at: now, status: "running", convKey: key, ...(note ? { note } : {}) });
   running.set(task.id, { runId: run.id, key, at: now });
   console.log(`[定时任务] ${task.id}「${task.title}」${manual ? "手动运行" : "到点运行"}，发到 ${key}`);
@@ -157,7 +159,7 @@ function fire(task: Task, manual: boolean, now = Date.now()): string | undefined
     { text: taskMessage(task, { now, manual, version: RUNNING_VERSION, fresh }), attachments: [] },
     { channel: "task", channelId: task.id, name: `定时任务「${task.title}」` },
     undefined,
-    { task: { taskId: task.id, runId: run.id, title: task.title, smart: task.notify === "smart", ...(fresh ? { fresh } : {}) } },
+    { task: { taskId: task.id, runId: run.id, title: task.title, smart: task.notify === "smart", ...contextTag } },
   );
   return undefined;
 }
@@ -241,6 +243,7 @@ export function startTaskRunner(): void {
       advance(task, now);
     }
   }
+  hub.recoverIsolatedRuns();
   hub.on("task", onTurnEnd);
   timer = setInterval(tick, TICK_MS);
   timer.unref();

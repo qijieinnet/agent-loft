@@ -144,10 +144,10 @@ test("侧栏时钟：专用对话和当前聊天关联的定时任务均显示�
   const { page } = await fixture(t);
   const mark = page.locator('.conv-item[data-key="web:1"] .task-mark');
   assert.equal(await mark.count(), 0);
-  for (const patch of [{ hasTasks: true }, { taskId: "t_dedicated" }, {}]) {
+  for (const patch of [{ tasks: [{ id: "t_conv", title: "早报" }] }, { taskId: "t_dedicated" }, {}]) {
     await page.evaluate((patch) => {
       const conv = S.convs.get("web:1");
-      delete conv.hasTasks;
+      delete conv.tasks;
       delete conv.taskId;
       Object.assign(conv, patch);
       window.renderSidebar();

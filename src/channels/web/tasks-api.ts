@@ -5,7 +5,7 @@ import { canUseExpert, getExpert, isBuiltin } from "../../core/experts.js";
 import { hub } from "../../core/hub.js";
 import { exceedsPermission, isPermissionLevel, PERMISSION_LABEL, permissionCapOfAccess } from "../../core/permission.js";
 import { memoryOwnerOf } from "../../core/personal.js";
-import { getConversation } from "../../core/store.js";
+import { expertIdOf, getConversation } from "../../core/store.js";
 import { forgetTask, isTaskRunning, releaseTaskConv, runTaskNow } from "../../core/task-runner.js";
 import { serverTimeZone } from "../../core/task-schedule.js";
 import { createTask, deleteTask, getTask, listTasks, updateTask, viewOf, type Task, type TaskInput } from "../../core/tasks.js";
@@ -19,13 +19,42 @@ function view(task: Task) {
     ...viewOf(task),
     running: isTaskRunning(task.id),
     // 结果在哪条对话里看（专用对话第一次运行前还没有）
-    ...(conv && !conv.hidden ? { convKey: conv.key, convTitle: conv.title ?? "", convPermission: hub.permissionOf(conv) } : {}),
+    ...(conv && !conv.hidden
+      ? {
+          convKey: conv.key,
+          convTitle: conv.title ?? "",
+          convPermission: hub.permissionOf(conv),
+          convPermissionMax: hub.permissionMax(conv),
+          convExpert: hub.expertBadge(conv),
+          convCwd: conv.cwd,
+        }
+      : {}),
   };
 }
 
+/** convPermission：任务发到已有对话时，顺手改那条对话的权限（权限属于对话，不属于任务） */
+type TaskBody = TaskInput & { convPermission?: unknown };
+
 /** 表单 / 请求里的字段先在这里核一遍：专家要是自己能用的、引擎要启用着，目录要在工作区里，对话要是自己的 */
-function checkInput(user: User, body: TaskInput): TaskInput {
-  const out: TaskInput = { ...body };
+function checkInput(user: User, body: TaskBody): TaskInput {
+  const { convPermission, ...out }: TaskBody = { ...body };
+  const target = body.target as { kind?: string; key?: string } | undefined;
+  const conv = target?.kind === "conv" && target.key ? getConversation(target.key) : undefined;
+  if (target?.kind === "conv" && (!conv || conv.hidden || memoryOwnerOf(conv) !== user.id)) throw new HttpError(400, "回复到的那条对话不存在了，改成专用对话吧");
+  if (conv) {
+    if (convPermission !== undefined) {
+      if (!isPermissionLevel(convPermission)) throw new HttpError(400, "权限级别不对");
+      if (conv.taskId) throw new HttpError(400, "这是另一个定时任务的专用对话，权限在那个任务里改");
+      if (convPermission === "full" && user.role !== "admin") throw new HttpError(403, "只有管理员能选「完全允许」");
+      const max = hub.permissionMax(conv);
+      if (exceedsPermission(convPermission, max)) throw new HttpError(400, `这条对话的权限最高只能到「${PERMISSION_LABEL[max]}」`);
+    }
+    // 专家和目录是这条对话的，中途换不了：以对话为准，表单给什么都不算
+    delete out.agent;
+    out.expert = expertIdOf(conv);
+    out.cwd = conv.cwd;
+    return out;
+  }
   const pick = body.expert ?? body.agent;
   if (pick !== undefined) {
     const id = String(pick);
@@ -47,12 +76,13 @@ function checkInput(user: User, body: TaskInput): TaskInput {
       throw new HttpError(400, `这个专家的权限最高只能到「${PERMISSION_LABEL[permissionCapOfAccess(access)]}」`);
     }
   }
-  const target = body.target as { kind?: string; key?: string } | undefined;
-  if (target?.kind === "conv") {
-    const conv = target.key ? getConversation(target.key) : undefined;
-    if (!conv || conv.hidden || memoryOwnerOf(conv) !== user.id) throw new HttpError(400, "回复到的那条对话不存在了，改成专用对话吧");
-  }
   return out;
+}
+
+/** 任务存好了再改对话的权限。前面 checkInput 核过了，这里不会被拒 */
+async function applyConvPermission(task: Task, body: TaskBody, user: User): Promise<void> {
+  if (task.target.kind !== "conv" || !isPermissionLevel(body.convPermission)) return;
+  await hub.setPermission(task.target.key, body.convPermission, user.role === "admin");
 }
 
 const bad = (err: unknown) => (err instanceof HttpError ? err : new HttpError(400, err instanceof Error ? err.message : String(err)));
@@ -65,7 +95,7 @@ export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, 
     return true;
   }
   if (p === "/api/tasks" && method === "POST") {
-    const body = await readJsonBody<TaskInput>(req);
+    const body = await readJsonBody<TaskBody>(req);
     // 没选专家：用第一个启用着的内置专家，不能默认成一个可能没启用的
     if (!body.expert && !body.agent) body.expert = hub.enabledAgents()[0]?.id;
     let task: Task;
@@ -74,6 +104,7 @@ export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, 
     } catch (err) {
       throw bad(err);
     }
+    await applyConvPermission(task, body, user);
     sendJson(res, 200, view(task));
     return true;
   }
@@ -88,7 +119,7 @@ export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, 
     return true;
   }
   if (!m[2] && method === "PATCH") {
-    const body = await readJsonBody<TaskInput>(req);
+    const body = await readJsonBody<TaskBody>(req);
     let updated: Task;
     // updateTask 是就地改的：先记下原来的专用对话
     const before = task.target.kind === "dedicated" ? task.target.key : undefined;
@@ -101,6 +132,7 @@ export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, 
     const now = updated.target.kind === "dedicated" ? updated.target.key : undefined;
     if (before && before !== now) releaseTaskConv(updated.id, before);
     if (now) hub.applyTaskPermission(now, updated.permission);
+    await applyConvPermission(updated, body, user);
     sendJson(res, 200, view(updated));
     return true;
   }

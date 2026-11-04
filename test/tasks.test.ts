@@ -80,24 +80,24 @@ test("当前聊天的定时任务：创建、暂停、迁移和删除同步会�
   hub.on("event", listener);
   const input = { prompt: "检查", schedule: { kind: "daily", time: "08:00" }, target: { kind: "conv", key: keys[0] } };
   try {
-    assert.equal(hub.info(keys[0]!)?.hasTasks, undefined);
+    assert.equal(hub.info(keys[0]!)?.tasks, undefined);
     const first = tasks.createTask(owner, input, "agent");
     assert.deepEqual(refreshed.splice(0), [keys[0]]);
-    assert.equal(hub.info(keys[0]!)?.hasTasks, true);
+    assert.deepEqual(hub.info(keys[0]!)?.tasks, [{ id: first.id, title: first.title }]);
     assert.equal(hub.info(keys[0]!)?.taskId, undefined, "普通对话的权限不改为跟随任务");
     const second = tasks.createTask(owner, input, "user");
     tasks.updateTask(owner, first.id, { enabled: false });
-    assert.equal(hub.info(keys[0]!)?.hasTasks, true, "暂停的任务仍然关联对话");
+    assert.equal(hub.info(keys[0]!)?.tasks?.length, 2, "暂停的任务仍然关联对话");
     refreshed.length = 0;
     tasks.updateTask(owner, first.id, { target: { kind: "conv", key: keys[1] } });
     assert.deepEqual(refreshed.splice(0), keys, "迁移同时刷新新旧对话");
-    assert.equal(hub.info(keys[0]!)?.hasTasks, true, "原对话还有第二个任务");
-    assert.equal(hub.info(keys[1]!)?.hasTasks, true);
+    assert.deepEqual(hub.info(keys[0]!)?.tasks?.map((t) => t.id), [second.id], "原对话还有第二个任务");
+    assert.deepEqual(hub.info(keys[1]!)?.tasks?.map((t) => t.id), [first.id]);
     tasks.deleteTask(owner, second.id);
-    assert.equal(hub.info(keys[0]!)?.hasTasks, undefined);
+    assert.equal(hub.info(keys[0]!)?.tasks, undefined);
     assert.deepEqual(refreshed.splice(0), [keys[0]]);
     tasks.deleteUserTasks(owner);
-    assert.equal(hub.info(keys[1]!)?.hasTasks, undefined);
+    assert.equal(hub.info(keys[1]!)?.tasks, undefined);
     assert.deepEqual(refreshed.splice(0), [keys[1]]);
   } finally {
     hub.off("event", listener);
@@ -199,17 +199,180 @@ test("运行：不携带上下文时每次换新会话，留在同一条对话�
     await hub.newSession(key);
     assert.deepEqual(await hub.history(key), []);
 
-    // 发到已有对话的不受这个选项影响：不能把用户在聊的会话换掉
-    const convTask = tasks.createTask(owner.id, { title: "原对话", prompt: "看看", schedule: { kind: "daily", time: "02:00" }, target: { kind: "conv", key }, freshContext: true }, "user");
-    hub.send(key, { text: "聊两句", attachments: [] }, { channel: "web", channelId: "web" });
-    await new Promise((r) => setTimeout(r, 60));
-    const chatting = agentBinding(getConversation(key)!).sessionId;
-    assert.ok(chatting);
-    assert.equal(runner.runTaskNow(convTask), undefined);
-    await new Promise((r) => setTimeout(r, 60));
-    assert.equal(agentBinding(getConversation(key)!).sessionId, chatting);
-    assert.equal(agentBinding(getConversation(key)!).pastSessions, undefined);
   } finally {
+    runner.stopTaskRunner();
+    tasks.deleteUserTasks(owner.id);
+  }
+});
+
+test("发到聊天对话、不携带上下文：借临时会话跑，跑完换回聊天的会话", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { agentBinding, getConversation, updateAgentBinding } = await import("../src/core/store.js");
+  const { createUser } = await import("../src/core/users.js");
+  const runner = await import("../src/core/task-runner.js");
+
+  const sent: { session: string; text: string }[] = [];
+  const created: (string | undefined)[] = [];
+  let seq = 0;
+  let holdTask = false;
+  let release = () => {};
+  hub.registerDriver({
+    id: "claude",
+    label: "Fake",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (opts, events) => {
+      created.push(opts.resumeId);
+      const id = opts.resumeId ?? `s${++seq}`;
+      const answer = () => {
+        events.onSessionId(id);
+        events.onResult({ text: `来自 ${id}`, durationMs: 1, anchor: `end-${id}` });
+      };
+      return {
+        sessionId: opts.resumeId,
+        send: (input: { text: string }) => {
+          sent.push({ session: id, text: input.text });
+          if (holdTask && input.text.includes("看看")) {
+            events.onSessionId(id);
+            release = answer;
+            return;
+          }
+          setTimeout(answer, 5);
+        },
+        interrupt: async () => {
+          release = () => {};
+          events.onError(new Error("interrupted"));
+        },
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: async () => {},
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async (id: string) =>
+      id === "s1"
+        ? [
+            { role: "user" as const, text: "聊两句", anchor: "a-1" },
+            { role: "assistant" as const, text: "好", ts: 100, anchor: "a-2" },
+            { role: "user" as const, text: "再聊", anchor: "a-3" },
+            { role: "assistant" as const, text: "嗯", ts: 300, anchor: "a-4" },
+          ]
+        : [
+            { role: "user" as const, text: `任务 ${id}`, anchor: `t-${id}` },
+            { role: "assistant" as const, text: `结果 ${id}`, ts: 200, anchor: `r-${id}` },
+          ],
+    listModels: async () => [],
+    catalog: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  const wait = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+  // 刚停止的 15 秒内不让再跑，这里不用真的等
+  const clearStopped = () => (hub as unknown as { stoppedAt: Map<string, number> }).stoppedAt.delete(key);
+  const owner = createUser({ name: "isolated-owner", password: "password-123", role: "admin" });
+  const key = "web:isolated";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude", owner: owner.id });
+  const binding = () => agentBinding(getConversation(key)!);
+  const chat = (text: string) => hub.send(key, { text, attachments: [] }, { channel: "web", channelId: "web" });
+  runner.startTaskRunner();
+  try {
+    const task = tasks.createTask(owner.id, { title: "独立", prompt: "看看", schedule: { kind: "daily", time: "02:00" }, target: { kind: "conv", key }, freshContext: true }, "user");
+    chat("聊两句");
+    await wait();
+    assert.equal(binding().sessionId, "s1");
+
+    // 跑完：聊天的会话换回来，任务的进历史，运行状态正常
+    assert.equal(runner.runTaskNow(task), undefined);
+    await wait();
+    assert.equal(sent.at(-1)!.session, "s2", "任务在新会话里跑");
+    assert.equal(binding().sessionId, "s1");
+    assert.deepEqual(binding().pastSessions, ["s2"]);
+    assert.equal(binding().parked, undefined);
+    assert.equal(task.runs[0]!.status, "notified");
+
+    // 显示：按时间穿插，不能回退或分叉任务那一段；聊天的还能
+    assert.deepEqual((await hub.history(key)).map((m) => [m.text, m.anchor]), [
+      ["聊两句", "a-1"],
+      ["好", "a-2"],
+      ["任务 s2", undefined],
+      ["结果 s2", undefined],
+      ["再聊", "a-3"],
+      ["嗯", "a-4"],
+    ]);
+
+    // 下一条聊天接着聊天的会话，结果只带一次，页面上看不到这段背景
+    chat("刚才那个结果什么意思");
+    await wait();
+    assert.equal(sent.at(-1)!.session, "s1");
+    assert.match(sent.at(-1)!.text, /来自 s2/);
+    assert.equal(stripContext(sent.at(-1)!.text), "刚才那个结果什么意思");
+    chat("再问一句");
+    await wait();
+    assert.equal(sent.at(-1)!.text, "再问一句");
+
+    // 运行期间发的消息：不进临时会话，跑完才发到聊天的会话
+    holdTask = true;
+    assert.equal(runner.runTaskNow(task), undefined);
+    await wait();
+    assert.equal(sent.at(-1)!.session, "s3");
+    assert.deepEqual(binding().parked, { sessionId: "s1" });
+    assert.equal((await hub.history(key)).filter((m) => m.text === "聊两句").length, 1, "运行中聊天记录还在");
+    chat("等你跑完");
+    await wait();
+    assert.ok(!sent.some((m) => m.text.startsWith("等你跑完")), "排着不发");
+    release();
+    await wait();
+    assert.equal(sent.at(-1)!.session, "s1");
+    assert.ok(sent.at(-1)!.text.startsWith("等你跑完"));
+    assert.equal(task.runs[0]!.status, "notified");
+
+    // 停止：换回聊天的会话，任务记成中断
+    assert.equal(runner.runTaskNow(task), undefined);
+    await wait();
+    assert.equal(binding().sessionId, "s4");
+    await hub.stop(key);
+    await wait();
+    assert.equal(binding().sessionId, "s1");
+    assert.equal(binding().parked, undefined);
+    assert.equal(task.runs[0]!.status, "interrupted");
+    clearStopped();
+
+    // 打断并发送：排着的消息照常发到聊天的会话
+    assert.equal(runner.runTaskNow(task), undefined);
+    await wait();
+    const pending: { id?: string }[] = [];
+    const listen = (env: { key: string; ev: { type: string; id?: string } }) => {
+      if (env.key === key && env.ev.type === "user") pending.push(env.ev);
+    };
+    hub.on("event", listen);
+    chat("马上看这条");
+    hub.off("event", listen);
+    await wait();
+    assert.match(await hub.jump(key, pending[0]!.id!), /已打断定时任务/);
+    await wait();
+    assert.equal(sent.at(-1)!.session, "s1");
+    assert.ok(sent.at(-1)!.text.startsWith("马上看这条"));
+    clearStopped();
+
+    // 开新会话：打断运行，新会话不沾旧的
+    assert.equal(runner.runTaskNow(task), undefined);
+    await wait();
+    await hub.newSession(key);
+    assert.equal(binding().sessionId, undefined);
+    assert.equal(binding().parked, undefined);
+    assert.equal(binding().pastSessions, undefined);
+
+    // 上次退出时还在跑：启动时换回来
+    updateAgentBinding(key, "claude", { sessionId: "s-run", parked: { sessionId: "s-chat" } });
+    hub.recoverIsolatedRuns();
+    assert.equal(binding().sessionId, "s-chat");
+    assert.equal(binding().parked, undefined);
+    assert.deepEqual(binding().pastSessions, ["s-run"]);
+  } finally {
+    holdTask = false;
     runner.stopTaskRunner();
     tasks.deleteUserTasks(owner.id);
   }

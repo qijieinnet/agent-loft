@@ -497,13 +497,16 @@ function withTasks(fn) {
 function convMenuItems(key) {
   const c = S.convs.get(key);
   if (!c) return [];
+  const tasks = c.tasks ?? [];
   return [
-    ...(c.taskId
+    ...(tasks.length === 1
       ? [
-          { id: "task-edit", label: "编辑定时任务", icon: "edit", onclick: () => withTasks((m) => m.editTaskById(c.taskId)) },
-          { id: "task-run", label: "立即运行", icon: "play", onclick: () => withTasks((m) => m.runTaskById(c.taskId)) },
+          { id: "task-edit", label: "编辑定时任务", icon: "edit", onclick: () => withTasks((m) => m.editTaskById(tasks[0].id)) },
+          { id: "task-run", label: "立即运行", icon: "play", onclick: () => withTasks((m) => m.runTaskById(tasks[0].id)) },
         ]
-      : []),
+      : tasks.length > 1
+        ? [{ id: "task-list", label: `定时任务（${tasks.length} 个）`, icon: "clock", onclick: () => withTasks((m) => m.openConvTasks(tasks)) }]
+        : []),
     {
       id: "fork",
       label: "分叉",

@@ -8,8 +8,8 @@ import { agentLabel, closeSide, renderSidebar } from "./sidebar.js";
 import { baseName, renderTopbar } from "./topbar.js";
 import { openConversation } from "./messages.js";
 import { changeCwd } from "./conv-actions.js";
-import { expertChoices, findExpert } from "./experts.js";
-import { capOfAccess, minPermission, PERMISSIONS, permissionsUpTo } from "../lib/permission.js";
+import { convExpert, expertChoices, findExpert } from "./experts.js";
+import { capOfAccess, FULL_WARNING, minPermission, PERMISSIONS, permissionsUpTo } from "../lib/permission.js";
 
 // ---------- 定时任务页 ----------
 // 到点让 agent 按提示词干活，结果回到一条对话里；「有需要才提醒」时由 agent 判断这次要不要打扰你。
@@ -238,7 +238,7 @@ function taskCard(t) {
       h("span", {}, state),
       h("span", {}, t.notify === "smart" ? "有需要才提醒" : "每次都提醒"),
       h("span", {}, where),
-      t.target.kind === "dedicated" && t.freshContext ? h("span", {}, "不带上下文") : null,
+      t.freshContext ? h("span", {}, "不带上下文") : null,
       t.target.kind === "dedicated" && t.permission ? h("span", { class: t.permission === "full" ? "task-perm-full" : "" }, PERMISSIONS[t.permission].label) : null,
       t.target.kind === "conv" && t.convPermission === "full" ? h("span", { class: "task-perm-full" }, "跟随对话：完全允许") : null,
     ),
@@ -277,6 +277,26 @@ export function runTaskById(id) {
   return runNow({ id });
 }
 
+/** 一条对话绑了好几个任务：先选是哪个 */
+export function openConvTasks(tasks) {
+  const close = modal({
+    title: "这条对话的定时任务",
+    body: h(
+      "div",
+      { class: "modal-body conv-tasks" },
+      tasks.map((t) =>
+        h(
+          "div",
+          { class: "conv-task-row" },
+          h("span", { class: "grow", title: t.title }, t.title),
+          h("button", { class: "btn", onclick: () => (close(), editTaskById(t.id)) }, "编辑"),
+          h("button", { class: "btn", onclick: () => (close(), runTaskById(t.id)) }, "立即运行"),
+        ),
+      ),
+    ),
+  });
+}
+
 async function removeTask(t) {
   const sure = await confirmDialog({
     title: `删除「${t.title}」？`,
@@ -298,6 +318,20 @@ async function removeTask(t) {
 
 const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const WEEK_NAME = ["日", "一", "二", "三", "四", "五", "六"];
+
+/** 「结果发到」可选的对话：自己的、不是别的任务专用的。正在用的那条一定在 */
+function targetChoices(current) {
+  const convs = [...S.convs.values()].filter((c) => c.personal && !c.hidden && !c.taskId && c.key !== current).sort((a, b) => b.activeAt - a.activeAt);
+  return convs.slice(0, 50);
+}
+
+/** 对话的专家、目录、权限：优先用页面上的（是最新的），对话还没加载就用任务接口带的 */
+function convTargetInfo(key, task) {
+  const c = S.convs.get(key);
+  if (c) return { title: c.title, expert: convExpert(c), cwd: c.cwd, permission: c.permission, max: c.permissionMax, locked: !!c.taskId };
+  if (task?.convKey !== key) return null;
+  return { title: task.convTitle, expert: task.convExpert, cwd: task.convCwd, permission: task.convPermission, max: task.convPermissionMax, locked: false };
+}
 
 /** task：编辑这个；preset：新建时预填（例子） */
 export function openTaskForm(task, preset) {
@@ -382,15 +416,14 @@ export function openTaskForm(task, preset) {
   );
 
   // ---- 结果发到哪 ----
-  const convTarget = task?.target.kind === "conv";
-  const target = convTarget
-    ? h(
-        "select",
-        {},
-        h("option", { value: "conv", selected: true }, `原来的对话「${task.convTitle || "对话"}」`),
-        h("option", { value: "dedicated" }, "专用对话（单独开一条）"),
-      )
-    : null;
+  const currentTarget = task?.target?.kind === "conv" ? task.target.key : "dedicated";
+  const target = h(
+    "select",
+    { class: "task-target" },
+    h("option", { value: "dedicated", selected: currentTarget === "dedicated" }, task?.target?.kind === "dedicated" && task.convKey ? `专用对话「${task.convTitle || "对话"}」` : "专用对话（第一次运行时新建，之后都发到这条）"),
+    currentTarget !== "dedicated" ? h("option", { value: currentTarget, selected: true }, `对话「${convTargetInfo(currentTarget, task)?.title || "对话"}」`) : null,
+    targetChoices(currentTarget).map((c) => h("option", { value: c.key }, `对话「${c.title || "未命名"}」`)),
+  );
   const picked = src.expert ?? src.agent ?? S.draftExpert;
   // 任务用的专家被删了：列表里没有它，留一项占位，免得一打开就悄悄换成别的
   const missing = task && !experts.some((e) => e.id === picked);
@@ -416,7 +449,7 @@ export function openTaskForm(task, preset) {
       },
     });
   const cwdField = field("工作目录", cwdBtn, "专家在这个目录里干活。没选就用专家默认的目录。");
-  // ---- 权限（只有专用对话有：发到已有对话的跟着那条对话）----
+  // ---- 权限（专用对话的在任务上；发到已有对话的就是那条对话的，见下面的 convBox）----
   const permission = h("select", {});
   const permissionHint = h("small", {});
   const permissionField = h("div", { class: "field" }, h("span", {}, "权限"), permission, permissionHint);
@@ -439,22 +472,44 @@ export function openTaskForm(task, preset) {
     permissionValue = permission.value;
     syncPermission();
   };
-  // ---- 上下文（只有专用对话有：发到已有对话的要接着你们的聊天）----
-  const context = h(
-    "select",
-    {},
-    h("option", { value: "keep", selected: !src.freshContext }, "携带（能看到之前几次运行的内容）"),
-    h("option", { value: "fresh", selected: !!src.freshContext }, "不携带（每次都从头开始）"),
-  );
-  const contextField = field("上下文", context, "不携带时结果还留在这条对话里，只是 agent 看不到，没法和上次对比，也更省 token。");
-  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField, permissionField, contextField);
-  const followField = convTarget
-    ? field("权限", h("div", { class: "task-static" }, `跟随这条对话（现在是「${task.convPermission ? PERMISSIONS[task.convPermission].label : "默认"}」）`), "要单独设权限，把结果改发到专用对话。")
-    : null;
+  // ---- 上下文 ----
+  const keepOption = h("option", { value: "keep", selected: !src.freshContext });
+  const context = h("select", { class: "task-context" }, keepOption, h("option", { value: "fresh", selected: !!src.freshContext }, "不携带（每次都从头开始）"));
+  const contextHint = h("small", {});
+  const contextField = h("div", { class: "field" }, h("span", {}, "上下文"), context, contextHint);
+  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField, permissionField);
+  // 发到已有对话：专家、目录属于对话，中途换不了，只显示；权限可以改，改的是对话自己的
+  const convBox = h("div", { class: "task-dedicated task-conv" });
+  let convPermission = null;
+  const syncConvBox = () => {
+    convPermission = null;
+    const info = target.value === "dedicated" ? null : convTargetInfo(target.value, task);
+    if (!info) return fill(convBox);
+    const label = PERMISSIONS[info.permission]?.label ?? "默认";
+    const levels = info.max ? permissionsUpTo(info.max) : [];
+    if (!info.locked && levels.length > 1) {
+      convPermission = h("select", { class: "task-conv-permission" }, levels.map((l) => h("option", { value: l, selected: l === info.permission }, `${PERMISSIONS[l].label}：${PERMISSIONS[l].desc}`)));
+    }
+    fill(
+      convBox,
+      field("专家", h("div", { class: "task-static" }, info.expert?.name ?? "（已删除的专家）"), "跟随这条对话，对话中途不能换专家。要换专家，改发到专用对话。"),
+      info.expert?.access === "web" ? null : field("工作目录", h("div", { class: "task-static", title: info.cwd ?? "" }, baseName(info.cwd ?? "") || info.cwd || ""), "跟随这条对话。"),
+      field("权限", convPermission ?? h("div", { class: "task-static" }, label), convPermission ? "这是这条对话自己的权限：改了之后，你在这条对话里聊天也按这一级。" : "跟随这条对话。"),
+    );
+  };
+  const syncContext = () => {
+    const dedicated = target.value === "dedicated";
+    keepOption.textContent = dedicated ? "携带（能看到之前几次运行的内容）" : "携带（接着这条对话的聊天内容）";
+    contextHint.textContent = dedicated
+      ? "不携带时结果还留在这条对话里，只是 agent 看不到，没法和上次对比，也更省 token。改回携带后只能接上最后一次运行的内容。"
+      : "不携带时任务在独立的会话里运行，看不到聊天内容，也不会打乱聊天的上下文；结果照样显示在这条对话里，你下一条消息会带给 agent。运行期间发的消息要等它结束（可以打断）。";
+  };
   const syncVisibility = () => {
-    const dedicated = !target || target.value === "dedicated";
+    const dedicated = target.value === "dedicated";
     dedicatedBox.hidden = !dedicated;
-    if (followField) followField.hidden = dedicated;
+    convBox.hidden = dedicated;
+    syncConvBox();
+    syncContext();
     // 只能联网的专家不碰目录
     const access = findExpert(expert.value)?.access;
     cwdField.hidden = access === "web";
@@ -462,7 +517,7 @@ export function openTaskForm(task, preset) {
     permissionField.hidden = capOfAccess(access) === "ask";
   };
   expert.onchange = syncVisibility;
-  if (target) target.onchange = syncVisibility;
+  target.onchange = syncVisibility;
   syncVisibility();
 
   const body = h(
@@ -473,9 +528,10 @@ export function openTaskForm(task, preset) {
     field("频率", freq),
     field("执行时间", freqBox, freqHint),
     field("提醒", notify),
-    target ? field("结果发到", target) : field("结果发到", h("div", { class: "task-static" }, task?.convKey ? `专用对话「${task.convTitle || "对话"}」` : "专用对话（第一次运行时新建，之后都发到这条）")),
-    followField,
+    field("结果发到", target),
+    convBox,
     dedicatedBox,
+    contextField,
   );
   const save = h("button", { class: "btn primary" }, task ? "保存" : "创建");
   const close = modal({ title: task ? "编辑定时任务" : "新建定时任务", body, foot: h("div", { class: "modal-foot" }, save) });
@@ -497,7 +553,7 @@ export function openTaskForm(task, preset) {
                 : { kind: "cron", expr: sch.expr };
     if (schedule.kind === "once" && !(schedule.at > Date.now())) return toast("运行时间要在现在之后");
     if (schedule.kind === "weekly" && !schedule.days.length) return toast("至少选择一个执行星期");
-    const dedicated = !target || target.value === "dedicated";
+    const dedicated = target.value === "dedicated";
     if (dedicated && !expert.value) return toast("选一个专家");
     const level = dedicated && !permissionField.hidden ? permission.value : "";
     if (
@@ -507,13 +563,32 @@ export function openTaskForm(task, preset) {
     ) {
       return;
     }
+    const convLevel = convPermission?.value;
+    const convInfo = dedicated ? null : convTargetInfo(target.value, task);
+    const convLevelChanged = !!convLevel && convLevel !== convInfo?.permission;
+    if (convLevelChanged && convLevel === "full" && !(await confirmDialog(FULL_WARNING))) return;
+    const fresh = context.value === "fresh";
+    if (
+      task?.freshContext &&
+      !fresh &&
+      !(await confirmDialog({
+        title: "改回携带上下文？",
+        sub: "之前不携带时运行的内容不会恢复：对话里还看得到，但 agent 看不到。",
+        message: dedicated ? "之后只能接上最后一次运行的内容，更早的接不回来。" : "之后每次运行都接着这条对话的聊天内容，运行结果也会进入聊天的上下文。",
+        confirmText: "改回携带",
+      }))
+    ) {
+      return;
+    }
     const payload = {
       title: title.value,
       prompt: prompt.value,
       schedule,
       notify: notify.value,
-      target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: task.target.key },
-      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level, freshContext: context.value === "fresh" } : {}),
+      target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: target.value },
+      freshContext: fresh,
+      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level } : {}),
+      ...(convLevelChanged ? { convPermission: convLevel } : {}),
     };
     save.disabled = true;
     try {

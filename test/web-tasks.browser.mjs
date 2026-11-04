@@ -151,17 +151,17 @@ test("定时任务的对话：右上角更多里能编辑和立即运行，改�
     target: { kind: "dedicated", key: "web:task" }, agent: "claude", notify: "smart", enabled: true, runs: [], freshContext: true,
   };
   const { page, calls } = await fixture(t, 1280, "light", [task]);
-  const menuOf = (taskId) => page.evaluate(async (taskId) => {
+  const menuOf = (taskList) => page.evaluate(async (taskList) => {
     const { S } = await import("/state.js");
     const { renderTopbar } = await import("/views/topbar.js");
     S.view = null;
     S.current = "web:task";
-    S.convs.set("web:task", { key: "web:task", agent: "claude", channel: "web", cwd: "/tmp", title: "ETF", ...(taskId ? { taskId } : {}) });
+    S.convs.set("web:task", { key: "web:task", agent: "claude", channel: "web", cwd: "/tmp", title: "ETF", ...(taskList ? { tasks: taskList } : {}) });
     renderTopbar();
     document.querySelector(".top-more").click();
     const labels = [...document.querySelectorAll(".top-menu .pop-item")].map((el) => el.textContent.trim());
     return labels;
-  }, taskId);
+  }, taskList);
 
   // 普通对话没有这两项
   const plain = await menuOf(undefined);
@@ -169,7 +169,15 @@ test("定时任务的对话：右上角更多里能编辑和立即运行，改�
   await page.keyboard.press("Escape");
   await page.mouse.click(5, 5);
 
-  const labels = await menuOf("t_conv");
+  // 发到聊天对话的任务也一样；绑了好几个时先选
+  const many = await menuOf([{ id: "t_conv", title: "ETF 投资跟踪" }, { id: "t_b", title: "早报" }]);
+  assert.ok(many.includes("定时任务（2 个）") && !many.includes("立即运行"));
+  await page.locator(".top-menu .pop-item", { hasText: "定时任务（2 个）" }).click();
+  await page.locator(".conv-task-row").first().waitFor();
+  assert.equal(await page.locator(".conv-task-row").count(), 2);
+  await page.locator(".modal .modal-head .icon-btn").click();
+
+  const labels = await menuOf([{ id: "t_conv", title: "ETF 投资跟踪" }]);
   assert.ok(labels.includes("编辑定时任务") && labels.includes("立即运行"));
 
   await page.locator(".top-menu .pop-item", { hasText: "立即运行" }).click();
@@ -180,10 +188,87 @@ test("定时任务的对话：右上角更多里能编辑和立即运行，改�
   await page.locator(".top-menu .pop-item", { hasText: "编辑定时任务" }).click();
   await page.locator(".task-form").waitFor();
   assert.equal(await page.locator(".task-form textarea").inputValue(), "查一下");
-  assert.equal(await page.locator(".task-form .task-dedicated select").last().inputValue(), "fresh", "表单回填不携带上下文");
+  assert.equal(await page.locator(".task-form .task-context").inputValue(), "fresh", "表单回填不携带上下文");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.locator(".overlay").waitFor({ state: "detached" });
   const patched = calls.find((c) => c.path === "/api/tasks/t_conv" && c.method === "PATCH");
   assert.equal(patched.body.freshContext, true);
   assert.equal(await page.evaluate(async () => (await import("/state.js")).S.view), null, "保存后还在对话页");
+});
+
+test("发到聊天对话的任务：表单和专用对话一致，专家目录只读，权限和上下文能改，改回携带要确认", async (t) => {
+  const task = {
+    id: "t_chat", title: "早报", prompt: "看看", schedule: { kind: "daily", time: "08:00" },
+    target: { kind: "conv", key: "web:chat" }, agent: "claude", notify: "smart", enabled: true, runs: [], freshContext: true,
+    convKey: "web:chat", convTitle: "在聊的", convPermission: "ask", convPermissionMax: "full", convExpert: { id: "claude", name: "Claude Code" }, convCwd: "/tmp/proj",
+  };
+  const { page, calls } = await fixture(t, 1280, "light", [task]);
+  await page.evaluate(async (task) => {
+    const { S } = await import("/state.js");
+    S.convs.set("web:other", { key: "web:other", agent: "claude", channel: "web", cwd: "/tmp/other", title: "另一条", personal: true, activeAt: 1, permission: "edit", permissionMax: "edit", expert: { id: "claude", name: "Claude Code" } });
+    S.convs.set("web:dedicated", { key: "web:dedicated", agent: "claude", channel: "web", cwd: "/tmp", title: "别的任务", personal: true, activeAt: 2, taskId: "t_x", permission: "ask", permissionMax: "full", expert: { id: "claude", name: "Claude Code" } });
+    window.openTaskForm(task);
+  }, task);
+  const form = page.locator(".task-form");
+  const options = await form.locator(".task-target option").allTextContents();
+  assert.deepEqual(options, ["专用对话（第一次运行时新建，之后都发到这条）", "对话「在聊的」", "对话「另一条」"], "别的任务的专用对话不能选");
+  assert.equal(await form.locator(".task-target").inputValue(), "web:chat");
+  assert.equal(await form.locator(".task-context").inputValue(), "fresh");
+  assert.match(await form.locator(".task-conv").textContent(), /Claude Code/);
+  assert.match(await form.locator(".task-conv").textContent(), /proj/);
+  assert.equal(await form.locator(".task-conv-permission").inputValue(), "ask");
+
+  // 换一条对话：显示跟着换，权限上限按那条对话
+  await form.locator(".task-target").selectOption("web:other");
+  assert.deepEqual(await form.locator(".task-conv-permission option").evaluateAll((els) => els.map((el) => el.value)), ["ask", "edit"]);
+  await form.locator(".task-target").selectOption("web:chat");
+
+  // 改回携带：先确认，取消就不保存
+  await form.locator(".task-context").selectOption("keep");
+  await form.locator(".task-conv-permission").selectOption("edit");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("改回携带上下文？").waitFor();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  assert.equal(calls.filter((c) => c.method === "PATCH").length, 0);
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "改回携带", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".task-form"));
+  const patched = calls.find((c) => c.path === "/api/tasks/t_chat" && c.method === "PATCH");
+  assert.deepEqual(patched.body.target, { kind: "conv", key: "web:chat" });
+  assert.equal(patched.body.freshContext, false);
+  assert.equal(patched.body.convPermission, "edit");
+  assert.equal(patched.body.expert, undefined);
+
+  // 新建：也能选已有对话
+  await page.evaluate(() => window.openTaskForm());
+  await page.locator(".task-form textarea").fill("新任务");
+  await page.locator(".task-form .task-target").selectOption("web:other");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".task-form"));
+  assert.deepEqual(calls.find((c) => c.path === "/api/tasks" && c.method === "POST").body.target, { kind: "conv", key: "web:other" });
+});
+
+test("专用对话的任务也能改发到聊天对话；从不携带改回携带提示说的是运行记录", async (t) => {
+  const task = {
+    id: "t_d", title: "专用", prompt: "看看", schedule: { kind: "daily", time: "08:00" },
+    target: { kind: "dedicated", key: "web:d" }, agent: "claude", notify: "smart", enabled: true, runs: [], freshContext: true, convKey: "web:d", convTitle: "专用",
+  };
+  const { page, calls } = await fixture(t, 390, "light", [task]);
+  await page.evaluate(async (task) => {
+    const { S } = await import("/state.js");
+    S.convs.set("web:other", { key: "web:other", agent: "claude", channel: "web", cwd: "/tmp/other", title: "另一条", personal: true, activeAt: 1, permission: "ask", permissionMax: "ask", expert: { id: "claude", name: "Claude Code" } });
+    window.openTaskForm(task);
+  }, task);
+  await page.locator(".task-form .task-context").selectOption("keep");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("之后只能接上最后一次运行的内容").waitFor();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.locator(".task-form .task-context").selectOption("fresh");
+  await page.locator(".task-form .task-target").selectOption("web:other");
+  assert.equal(await page.locator(".task-form .task-conv-permission").count(), 0, "只有一级可选时不给下拉框");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".task-form"));
+  const patched = calls.find((c) => c.path === "/api/tasks/t_d" && c.method === "PATCH");
+  assert.deepEqual(patched.body.target, { kind: "conv", key: "web:other" });
+  assert.equal(patched.body.freshContext, true);
 });

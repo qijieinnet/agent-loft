@@ -66,6 +66,10 @@ const TOOLS = [
           enum: ["this_conversation", "dedicated"],
           description: "this_conversation：结果回到当前对话（默认）；dedicated：给任务单独开一条对话（和当前对话用同一个专家）",
         },
+        fresh_context: {
+          type: "boolean",
+          description: "true：每次运行都不带之前的上下文，看不到聊天内容和以前的运行结果，更省 token。发到当前对话时会在独立的会话里运行，不打乱聊天。默认 false",
+        },
       },
       required: ["prompt", "schedule"],
       additionalProperties: false,
@@ -74,7 +78,7 @@ const TOOLS = [
   },
   {
     name: "update_task",
-    description: "修改用户的一个定时任务：改名称、提示词、频率、提醒方式，或者暂停 / 恢复（enabled）。只给要改的字段。除了暂停以外的修改会弹授权卡让用户确认。",
+    description: "修改用户的一个定时任务：改名称、提示词、频率、提醒方式、是否携带上下文，或者暂停 / 恢复（enabled）。只给要改的字段。除了暂停以外的修改会弹授权卡让用户确认。",
     inputSchema: {
       type: "object",
       properties: {
@@ -84,6 +88,7 @@ const TOOLS = [
         schedule: SCHEDULE,
         notify: { type: "string", enum: ["smart", "always"] },
         enabled: { type: "boolean", description: "false 暂停，true 恢复" },
+        fresh_context: { type: "boolean", description: "true：每次运行不带之前的上下文；false：改回携带（之前不携带时运行的内容不会恢复）" },
       },
       required: ["id"],
       additionalProperties: false,

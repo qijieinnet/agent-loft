@@ -507,3 +507,24 @@ button.task-run:hover {
 .task-perm-full {
   color: var(--danger);
 }
+
+/* 对话绑了好几个任务时的选择框 */
+.conv-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.conv-task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conv-task-row .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
