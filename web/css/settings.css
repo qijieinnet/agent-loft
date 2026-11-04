@@ -1,5 +1,36 @@
 /* ---------- 设置 ---------- */
 
+/* 设置和从设置打开的弹层共用黑白主题，覆盖原生控件的系统强调色。 */
+.settings,
+body:has(.settings) > :is(.overlay, .menu) {
+  --accent: var(--fg);
+  --accent-fg: var(--bg);
+  --link: var(--fg);
+  accent-color: var(--accent);
+}
+
+:is(.settings, body:has(.settings) > .overlay, body:has(.settings) > .menu) a:not(.btn) {
+  color: var(--link);
+}
+
+:is(.settings, body:has(.settings) > .overlay, body:has(.settings) > .menu) .switch input:checked + .slider::before {
+  background: var(--accent-fg);
+}
+
+:is(.settings, body:has(.settings) > .overlay, body:has(.settings) > .menu) .btn.accent:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+:is(.settings, body:has(.settings) > .overlay, body:has(.settings) > .menu) .btn:disabled {
+  opacity: 0.5;
+}
+
+:is(.settings, body:has(.settings) > .overlay, body:has(.settings) > .menu)
+  :is(button, a, summary, input[type="checkbox"], input[type="radio"]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .settings {
   display: flex;
   min-height: 0;

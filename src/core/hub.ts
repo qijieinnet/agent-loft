@@ -9,8 +9,11 @@
 // 说的话照样回到飞书。所以事件是广播出去的，每个订阅者自己挑感兴趣的会话。
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
-import { attachFooters, copyFooters, formatDuration, recordFooter } from "./footers.js";
+import { attachFooters, copyFooters, formatDuration, recordFooter, setFooterChanges } from "./footers.js";
+import { beginTurnSnapshot, finishTurnSnapshot } from "./turn-changes.js";
 import { removeHistoryRecord, replaceConversationRecords } from "./chat-history.js";
 import { recordUsage, usageOf, type UsageTotals } from "./usage.js";
 import { interactions, SETTLEMENT_LABEL } from "./interactions.js";
@@ -35,7 +38,7 @@ import { attachmentInfo, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import { memoryOwnerOf, sessionMemory } from "./personal.js";
 import { exceedsPermission, minPermission, PERMISSION_LABEL, permissionCapOfAccess, permissionOfSandbox, type PermissionLevel } from "./permission.js";
 import { readMemory } from "./memory.js";
-import { getUser, userEvents } from "./users.js";
+import { canUseFiles, getUser, userEvents } from "./users.js";
 import type {
   AgentDriver,
   AttachmentInfo,
@@ -49,6 +52,7 @@ import type {
   SessionSummary,
   StepKind,
   TodoItem,
+  TurnChanges,
   UserInput,
 } from "./types.js";
 import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
@@ -93,6 +97,8 @@ export type ConvEvent =
   | { type: "step"; kind: StepKind; text: string }
   /** agent 的任务清单变了（改完之后的整份） */
   | { type: "todos"; todos: TodoItem[] }
+  /** 这一轮改了哪些文件。快照做完才知道，比 result 晚到；at 对应 result 的 at（出错结束的轮次没有） */
+  | { type: "turn_changes"; changes: TurnChanges; at?: number }
   | { type: "delta"; text: string }
   | { type: "text"; text: string }
   /**
@@ -812,20 +818,22 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
           const footer = parts.join("　");
           const tag = this.takeTurnTag(key);
           const silent = !!tag?.smart && isSilentReply(result.text);
+          const at = Date.now();
           this.emitEvent(key, {
             type: "result",
             text: result.text,
             footer,
-            at: Date.now(),
+            at,
             ...(result.anchor && !tag?.isolated ? { anchor: result.anchor } : {}),
             ...(tag ? { task: { id: tag.taskId, title: tag.title } } : {}),
             ...(silent ? { silent: true as const } : {}),
           });
           if (tag) this.emit("task", { ...tag, key, status: silent ? "silent" : "notified", text: result.text });
           const conv = getConversation(key);
-          recordFooter(holder.session?.sessionId ?? (conv ? agentBinding(conv, agent).sessionId : undefined), result.text, footer);
+          const footerId = recordFooter(holder.session?.sessionId ?? (conv ? agentBinding(conv, agent).sessionId : undefined), result.text, footer);
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
           this.finishTurn(key);
+          this.reportTurnChanges(key, at, footerId);
           this.refreshRuntimeOnce(key, liveId);
           this.syncTitle(key, agent);
           this.dropIfStale(key);
@@ -853,6 +861,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
           }
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
           this.finishTurn(key);
+          // 停止、出错之前可能已经改了文件，也要告诉用户。这种轮次没有脚注，刷新后就看不到了
+          this.reportTurnChanges(key);
           this.dropIfStale(key);
         },
         onContext: (ctx) => {
@@ -951,6 +961,46 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         }
       })();
     }, delays[attempt]);
+  }
+
+  // ---------- 每轮改了什么 ----------
+
+  /** 只给能用工作区面板的人做快照：看不到卡片，就没必要往他的仓库里写东西。没主人的会话归管理员 */
+  private tracksChanges(conv: Conversation): boolean {
+    return conv.owner ? canUseFiles(getUser(conv.owner)) || !getUser(conv.owner) : true;
+  }
+
+  /** 这个仓库里有没有别的会话正在跑（key 是 null 时不排除任何会话） */
+  busyInRepo(key: string | null, root: string): boolean {
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    for (const [other, count] of this.inflight) {
+      if (other === key || count <= 0) continue;
+      const cwd = getConversation(other)?.cwd;
+      if (!cwd) continue;
+      try {
+        const real = fs.realpathSync(cwd);
+        if (real === root || real.startsWith(prefix)) return true;
+      } catch {
+        // 目录没了
+      }
+    }
+    return false;
+  }
+
+  private async snapshotBeforeTurn(key: string): Promise<void> {
+    const conv = getConversation(key);
+    if (!conv || !this.tracksChanges(conv)) return;
+    await beginTurnSnapshot(key, conv.cwd, (root) => this.busyInRepo(key, root));
+  }
+
+  private reportTurnChanges(key: string, at?: number, footerId?: number): void {
+    const conv = getConversation(key);
+    if (!conv || !this.tracksChanges(conv)) return;
+    void finishTurnSnapshot(key, conv.cwd, (root) => this.busyInRepo(key, root)).then((changes) => {
+      if (!changes) return;
+      if (footerId !== undefined) setFooterChanges(footerId, changes);
+      this.emitEvent(key, { type: "turn_changes", changes, ...(at !== undefined ? { at } : {}) });
+    });
   }
 
   /** 丢掉活着的会话（不动绑定）。挂着的审批一并取消，否则阻塞的那一轮永远走不完。 */
@@ -1173,6 +1223,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         if (blocked) {
           this.emitEvent(key, { type: "notice", text: blocked });
           return gone(blocked);
+        }
+        // 这一轮开始之前拍一张快照，结束时比较（排队的消息接着上一轮结束时的那张，见 turn-changes.ts）
+        if (!this.isBusy(key)) {
+          await this.snapshotBeforeTurn(key);
+          if (waiting.cancelled) return;
+          if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
         }
         if (task?.isolated) {
           if (this.isBusy(key)) return gone("对话正在回复，这次没有运行");
@@ -1839,7 +1895,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         updateAgentBinding(key, conv.agent, { sessionId, forkFrom: undefined });
         if (sessionId) {
           recordSessionOwner(sessionId, conv.owner);
-          for (const m of kept) if (m.footer) recordFooter(sessionId, m.text, m.footer);
+          for (const m of kept) if (m.footer) recordFooter(sessionId, m.text, m.footer, m.changes);
         }
         const owner = memoryOwnerOf(conv);
         if (owner) replaceConversationRecords(owner, key, mergeSessionHistory(past, kept).flatMap((m) => {

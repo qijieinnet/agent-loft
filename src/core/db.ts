@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS footers (
 );
 CREATE INDEX IF NOT EXISTS footers_session ON footers (session_id, id);
 
+CREATE TABLE IF NOT EXISTS turn_changes (
+  id TEXT PRIMARY KEY,
+  root TEXT NOT NULL,
+  before_tree TEXT NOT NULL,
+  after_tree TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS turn_changes_root ON turn_changes (root, at);
+
 CREATE TABLE IF NOT EXISTS usage_sessions (
   session_id TEXT PRIMARY KEY,
   input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
@@ -194,6 +203,16 @@ export function database(): DatabaseSync {
   opened.exec("PRAGMA journal_mode = WAL");
   opened.exec("PRAGMA synchronous = NORMAL");
   opened.exec(SCHEMA);
+  // 旧库的 footers 表还没有这一列（列表里每轮改动的摘要，JSON）。老版本读写时不看它，降级也没事
+  const footerColumns = opened.prepare("PRAGMA table_info(footers)").all() as { name: string }[];
+  if (!footerColumns.some((c) => c.name === "changes")) {
+    try {
+      opened.exec("ALTER TABLE footers ADD COLUMN changes TEXT");
+    } catch (err) {
+      // 另一个进程（服务和命令行同时打开）刚加好了
+      if (!/duplicate column/i.test(String(err))) throw err;
+    }
+  }
   db = opened;
   importLegacy(opened);
   return opened;

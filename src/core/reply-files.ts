@@ -41,7 +41,8 @@ function within(file: string, dir: string): boolean {
 
 export function isSensitivePath(file: string): boolean {
   const parts = file.split(path.sep);
-  if (parts.some((p) => SENSITIVE_DIRS.has(p))) return true;
+  // 不分大小写的文件系统（macOS、Windows）上 .SSH 就是 .ssh
+  if (parts.some((p) => SENSITIVE_DIRS.has(p.toLowerCase()))) return true;
   if (sensitiveName(path.basename(file))) return true;
   const userHome = os.homedir();
   if (SENSITIVE_HOME.some((p) => within(file, path.join(userHome, p)))) return true;

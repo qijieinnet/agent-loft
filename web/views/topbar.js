@@ -9,6 +9,7 @@ import { openConversation } from "./messages.js";
 import { openSchedule } from "./schedule.js";
 import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
 import { capOfAccess, minPermission, PERMISSION_ORDER, PERMISSIONS } from "../lib/permission.js";
+import { syncWorkspace, workspaceButtons } from "./workspace-entry.js";
 
 // ---------- 顶栏 ----------
 
@@ -34,12 +35,14 @@ export function renderTopbar() {
     showExpert || showMore
       ? h("div", { class: "top-actions", role: "group", "aria-label": "会话操作" },
           showExpert ? expertAvatarButton(c) : null,
+          showExpert ? workspaceButtons() : null,
           showMore ? h("button", { class: "icon-btn top-more", title: "更多", onclick: (e) => openTopMore(e.currentTarget) }, icon("more")) : null,
         )
       : null,
   );
   renderContext();
   syncDesktopMenu();
+  syncWorkspace();
 }
 
 // ---------- 顶栏的专家头像和信息卡 ----------

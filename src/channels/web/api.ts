@@ -11,12 +11,12 @@ import { approve, listApproved, listPending, revoke } from "../../core/pairing.j
 import { agentBinding, conversationLabels, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
 import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
-import { mentions, replyFileType, resolveReplyFile } from "../../core/reply-files.js";
-import { HTML_CSP, HTML_MAX, htmlDocument } from "../../core/visualize.js";
-import { cleanServers, ownFrameAncestors, shellInfo } from "../../core/servers.js";
+import { mentions, resolveReplyFile } from "../../core/reply-files.js";
+import { cleanServers, shellInfo } from "../../core/servers.js";
 import {
   createUser,
   getUser,
+  canUseFiles,
   isAdmin,
   legacyOwnerId,
   listUsers,
@@ -98,6 +98,8 @@ import { botExpertSelection } from "../../core/feishu-experts.js";
 import { expertBrief } from "./experts-api.js";
 import { handleTerminalApi } from "./terminal.js";
 import { handleDesktopApi, remoteStatus } from "./desktop.js";
+import { serveHtmlFile, serveReplyFile } from "./file-serve.js";
+import { handleWorkspaceApi } from "./workspace-api.js";
 import {
   addRelaySubscription,
   addSubscription,
@@ -246,51 +248,6 @@ async function replyMentions(key: string, requested: string): Promise<boolean> {
  * 回复里的文件：stat=1 只回名字和大小；其余返回内容，支持 Range（视频拖进度、iOS 放视频都要它）。
  * 图片、PDF、音视频按类型 inline，别的一律当下载 —— HTML 之类不能在本站域名下被当网页打开
  */
-function serveReplyFile(req: IncomingMessage, res: ServerResponse, file: string, opts: { stat: boolean; download: boolean }): void {
-  const st = fs.statSync(file);
-  const name = path.basename(file);
-  if (opts.stat) {
-    sendJson(res, 200, { name, path: file, size: st.size, mtime: st.mtimeMs });
-    return;
-  }
-  const type = replyFileType(file);
-  const inline = !opts.download && !!type;
-  const headers: Record<string, string | number> = {
-    ...SECURITY_HEADERS,
-    "Content-Type": inline ? type! : "application/octet-stream",
-    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
-    "Accept-Ranges": "bytes",
-    "Cache-Control": "private, no-cache",
-    "Last-Modified": new Date(st.mtimeMs).toUTCString(),
-  };
-  if (type === "application/pdf") {
-    // 预览窗里用 iframe 嵌 PDF：要允许本站嵌入。Chrome 带 sandbox 的文档不显示 PDF，这里不加
-    // （所有接口的响应事先都带上了 SECURITY_HEADERS，见 server.ts，这里得把那个也去掉）
-    delete headers["X-Frame-Options"];
-    res.removeHeader("X-Frame-Options");
-    headers["Content-Security-Policy"] = `default-src 'none'; frame-ancestors ${ownFrameAncestors(config().servers)}`;
-  } else {
-    headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox";
-  }
-  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ""));
-  if (range && (range[1] || range[2])) {
-    let start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]));
-    let end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1;
-    if (start >= st.size || start > end) {
-      res.writeHead(416, { ...headers, "Content-Range": `bytes */${st.size}` });
-      res.end();
-      return;
-    }
-    start = Math.max(0, start);
-    end = Math.max(start, end);
-    res.writeHead(206, { ...headers, "Content-Range": `bytes ${start}-${end}/${st.size}`, "Content-Length": end - start + 1 });
-    fs.createReadStream(file, { start, end }).pipe(res);
-    return;
-  }
-  res.writeHead(200, { ...headers, "Content-Length": st.size });
-  fs.createReadStream(file).pipe(res);
-}
-
 // ---------- 飞书扫码创建应用 ----------
 
 type Registration = {
@@ -535,8 +492,8 @@ function adminOnly(p: string): boolean {
   );
 }
 
-function publicMe(user: Pick<User, "id" | "name" | "role">) {
-  return { id: user.id, name: user.name, role: user.role };
+function publicMe(user: Pick<User, "id" | "name" | "role" | "disabled" | "files">) {
+  return { id: user.id, name: user.name, role: user.role, ...(canUseFiles(user) ? { files: true } : {}) };
 }
 
 /** users.ts 抛的是给人看的错误，转成 400 */
@@ -1006,6 +963,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     // 别人的会话：当它不存在
     if (!visible(conv)) throw new HttpError(404, "会话不存在");
 
+    if (sub && (await handleWorkspaceApi(req, res, url, sub, conv, user))) return;
+
     if (sub === "continue" && method === "POST") {
       const body = await readJsonBody<{ agent?: unknown; sessionId?: unknown }>(req);
       const binding = agentBinding(conv);
@@ -1143,19 +1102,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const requested = url.searchParams.get("path") ?? "";
       const file = resolveReplyFile(requested, conv.cwd);
       if (!file || !/\.html?$/i.test(file) || !(await replyMentions(key, requested))) throw new HttpError(404, "文件不存在，或者不能查看");
-      if (fs.statSync(file).size > HTML_MAX) throw new HttpError(413, "文件太大，下载下来看吧");
-      const doc = Buffer.from(htmlDocument(fs.readFileSync(file, "utf8"), path.basename(file)));
-      // 要能嵌进对话里：去掉所有响应默认带的 X-Frame-Options（见 server.ts）
-      res.removeHeader("X-Frame-Options");
-      res.writeHead(200, {
-        "X-Content-Type-Options": "nosniff",
-        "Referrer-Policy": "no-referrer",
-        "Content-Security-Policy": HTML_CSP.replace("frame-ancestors 'self'", `frame-ancestors ${ownFrameAncestors(config().servers)}`),
-        "Content-Type": "text/html; charset=utf-8",
-        "Content-Length": doc.length,
-        "Cache-Control": "private, no-cache",
-      });
-      res.end(doc);
+      serveHtmlFile(res, file);
       return;
     }
     if (sub === "upload" && method === "POST") {
@@ -1749,11 +1696,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
   }
   if (p === "/api/users" && method === "POST") {
-    const body = await readJsonBody<{ name?: string; password?: string; role?: Role; remote?: boolean; permissions?: unknown }>(req);
+    const body = await readJsonBody<{ name?: string; password?: string; role?: Role; remote?: boolean; files?: boolean; permissions?: unknown }>(req);
     sendJson(
       res,
       200,
-      userOp(() => createUser({ name: String(body.name ?? ""), password: String(body.password ?? ""), role: body.role === "admin" ? "admin" : "member", ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}), ...(body.permissions !== undefined ? { permissions: body.permissions } : {}) })),
+      userOp(() => createUser({ name: String(body.name ?? ""), password: String(body.password ?? ""), role: body.role === "admin" ? "admin" : "member", ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}), ...(typeof body.files === "boolean" ? { files: body.files } : {}), ...(body.permissions !== undefined ? { permissions: body.permissions } : {}) })),
     );
     return;
   }
@@ -1762,7 +1709,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const id = userMatch[1]!;
     if (!getUser(id)) throw new HttpError(404, "用户不存在");
     if (method === "PATCH") {
-      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; permissions?: unknown }>(req);
+      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; files?: boolean; permissions?: unknown }>(req);
       if (id === user.id && (body.disabled === true || (body.role !== undefined && body.role !== "admin"))) {
         throw new HttpError(400, "不能停用自己，也不能取消自己的管理员");
       }
@@ -1774,6 +1721,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           ...(typeof body.disabled === "boolean" ? { disabled: body.disabled } : {}),
           ...(typeof body.password === "string" ? { password: body.password } : {}),
           ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}),
+          ...(typeof body.files === "boolean" ? { files: body.files } : {}),
           ...(body.permissions !== undefined ? { permissions: body.permissions } : {}),
         }),
       );

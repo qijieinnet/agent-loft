@@ -12,6 +12,7 @@ import { renderScheduled } from "./schedule.js";
 import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
 import { scheduleNav } from "./msg-nav.js";
 import { linkReplyFiles } from "./file-preview.js";
+import { canSeeChanges, openTurnChanges } from "./workspace-entry.js";
 import { setTodos } from "./todos.js";
 import { expertIcon, findExpert, setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
@@ -221,7 +222,7 @@ export async function openConversation(key) {
       else if (m.todos) todos = m.todos;
       if (m.role === "user") addItem({ type: "user", text: m.text, files: m.attachments ?? [], origin: null, anchor: m.anchor });
       else if (m.role === "question") addItem({ type: "ix", id: m.question.id, ix: historyQuestion(key, m) });
-      else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, at: m.ts, anchor: m.anchor, segment: m.segment });
+      else addItem({ type: "ai", steps: m.steps ?? [], committed: m.text, partial: "", done: true, footer: m.footer, changes: m.changes, at: m.ts, anchor: m.anchor, segment: m.segment });
     }
     // 进行中这一轮的清单由下面重放 todos 事件恢复。
     setTodos(todos);
@@ -722,7 +723,12 @@ function patchAi(item) {
   if (!item.error) v.error = null;
   else if (v.error?.textContent !== item.error) v.error = h("div", { class: "error-box" }, item.error);
 
-  placeChildren(item.el, [v.steps, v.body, v.thinking, v.error, renderAiActions(item, body)]);
+  // 这一轮改了什么：摘要变了才重新画（流式输出时这里每一下都会走到）
+  if (item.changes?.id !== v.changesId) {
+    v.changesId = item.changes?.id;
+    v.changes = item.changes ? changesCard(item.changes) : null;
+  }
+  placeChildren(item.el, [v.steps, v.body, v.thinking, v.error, v.changes, renderAiActions(item, body)]);
 }
 
 function setText(el, text) {
@@ -738,6 +744,41 @@ function placeChildren(parent, nodes) {
     if (n === ref) ref = ref.nextSibling;
     else parent.insertBefore(n, ref);
   }
+}
+
+const CHANGE_LETTER = { modified: "M", added: "A", deleted: "D", renamed: "R", copied: "C", typechange: "T" };
+/** 卡片上最多列这么多个文件，其余的点开面板看 */
+const CHANGES_SHOWN = 5;
+
+/** 回复下面的「改了 3 个文件 +45 −12」。点文件看 diff，点标题看这一轮的全部 */
+function changesCard(changes) {
+  if (!canSeeChanges()) return null;
+  const count = (n, cls, mark) => (n ? h("span", { class: cls }, `${mark}${n}`) : null);
+  const rows = changes.files.slice(0, CHANGES_SHOWN).map((file) =>
+    h(
+      "button",
+      { class: "turn-file", title: file.oldPath ? `${file.oldPath} → ${file.path}` : file.path, onclick: () => void openTurnChanges(changes, file) },
+      h("span", { class: `ws-state s-${file.status}` }, CHANGE_LETTER[file.status] ?? "M"),
+      h("span", { class: "turn-file-name" }, file.path),
+      file.binary ? h("span", { class: "turn-count" }, "二进制") : h("span", { class: "turn-count" }, count(file.added, "ws-add", "+"), count(file.removed, "ws-del", "−")),
+    ),
+  );
+  const more = changes.fileCount - rows.length;
+  return h(
+    "div",
+    { class: "turn-changes" },
+    h(
+      "button",
+      { class: "turn-head", onclick: () => void openTurnChanges(changes) },
+      icon("file"),
+      h("span", { class: "turn-title" }, `改了 ${changes.fileCount} 个文件`),
+      h("span", { class: "turn-count" }, count(changes.added, "ws-add", "+"), count(changes.removed, "ws-del", "−")),
+      h("span", { class: "turn-open" }, "查看"),
+    ),
+    rows,
+    more > 0 ? h("button", { class: "turn-more", onclick: () => void openTurnChanges(changes) }, `还有 ${more} 个文件`) : null,
+    changes.shared ? h("div", { class: "turn-note" }, "这一轮期间同一仓库里还有别的会话在跑，可能混入了它们的改动") : null,
+  );
 }
 
 function renderAiActions(item, body) {
@@ -884,6 +925,18 @@ export function applyEvent(env) {
       updateItem(ai);
       S.turnAi = null;
       turnStartAt = null;
+      // 这一轮可能改了文件：工作区面板和分支标记刷新一下
+      document.dispatchEvent(new Event("aim:turn-done"));
+      return;
+    }
+    case "turn_changes": {
+      // 比 result 晚到，下一轮可能已经开始了：按时间找到它是哪一轮的。
+      // 对不上（出错结束的没有时间；从历史记录画的用的是记录里的时间）就算在最后一条结束了的回复上，不能算到正在进行的那轮
+      const item = (ev.at ? S.items.find((it) => it.type === "ai" && it.at === ev.at) : null) ?? S.items.findLast((it) => it.type === "ai" && it.done);
+      if (item) {
+        item.changes = ev.changes;
+        updateItem(item);
+      }
       return;
     }
     case "error": {

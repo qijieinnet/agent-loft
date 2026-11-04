@@ -6,6 +6,8 @@ import { api } from "../lib/api.js";
 import { renderMarkdown } from "../lib/markdown.js";
 import { S } from "../state.js";
 import { mountAlbums } from "../lib/albums.js";
+import { csvDelimiter, parseCsv } from "../lib/csv.js";
+import { openWorkspaceFile, workspaceRelative } from "./workspace-entry.js";
 
 const fileUrl = (key, p, extra = "") =>
   `/api/conversations/${encodeURIComponent(key)}/file?path=${encodeURIComponent(p)}${extra}`;
@@ -211,6 +213,9 @@ const VIDEO = /\.(mp4|m4v|webm|mov)$/i;
 const AUDIO = /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac)$/i;
 const MARKDOWN = /\.(md|markdown)$/i;
 const HTML = /\.html?$/i;
+const CSV = /\.(csv|tsv)$/i;
+/** 表格最多显示这么多行：几十万个单元格的 DOM 会把页面卡住 */
+const CSV_MAX_ROWS = 2000;
 /** 网页超过这么大就不显示了（和服务端 core/visualize.ts 的 HTML_MAX 一致） */
 const HTML_MAX = 2 * 1024 * 1024;
 /** 明摆着不是文本的：不去读内容，直接给下载 */
@@ -218,7 +223,13 @@ const BINARY = /\.(zip|gz|tgz|bz2|xz|7z|rar|tar|docx?|xlsx?|pptx?|key|numbers|pa
 /** 文本最多读这么多来预览 */
 const TEXT_MAX = 1024 * 1024;
 
-function fmtSize(n) {
+/** 看后缀像不像能编辑的文本（图片里只有 SVG 是文本）。真正能不能编辑由服务端读了内容才知道 */
+export function editableName(name) {
+  if (/\.svg$/i.test(name)) return true;
+  return !(IMAGE.test(name) || VIDEO.test(name) || AUDIO.test(name) || BINARY.test(name) || /\.pdf$/i.test(name));
+}
+
+export function fmtSize(n) {
   if (!Number.isFinite(n)) return "";
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -264,6 +275,18 @@ export async function openReplyFile(key, p) {
   if (!overlay.isConnected) return;
   title.lastChild.textContent = [info.path, fmtSize(info.size)].filter(Boolean).join(" · ");
   title.firstChild.textContent = info.name;
+  await renderFileView({ info, url, page: htmlUrl(key, p), body, actions, alive: () => overlay.isConnected });
+  const rel = workspaceRelative(info.path);
+  if (rel && overlay.isConnected) {
+    actions.prepend(h("button", { class: "btn ghost", onclick: () => (close(), openWorkspaceFile(rel)) }, "在工作区打开"));
+  }
+}
+
+/**
+ * 按类型把文件画进 body，操作按钮放进 actions。预览弹层和工作区面板共用。
+ * url：文件地址（已经带着 ?path=）；page：网页放进沙箱显示的地址；alive：容器还在不在，异步读完时用
+ */
+export async function renderFileView({ info, url, page, body, actions, alive }) {
   const download = h("a", { class: "btn", href: `${url}&download=1`, download: info.name }, "下载");
   const newTab = h("a", { class: "btn ghost", href: url, target: "_blank", rel: "noopener" }, "新标签页打开");
   const name = info.name;
@@ -283,11 +306,10 @@ export async function openReplyFile(key, p) {
 
   const showText = async () => {
     const view = await textView(url, info, download);
-    if (overlay.isConnected) body.replaceChildren(...view);
+    if (alive()) body.replaceChildren(...view);
   };
   // 网页：放进沙箱里显示出来，也能切到源码
   if (HTML.test(name) && info.size <= HTML_MAX) {
-    const page = htmlUrl(key, p);
     const frame = h("iframe", { class: "fv-frame fv-html", src: page, sandbox: "allow-scripts", referrerpolicy: "no-referrer", title: name });
     const toggle = h(
       "button",
@@ -305,11 +327,65 @@ export async function openReplyFile(key, p) {
     actions.replaceChildren(toggle, h("a", { class: "btn ghost", href: page, target: "_blank", rel: "noopener" }, "新标签页打开"), download);
     return body.replaceChildren(frame);
   }
+  // 表格：默认显示成表，也能切到源码
+  if (CSV.test(name)) {
+    let source = false;
+    const toggle = h(
+      "button",
+      {
+        class: "btn ghost",
+        onclick: async () => {
+          source = !source;
+          toggle.textContent = source ? "表格" : "源码";
+          const view = await textView(url, info, download, source);
+          if (alive()) body.replaceChildren(...view);
+        },
+      },
+      "源码",
+    );
+    actions.prepend(toggle);
+  }
   await showText();
 }
 
+/** 文字显示成预览：Markdown 渲染、CSV 画表。别的文件没有预览，返回 null。编辑时看没保存的内容也用这个 */
+export function textPreview(name, text, { cut = false } = {}) {
+  if (MARKDOWN.test(name)) return h("div", { class: "fv-doc" }, renderMarkdown(text));
+  if (CSV.test(name)) return csvTable(name, text, cut);
+  return null;
+}
+
+function csvTable(name, text, cut) {
+  const { rows, more } = parseCsv(text, { delimiter: csvDelimiter(name, text), cut, maxRows: CSV_MAX_ROWS + 1 });
+  if (!rows.length) return h("div", { class: "fv-empty" }, "表格是空的");
+  const columns = Math.max(...rows.map((row) => row.length));
+  const shown = rows.slice(1, CSV_MAX_ROWS + 1);
+  const hasMore = more || rows.length > CSV_MAX_ROWS + 1;
+  const cell = (tag, value) => {
+    // 内容一律当文字，表格里的 HTML、公式都不执行
+    const text = value ?? "";
+    return h(tag, text.length > 40 ? { title: text } : {}, text);
+  };
+  const fillRow = (row) => Array.from({ length: columns }, (_, i) => row[i]);
+  return h(
+    "div",
+    { class: "fv-csv" },
+    hasMore ? h("div", { class: "fv-cut" }, `只显示前 ${shown.length} 行，完整内容请下载或看源码`) : null,
+    h(
+      "table",
+      {},
+      h("thead", {}, h("tr", {}, h("th", { class: "fv-csv-no" }, ""), fillRow(rows[0]).map((v) => cell("th", v)))),
+      h(
+        "tbody",
+        {},
+        shown.map((row, i) => h("tr", {}, h("td", { class: "fv-csv-no" }, i + 1), fillRow(row).map((v) => cell("td", v)))),
+      ),
+    ),
+  );
+}
+
 /** 当文本显示：太大只读开头，有 NUL 字节的是二进制。返回要放进 body 的节点 */
-async function textView(url, info, download) {
+async function textView(url, info, download, source = false) {
   let buf;
   try {
     const res = await fetch(url, { credentials: "same-origin", headers: info.size > TEXT_MAX ? { Range: `bytes=0-${TEXT_MAX - 1}` } : {} });
@@ -320,8 +396,9 @@ async function textView(url, info, download) {
   }
   if (buf.subarray(0, 8192).includes(0)) return [notPreviewable("这个文件不是文本，不能在网页里预览", download)];
   const text = new TextDecoder("utf-8").decode(buf);
-  const cut = info.size > buf.length ? h("div", { class: "fv-cut" }, `文件有 ${fmtSize(info.size)}，这里只显示前 ${fmtSize(buf.length)}，完整内容请下载`) : null;
-  const view = MARKDOWN.test(info.name) ? h("div", { class: "fv-doc" }, renderMarkdown(text)) : codeView(text, info.name);
+  const truncated = info.size > buf.length;
+  const cut = truncated ? h("div", { class: "fv-cut" }, `文件有 ${fmtSize(info.size)}，这里只显示前 ${fmtSize(buf.length)}，完整内容请下载`) : null;
+  const view = (source ? null : textPreview(info.name, text, { cut: truncated })) ?? codeView(text, info.name);
   return cut ? [cut, view] : [view];
 }
 

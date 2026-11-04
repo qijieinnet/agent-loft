@@ -4,10 +4,10 @@
 // （手机切回前台、刷新）读的是 agent 的记录，脚注就丢了。所以在这里按会话记下来，
 // 读历史时再按回复正文的结尾对回去。存在数据库的 footers 表里（见 db.ts），一轮一行。
 import { sql, transaction } from "./db.js";
-import type { HistoryMessage } from "./types.js";
+import type { HistoryMessage, TurnChanges } from "./types.js";
 
-/** t：回复正文（去掉空白后）的结尾；f：脚注 */
-type Entry = { t: string; f: string };
+/** t：回复正文（去掉空白后）的结尾；f：脚注；c：这一轮改了什么（JSON） */
+type Entry = { t: string; f: string; c: string | null };
 
 const MAX_PER_SESSION = 1000;
 /** 存下来比对用的正文结尾长度 */
@@ -36,21 +36,36 @@ function endsWithTail(text: string, tail: string): boolean {
   return squash(text).endsWith(tail);
 }
 
-export function recordFooter(sessionId: string | undefined, text: string, footer: string): void {
+/** 记一轮的脚注，返回这一行的编号（这一轮改了什么要等快照做完才知道，到时候用 setFooterChanges 补上）。没记就是 undefined */
+export function recordFooter(sessionId: string | undefined, text: string, footer: string, changes?: TurnChanges): number | undefined {
   const t = squash(text).slice(-TAIL);
-  if (!sessionId || !t || !footer) return;
-  transaction(() => {
-    sql("INSERT INTO footers (session_id, tail, footer, at) VALUES (?, ?, ?, ?)").run(sessionId, t, footer, Date.now());
+  if (!sessionId || !t || !footer) return undefined;
+  return transaction(() => {
+    const row = sql("INSERT INTO footers (session_id, tail, footer, at, changes) VALUES (?, ?, ?, ?, ?)").run(sessionId, t, footer, Date.now(), changes ? JSON.stringify(changes) : null);
     // 一个会话只留最近这么多轮
     sql(
       `DELETE FROM footers WHERE session_id = ? AND id <= (
          SELECT id FROM footers WHERE session_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`,
     ).run(sessionId, sessionId, MAX_PER_SESSION);
+    return Number(row.lastInsertRowid);
   });
 }
 
+export function setFooterChanges(id: number, changes: TurnChanges): void {
+  sql("UPDATE footers SET changes = ? WHERE id = ?").run(JSON.stringify(changes), id);
+}
+
 function entriesOf(sessionId: string): Entry[] {
-  return sql("SELECT tail AS t, footer AS f FROM footers WHERE session_id = ? ORDER BY id").all(sessionId) as Entry[];
+  return sql("SELECT tail AS t, footer AS f, changes AS c FROM footers WHERE session_id = ? ORDER BY id").all(sessionId) as Entry[];
+}
+
+function changesOf(entry: Entry): TurnChanges | undefined {
+  if (!entry.c) return undefined;
+  try {
+    return JSON.parse(entry.c) as TurnChanges;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 给历史里的助手消息按顺序配上脚注。同样的正文（比如两次都回「好的」）按先后一一对应 */
@@ -64,7 +79,8 @@ export function attachFooters(sessionId: string, messages: HistoryMessage[]): Hi
     const found = entries.findIndex((e, i) => i >= next && endsWithTail(m.text, e.t));
     if (found < 0) return m;
     next = found + 1;
-    return { ...m, footer: entries[found]!.f };
+    const changes = changesOf(entries[found]!);
+    return { ...m, footer: entries[found]!.f, ...(changes ? { changes } : {}) };
   });
 }
 
@@ -73,6 +89,6 @@ export function copyFooters(from: string, to: string): void {
   if (from === to || !sql("SELECT 1 FROM footers WHERE session_id = ? LIMIT 1").get(from)) return;
   transaction(() => {
     sql("DELETE FROM footers WHERE session_id = ?").run(to);
-    sql("INSERT INTO footers (session_id, tail, footer, at) SELECT ?, tail, footer, ? FROM footers WHERE session_id = ? ORDER BY id").run(to, Date.now(), from);
+    sql("INSERT INTO footers (session_id, tail, footer, at, changes) SELECT ?, tail, footer, ?, changes FROM footers WHERE session_id = ? ORDER BY id").run(to, Date.now(), from);
   });
 }

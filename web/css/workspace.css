@@ -1,0 +1,1064 @@
+/* ---------- 顶栏：分支标记和面板按钮 ---------- */
+
+.top-git {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-soft);
+  font-size: 12.5px;
+  font-family: var(--mono);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.top-git[hidden] {
+  display: none;
+}
+
+.top-git:hover {
+  background: var(--bg-hover);
+}
+
+.top-git svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.top-git-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.top-git-count {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.top-git-count[hidden] {
+  display: none;
+}
+
+/* ---------- 面板 ---------- */
+
+.ws-panel {
+  --ws-w: 480px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: var(--ws-w);
+  min-width: 280px;
+  max-width: calc(100% - var(--side-w) - 320px);
+  height: 100%;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  z-index: 7;
+}
+
+.ws-panel[hidden] {
+  display: none;
+}
+
+.ws-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.ws-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: calc(10px + env(safe-area-inset-top)) 8px 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.ws-head .grow {
+  flex: 1;
+}
+
+.ws-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.ws-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-soft);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.ws-tab:hover {
+  background: var(--bg-hover);
+}
+
+.ws-tab.on {
+  background: var(--bg-soft);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.ws-tab-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.ws-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 0 16px;
+}
+
+.ws-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 20px;
+  color: var(--fg-faint);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 12px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.ws-row:hover {
+  background: var(--bg-hover);
+}
+
+.ws-row.faint .ws-name {
+  color: var(--fg-soft);
+}
+
+.ws-row-note {
+  color: var(--fg-faint);
+  font-size: 12px;
+  cursor: default;
+}
+
+.ws-icon {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-faint);
+}
+
+.ws-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.ws-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 40px;
+}
+
+.ws-dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.ws-size {
+  margin-left: auto;
+  padding-left: 8px;
+  flex-shrink: 0;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+}
+
+.ws-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  line-height: 15px;
+}
+
+.ws-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 4px;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.ws-group-count {
+  font-weight: 400;
+}
+
+.ws-state {
+  flex-shrink: 0;
+  width: 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.s-modified,
+.s-typechange {
+  color: #b7791f;
+}
+
+.s-added,
+.s-untracked,
+.s-copied {
+  color: var(--ok);
+}
+
+.s-deleted,
+.s-conflicted {
+  color: var(--danger);
+}
+
+.s-renamed {
+  color: var(--accent);
+}
+
+/* ---------- 文件树的操作 ---------- */
+
+.ws-toolbar {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-toolbar .btn {
+  padding: 3px 9px;
+  font-size: 12.5px;
+}
+
+.ws-entry {
+  position: relative;
+}
+
+.ws-entry .ws-row {
+  padding-right: 34px;
+}
+
+.ws-entry-more {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  opacity: 0;
+}
+
+.ws-entry-more svg {
+  width: 15px;
+  height: 15px;
+}
+
+.ws-entry:hover .ws-entry-more,
+.ws-entry-more:focus-visible {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .ws-entry-more {
+    opacity: 0.7;
+  }
+}
+
+.ws-panel.ws-dropping .ws-body {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* ---------- 编辑器 ---------- */
+
+.ws-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.ws-editor[hidden] {
+  display: none;
+}
+
+.ws-editor .cm-editor {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: 13px;
+}
+
+.ws-editor .cm-editor.cm-focused {
+  outline: none;
+}
+
+/* 跟着应用的底色走，不要主题自带的（深色主题偏蓝） */
+.ws-editor .cm-editor {
+  background: var(--bg);
+}
+
+.ws-editor .cm-gutters {
+  background: var(--bg-soft);
+  border-right: 1px solid var(--border);
+}
+
+.ws-editor .cm-scroller {
+  font-family: var(--mono);
+  line-height: 1.55;
+}
+
+.ws-dirty {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+.ws-dirty[hidden] {
+  display: none;
+}
+
+/* ---------- 暂存、丢弃、提交 ---------- */
+
+.ws-changes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-branch-slot {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.ws-row-actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  padding-left: 6px;
+  background: var(--bg-hover);
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ws-entry:hover .ws-row-actions,
+.ws-row-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ws-entry:hover > .ws-change {
+  background: var(--bg-hover);
+}
+
+.ws-row-act {
+  width: 24px;
+  height: 24px;
+}
+
+.ws-row-act svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ws-group-act {
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+}
+
+.ws-group-act svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 没有悬停的设备：按钮一直在，文件名让出位置 */
+@media (pointer: coarse) {
+  .ws-row-actions {
+    position: static;
+    background: transparent;
+    transform: none;
+    opacity: 1;
+    pointer-events: auto;
+    flex-shrink: 0;
+    padding: 0 6px 0 0;
+  }
+
+  .ws-entry:has(> .ws-change) {
+    display: flex;
+    align-items: center;
+  }
+
+  .ws-entry > .ws-change {
+    flex: 1;
+    min-width: 0;
+    padding-right: 4px;
+  }
+
+  .ws-row-act {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+.ws-commit {
+  flex-shrink: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-commit-msg {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.ws-commit-msg:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.ws-commit-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ws-commit-hooks {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ws-commit-foot .btn {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+/* ---------- 提交历史 ---------- */
+
+.ws-commit-row {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ws-commit-row:hover {
+  background: var(--bg-hover);
+}
+
+.ws-commit-subject {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-commit-meta {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 分支 ---------- */
+
+.ws-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ws-branch:hover {
+  background: var(--bg-hover);
+}
+
+.ws-branch > span:first-child {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+}
+
+.ws-branch > span:first-child svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ws-branch-name {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-branch-up {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-sync {
+  flex-shrink: 0;
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.ws-caret {
+  display: inline-grid;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--fg-faint);
+}
+
+.ws-caret svg {
+  width: 10px;
+  height: 10px;
+}
+
+.menu.ws-branches {
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.ws-branches-note {
+  padding: 12px;
+  color: var(--fg-faint);
+  font-size: 13px;
+}
+
+.menu.ws-branches button.ws-branch-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 12px 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu.ws-branches button.ws-branch-row:hover,
+.menu.ws-branches button.ws-branch-new:hover {
+  background: var(--bg-hover);
+}
+
+.menu.ws-branches button.ws-branch-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ws-branch-new svg {
+  width: 13px;
+  height: 13px;
+}
+
+.ws-branch-check {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+
+.ws-branch-check svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ws-branch-text {
+  min-width: 0;
+}
+
+.ws-branch-title {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-branch-row.on .ws-branch-title {
+  font-weight: 600;
+}
+
+.ws-branch-sub {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 详情页 ---------- */
+
+.ws-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 6px 10px 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-detail-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-detail-name {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-detail-sub {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-detail-head .btn {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  font-size: 12.5px;
+}
+
+.ws-detail-head .fv-actions {
+  flex-shrink: 0;
+}
+
+.ws-preview {
+  flex: 1;
+  min-height: 0;
+}
+
+.ws-stat {
+  display: inline-flex;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.ws-add {
+  color: var(--ok);
+}
+
+.ws-del {
+  color: var(--danger);
+}
+
+/* ---------- diff ---------- */
+
+.ws-diff-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.diff {
+  --d-add: color-mix(in srgb, var(--ok) 14%, transparent);
+  --d-del: color-mix(in srgb, var(--danger) 13%, transparent);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.d-row {
+  display: grid;
+  grid-template-columns: 4.5ch 4.5ch 2ch minmax(0, 1fr);
+}
+
+.d-split-row {
+  grid-template-columns: 4.5ch minmax(0, 1fr) 4.5ch minmax(0, 1fr);
+}
+
+.d-ln {
+  padding-right: 6px;
+  color: var(--fg-faint);
+  text-align: right;
+  user-select: none;
+}
+
+.d-mark {
+  color: var(--fg-faint);
+  text-align: center;
+  user-select: none;
+}
+
+.d-code {
+  min-width: 0;
+  padding-right: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.d-row.d-add,
+.d-ln.d-add,
+.d-code.d-add {
+  background: var(--d-add);
+}
+
+.d-row.d-del,
+.d-ln.d-del,
+.d-code.d-del {
+  background: var(--d-del);
+}
+
+.d-row.d-note .d-code,
+.d-code.d-note {
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
+.d-blank {
+  background: var(--bg-soft);
+}
+
+.d-hunk {
+  display: flex;
+  gap: 10px;
+  padding: 3px 10px;
+  background: var(--bg-soft);
+  color: var(--fg-faint);
+  font-size: 11.5px;
+}
+
+.d-section {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.d-note-bar {
+  padding: 6px 12px;
+  background: var(--warn-bg);
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+
+.d-raw {
+  margin: 0;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.d-more {
+  display: block;
+  margin: 12px auto;
+}
+
+/* ---------- 回复下面的改动卡片 ---------- */
+
+.turn-changes {
+  margin: 10px 0 2px;
+  max-width: 560px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.turn-head,
+.turn-file,
+.turn-more {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-head {
+  padding: 7px 10px;
+}
+
+.turn-head:hover,
+.turn-file:hover,
+.turn-more:hover {
+  background: var(--bg-hover);
+}
+
+.turn-head > span:first-child {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+}
+
+.turn-head svg {
+  width: 15px;
+  height: 15px;
+}
+
+.turn-title {
+  font-weight: 500;
+}
+
+.turn-open {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.turn-file {
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.turn-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.turn-count {
+  display: inline-flex;
+  gap: 5px;
+  flex-shrink: 0;
+  color: var(--fg-faint);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.turn-more {
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+
+.turn-note {
+  padding: 5px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--warn-bg);
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+
+/* ---------- 手机：全屏 ---------- */
+
+@media (max-width: 768px) {
+  .top-git {
+    display: none;
+  }
+
+  .top-actions .top-workspace {
+    width: 44px;
+    height: 44px;
+    border-radius: 999px;
+    color: var(--fg);
+  }
+
+  .ws-panel {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    height: calc(100% - var(--kb-inset, 0px));
+    border-left: none;
+    /* 盖过手机上的侧栏（30），弹窗（40）要盖在它上面 */
+    z-index: 35;
+  }
+
+  .ws-resizer {
+    display: none;
+  }
+
+  .ws-row {
+    min-height: 38px;
+    font-size: 14px;
+  }
+
+  .diff {
+    font-size: 11.5px;
+  }
+
+  /* 小于 16px 的输入框，iOS 聚焦时会放大页面 */
+  .ws-editor .cm-editor {
+    font-size: 16px;
+  }
+}
+
+/* ---------- 表格（预览弹层和面板共用） ---------- */
+
+.fv-csv {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.fv-csv table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+}
+
+.fv-csv th,
+.fv-csv td {
+  max-width: 360px;
+  overflow: hidden;
+  padding: 4px 10px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fv-csv thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-soft);
+  font-weight: 600;
+}
+
+.fv-csv-no {
+  color: var(--fg-faint);
+  font-weight: 400;
+  text-align: right;
+  user-select: none;
+}

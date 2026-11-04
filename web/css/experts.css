@@ -23,11 +23,13 @@
   min-width: 0;
 }
 
-.tool-check-item > input {
+.tool-check-item > input,
+.perm-list > .check-item > input {
   flex-shrink: 0;
 }
 
-.tool-check-item > span {
+.tool-check-item > span,
+.perm-list > .check-item > span {
   flex: 0 0 auto;
   max-width: calc(100% - 28px);
   white-space: nowrap;
@@ -35,7 +37,8 @@
   text-overflow: ellipsis;
 }
 
-.tool-check-item > small {
+.tool-check-item > small,
+.perm-list > .check-item > small {
   flex: 1;
 }
 

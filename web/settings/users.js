@@ -133,6 +133,24 @@ export async function usersTab(page) {
         }),
       });
     }
+    // 工作区面板：管理员一直能用，成员要单独开
+    if (u.role !== "admin") {
+      items.push({
+        label: u.files ? "关闭工作区面板" : "开通工作区面板…",
+        onclick: act(async () => {
+          if (!u.files) {
+            const sure = await confirmDialog({
+              title: `给「${u.name}」开通工作区面板？`,
+              message: "他能在自己的对话里浏览、编辑、上传和删除工作目录下的文件，并在 Git 仓库里暂存、丢弃、提交、切换分支、撤销一轮的改动，都不经过授权卡。密钥一类的敏感文件不显示也改不了。他能在工作区任意目录开对话，所以相当于能读写整个工作区。",
+              confirmText: "开通",
+            });
+            if (!sure) return false;
+          }
+          await patch(u, { files: !u.files });
+          toast(u.files ? "已关闭" : "已开通");
+        }),
+      });
+    }
     items.push("sep");
     if (u.feishuLinks) {
       items.push({
@@ -208,6 +226,7 @@ export async function usersTab(page) {
             h("span", { class: "status-tag" }, u.role === "admin" ? "管理员" : "成员"),
             u.disabled ? h("span", { class: "status-tag bad" }, "已停用") : null,
             u.role !== "admin" && u.remote ? h("span", { class: "status-tag" }, "远程控制") : null,
+            u.role !== "admin" && u.files ? h("span", { class: "status-tag" }, "工作区面板") : null,
           ),
           h("div", { class: "s" }, `创建于 ${relTime(u.createdAt)} · ${u.devices} 台设备已登录${u.feishuLinks ? ` · 绑定了 ${u.feishuLinks} 个飞书账号` : ""}`),
         ),
@@ -227,8 +246,10 @@ export async function usersTab(page) {
     const role = h("select", {}, h("option", { value: "member" }, "成员"), h("option", { value: "admin" }, "管理员"));
     const permissions = permissionFields(data.resources);
     const remote = h("input", { type: "checkbox" });
+    const files = h("input", { type: "checkbox" });
     const memberOptions = h("div", { class: "user-permissions" }, permissions.el,
-      h("div", { class: "field" }, h("span", {}, "远程权限"), h("label", { class: "check-item" }, remote, h("span", {}, "允许使用终端和桌面"))));
+      h("div", { class: "field" }, h("span", {}, "远程权限"), h("label", { class: "check-item" }, remote, h("span", {}, "允许使用终端和桌面"))),
+      h("div", { class: "field" }, h("span", {}, "文件权限"), h("label", { class: "check-item" }, files, h("span", {}, "允许用工作区面板读写文件、操作 Git"))));
     role.onchange = () => { memberOptions.hidden = role.value === "admin"; };
     fill(
       addBox,
@@ -246,7 +267,7 @@ export async function usersTab(page) {
             confirmText: "开通并添加", danger: true,
           }))) return false;
           await api("/api/users", { method: "POST", body: { name: name.value.trim(), password: pw.value, role: role.value,
-            ...(role.value === "member" ? { remote: remote.checked, permissions: permissions.value() } : {}) } });
+            ...(role.value === "member" ? { remote: remote.checked, files: files.checked, permissions: permissions.value() } : {}) } });
           toast(`已添加「${name.value.trim()}」`);
           close();
           reload();

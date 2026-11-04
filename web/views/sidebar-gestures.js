@@ -25,7 +25,7 @@ export function bindSidebarGestures(layout, sidebar) {
     if (!mobile.matches || e.touches.length !== 1) return;
     if (e.defaultPrevented || document.querySelector(".overlay, .popover")) return;
     const target = e.target;
-    if (!(target instanceof Element) || target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), .desk-viewport, .term-pane, .msg-nav") || ownsHorizontalScroll(target)) return;
+    if (!(target instanceof Element) || target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), .desk-viewport, .term-pane, .msg-nav, .ws-panel") || ownsHorizontalScroll(target)) return;
     if (window.getSelection()?.isCollapsed === false) return;
     const touch = e.touches[0];
     const open = layout.classList.contains("side-open");

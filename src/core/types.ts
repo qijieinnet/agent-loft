@@ -196,8 +196,21 @@ export type HistoryMessage = {
   anchor?: string;
   /** 助手消息：这一轮的用时 / 费用 / tokens（agent-loft 自己记的，agent 记录里没有） */
   footer?: string;
+  /** 助手消息：这一轮改了哪些文件（agent-loft 自己比较快照得出的，见 turn-changes.ts） */
+  changes?: TurnChanges;
   /** 用户消息：带的附件（从消息里的附件清单解析出来） */
   attachments?: AttachmentInfo[];
+};
+
+/** 一轮对话改了什么。files 太多时只留前一部分，fileCount、added、removed 是全部的 */
+export type TurnChanges = {
+  id: string;
+  files: { path: string; oldPath?: string; status: string; added: number; removed: number; binary?: boolean }[];
+  fileCount: number;
+  added: number;
+  removed: number;
+  /** 这一轮期间同一个仓库里还有别的会话在跑：可能混入了它们的改动 */
+  shared?: boolean;
 };
 
 export type SessionOptions = {
