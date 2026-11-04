@@ -9,7 +9,7 @@ import { openConversation } from "./messages.js";
 import { openSchedule } from "./schedule.js";
 import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
 import { capOfAccess, minPermission, PERMISSION_ORDER, PERMISSIONS } from "../lib/permission.js";
-import { syncWorkspace, workspaceButtons } from "./workspace-entry.js";
+import { canSeeChanges, syncWorkspace, toggleWorkspace, workspaceButtons, workspaceStats } from "./workspace-entry.js";
 
 // ---------- 顶栏 ----------
 
@@ -151,6 +151,7 @@ function openExpertCard(anchor, key, pinned) {
 function topMenuItems() {
   const items = [];
   if (!S.view) {
+    if (S.convs.has(S.current) && canSeeChanges()) items.push({ id: "files", label: "文件", icon: "panel", detail: workspaceStats, onclick: () => void toggleWorkspace() });
     items.push({ id: "schedule", label: "定时发送", icon: "clock", onclick: () => openSchedule() });
     const actions = convMenuItems(S.current);
     if (actions.length) items.push("sep", ...actions);
@@ -170,9 +171,10 @@ function openTopMore(anchor) {
         ? h("div", { class: "sep" })
         : h(
             "button",
-            { class: `pop-item${it.checked ? " on" : ""}${it.danger ? " danger" : ""}`, onclick: () => (closeMenu(), it.onclick()) },
+            { class: `pop-item${it.checked ? " on" : ""}${it.danger ? " danger" : ""}`, "aria-label": it.detail ? it.label : null, onclick: () => (closeMenu(), it.onclick()) },
             icon(it.icon),
             h("span", { class: "grow" }, it.label),
+            it.detail ?? null,
             it.checked ? h("span", { class: "check" }, "✓") : null,
           ),
     ),
@@ -250,7 +252,7 @@ function syncDesktopMenu() {
   const items = topMenuItems();
   desktopActions = new Map(items.filter((it) => it !== "sep").map((it) => [it.id, it.onclick]));
   const menu = {
-    items: items.map((it) => (it === "sep" ? { type: "separator" } : { id: it.id, label: it.label, ...(it.checked !== undefined ? { checked: it.checked } : {}) })),
+    items: items.map((it) => (it === "sep" ? { type: "separator" } : { id: it.id, label: it.detail && !it.detail.hidden ? `${it.label}  ${it.detail.textContent}` : it.label, ...(it.checked !== undefined ? { checked: it.checked } : {}) })),
     usage: [],
   };
   const sig = JSON.stringify(menu);
@@ -263,6 +265,8 @@ function syncDesktopMenu() {
 export function runDesktopMenu(id) {
   desktopActions.get(id)?.();
 }
+
+document.addEventListener("aim:git", syncDesktopMenu);
 
 export function baseName(p) {
   return (p ?? "").split(/[\\/]/).filter(Boolean).pop() || p || "";

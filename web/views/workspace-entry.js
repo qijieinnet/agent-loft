@@ -1,4 +1,4 @@
-// 工作区面板的入口：顶栏上的分支标记和按钮、Git 状态的刷新。首屏就加载，所以只放这点；
+// 工作区面板的入口：顶栏上的分支标记、更多菜单操作和 Git 状态的刷新。首屏就加载，所以只放这点；
 // 面板本身（views/workspace.js）第一次打开时才加载。
 import { h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
@@ -33,10 +33,17 @@ export function rememberOpen(open) {
 const chipText = h("span", { class: "top-git-name" });
 const chipCount = h("span", { class: "top-git-count" });
 const chip = h("button", { class: "top-git", hidden: true, onclick: () => void openWorkspace("changes") }, icon("fork"), chipText, chipCount);
-const toggleBtn = h("button", { class: "icon-btn top-workspace", title: "工作区：文件和改动", "aria-label": "工作区面板", onclick: () => void loadPanel().then((m) => m.togglePanel()) }, icon("panel"));
+const addedCount = h("span", { class: "ws-add" });
+const removedCount = h("span", { class: "ws-del" });
+export const workspaceStats = h("span", { class: "ws-stat top-file-stat", hidden: true }, addedCount, removedCount);
 
 function renderChip() {
   const s = git.status;
+  const stats = s?.repo ? s.stats : null;
+  workspaceStats.hidden = !stats || !(stats.added || stats.removed);
+  addedCount.textContent = `+${stats?.added ?? 0}`;
+  removedCount.textContent = `−${stats?.removed ?? 0}`;
+  workspaceStats.title = `新增 ${stats?.added ?? 0} 行，删除 ${stats?.removed ?? 0} 行`;
   chip.hidden = !s?.repo;
   if (!s?.repo) return;
   const name = s.branch ?? s.head ?? "未知";
@@ -47,9 +54,14 @@ function renderChip() {
   chip.title = [s.branch ? `当前分支：${s.branch}` : `分离头指针：${s.head}`, sync, s.files.length ? `${s.files.length} 个文件有改动` : "没有改动"].filter(Boolean).join("\n");
 }
 
-/** 顶栏要放的按钮。每次重画顶栏用的是同一组元素，状态不用重新画 */
+/** 顶栏的分支标记。每次重画顶栏用的是同一个元素，状态不用重新画 */
 export function workspaceButtons() {
-  return allowed() ? [chip, toggleBtn] : [];
+  return allowed() ? [chip] : [];
+}
+
+/** 更多菜单里的「文件」：展开或折叠工作区面板。 */
+export async function toggleWorkspace() {
+  (await loadPanel()).togglePanel();
 }
 
 // ---------- 状态 ----------
@@ -109,7 +121,7 @@ export async function openTurnChanges(changes, path) {
   await (await loadPanel()).openTurn(changes, path);
 }
 
-/** 这个账号能不能看改动卡片 */
+/** 这个账号能不能使用工作区面板 */
 export const canSeeChanges = allowed;
 
 /** 绝对路径换算成相对当前会话工作目录的路径；不在工作目录里、不能用面板：null */

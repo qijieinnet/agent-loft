@@ -210,6 +210,8 @@ export type GitStatus = {
   behind: number;
   files: GitFileChange[];
   truncated: boolean;
+  /** 工作区相对 HEAD 的总行数变化（含未跟踪文件，不含敏感文件、二进制）。 */
+  stats?: { added: number; removed: number };
 };
 
 const STATE: Record<string, GitFileState> = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", T: "typechange" };
@@ -260,11 +262,12 @@ function fieldsAfter(line: string, n: number): string {
   return line.slice(at);
 }
 
-export async function gitStatus(root: string): Promise<GitStatus> {
+export async function gitStatus(root: string, options: { stats?: boolean } = {}): Promise<GitStatus> {
+  const safe = await safeArgs(root);
   const out = await run(
     root,
     // 子模块里的改动不往里看：既慢，又会跑子模块自己的配置
-    [...(await safeArgs(root)), "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all", "--ignore-submodules=dirty"],
+    [...safe, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all", "--ignore-submodules=dirty"],
     STATUS_MAX_BYTES,
   );
   if (out.code !== 0) throw new Error(out.stderr.trim() || "读取仓库状态失败");
@@ -275,7 +278,55 @@ export async function gitStatus(root: string): Promise<GitStatus> {
   for (const f of status.files) {
     if (isSensitivePath(path.join(root, f.path)) || (f.oldPath && isSensitivePath(path.join(root, f.oldPath)))) f.sensitive = true;
   }
+  if (options.stats && !status.truncated) status.stats = await workingTreeStats(root, status, safe).catch(() => undefined);
   return status;
+}
+
+/** 一次比较 HEAD 与工作区，避免把同一文件的暂存和未暂存改动重复相加。 */
+async function workingTreeStats(root: string, status: GitStatus, safe: string[]): Promise<GitStatus["stats"]> {
+  const stats = { added: 0, removed: 0 };
+  const files = new Map(status.files.filter((f) => !f.sensitive).map((f) => [f.path, f]));
+  const paths = new Set([...files.values()].flatMap((f) => f.oldPath ? [f.path, f.oldPath] : [f.path]));
+  if (!files.size) return stats;
+  if (status.head) {
+    const out = await run(root, [...safe, "diff", "--numstat", "-z", "-M", "--no-ext-diff", "--no-textconv", "--ignore-submodules=dirty", "HEAD", "--"], STATUS_MAX_BYTES);
+    if (out.code !== 0 || out.truncated) return undefined;
+    const fields = out.stdout.split("\0");
+    for (let i = 0; i < fields.length; i++) {
+      const match = /^([^\t]+)\t([^\t]+)\t([\s\S]*)$/.exec(fields[i]!);
+      if (!match) continue;
+      let file = match[3]!;
+      if (!file) { // 重命名后面另有两段路径。
+        i++;
+        file = fields[++i]!;
+      }
+      if (!paths.has(file) || !/^\d+$/.test(match[1]!) || !/^\d+$/.test(match[2]!)) continue;
+      stats.added += Number(match[1]);
+      stats.removed += Number(match[2]);
+    }
+  }
+  // 未跟踪文件不在 git diff 里；还没有提交时，所有普通文本文件都是新增。
+  for (const file of files.values()) {
+    if (status.head && file.unstaged !== "untracked") continue;
+    let handle;
+    try {
+      const abs = path.join(root, file.path);
+      const entry = await fs.promises.lstat(abs);
+      if (!entry.isFile() || entry.size > UNTRACKED_MAX_BYTES) continue;
+      handle = await fs.promises.open(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      const st = await handle.stat();
+      if (!st.isFile() || st.size > UNTRACKED_MAX_BYTES) continue;
+      const content = await handle.readFile();
+      if (!content.length || content.subarray(0, 8000).includes(0)) continue;
+      for (const byte of content) if (byte === 10) stats.added++;
+      if (content[content.length - 1] !== 10) stats.added++;
+    } catch {
+      // 刷新时文件可能已被删除、移动，符号链接也不跟随。
+    } finally {
+      await handle?.close();
+    }
+  }
+  return stats;
 }
 
 // ---------- diff ----------

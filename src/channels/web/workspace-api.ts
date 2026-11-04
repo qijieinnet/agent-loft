@@ -191,7 +191,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     return true;
   }
   if (sub === "git-status") {
-    const status = await gitOp(() => gitStatus(repo.root));
+    const status = await gitOp(() => gitStatus(repo.root, { stats: true }));
     // 工作目录在仓库里的位置：页面拿仓库路径（相对根目录）去开文件（相对工作目录）时要换算
     sendJson(res, 200, { repo: true, ...status, prefix: path.relative(repo.root, fs.realpathSync(cwd)).split(path.sep).join("/") });
     return true;

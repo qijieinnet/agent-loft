@@ -143,6 +143,39 @@ async function fixture(t) {
   return { open, project, plain, turn, undoRepo };
 }
 
+async function toggleWorkspace(page) {
+  await page.locator(".top-more").click();
+  await page.locator(".top-menu").getByRole("button", { name: "文件", exact: true }).click();
+}
+
+async function refreshWorkspaceGit(page) {
+  await page.evaluate(async () => {
+    const entry = document.querySelector('script[type="module"][src]').src;
+    await (await import(new URL("./views/workspace-entry.js", entry).href)).refreshGit();
+  });
+}
+
+// 每轮快照仍由工作区使用，聊天回复不再提供改动卡片入口。
+async function recordedTurns(page, count) {
+  await page.evaluate(async () => {
+    const entry = document.querySelector('script[type="module"][src]').src;
+    const { S } = await import(new URL("./state.js", entry).href);
+    window.workspaceTestState = S;
+  });
+  const turns = await page.waitForFunction((count) => {
+    const items = window.workspaceTestState.items.filter((item) => item.type === "ai" && item.changes);
+    return items.length === count ? items.map((item) => item.changes) : false;
+  }, count);
+  return turns.jsonValue();
+}
+
+async function openRecordedTurn(page, changes, file) {
+  await page.evaluate(async ({ changes, file }) => {
+    const entry = document.querySelector('script[type="module"][src]').src;
+    await (await import(new URL("./views/workspace-entry.js", entry).href)).openTurnChanges(changes, file);
+  }, { changes, file });
+}
+
 test("工作区面板", { timeout: 120000 }, async (t) => {
   const { open, project, plain, turn, undoRepo } = await fixture(t);
   const shots = process.env.AIM_SCREENSHOTS;
@@ -153,7 +186,22 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     await chip.waitFor();
     assert.equal(await chip.locator(".top-git-name").textContent(), "main");
     assert.equal(await chip.locator(".top-git-count").textContent(), "5");
-    await page.locator(".top-workspace").click();
+    assert.equal(await page.locator(".top-workspace").count(), 0, "顶栏不直接显示文件按钮");
+    await page.locator(".top-more").click();
+    const files = page.locator(".top-menu").getByRole("button", { name: "文件", exact: true });
+    assert.equal(await files.locator(".ws-add").textContent(), "+4");
+    assert.equal(await files.locator(".ws-del").textContent(), "−2");
+    const colors = await files.locator(".ws-add, .ws-del").evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).color));
+    assert.notEqual(colors[0], colors[1], "新增和删除使用不同颜色");
+    fs.writeFileSync(path.join(project, "menu-stats.txt"), "one\ntwo");
+    try {
+      await refreshWorkspaceGit(page);
+      assert.equal(await files.locator(".ws-add").textContent(), "+6", "菜单打开时随状态刷新更新");
+    } finally {
+      fs.rmSync(path.join(project, "menu-stats.txt"));
+      await refreshWorkspaceGit(page);
+    }
+    await files.click();
     const panel = page.locator(".ws-panel");
     await panel.waitFor();
     await panel.getByRole("button", { name: /README\.md/ }).waitFor();
@@ -261,9 +309,12 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
 
   await t.test("不是仓库：没有分支标记，文件照常看", async () => {
     const page = await open("admin", "web:plain");
-    await page.locator(".top-workspace").waitFor();
+    await page.locator(".top-more").waitFor();
     assert.equal(await page.locator(".top-git").isVisible(), false);
-    await page.locator(".top-workspace").click();
+    await page.locator(".top-more").click();
+    const files = page.locator(".top-menu").getByRole("button", { name: "文件", exact: true });
+    assert.equal(await files.locator(".top-file-stat").isVisible(), false, "非仓库不显示行数");
+    await files.click();
     const panel = page.locator(".ws-panel");
     await panel.getByRole("button", { name: /note\.md/ }).waitFor();
     await panel.getByRole("tab", { name: "改动" }).click();
@@ -274,8 +325,8 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
   /** 打开「普通目录」会话的面板 */
   const openPlain = async () => {
     const page = await open("admin", "web:plain");
-    await page.locator(".top-workspace").waitFor();
-    await page.locator(".top-workspace").click();
+    await page.locator(".top-more").waitFor();
+    await toggleWorkspace(page);
     const panel = page.locator(".ws-panel");
     await panel.getByRole("button", { name: /note\.md/ }).waitFor();
     return { page, panel };
@@ -406,7 +457,7 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     assert.equal(await panel.locator(".ws-tab.on").textContent(), "文件");
     // 收起再打开：编辑器还在，内容还在
     await panel.getByRole("button", { name: "关闭工作区" }).click();
-    await page.locator(".top-workspace").click();
+    await toggleWorkspace(page);
     await panel.locator(".cm-content").waitFor();
     assert.match(await panel.locator(".cm-content").innerText(), /草稿内容/);
     // 刷新页面：草稿还在，再打开时恢复
@@ -481,7 +532,7 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     await (await again).setFiles([{ name: "up.bin", mimeType: "application/octet-stream", buffer: Buffer.from([7]) }]);
     await dialog(page).getByText("已经存在，要覆盖吗").waitFor();
     await dialog(page).getByRole("button", { name: "覆盖" }).click();
-    await page.getByText("已上传 1 个文件").waitFor();
+    await page.getByText("已上传 1 个文件").last().waitFor();
     assert.deepEqual([...fs.readFileSync(path.join(plain, "up.bin"))], [7]);
     // 删除：取消不删，确认才删
     const row = panel.locator(".ws-entry", { hasText: "up.bin" });
@@ -544,7 +595,7 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     await page.context().close();
   });
 
-  await t.test("每轮改动：回复下面有卡片，点开看 diff，刷新后还在", async () => {
+  await t.test("每轮改动：实时回复和历史回复不追加卡片，工作区仍能读取快照", async () => {
     const page = await open("admin", "web:turn");
     await page.locator(".top-git").waitFor();
     const send = async (text) => {
@@ -553,15 +604,15 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     };
     await send("写 a.ts,b.md");
     const card = page.locator(".turn-changes");
-    await card.waitFor();
-    assert.match(await card.locator(".turn-head").textContent(), /改了 2 个文件.*\+4/);
-    assert.deepEqual((await card.locator(".turn-file-name").allTextContents()).sort(), ["a.ts", "b.md"]);
+    const [first] = await recordedTurns(page, 1);
+    assert.equal(await card.count(), 0, "收到实时改动事件也不追加卡片");
+    assert.deepEqual(first.files.map((f) => f.path).sort(), ["a.ts", "b.md"]);
     // 一轮结束，分支标记也跟着更新
     await page.waitForFunction(() => document.querySelector(".top-git-count")?.textContent === "2");
-    if (shots) await page.screenshot({ path: path.join(shots, "12-turn-card.png") });
+    if (shots) await page.screenshot({ path: path.join(shots, "12-reply.png") });
 
-    // 点文件：面板打开，直接看这个文件这一轮的 diff
-    await card.locator(".turn-file", { hasText: "a.ts" }).click();
+    // 工作区仍能读取这一轮的 diff。
+    await openRecordedTurn(page, first, first.files.find((f) => f.path === "a.ts"));
     const panel = page.locator(".ws-panel");
     await panel.locator(".d-row.d-add").first().waitFor();
     assert.deepEqual(await panel.locator(".d-row.d-add .d-code").allTextContents(), ["第一行", "第二行"]);
@@ -576,21 +627,21 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
 
     // 第二轮只算第二轮的，且之前的改动没被计入
     await send("写 c.txt");
-    await page.waitForFunction(() => document.querySelectorAll(".turn-changes").length === 2);
-    assert.match(await card.nth(1).locator(".turn-head").textContent(), /改了 1 个文件/);
-    assert.deepEqual(await card.nth(1).locator(".turn-file-name").allTextContents(), ["c.txt"]);
+    const [, second] = await recordedTurns(page, 2);
+    assert.equal(await card.count(), 0);
+    assert.deepEqual(second.files.map((f) => f.path), ["c.txt"]);
 
     // 没改文件：没有卡片
     await send("随便聊聊");
     await page.getByText("好了：随便聊聊").waitFor();
     await page.waitForTimeout(300);
-    assert.equal(await card.count(), 2);
+    assert.equal(await card.count(), 0);
 
-    // 刷新：卡片还在，点标题看这一轮的全部，内容还能看
+    // 刷新后的历史回复也没有卡片，快照内容仍可读取。
     await page.reload();
-    await card.first().waitFor();
-    assert.equal(await card.count(), 2);
-    await card.first().locator(".turn-head").click();
+    const [restored] = await recordedTurns(page, 2);
+    assert.equal(await card.count(), 0);
+    await openRecordedTurn(page, restored);
     await panel.locator(".ws-change", { hasText: "a.ts" }).click();
     await panel.locator(".d-row.d-add").first().waitFor();
     // 之后文件又变了，这一轮的 diff 还是当时的
@@ -610,7 +661,7 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
   await t.test("编辑时从顶栏打开改动：没保存的要先问", async () => {
     const page = await open("admin", "web:repo");
     await page.locator(".top-git").waitFor();
-    await page.locator(".top-workspace").click();
+    await toggleWorkspace(page);
     const panel = page.locator(".ws-panel");
     await panel.getByRole("tab", { name: "文件" }).click();
     await panel.getByRole("button", { name: /README\.md/ }).click();
@@ -749,11 +800,10 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     await page.locator(".top-git").waitFor();
     await page.locator("textarea").first().fill("写 undo.txt");
     await page.keyboard.press("Enter");
-    const card = page.locator(".turn-changes");
-    await card.waitFor();
+    const [changes] = await recordedTurns(page, 1);
     const file = path.join(undoRepo, "undo.txt");
     assert.equal(fs.existsSync(file), true);
-    await card.locator(".turn-head").click();
+    await openRecordedTurn(page, changes);
     const panel = page.locator(".ws-panel");
     const undo = panel.getByRole("button", { name: "撤销这一轮" });
     await undo.waitFor();
@@ -792,8 +842,8 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     fs.writeFileSync(path.join(repo, "b.txt"), "手机上改的\n");
     const page = await open("admin", "web:ops", { width: 390, height: 844 }, { hasTouch: true, isMobile: true });
     assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "确实是触屏环境");
-    await page.locator(".top-workspace").waitFor();
-    await page.locator(".top-workspace").tap();
+    await page.locator(".top-more").waitFor();
+    await toggleWorkspace(page);
     const panel = page.locator(".ws-panel");
     await panel.getByRole("tab", { name: /改动/ }).tap();
     const row = panel.locator(".ws-entry", { hasText: "b.txt" });
@@ -946,11 +996,11 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
 
   await t.test("手机上弹窗盖在面板上面，手势不会在面板后面打开侧栏", async () => {
     const page = await open("admin", "web:plain", { width: 390, height: 844 }, { hasTouch: true, isMobile: true });
-    await page.locator(".top-workspace").waitFor();
+    await page.locator(".top-more").waitFor();
     if (shots) await page.screenshot({ path: path.join(shots, "19-mobile-top.png") });
     const top = await page.locator(".topbar").evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
     assert.equal(top, true, "顶栏不溢出");
-    await page.locator(".top-workspace").tap();
+    await toggleWorkspace(page);
     const panel = page.locator(".ws-panel");
     await panel.getByRole("button", { name: "新建文件", exact: true }).tap();
     const input = page.locator(".modal input");
@@ -983,9 +1033,10 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
 
   await t.test("深色模式下看得清", async () => {
     const page = await open("admin", "web:turn", { width: 1400, height: 900 }, { colorScheme: "dark" });
-    await page.locator(".turn-changes").first().waitFor();
-    if (shots) await page.screenshot({ path: path.join(shots, "20-dark-card.png") });
-    await page.locator(".turn-changes .turn-file").first().click();
+    const [changes] = await recordedTurns(page, 2);
+    assert.equal(await page.locator(".turn-changes").count(), 0);
+    if (shots) await page.screenshot({ path: path.join(shots, "20-dark-reply.png") });
+    await openRecordedTurn(page, changes, changes.files[0]);
     const panel = page.locator(".ws-panel");
     await panel.locator(".d-row, .ws-empty").first().waitFor();
     await panel.getByRole("button", { name: "返回" }).click();
@@ -1005,6 +1056,8 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     await page.locator(".conv-expert-icon").waitFor();
     assert.equal(await page.locator(".top-workspace").count(), 0);
     assert.equal(await page.locator(".top-git").count(), 0);
+    await page.locator(".top-more").click();
+    assert.equal(await page.locator(".top-menu").getByRole("button", { name: "文件", exact: true }).count(), 0);
     const status = await page.evaluate(() => fetch("/api/conversations/web%3Amember/workspace-tree").then((r) => r.status));
     assert.equal(status, 403);
     await page.context().close();
@@ -1012,7 +1065,7 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
 
   await t.test("管理员在设置里开通后，成员就能用了；关掉又不行", async () => {
     const admin = await open("admin", "web:repo");
-    await admin.locator(".top-workspace").waitFor();
+    await admin.locator(".top-more").waitFor();
     await admin.evaluate(() => document.dispatchEvent(new CustomEvent("aim:open-settings", { detail: "用户" })));
     const memberRow = admin.locator(".user-entry").filter({ hasText: "member" });
     await memberRow.waitFor();
@@ -1022,8 +1075,8 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     await admin.locator(".dialog-overlay").getByRole("button", { name: "开通" }).click();
     await memberRow.getByText("工作区面板", { exact: true }).waitFor();
     const member = await open("member", "web:member");
-    await member.locator(".top-workspace").waitFor();
-    await member.locator(".top-workspace").click();
+    await member.locator(".top-more").waitFor();
+    await toggleWorkspace(member);
     await member.locator(".ws-panel").getByRole("button", { name: /README\.md/ }).waitFor();
     assert.equal(await member.evaluate(() => fetch("/api/conversations/web%3Amember/workspace-tree").then((r) => r.status)), 200);
     await more.click();
@@ -1035,8 +1088,8 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
 
   await t.test("手机：全屏，不横向溢出，关掉回到对话", async () => {
     const page = await open("admin", "web:repo", { width: 390, height: 844 });
-    await page.locator(".top-workspace").waitFor();
-    await page.locator(".top-workspace").click();
+    await page.locator(".top-more").waitFor();
+    await toggleWorkspace(page);
     const panel = page.locator(".ws-panel");
     await panel.getByRole("button", { name: /README\.md/ }).waitFor();
     const box = await panel.boundingBox();

@@ -12,7 +12,6 @@ import { renderScheduled } from "./schedule.js";
 import { changeCwd, doAction, forkConversation } from "./conv-actions.js";
 import { scheduleNav } from "./msg-nav.js";
 import { linkReplyFiles } from "./file-preview.js";
-import { canSeeChanges, openTurnChanges } from "./workspace-entry.js";
 import { setTodos } from "./todos.js";
 import { expertIcon, findExpert, setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
@@ -723,12 +722,7 @@ function patchAi(item) {
   if (!item.error) v.error = null;
   else if (v.error?.textContent !== item.error) v.error = h("div", { class: "error-box" }, item.error);
 
-  // 这一轮改了什么：摘要变了才重新画（流式输出时这里每一下都会走到）
-  if (item.changes?.id !== v.changesId) {
-    v.changesId = item.changes?.id;
-    v.changes = item.changes ? changesCard(item.changes) : null;
-  }
-  placeChildren(item.el, [v.steps, v.body, v.thinking, v.error, v.changes, renderAiActions(item, body)]);
+  placeChildren(item.el, [v.steps, v.body, v.thinking, v.error, renderAiActions(item, body)]);
 }
 
 function setText(el, text) {
@@ -744,41 +738,6 @@ function placeChildren(parent, nodes) {
     if (n === ref) ref = ref.nextSibling;
     else parent.insertBefore(n, ref);
   }
-}
-
-const CHANGE_LETTER = { modified: "M", added: "A", deleted: "D", renamed: "R", copied: "C", typechange: "T" };
-/** 卡片上最多列这么多个文件，其余的点开面板看 */
-const CHANGES_SHOWN = 5;
-
-/** 回复下面的「改了 3 个文件 +45 −12」。点文件看 diff，点标题看这一轮的全部 */
-function changesCard(changes) {
-  if (!canSeeChanges()) return null;
-  const count = (n, cls, mark) => (n ? h("span", { class: cls }, `${mark}${n}`) : null);
-  const rows = changes.files.slice(0, CHANGES_SHOWN).map((file) =>
-    h(
-      "button",
-      { class: "turn-file", title: file.oldPath ? `${file.oldPath} → ${file.path}` : file.path, onclick: () => void openTurnChanges(changes, file) },
-      h("span", { class: `ws-state s-${file.status}` }, CHANGE_LETTER[file.status] ?? "M"),
-      h("span", { class: "turn-file-name" }, file.path),
-      file.binary ? h("span", { class: "turn-count" }, "二进制") : h("span", { class: "turn-count" }, count(file.added, "ws-add", "+"), count(file.removed, "ws-del", "−")),
-    ),
-  );
-  const more = changes.fileCount - rows.length;
-  return h(
-    "div",
-    { class: "turn-changes" },
-    h(
-      "button",
-      { class: "turn-head", onclick: () => void openTurnChanges(changes) },
-      icon("file"),
-      h("span", { class: "turn-title" }, `改了 ${changes.fileCount} 个文件`),
-      h("span", { class: "turn-count" }, count(changes.added, "ws-add", "+"), count(changes.removed, "ws-del", "−")),
-      h("span", { class: "turn-open" }, "查看"),
-    ),
-    rows,
-    more > 0 ? h("button", { class: "turn-more", onclick: () => void openTurnChanges(changes) }, `还有 ${more} 个文件`) : null,
-    changes.shared ? h("div", { class: "turn-note" }, "这一轮期间同一仓库里还有别的会话在跑，可能混入了它们的改动") : null,
-  );
 }
 
 function renderAiActions(item, body) {
@@ -935,7 +894,6 @@ export function applyEvent(env) {
       const item = (ev.at ? S.items.find((it) => it.type === "ai" && it.at === ev.at) : null) ?? S.items.findLast((it) => it.type === "ai" && it.done);
       if (item) {
         item.changes = ev.changes;
-        updateItem(item);
       }
       return;
     }

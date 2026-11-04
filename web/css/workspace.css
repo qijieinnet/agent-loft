@@ -880,115 +880,11 @@ button.ws-row:hover {
   margin: 12px auto;
 }
 
-/* ---------- 回复下面的改动卡片 ---------- */
-
-.turn-changes {
-  margin: 10px 0 2px;
-  max-width: 560px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-size: 13px;
-}
-
-.turn-head,
-.turn-file,
-.turn-more {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.turn-head {
-  padding: 7px 10px;
-}
-
-.turn-head:hover,
-.turn-file:hover,
-.turn-more:hover {
-  background: var(--bg-hover);
-}
-
-.turn-head > span:first-child {
-  flex-shrink: 0;
-  color: var(--fg-faint);
-}
-
-.turn-head svg {
-  width: 15px;
-  height: 15px;
-}
-
-.turn-title {
-  font-weight: 500;
-}
-
-.turn-open {
-  margin-left: auto;
-  color: var(--fg-faint);
-  font-size: 12px;
-}
-
-.turn-file {
-  padding: 4px 10px;
-  border-top: 1px solid var(--border);
-}
-
-.turn-file-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-family: var(--mono);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-
-.turn-count {
-  display: inline-flex;
-  gap: 5px;
-  flex-shrink: 0;
-  color: var(--fg-faint);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.turn-more {
-  padding: 4px 10px;
-  border-top: 1px solid var(--border);
-  color: var(--fg-soft);
-  font-size: 12px;
-}
-
-.turn-note {
-  padding: 5px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--warn-bg);
-  color: var(--fg-soft);
-  font-size: 12px;
-}
-
 /* ---------- 手机：全屏 ---------- */
 
 @media (max-width: 768px) {
   .top-git {
     display: none;
-  }
-
-  .top-actions .top-workspace {
-    width: 44px;
-    height: 44px;
-    border-radius: 999px;
-    color: var(--fg);
   }
 
   .ws-panel {

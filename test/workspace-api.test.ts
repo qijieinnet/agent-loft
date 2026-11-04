@@ -13,7 +13,7 @@ const { createUser, updateUser } = await import("../src/core/users.js");
 const { createSession } = await import("../src/channels/web/auth.js");
 const { startWeb, stopWeb } = await import("../src/channels/web/server.js");
 const { ensureConversation } = await import("../src/core/store.js");
-const { parseStatus } = await import("../src/core/git.js");
+const { gitStatus, parseStatus } = await import("../src/core/git.js");
 loadConfig();
 
 function git(cwd: string, ...args: string[]): string {
@@ -198,10 +198,40 @@ test("工作区面板接口", { timeout: 60000 }, async (t) => {
     assert.equal(by("staged.txt").staged, "added");
     assert.equal(by(".env").sensitive, true);
     assert.equal(by("id_rsa").sensitive, true);
+    assert.deepEqual(s.stats, { added: 4, removed: 2 }, "统计文本新增、删除行数，跳过二进制、敏感文件及链接");
     // 工作目录是仓库的子目录：路径还是相对根目录，并给出换算用的前缀
     const sub = await json(await get("web:sub", "git-status"));
     assert.equal(sub.prefix, "src");
     assert.ok(sub.files.some((f: { path: string }) => f.path === "src/a.ts"));
+    assert.deepEqual(sub.stats, s.stats, "子目录会话也显示当前分支的总改动");
+  });
+
+  await t.test("行数统计：暂存和未暂存按净变动计算，支持未提交仓库、重命名及特殊文件名", async () => {
+    const repo = path.join(root, "stats");
+    fs.mkdirSync(repo);
+    git(repo, "init");
+    const file = path.join(repo, "a\tb.txt");
+    fs.writeFileSync(file, "first\nsecond\n");
+    assert.deepEqual((await gitStatus(repo, { stats: true })).stats, { added: 2, removed: 0 });
+    git(repo, "add", "-A");
+    fs.writeFileSync(file, "first\nsecond\nthird");
+    assert.deepEqual((await gitStatus(repo, { stats: true })).stats, { added: 3, removed: 0 });
+    git(repo, "add", "-A");
+    git(repo, "commit", "-m", "init");
+    assert.deepEqual((await gitStatus(repo, { stats: true })).stats, { added: 0, removed: 0 });
+    fs.writeFileSync(file, "first\nstaged\nthird");
+    git(repo, "add", "-A");
+    fs.writeFileSync(file, "first\nfinal\nextra\nthird");
+    const index = git(repo, "ls-files", "--stage");
+    assert.deepEqual((await gitStatus(repo, { stats: true })).stats, { added: 2, removed: 1 });
+    assert.equal(git(repo, "ls-files", "--stage"), index, "统计不修改暂存区");
+    fs.writeFileSync(file, "first\nsecond\nthird");
+    assert.deepEqual((await gitStatus(repo, { stats: true })).stats, { added: 0, removed: 0 }, "工作区抵消暂存改动时不重复计数");
+    git(repo, "reset", "--hard", "HEAD");
+    git(repo, "mv", "a\tb.txt", "renamed\nfile.txt");
+    assert.deepEqual((await gitStatus(repo, { stats: true })).stats, { added: 0, removed: 0 }, "纯重命名没有行数变化");
+    fs.writeFileSync(path.join(repo, "renamed\nfile.txt"), "first\nsecond\nthird\nextra");
+    assert.deepEqual((await gitStatus(repo, { stats: true })).stats, { added: 2, removed: 1 });
   });
 
   await t.test("diff：修改、新增、已暂存、删除、二进制", async () => {

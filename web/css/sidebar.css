@@ -407,9 +407,12 @@ button.conv-group:hover {
   height: 14px;
 }
 
-/* 尾部图标共用右侧空间，状态始终排在最后。 */
-.conv-item > .task-mark ~ .dot,
-.conv-item > .task-mark ~ .conv-spin {
+/* 进行中只显示转圈；待处理状态仍排在任务图标后面。 */
+.conv-item:has(> .conv-spin) > .task-mark {
+  display: none;
+}
+
+.conv-item > .task-mark ~ .dot {
   margin-left: 0;
 }
 
@@ -431,12 +434,12 @@ button.conv-group:hover {
     display: inline-grid;
   }
 
-  .conv-item:hover > .expert-mark ~ .dot,
-  .conv-item:hover > .expert-mark ~ .conv-spin {
+  .conv-item:hover > .expert-mark ~ .dot {
     margin-left: 0;
   }
 
   .conv-item:hover .task-mark,
+  .conv-item:hover > .expert-mark ~ .conv-spin,
   .conv-item:hover .expert-mark ~ .feishu-mark {
     display: none;
   }
