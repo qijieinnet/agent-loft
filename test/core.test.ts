@@ -14,6 +14,15 @@ const { parseCommand } = await import("../src/core/commands.js");
 const { agentEnvironment } = await import("../src/core/agent-env.js");
 const { decodeEnvelope, createEnvelope } = await import("../src/channels/feishu/envelope.js");
 
+// 发消息前会异步拍工作区快照；等可观察的状态，不能假定 20ms 内一定送到 driver。
+async function waitUntil(ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!ready()) {
+    assert.ok(Date.now() < deadline, "等待异步会话操作完成超时");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 const question = (multi: boolean) => ({
   kind: "question" as const,
   title: "t",
@@ -245,7 +254,7 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
   const origin = { channel: "web", channelId: "web" };
   hub.send(key, { text: "第一条", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.length === 1);
   assert.deepEqual(sent, ["new:第一条"]);
 
   // /new 正在等旧会话 dispose（卡住），这期间发的消息排队；点停止后它不该再发出去
@@ -259,15 +268,15 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
 
   // 没过期：沿用活着的会话，不新建
   hub.send(key, { text: "续用", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.at(-1)?.endsWith(":续用") === true);
   const before = sessions;
   hub.send(key, { text: "再来", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.at(-1)?.endsWith(":再来") === true);
   assert.equal(sessions, before);
   // 闲置过期：上次活跃时间很早，这次说话要丢掉活着的会话、清掉 s-1，开新的
   updateConversation(key, { activeAt: Date.now() - 365 * 24 * 3600 * 1000 });
   hub.send(key, { text: "过期后", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 50));
+  await waitUntil(() => sent.at(-1)?.endsWith(":过期后") === true);
   assert.equal(sessions, before + 1);
   assert.equal(sent.at(-1), "new:过期后");
 
@@ -278,7 +287,7 @@ test("hub：停止会作废还在排队的消息；闲置过期按说话之前�
   updateConversation(key, { activeAt: Date.now() - 365 * 24 * 3600 * 1000 });
   hub.send(key, { text: "带附件", attachments: [fresh] }, origin);
   hub.send(key, { text: "排在后面", attachments: [later] }, origin);
-  await new Promise((r) => setTimeout(r, 50));
+  await waitUntil(() => sent.at(-1)?.endsWith(":排在后面") === true);
   assert.equal(fs.existsSync(fresh.path), true);
   assert.equal(fs.existsSync(later.path), true);
 
@@ -343,9 +352,8 @@ test("不阻塞的提问：点选后作为用户消息发出；直接发消息�
   const key = "web:detached";
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
   const origin = { channel: "web", channelId: "web" };
-  const tick = () => new Promise((r) => setTimeout(r, 20));
   hub.send(key, { text: "开始", attachments: [] }, origin);
-  await tick();
+  await waitUntil(() => sent.length === 1);
   const card = { ...question(false), detached: true };
 
   // 点选：卡收束，答案走正常发送
@@ -356,14 +364,14 @@ test("不阻塞的提问：点选后作为用户消息发出；直接发消息�
   const outcome = await clicked;
   assert.equal(outcome.settlement, "answered");
   followUp(outcome.answers.a![0]!);
-  await tick();
+  await waitUntil(() => sent.length === 2);
   assert.deepEqual(sent, ["开始", "x"]);
 
   // 直接发消息：撤卡，消息照常到 agent，且不会再发一次答案
   const typed = ask(card);
   hub.send(key, { text: "我再想想", attachments: [] }, origin);
   assert.equal((await typed).settlement, "skipped");
-  await tick();
+  await waitUntil(() => sent.length === 3);
   assert.deepEqual(sent, ["开始", "x", "我再想想"]);
 });
 
@@ -451,7 +459,7 @@ test("/fork 只记意图并落盘：中间做了别的操作、或重建会话�
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
   const origin = { channel: "web", channelId: "web" };
   hub.send(key, { text: "1", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => getConversation(key)!.perAgent.claude?.sessionId === "claude-orig");
   assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "claude-orig");
   await hub.fork(key);
   assert.equal(getConversation(key)!.perAgent.claude!.forkFrom, "claude-orig");
@@ -459,7 +467,7 @@ test("/fork 只记意图并落盘：中间做了别的操作、或重建会话�
   await hub.setExpert(key, "codex", ["claude", "codex"]);
   created.length = 0;
   hub.send(key, { text: "2", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => getConversation(key)!.perAgent.claude?.sessionId === "claude-forked");
   assert.deepEqual(created[0], { resumeId: "claude-orig", fork: true });
   const b = getConversation(key)!.perAgent.claude!;
   assert.equal(b.sessionId, "claude-forked");
@@ -503,7 +511,7 @@ test("代次：下载附件期间 /cd 或 /new，旧消息作废；关掉的 age
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(sent, []);
   hub.send(key, { text: "新", attachments: [] }, origin, hub.generation(key));
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.length === 1);
   assert.deepEqual(sent, ["新"]);
   // 关掉 codex：活着的会话也不能再用
   const cfg = structuredClone(config());
@@ -554,7 +562,7 @@ test("顶栏模型：没起进程时用 agent 默认，跑起来后显示实际�
   const key = "web:runtime";
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "codex" });
   hub.info(key); // 第一次触发后台读默认
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => hub.info(key)!.runtimeModel === "toml-model");
   assert.equal(hub.info(key)!.runtimeModel, "toml-model");
   assert.equal(hub.info(key)!.runtimeEffort, "medium");
   assert.equal(hub.info(key)!.model, undefined);
@@ -601,8 +609,7 @@ test("开新会话不清附件（都在资料库里）；改 workspaceRoot 让�
   const origin = { channel: "web", channelId: "web" };
   const old = saveBuffer({ key, data: Buffer.from("old"), name: "old.txt", subdir: "u1" });
   hub.send(key, { text: "建立会话", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
-  await new Promise((r) => setTimeout(r, 5));
+  await waitUntil(() => sent.length === 1);
   const pending = hub.newSession(key); // 卡在 dispose 上
   await new Promise((r) => setTimeout(r, 5));
   const fresh = saveBuffer({ key, data: Buffer.from("new"), name: "new.txt", subdir: "u2" });
@@ -655,7 +662,7 @@ test("排队中的消息也核对生命周期代次；连续两次切换不会�
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
   const origin = { channel: "web", channelId: "web" };
   hub.send(key, { text: "建立", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.length === 1);
 
   // t1 /new 卡在 dispose；t2 收到新附件；t3 再来一个（无效的）/cd
   const first = hub.newSession(key);
@@ -670,7 +677,7 @@ test("排队中的消息也核对生命周期代次；连续两次切换不会�
   await first;
   assert.equal(fs.existsSync(fresh.path), true);
   await second;
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.includes("排队中"));
   assert.equal(sent.includes("排队中"), true);
 
   // 收到消息之后才发起的切换（飞书下载附件期间 /new）：旧消息作废
@@ -682,7 +689,7 @@ test("排队中的消息也核对生命周期代次；连续两次切换不会�
 
   // 没有实际效果的操作（被拒绝的换专家）：挂着的提问照样能用文字作答
   hub.send(key, { text: "建立新进程", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.includes("建立新进程"));
   const q = interactions.create(key, {
     kind: "question",
     title: "t",
@@ -733,7 +740,7 @@ test("/new 之后的消息不会被旧会话的提问吃掉；显式恢复后第
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
   const origin = { channel: "web", channelId: "web" };
   hub.send(key, { text: "建立", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.length === 1);
   const q = interactions.create(key, {
     kind: "question",
     title: "t",
@@ -752,7 +759,7 @@ test("/new 之后的消息不会被旧会话的提问吃掉；显式恢复后第
   await hub.resume(key, "old-session");
   sent.length = 0;
   hub.send(key, { text: "继续之前的任务", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.length === 1);
   assert.deepEqual(sent, ["old-session:继续之前的任务"]);
   assert.equal(getConversation(key)!.perAgent.claude!.sessionId, "old-session");
 });
@@ -869,7 +876,7 @@ test("操作序号边界：无效操作的占位、同一次切换都不会给�
   hub.ensure({ key, channel: "feishu", channelId: "b", defaultAgent: "claude" });
   const origin = { channel: "feishu", channelId: "b" };
   hub.send(key, { text: "建立", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.length === 1);
 
   // 场景一：/resume 不存在的 id 正在查询时收到附件消息；查询失败后用户 /cd B；附件下载完 → 必须作废
   blocker = new Promise<void>((r) => (gate = r));
@@ -897,7 +904,7 @@ test("操作序号边界：无效操作的占位、同一次切换都不会给�
 
   // 无效操作执行期间打字作答：操作结束后仍当作答案，不会变成下一轮输入
   hub.send(key, { text: "建立进程", attachments: [] }, origin);
-  await new Promise((r) => setTimeout(r, 20));
+  await waitUntil(() => sent.at(-1) === "建立进程");
   sent.length = 0;
   const q = interactions.create(key, {
     kind: "question",
@@ -996,17 +1003,16 @@ test("hub：排队的消息标出来，轮到了 / 被丢了都告诉页面；�
   hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
   const seen: { type: string; id?: string; queued?: boolean; state?: string; text?: string }[] = [];
   hub.on("event", (env: { key: string; ev: (typeof seen)[number] }) => env.key === key && seen.push(env.ev));
-  const tick = () => new Promise((r) => setTimeout(r, 10));
   const origin = { channel: "web", channelId: "web" };
   const idOf = (text: string) => seen.find((e) => e.type === "user" && e.text === text)!.id!;
   const queueEvents = () => seen.filter((e) => e.type === "queue").map((e) => `${e.state}:${e.id}`);
 
   hub.send(key, { text: "A", attachments: [] }, origin);
-  await tick();
+  await waitUntil(() => delivered.length === 1);
   hub.send(key, { text: "B", attachments: [] }, origin);
   hub.send(key, { text: "C", attachments: [] }, origin);
   hub.send(key, { text: "D", attachments: [] }, origin);
-  await tick();
+  await waitUntil(() => pending.length === 3);
   assert.deepEqual(
     seen.filter((e) => e.type === "user").map((e) => [e.text, e.queued]),
     [["A", false], ["B", true], ["C", true], ["D", true]],
