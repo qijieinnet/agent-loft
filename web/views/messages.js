@@ -63,8 +63,8 @@ function leaveTasksView() {
   document.dispatchEvent(new Event("aim:leave-view"));
 }
 
-export function latestConversation() {
-  return [...S.convs.values()].filter((c) => !c.hidden).sort((a, b) => b.activeAt - a.activeAt)[0];
+export function latestConversation(channel) {
+  return [...S.convs.values()].filter((c) => !c.hidden && (!channel || c.channel === channel)).sort((a, b) => b.activeAt - a.activeAt)[0];
 }
 
 export function newDraft({ inheritLatest = false } = {}) {

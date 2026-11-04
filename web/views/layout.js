@@ -165,8 +165,8 @@ export async function boot() {
   else void loadQuota();
   if (srv && srv !== HOME) routeToServer(srv, decodeURIComponent(landing.hash.slice(1)));
   const fromHash = decodeURIComponent(location.hash.slice(1));
-  // 地址里带了会话就打开它；否则打开「最近」里最近活跃的那个对话，一个都没有才进新对话页
-  const latest = latestConversation();
+  // 地址里带了会话就打开它；否则打开最近活跃的 Web 对话，没有才进新对话页
+  const latest = latestConversation("web");
   if (fromHash === "tasks") openTasksView();
   else if (fromHash === "library") openLibraryView();
   else if (fromHash === "new") newDraft({ inheritLatest: true });
