@@ -31,6 +31,14 @@ async function fixture(t, width, colorScheme, role = "member") {
     enabled: true, about: "测试简介", chatHistory: true, limits: { about: 4000, item: 500 },
     curate: { when: "manual", agent: "auto", scope: "all", experts: [], dailyHour: 3 },
     items: Array.from({ length: 40 }, (_, i) => ({ id: `m${i}`, text: `记忆条目 ${i}：偏好简洁清晰的回答。`, source: "user", updatedAt: 1000 - i })),
+    counts: { core: 0, active: 40, archive: 0, trash: 0 },
+    summaries: { conv: 0, month: 1 },
+    searchStats: { searches: 12, empty: 3 },
+    ...(role === "admin" ? { backup: { dir: "/backups/db", count: 2, last: { name: "x", at: Date.now() - 3600_000, size: 1048576 } } } : {}),
+    archived: [],
+    trashed: [],
+    logEntries: [{ id: 7, itemId: "m1", action: "update", actor: "auto", oldText: "旧内容", newText: "新内容", at: Date.now() - 60_000 }],
+    summaryRows: [{ id: 1, kind: "month", scope: "2026-10", title: "折腾软路由", text: "这个月主要在配 OpenClash。", toTs: Date.now(), fromTs: Date.now() }],
   };
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
@@ -50,11 +58,42 @@ async function fixture(t, width, colorScheme, role = "member") {
       mem.items.unshift({ id: "new", text: route.request().postDataJSON().text, source: "user", updatedAt: Date.now() });
       return route.fulfill({ json: { ok: true } });
     }
+    if (url.pathname === "/api/account/memory/items" && method === "GET") {
+      const view = url.searchParams.get("view");
+      return route.fulfill({ json: { items: view === "archive" ? mem.archived : mem.trashed } });
+    }
+    if (url.pathname === "/api/account/memory/log") return route.fulfill({ json: { log: mem.logEntries } });
+    if (/\/api\/account\/memory\/log\/\d+\/undo$/.test(url.pathname)) {
+      mem.undone = true;
+      return route.fulfill({ json: { ok: true } });
+    }
+    if (url.pathname === "/api/account/memory/summaries") return route.fulfill({ json: { summaries: mem.summaryRows } });
+    const restore = /\/api\/account\/memory\/items\/(\w+)\/restore$/.exec(url.pathname);
+    if (restore) {
+      const i = mem.trashed.findIndex((it) => it.id === restore[1]);
+      mem.items.unshift(...mem.trashed.splice(i, 1));
+      mem.counts.trash = mem.trashed.length;
+      return route.fulfill({ json: { ok: true } });
+    }
     if (url.pathname.startsWith("/api/account/memory/items/")) {
       const id = url.pathname.split("/").at(-1);
       const index = mem.items.findIndex((it) => it.id === id);
-      if (method === "DELETE") mem.items.splice(index, 1);
-      if (method === "PATCH") Object.assign(mem.items[index], { text: route.request().postDataJSON().text, updatedAt: Date.now() });
+      const body = method === "PATCH" ? route.request().postDataJSON() : {};
+      if (method === "DELETE") {
+        mem.trashed.push(...mem.items.splice(index, 1).map((it) => ({ ...it, deletedAt: Date.now() })));
+        mem.counts.trash = mem.trashed.length;
+      }
+      if (method === "PATCH" && body.tier === "archive") {
+        mem.archived.push(...mem.items.splice(index, 1));
+      } else if (method === "PATCH" && body.tier === "active" && index < 0) {
+        const i = mem.archived.findIndex((it) => it.id === id);
+        mem.items.unshift(...mem.archived.splice(i, 1).map((it) => ({ ...it, tier: "active", locked: false })));
+      } else if (method === "PATCH" && body.tier) {
+        Object.assign(mem.items[index], { tier: body.tier, locked: body.tier === "core" });
+      } else if (method === "PATCH") {
+        Object.assign(mem.items[index], { text: body.text, updatedAt: Date.now() });
+      }
+      mem.counts.archive = mem.archived.length;
       return route.fulfill({ json: { ok: true } });
     }
     if (url.pathname === "/api/account/history") return route.fulfill({ json: { conversations: 0, count: 0 } });
@@ -73,7 +112,7 @@ async function fixture(t, width, colorScheme, role = "member") {
   await page.getByRole("heading", { name: "记住的事（40）", exact: true }).waitFor({ timeout: 10000 }).catch(async (err) => {
     throw new Error(`${err.message}\n页面：${await page.locator("body").innerText()}\n错误：${errors.join("\n")}`);
   });
-  return { page, failNextRefresh: () => { failRefresh = true; } };
+  return { page, mem, failNextRefresh: () => { failRefresh = true; } };
 }
 
 for (const width of [1280, 390]) {
@@ -180,7 +219,7 @@ for (const width of [1280, 390]) {
       }
       const memories = page.locator(".settings-page > .section").filter({ has: page.getByRole("heading", { name: /^记住的事/ }) });
       const add = memories.getByRole("button", { name: "添加", exact: true });
-      await memories.locator("input").fill("新增的测试记忆");
+      await memories.getByPlaceholder(/^手动加一条/).fill("新增的测试记忆");
       await add.scrollIntoViewIfNeeded();
       let before = await recordScroll(page);
       await add.click();
@@ -237,4 +276,52 @@ for (const width of [390, 1280]) {
       assert.equal(await page.locator('.settings-nav button.on').textContent(), '系统');
     });
   }
+}
+
+for (const width of [390, 1280]) {
+  test(`${width}px：记忆页的筛选、置顶、归档、回收站、改动记录、摘要、导出`, async (t) => {
+    const { page, mem } = await fixture(t, width, "light", "admin");
+    const memories = page.locator(".settings-page > .section").filter({ has: page.getByRole("heading", { name: /^记住的事/ }) });
+    // 筛选：输入就筛，改了东西刷新之后筛选词还在
+    await memories.getByPlaceholder("筛选记住的事").fill("条目 3");
+    assert.ok((await memories.locator(".list-item").count()) < 40);
+    await memories.locator(".list-item").first().getByRole("button", { name: "置顶", exact: true }).click();
+    await memories.getByRole("button", { name: "取消置顶", exact: true }).first().waitFor();
+    assert.equal(await memories.getByPlaceholder("筛选记住的事").inputValue(), "条目 3");
+    assert.match(await memories.locator(".list-item").first().textContent(), /已置顶/);
+    await memories.locator(".list-item").first().getByRole("button", { name: "归档", exact: true }).click();
+    await page.locator("summary").filter({ hasText: "归档（1）" }).waitFor();
+    await memories.getByPlaceholder("筛选记住的事").fill("");
+    // 归档：点开才读，能恢复；刷新后还开着
+    await page.locator("summary").filter({ hasText: "归档（1）" }).click();
+    const archived = page.locator(".section").filter({ has: page.locator("summary", { hasText: "归档（" }) });
+    await archived.getByRole("button", { name: "恢复", exact: true }).click();
+    await page.locator("summary").filter({ hasText: "归档（0）" }).waitFor();
+    assert.equal(await page.locator("details").filter({ hasText: "归档（0）" }).evaluate((el) => el.open), true);
+    // 回收站：删除进回收站，能恢复
+    await memories.locator(".list-item").first().getByRole("button", { name: "删除", exact: true }).click();
+    await page.locator("summary").filter({ hasText: "回收站（1）" }).waitFor();
+    await page.locator("summary").filter({ hasText: "回收站（1）" }).click();
+    const trash = page.locator(".section").filter({ has: page.locator("summary", { hasText: "回收站（" }) });
+    await trash.getByRole("button", { name: "彻底删除", exact: true }).waitFor();
+    await trash.getByRole("button", { name: "恢复", exact: true }).click();
+    await page.locator("summary").filter({ hasText: "回收站（0）" }).waitFor();
+    // 改动记录能撤销
+    await page.locator("summary").filter({ hasText: "改动记录" }).click();
+    const logBox = page.locator(".section").filter({ has: page.locator("summary", { hasText: "改动记录" }) });
+    await logBox.getByText("改成：新内容（原来是：旧内容）").waitFor();
+    await logBox.getByRole("button", { name: "撤销", exact: true }).click();
+    await page.locator(".toast").filter({ hasText: "已撤销" }).waitFor();
+    assert.ok(mem.undone);
+    // 摘要
+    await page.locator("summary").filter({ hasText: "摘要（1）" }).click();
+    await page.getByText("2026-10 月度：折腾软路由").waitFor();
+    // 导出、备份（管理员）
+    assert.equal(await page.getByRole("link", { name: "导出记忆", exact: true }).getAttribute("href"), "/api/account/memory/export");
+    assert.equal(await page.getByRole("link", { name: "导出聊天记录", exact: true }).getAttribute("href"), "/api/account/history/export");
+    await page.getByRole("button", { name: "现在备份", exact: true }).waitFor();
+    await page.getByText("近 30 天 agent 搜了 12 次聊天记录，3 次没搜到。").waitFor();
+    assert.equal(await page.locator(".settings-body").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false, "窄屏不横向溢出");
+    if (process.env.MEMORY_SHOTS) await page.screenshot({ path: `${process.env.MEMORY_SHOTS}/memory-${width}.png`, fullPage: false });
+  });
 }

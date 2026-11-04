@@ -8,6 +8,240 @@ import { field, saveButton } from "./common.js";
 
 // ---------- 记忆（每个人自己的） ----------
 
+/** 列表一次先显示这么多条 */
+const PAGE = 50;
+
+/** 筛选词和显示了多少条：改了东西页面会刷新，刷新后还是原样 */
+const listState = { filter: "", shown: PAGE };
+
+function dayText(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** 展开着的区块：改了东西页面会刷新，刷新后还开着 */
+const openSections = new Set();
+
+/** 一个点开才读的区块 */
+function lazySection(key, title, load) {
+  const body = h("div", { class: "memory-more-body" });
+  const details = h("details", { open: openSections.has(key) }, h("summary", { class: "memory-more" }, title), body);
+  let loaded = false;
+  details.ontoggle = () => {
+    if (details.open) openSections.add(key);
+    else openSections.delete(key);
+    if (!details.open || loaded) return;
+    loaded = true;
+    void load(body);
+  };
+  return h("div", { class: "section" }, details);
+}
+
+/** 归档和回收站：点开才读 */
+function otherItemsSection(title, view, count, hint, reload, run) {
+  return lazySection(view, `${title}（${count}）`, async (body) => {
+    fill(body, h("span", { class: "spinner" }));
+    let items;
+    try {
+      items = (await api(`/api/account/memory/items?view=${view}`)).items;
+    } catch (err) {
+      fill(body, h("div", { class: "error-text" }, err.message));
+      return;
+    }
+    const row = (it) => {
+      const restore = h("button", { class: "btn small" }, "恢复");
+      const buttons = [restore];
+      if (view === "archive") {
+        restore.onclick = run(restore, () => api(`/api/account/memory/items/${it.id}`, { method: "PATCH", body: { tier: "active" } }));
+        const del = h("button", { class: "btn small danger" }, "删除");
+        del.onclick = run(del, () => api(`/api/account/memory/items/${it.id}`, { method: "DELETE" }));
+        buttons.push(del);
+      } else {
+        restore.onclick = run(restore, () => api(`/api/account/memory/items/${it.id}/restore`, { method: "POST" }));
+        const purge = h("button", { class: "btn small danger" }, "彻底删除");
+        purge.onclick = run(purge, async () => {
+          const sure = await confirmDialog({ title: "彻底删除这条？", message: "连同它的改动记录一起删掉，不能恢复。", confirmText: "彻底删除", danger: true });
+          if (!sure) return false;
+          await api(`/api/account/memory/items/${it.id}?purge=1`, { method: "DELETE" });
+        });
+        buttons.push(purge);
+      }
+      const when = view === "trash" ? `删于 ${relTime(it.deletedAt)}` : relTime(it.updatedAt);
+      return h("div", { class: "list-item memory-item" }, h("div", { class: "grow" }, h("div", { class: "t", style: { whiteSpace: "pre-wrap" } }, it.text), h("div", { class: "s" }, when)), ...buttons);
+    };
+    fill(body, h("div", { class: "muted" }, hint), items.length ? items.slice(0, 200).map(row) : h("div", { class: "muted" }, "这里没有东西。"));
+  });
+}
+
+const ACTORS = { user: "你", agent: "agent", auto: "自动整理", system: "系统" };
+
+function describeChange(e) {
+  const text = e.newText ?? e.oldText ?? "";
+  if (e.action === "about") return "改了「关于我」";
+  if (e.action === "add") return `记下：${text}`;
+  if (e.action === "update") return `改成：${text}（原来是：${e.oldText ?? ""}）`;
+  if (e.action === "delete") return `删掉：${text}`;
+  if (e.action === "restore") return `恢复：${text}`;
+  const tiers = { core: "长期", active: "活跃", archive: "归档" };
+  return `把一条从「${tiers[e.oldTier] ?? e.oldTier}」挪到「${tiers[e.newTier] ?? e.newTier}」${e.note ? `（${e.note}）` : ""}`;
+}
+
+/** 改动记录：谁在什么时候改了什么，可以撤销 */
+function logSection(reload) {
+  return lazySection("log", "改动记录", async (body) => {
+    const list = h("div");
+    let before;
+    const more = h("button", { class: "btn small" }, "再看更早的");
+    const row = (e) => {
+      const undo = h("button", { class: "btn small" }, "撤销");
+      undo.onclick = async () => {
+        undo.disabled = true;
+        try {
+          await api(`/api/account/memory/log/${e.id}/undo`, { method: "POST" });
+          toast("已撤销");
+          await reload();
+        } catch (err) {
+          toast(err.message);
+          undo.disabled = false;
+        }
+      };
+      return h(
+        "div",
+        { class: "list-item memory-item" },
+        h("div", { class: "grow" }, h("div", { class: "t", style: { whiteSpace: "pre-wrap" } }, describeChange(e)), h("div", { class: "s" }, `${ACTORS[e.actor] ?? e.actor} · ${relTime(e.at)}${e.undoneAt ? " · 已撤销" : ""}`)),
+        e.undoneAt ? null : undo,
+      );
+    };
+    const page = async () => {
+      try {
+        const { log } = await api(`/api/account/memory/log${before ? `?before=${before}` : ""}`);
+        if (!before && log.length === 0) list.append(h("div", { class: "muted" }, "还没有改动。"));
+        for (const e of log) list.append(row(e));
+        before = log.at(-1)?.id;
+        more.hidden = log.length < 30;
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+    more.onclick = page;
+    fill(body, h("div", { class: "muted" }, "记忆的每一次改动都在这里，自动整理改错了可以撤销。"), list, more);
+    await page();
+  });
+}
+
+/** 摘要：月度的和每段对话的 */
+function summariesSection(mem) {
+  const total = (mem.summaries?.conv ?? 0) + (mem.summaries?.month ?? 0);
+  return lazySection("summaries", `摘要（${total}）`, async (body) => {
+    const list = h("div");
+    let offset = 0;
+    const more = h("button", { class: "btn small" }, "再看更早的");
+    const row = (s) => {
+      const del = h("button", { class: "btn small danger" }, "删除");
+      const item = h(
+        "div",
+        { class: "list-item memory-item" },
+        h(
+          "div",
+          { class: "grow" },
+          h("div", { class: "t" }, `${s.kind === "month" ? `${s.scope} 月度：` : ""}${s.title}`),
+          h("div", { style: { whiteSpace: "pre-wrap" } }, s.text),
+          h("div", { class: "s" }, `${dayText(s.toTs)}${s.project ? ` · ${s.project}` : ""}`),
+        ),
+        del,
+      );
+      del.onclick = async () => {
+        del.disabled = true;
+        try {
+          await api(`/api/account/memory/summaries/${s.id}`, { method: "DELETE" });
+          item.remove();
+        } catch (err) {
+          toast(err.message);
+          del.disabled = false;
+        }
+      };
+      return item;
+    };
+    const page = async () => {
+      try {
+        const { summaries } = await api(`/api/account/memory/summaries?offset=${offset}`);
+        if (offset === 0 && summaries.length === 0) list.append(h("div", { class: "muted" }, "还没有。整理记忆时会顺带给每段对话写摘要，一个月过去之后合成月度摘要。"));
+        for (const s of summaries) list.append(row(s));
+        offset += 30;
+        more.hidden = summaries.length < 30;
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+    more.onclick = page;
+    fill(body, h("div", { class: "muted" }, "agent 回答「那段时间做了什么」「那件事的经过」时会看这些。整理范围内的对话才有。"), list, more);
+    await page();
+  });
+}
+
+/** 导出、导入、备份、搜索统计 */
+function dataSection(mem, reload) {
+  const file = h("input", { type: "file", accept: "application/json,.json", style: { display: "none" } });
+  const importBtn = h("button", { class: "btn small" }, "导入记忆");
+  importBtn.onclick = () => file.click();
+  file.onchange = async () => {
+    const f = file.files?.[0];
+    file.value = "";
+    if (!f) return;
+    importBtn.disabled = true;
+    try {
+      const r = await api("/api/account/memory/import", { method: "POST", body: JSON.parse(await f.text()) });
+      toast(`导入了 ${r.added} 条记忆${r.summaries ? `、${r.summaries} 份摘要` : ""}${r.skipped ? `，${r.skipped} 条已有的跳过` : ""}`);
+      await reload();
+    } catch (err) {
+      toast(err instanceof SyntaxError ? "这个文件不是合法的 JSON" : err.message);
+    } finally {
+      importBtn.disabled = false;
+    }
+  };
+  const stats = mem.searchStats;
+  const b = mem.backup;
+  let backupRow = null;
+  if (b) {
+    const btn = h("button", { class: "btn small" }, "现在备份");
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = "备份中…";
+      try {
+        await api("/api/account/memory/backup", { method: "POST" });
+        toast("已备份");
+        await reload();
+      } catch (err) {
+        toast(err.message);
+        btn.disabled = false;
+        btn.textContent = "现在备份";
+      }
+    };
+    const size = b.last ? `，${(b.last.size / 1048576).toFixed(1)} MB` : "";
+    backupRow = [
+      h("div", { class: "row", style: { alignItems: "center", gap: "10px" } }, btn, h("span", { class: "muted" }, b.last ? `上次备份：${relTime(b.last.at)}${size}，共 ${b.count} 份` : "还没有备份")),
+      h("div", { class: "muted" }, `整个数据库每天自动备份一份到 ${b.dir}（留最近 7 天、4 周、12 个月）。这个目录和数据在同一块盘上，防不了硬盘损坏；可以设环境变量 AGENT_LOFT_BACKUP_DIR 放到别的盘。`),
+      b.error ? h("div", { class: "error-text" }, `上次备份失败（${relTime(b.error.at)}）：${b.error.message}`) : null,
+    ];
+  }
+  return h(
+    "div",
+    { class: "section" },
+    h("h4", {}, "导出和备份"),
+    h(
+      "div",
+      { class: "row" },
+      h("a", { class: "btn small memory-link", href: "/api/account/memory/export", download: "" }, "导出记忆"),
+      h("a", { class: "btn small memory-link", href: "/api/account/history/export", download: "" }, "导出聊天记录"),
+      importBtn,
+      file,
+    ),
+    h("div", { class: "muted" }, "记忆导出成 JSON（条目、摘要和改动记录），可以导入到别的账号或服务器，内容一样的会跳过。聊天记录导出成一行一句的 JSONL。"),
+    backupRow,
+    stats?.searches ? h("div", { class: "muted" }, `近 30 天 agent 搜了 ${stats.searches} 次聊天记录，${stats.empty} 次没搜到。`) : null,
+  );
+}
+
 export async function memoryTab(panel, refresh = false) {
   const box = h("div", { class: "section" }, h("h4", {}, "记忆"), h("span", { class: "spinner" }));
   // 更新时保留旧内容，避免加载占位让页面变短、滚动位置被浏览器压回顶部。
@@ -62,7 +296,7 @@ export async function memoryTab(panel, refresh = false) {
   clearHistory.onclick = run(clearHistory, async () => {
     const sure = await confirmDialog({
       title: "清空聊天记录索引？",
-      message: "侧栏的「搜索」和 agent 都将搜不到以前聊天的内容（按标题还能搜到；对话本身不删，侧栏里照样能打开）。之后的聊天还会继续记进来。",
+      message: "侧栏的「搜索」和 agent 都将搜不到以前聊天的内容（按标题还能搜到；对话本身不删，侧栏里照样能打开）。从聊天写出来的对话摘要和月度摘要也一起清掉。之后的聊天还会继续记进来。",
       confirmText: "清空",
       danger: true,
     });
@@ -88,30 +322,66 @@ export async function memoryTab(panel, refresh = false) {
     if (e.key === "Enter" && !e.isComposing) addBtn.click();
   };
 
-  const items = [...mem.items].sort((a, b) => b.updatedAt - a.updatedAt);
+  const items = [...mem.items].sort((a, b) => Math.max(b.updatedAt, b.lastUsedAt ?? 0) - Math.max(a.updatedAt, a.lastUsedAt ?? 0));
+  const patchItem = (it, body) => api(`/api/account/memory/items/${it.id}`, { method: "PATCH", body });
+  const itemMeta = (it) => {
+    const from = { user: "你加的", asked: "你让记的", agent: "agent 在聊天里记的", auto: "聊完后自动整理的" }[it.source] ?? "agent 记的";
+    return [
+      it.tier === "core" ? (it.locked ? "已置顶" : "长期") : "",
+      from,
+      relTime(it.updatedAt),
+      it.observedAt ? `事情发生在 ${dayText(it.observedAt)}` : "",
+      it.validUntil ? `到 ${dayText(it.validUntil)} 过期` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  };
   const itemRow = (it) => {
-    const from = { user: "你加的", agent: "agent 在聊天里记的", auto: "聊完后自动整理的" }[it.source] ?? "agent 记的";
-    const body = h("div", { class: "grow" }, h("div", { class: "t", style: { whiteSpace: "pre-wrap" } }, it.text), h("div", { class: "s" }, `${from} · ${relTime(it.updatedAt)}`));
+    const body = h("div", { class: "grow" }, h("div", { class: "t", style: { whiteSpace: "pre-wrap" } }, it.text), h("div", { class: "s" }, itemMeta(it)));
     const edit = h("button", { class: "btn small" }, "编辑");
+    const pin = h("button", { class: "btn small", title: "置顶的一直放在系统提示里，自动整理也不会动它" }, it.tier === "core" ? "取消置顶" : "置顶");
+    const archive = h("button", { class: "btn small", title: "归档：不再放进系统提示，agent 需要时还能搜到" }, "归档");
     const del = h("button", { class: "btn small danger" }, "删除");
     edit.onclick = () => {
-      edit.hidden = del.hidden = true;
+      edit.hidden = del.hidden = pin.hidden = archive.hidden = true;
       const input = h("textarea", { class: "input", rows: 2, maxlength: mem.limits.item });
       input.value = it.text;
       const ok = h("button", { class: "btn small primary" }, "保存");
-      ok.onclick = run(ok, () => api(`/api/account/memory/items/${it.id}`, { method: "PATCH", body: { text: input.value } }));
+      ok.onclick = run(ok, () => patchItem(it, { text: input.value }));
       fill(body, input, h("div", { class: "row" }, ok, h("button", { class: "btn small", onclick: reload }, "取消")));
       input.focus();
     };
+    pin.onclick = run(pin, () => patchItem(it, { tier: it.tier === "core" ? "active" : "core" }));
+    archive.onclick = run(archive, () => patchItem(it, { tier: "archive" }));
     del.onclick = run(del, () => api(`/api/account/memory/items/${it.id}`, { method: "DELETE" }));
-    return h("div", { class: "list-item" }, body, edit, del);
+    return h("div", { class: "list-item memory-item" }, body, edit, pin, archive, del);
   };
+
+  // 条目多了要能找：输入就筛，一次先显示前 PAGE 条
+  const listBox = h("div");
+  const filter = h("input", { class: "input", style: { flex: "1", minWidth: "0" }, placeholder: "筛选记住的事" });
+  filter.value = listState.filter;
+  const renderList = () => {
+    const q = filter.value.trim().toLowerCase();
+    const hit = q ? items.filter((it) => it.text.toLowerCase().includes(q)) : items;
+    fill(
+      listBox,
+      hit.length ? hit.slice(0, listState.shown).map(itemRow) : h("div", { class: "muted" }, q ? "没有匹配的。" : "还没有。聊天时说「记住……」，或者在上面手动加。"),
+      hit.length > listState.shown ? h("button", { class: "btn small", onclick: () => ((listState.shown += PAGE), renderList()) }, `再显示一些（还有 ${hit.length - listState.shown} 条）`) : null,
+    );
+  };
+  filter.oninput = () => {
+    listState.filter = filter.value;
+    listState.shown = PAGE;
+    renderList();
+  };
+  renderList();
 
   const clearBtn = h("button", { class: "btn danger" }, "清空全部记忆");
   clearBtn.onclick = run(clearBtn, async () => {
     const sure = await confirmDialog({
       title: "清空全部记忆？",
-      message: "「关于我」和所有记住的事都会删除，不能恢复。",
+      message: "「关于我」、所有记住的事（包括归档和回收站）、改动记录和摘要都会彻底删除，不能恢复。想留一份的话先导出。",
       confirmText: "清空",
       danger: true,
     });
@@ -158,9 +428,16 @@ export async function memoryTab(panel, refresh = false) {
       "div",
       { class: "section" },
       h("h4", {}, `记住的事（${items.length}）`),
+      h("div", { class: "muted" }, "「长期」和置顶的一直放在系统提示里；其余的按最近动过的时间放，放不下的 agent 需要时能搜到。满了会把最久没动过的挪到归档，不会删掉。你加的、你让记的、置顶的，自动整理都不会动。"),
       h("div", { class: "row" }, newItem, addBtn),
-      items.length ? items.map(itemRow) : h("div", { class: "muted" }, "还没有。聊天时说「记住……」，或者在上面手动加。"),
+      items.length > 8 ? h("div", { class: "row" }, filter) : null,
+      listBox,
     ),
+    otherItemsSection("归档", "archive", mem.counts?.archive ?? 0, "过时了的事。不放进系统提示，agent 问到以前的情况时能搜到。", reload, run),
+    otherItemsSection("回收站", "trash", mem.counts?.trash ?? 0, "删掉的放在这里 30 天，之后彻底删除。", reload, run),
+    logSection(reload),
+    summariesSection(mem),
+    dataSection(mem, reload),
     h(
       "div",
       { class: "section" },
@@ -272,7 +549,7 @@ function curateSection(mem, reload) {
           r.error
             ? `整理失败：${r.error}`
             : r.conversations
-              ? `整理了 ${r.conversations} 段对话：新增 ${r.added.length}、更新 ${r.updated.length}、删除 ${r.removed}`
+              ? `整理了 ${r.conversations} 段对话：新增 ${r.added.length}、更新 ${r.updated.length}、移走 ${r.removed}`
               : "没有需要整理的对话（正在回复的那段先不整理）",
         );
         reload();
@@ -283,10 +560,11 @@ function curateSection(mem, reload) {
       }
     };
     const last = mem.lastCuration;
+    const retryText = mem.curateRetry ? `失败的对话都留着，${new Date(mem.curateRetry.nextAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 之后自动再试。` : "失败的对话都留着，下次再试。";
     const lastText = last
       ? last.error
-        ? `上次整理（${relTime(last.at)}）没成功：${last.error}`
-        : `上次整理：${relTime(last.at)}，${last.conversations} 段对话${last.by ? `，用 ${last.by}` : ""}，新增 ${last.added.length}、更新 ${last.updated.length}、删除 ${last.removed}`
+        ? `上次整理（${relTime(last.at)}）${last.conversations ? `成功 ${last.conversations} 段，其余` : ""}没成功：${last.error}。${retryText}`
+        : `上次整理：${relTime(last.at)}，${last.conversations} 段对话${last.by ? `，用 ${last.by}` : ""}，新增 ${last.added.length}、更新 ${last.updated.length}、移走 ${last.removed}${last.summaries ? `、写了 ${last.summaries} 份摘要` : ""}`
       : "还没整理过";
 
     fill(
@@ -307,7 +585,7 @@ function curateSection(mem, reload) {
       c.when === "off" ? null : field("用哪个 agent", agent),
       c.when === "off" ? null : model,
       h("div", { class: "row", style: { alignItems: "center", gap: "10px" } }, nowBtn, h("span", { class: "muted" }, `${mem.pending ? `有 ${mem.pending} 段对话等着整理。` : ""}${lastText}`)),
-      h("div", { class: "muted" }, "整理时会对照现有记忆补充、更新或删掉过时的条目；你自己加的条目它不会动。"),
+      h("div", { class: "muted" }, "整理时会对照现有记忆补充、更新、归档过时的条目，顺带给每段对话写摘要。你加的、你让记的、置顶的它不会动；改错了可以在下面的「改动记录」里撤销。"),
     );
   };
   render();

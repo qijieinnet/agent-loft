@@ -137,7 +137,7 @@ function buildContent(input: UserInput, inlineText: boolean): string | ContentBl
 }
 
 /** 记忆工具在 Claude 里的全名 */
-const MEMORY_TOOLS = new Set(["remember", "forget", "search_past_chats"].map((t) => `mcp__${MEMORY_MCP_NAME}__${t}`));
+const MEMORY_TOOLS = new Set(["remember", "forget", "update_memory", "search_memory", "search_past_chats", "read_past_chat", "memory_timeline"].map((t) => `mcp__${MEMORY_MCP_NAME}__${t}`));
 /** 定时任务工具：要用户确认的那几个由 agent-loft 自己弹卡（tasks-bridge.ts），这里不再问一遍 */
 const TASK_TOOLS = new Set(["list_tasks", "create_task", "update_task", "delete_task"].map((t) => `mcp__${TASKS_MCP_NAME}__${t}`));
 /** 技能工具：建、改技能前由 agent-loft 自己弹卡（skills-bridge.ts） */

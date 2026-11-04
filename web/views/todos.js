@@ -25,8 +25,8 @@ export function renderTodos() {
   const show = !!list && !dismissed && (done < list.length || S.busy);
   ui.todoBar.hidden = !show;
   if (!show) return fill(ui.todoBar);
-  const doing = list.find((t) => t.status === "in_progress");
-  const title = doing ? doing.activeForm || doing.content : done === list.length ? "全部完成" : "任务清单";
+  const doing = list.filter((t) => t.status === "in_progress");
+  const title = doing.length > 1 ? `${doing.length} 项进行中` : doing.length ? doing[0].activeForm || doing[0].content : done === list.length ? "全部完成" : "任务清单";
   fill(
     ui.todoBar,
     h(
@@ -43,7 +43,7 @@ export function renderTodos() {
             renderTodos();
           },
         },
-        h("span", { class: `todo-title${doing && S.busy ? " shimmer" : ""}` }, title),
+        h("span", { class: `todo-title${doing.length && S.busy ? " shimmer" : ""}`, title: doing.map((t) => t.activeForm || t.content).join("；") }, title),
         h("span", { class: "todo-count" }, `${done}/${list.length}`),
         h("span", { class: `chev${open ? " open" : ""}` }, "›"),
       ),

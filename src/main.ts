@@ -11,7 +11,10 @@ import { startWeixin, stopWeixin } from "./channels/weixin/index.js";
 import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
 import { startMemoryCurator } from "./core/memory-curator.js";
-import { migrateMemoryDefault } from "./core/memory.js";
+import { backupBeforeMigration, startBackups } from "./core/backup.js";
+import { purgeHiddenConversationsOnce } from "./core/personal.js";
+import { buildHistoryIndex } from "./core/chat-history.js";
+import { migrateAllMemoryItems, migrateMemoryDefault } from "./core/memory.js";
 import { listUsers } from "./core/users.js";
 import { startScheduler, stopScheduler } from "./core/scheduled.js";
 import { startTaskRunner, stopTaskRunner } from "./core/task-runner.js";
@@ -48,8 +51,31 @@ async function main(): Promise<void> {
   startLibraryCapture();
 
   // 聊天记录索引和聊完后的记忆整理
+  // 记忆条目搬表之前留一份备份，之后每天备份一次
+  let backedUp = true;
+  try {
+    backupBeforeMigration();
+  } catch (err) {
+    backedUp = false;
+    console.error("[备份] 升级前的备份失败，这次先不清已删除对话的记录，下次启动再试:", err);
+  }
   migrateMemoryDefault(listUsers().map((u) => u.id));
+  try {
+    migrateAllMemoryItems();
+    if (backedUp) {
+      const purged = purgeHiddenConversationsOnce();
+      if (purged) console.log(`[记忆] 清掉了 ${purged} 段已删除对话的聊天记录索引`);
+    }
+  } catch (err) {
+    // 迁移失败不能让服务起不来：条目在第一次读到时还会再搬一次
+    console.error("[记忆] 升级迁移出错:", err);
+  }
+  // 第一次升级要给全部老聊天建全文索引，放后台分批做；没建完时搜索会自己补上
+  void buildHistoryIndex()
+    .then((n) => n && console.log(`[记忆] 全文索引补上了 ${n} 句聊天`))
+    .catch((err) => console.error("[记忆] 建全文索引失败:", err));
   startMemoryCurator();
+  startBackups();
 
   startFeishu();
   startWeixin();

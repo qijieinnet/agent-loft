@@ -77,6 +77,29 @@ async function fixture(t, viewport) {
   return page;
 }
 
+test("Todo 顶部：多项进行中、完成计数、折叠后更新和全部完成", async (t) => {
+  const page = await fixture(t, { width: 1280, height: 800 });
+  const update = (statuses) => page.evaluate((statuses) => {
+    window.emit({ type: "state", busy: true });
+    window.emit({ type: "todos", todos: statuses.map((status, i) => ({ content: `阶段${i + 1}`, activeForm: `做阶段${i + 1}`, status })) });
+  }, statuses);
+  await update(["in_progress", "in_progress", "in_progress", "pending"]);
+  assert.equal(await page.locator(".todo-title").textContent(), "3 项进行中");
+  assert.equal(await page.locator(".todo-title").getAttribute("title"), "做阶段1；做阶段2；做阶段3");
+  assert.equal(await page.locator(".todo-count").textContent(), "0/4");
+  assert.equal(await page.locator(".todo-item.in_progress").count(), 3);
+  await page.locator(".todo-toggle").click();
+  await update(["completed", "completed", "completed", "in_progress"]);
+  assert.equal(await page.locator(".todo-title").textContent(), "做阶段4");
+  assert.equal(await page.locator(".todo-count").textContent(), "3/4");
+  assert.equal(await page.locator(".todo-list").count(), 0);
+  await update(["completed", "completed", "completed", "completed"]);
+  assert.equal(await page.locator(".todo-title").textContent(), "全部完成");
+  assert.equal(await page.locator(".todo-count").textContent(), "4/4");
+  await page.evaluate(() => window.emit({ type: "state", busy: false }));
+  assert.equal(await page.locator(".todo-bar").isVisible(), false);
+});
+
 test("Todo 面板：新一轮清掉旧清单，排队和本轮作答保留当前进度", async (t) => {
   const page = await fixture(t, { width: 1280, height: 800 });
   const bar = page.locator(".todo-bar");

@@ -59,7 +59,7 @@ import { mcpEvents } from "./mcp.js";
 import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
 import { skillEvents } from "./skills.js";
 import { isSilentReply } from "./task-prompt.js";
-import { findTask } from "./tasks.js";
+import { findTask, listTasks, taskEvents } from "./tasks.js";
 import { patchWeixinAccount } from "./weixin-accounts.js";
 
 // ---------- 事件 ----------
@@ -193,6 +193,8 @@ export type ConversationInfo = {
   scheduled?: { id: string; text: string; at: number }[];
   /** 定时任务的专用对话 */
   taskId?: string;
+  /** 有定时任务把结果发回这条对话（含暂停的任务） */
+  hasTasks?: boolean;
 };
 
 /** 顶栏、列表里显示的专家 */
@@ -292,6 +294,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     super();
     this.setMaxListeners(100);
     interactions.on("created", (i) => this.emitEvent(i.convKey, { type: "ix", id: i.id }));
+    taskEvents.on("changed", (owner, keys) => {
+      for (const key of new Set(keys)) {
+        const conv = getConversation(key);
+        if (conv && memoryOwnerOf(conv) === owner) this.emitEvent(key, { type: "meta" });
+      }
+    });
     // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
     skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
     // 专家修改只影响自定义专家；MCP 和内置默认配置修改也更新该账号的内置会话。
@@ -638,6 +646,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       ...(memoryOwnerOf(conv) ? { personal: true } : {}),
       ...(conv.taskId ? { taskId: conv.taskId } : {}),
       ...(() => {
+        const owner = memoryOwnerOf(conv);
+        return owner && listTasks(owner).some((task) => task.target.key === key) ? { hasTasks: true } : {};
+      })(),
+      ...(() => {
         const list = listScheduled(key);
         return list.length ? { scheduled: list.map(({ id, text, at }) => ({ id, text, at })) } : {};
       })(),
@@ -715,7 +727,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     // 专家：自定义的按它的配置来；被删了就在这里抛错，这条对话不能再用
     const expert = this.expertFor(conv);
     // 记忆在拉起会话这一刻读一次：会话里 agent 自己记下的，上下文里本来就有；
-    // 用户在设置里改了，memoryChanged() 会让空闲的会话下次说话时带着新的重新拉起。专家可以不带记忆
+    // 用户在设置里改了、后台整理改了、别的对话里记了，memoryChanged() 会让空闲的会话下次说话时
+    // 带着新的重新拉起。专家可以不带记忆
     const memory = expert && !expert.memory ? undefined : sessionMemory(conv);
     // 定时任务工具：和记忆一样只给有主人的对话（飞书群聊里谁都能让机器人建任务，算不清是谁的）
     const taskOwner = memoryOwnerOf(conv);
@@ -1544,16 +1557,18 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
    * 用户在设置里改了记忆（关于我、增删条目、开关）：他名下活着的会话都要换上新的。
    * agent 自己用 remember / forget 改的不走这里 —— 那些本来就在上下文里，没必要重启进程、白白丢掉提示缓存。
    */
-  memoryChanged(userId: string): void {
-    this.personalChanged(new Set([userId]));
+  /** except：这几条对话不用换（改动就是它们自己做的，上下文里本来就有） */
+  memoryChanged(userId: string, opts: { except?: Set<string> } = {}): void {
+    this.personalChanged(new Set([userId]), false, opts.except);
   }
 
   /**
    * 这些人的记忆、技能、专家或 MCP 变了：他们名下活着的会话空闲下来就重新拉起。
    * onlyExperts：只管用自定义专家的会话（修改自定义专家配置时使用）
    */
-  private personalChanged(users: Set<string>, onlyExperts = false): void {
+  private personalChanged(users: Set<string>, onlyExperts = false, except?: Set<string>): void {
     for (const [key, live] of this.live) {
+      if (except?.has(key)) continue;
       const conv = getConversation(key);
       const owner = conv ? memoryOwnerOf(conv) : undefined;
       if (!owner || !users.has(owner) || (onlyExperts && !conv?.expert)) continue;

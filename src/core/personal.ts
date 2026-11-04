@@ -1,13 +1,15 @@
 // 「这条对话是谁的」在个人数据（记忆、飞书绑定）上的落点。
 import { deleteMemory, memoryPrompt, readMemory } from "./memory.js";
-import { purgeHistory } from "./chat-history.js";
+import { purgeConversationHistory, purgeHistory } from "./chat-history.js";
+import { deleteConvSummary } from "./memory-summaries.js";
 import { unlinkUser } from "./feishu-links.js";
 import { removeWeixinAccount } from "./weixin-accounts.js";
 import { deleteUserTasks } from "./tasks.js";
 import { purgeUserSkills } from "./skills.js";
 import { purgeUserExperts } from "./experts.js";
 import { purgeUserMcp } from "./mcp.js";
-import type { Conversation } from "./store.js";
+import { sql } from "./db.js";
+import { listConversations, type Conversation } from "./store.js";
 import { getUser, legacyOwnerId } from "./users.js";
 import { deleteBuiltinAgentDefaults } from "./builtin-agents.js";
 import { deleteUiPrefs } from "./ui-prefs.js";
@@ -41,6 +43,35 @@ export function sessionMemory(
     ...(readMemory(userId).chatHistory ? { search: true } : {}),
     ...(conv.key ? { convKey: conv.key } : {}),
   };
+}
+
+/**
+ * 对话被删了：它的聊天记录索引和摘要一起删掉。从它提炼出来的记忆条目留着 ——
+ * 删对话多半只是收拾侧栏，那些事实还是对的；不想要了可以在记忆页按「来源对话已删除」找到它们删掉。
+ */
+export function purgeConversationData(conv: Pick<Conversation, "key" | "owner" | "channel">): void {
+  const userId = memoryOwnerOf(conv) ?? conv.owner;
+  if (!userId) return;
+  purgeConversationHistory(userId, conv.key);
+  deleteConvSummary(userId, conv.key);
+}
+
+const HIDDEN_PURGED = "memory-hidden-conversations-purged";
+
+/**
+ * 升级时跑一次：以前删对话只是隐藏，聊天记录还留在索引里。把这些补删掉，和现在删对话的效果一致。
+ * 要在启动时的升级备份之后调用。返回清了几段对话。
+ */
+export function purgeHiddenConversationsOnce(): number {
+  if (sql("SELECT 1 FROM migrations WHERE name = ?").get(HIDDEN_PURGED)) return 0;
+  let n = 0;
+  for (const conv of listConversations()) {
+    if (!conv.hidden) continue;
+    purgeConversationData(conv);
+    n++;
+  }
+  sql("INSERT OR IGNORE INTO migrations (name, at) VALUES (?, ?)").run(HIDDEN_PURGED, Date.now());
+  return n;
 }
 
 /** 删用户时一起删掉的个人数据：记忆、聊天记录索引、飞书和微信绑定、定时任务、技能（他建的技能，装了的人也就没了）、专家和 MCP */

@@ -206,7 +206,7 @@ test("记忆 MCP 服务：initialize、tools/list、remember 记给拉起它时�
   child.stdin.end();
   const [init, list, call, unknown] = lines.map((l) => JSON.parse(l));
   assert.equal(init.result.protocolVersion, "2025-06-18");
-  assert.deepEqual(list.result.tools.map((t: { name: string }) => t.name), ["remember", "forget"]);
+  assert.deepEqual(list.result.tools.map((t: { name: string }) => t.name), ["remember", "forget", "update_memory", "search_memory"]);
   assert.equal(call.result.isError, undefined);
   assert.equal(unknown.error.code, -32601);
   assert.ok(memory.readMemory(alice.id).items.some((i) => i.text === "MCP 记下的一条" && i.source === "agent"));
@@ -538,6 +538,7 @@ test("记忆满了：挤掉最旧的非用户条目（自动整理的也算）�
     createdAt: t0 + i,
     updatedAt: t0 + i,
     source: i === 0 ? ("user" as const) : ("auto" as const),
+    tier: i === 0 ? ("core" as const) : ("active" as const),
   }));
   putRawMemory(alice.id, m);
   const r = curator.applyProposal(alice.id, { add: ["用户新学了日语"], update: [], remove: [] });

@@ -6,9 +6,12 @@
 //   - 实时：hub 的事件流（见 startHistoryCapture），从现在起说的话；
 //   - 回填：第一次用时把已有对话从 agent 的记录里读一遍（见 memory-curator.ts），只做一次。
 //
-// 搜索不用 SQLite 的 FTS5：trigram 分词搜不到两个字的中文词（「豆豆」）。先用 instr 在库里筛出
-// 含有某个词的句子，再在这里按命中情况打分，不用把整个人的记录都读出来。
+// 搜索用 FTS5（history_fts，切词方式见 fts.ts）在库里筛出候选，再在这里按命中情况打分。
+// 索引不在写入时维护，而是按 index_state 里的进度补（见 syncHistoryIndex）：写入路径不用多一步，
+// 导入的、老版本写的也都能补上。英文词中间的片段（lowercase 写的 openclash 搜 clash）FTS 查不到，
+// 最近的一段记录再用 instr 扫一遍兜底，扫描量有上限。
 import { sql, transaction } from "./db.js";
+import { bigrams, ftsIndexText, ftsMatch, isCjk, needles, terms } from "./fts.js";
 
 export type HistoryRecord = {
   /** 实时用户消息的编号，撤销排队消息时用于精确移除 */
@@ -33,6 +36,8 @@ export type CurationLog = {
   /** 用的哪个 agent / 模型 */
   by?: string;
   error?: string;
+  /** 这次写了几份对话摘要 */
+  summaries?: number;
 };
 
 export type Meta = {
@@ -44,10 +49,24 @@ export type Meta = {
   lastDaily?: string;
   /** 上次整理的结果，设置页显示 */
   lastCuration?: CurationLog;
+  /** 整轮都失败时的退避：连着失败了几轮、下次什么时候再试 */
+  curateRetry?: { failures: number; nextAt: number };
+  /** 每段对话连着整理失败了几次。到上限的先搁置（不丢），用户点「现在整理」时再试 */
+  curateAttempts?: Record<string, number>;
+  /** 月度摘要上次检查的日期（本地日期 YYYY-MM-DD），一天查一次 */
+  lastRollup?: string;
 };
 
 /** 一句话最多存这么多字：长篇代码、整页网页没必要全存 */
-const TEXT_MAX = 4000;
+export const TEXT_MAX = 8000;
+/** 太长时头尾都留：长回复的结论通常在最后 */
+const TEXT_TAIL = 2000;
+
+function capText(text: string): string {
+  if (text.length <= TEXT_MAX) return text;
+  const gap = "\n…（中间省略）…\n";
+  return `${text.slice(0, TEXT_MAX - TEXT_TAIL - gap.length)}${gap}${text.slice(-TEXT_TAIL)}`;
+}
 
 function checkUser(userId: string): string {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(userId)) throw new Error("用户 id 不合法");
@@ -64,7 +83,7 @@ function toRecord(row: Row): HistoryRecord {
 
 function insertRecords(userId: string, records: HistoryRecord[]): void {
   const insert = sql("INSERT INTO history (user_id, conv_key, agent, role, text, ts, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  for (const r of records) insert.run(userId, r.k, r.a, r.r, r.t.slice(0, TEXT_MAX), r.ts, r.id ?? null);
+  for (const r of records) insert.run(userId, r.k, r.a, r.r, capText(r.t), r.ts, r.id ?? null);
 }
 
 export function appendRecords(userId: string, records: HistoryRecord[]): void {
@@ -88,14 +107,34 @@ export function countRecords(userId: string): { count: number; conversations: nu
 
 export function removeHistoryRecord(userId: string, key: string, id: string): void {
   checkUser(userId);
-  sql("DELETE FROM history WHERE user_id = ? AND conv_key = ? AND msg_id = ?").run(userId, key, id);
+  transaction(() => {
+    sql("DELETE FROM history_fts WHERE rowid IN (SELECT id FROM history WHERE user_id = ? AND conv_key = ? AND msg_id = ?)").run(userId, key, id);
+    sql("DELETE FROM history WHERE user_id = ? AND conv_key = ? AND msg_id = ?").run(userId, key, id);
+  });
+}
+
+function deleteConversationRows(userId: string, key: string): void {
+  sql("DELETE FROM history_fts WHERE rowid IN (SELECT id FROM history WHERE user_id = ? AND conv_key = ?)").run(userId, key);
+  sql("DELETE FROM history WHERE user_id = ? AND conv_key = ?").run(userId, key);
+}
+
+/** 对话被删了：这段的聊天记录和整理进度一起删，不只是搜不到 */
+export function purgeConversationHistory(userId: string, key: string): void {
+  checkUser(userId);
+  transaction(() => {
+    deleteConversationRows(userId, key);
+    const meta = readMeta(userId);
+    delete meta.extracted[key];
+    if (meta.curateAttempts) delete meta.curateAttempts[key];
+    writeMeta(userId, meta);
+  });
 }
 
 /** 回退后只保留当前对话剩下的内容，避免搜索再搜出已经移除的消息 */
 export function replaceConversationRecords(userId: string, key: string, records: HistoryRecord[]): void {
   checkUser(userId);
   transaction(() => {
-    sql("DELETE FROM history WHERE user_id = ? AND conv_key = ?").run(userId, key);
+    deleteConversationRows(userId, key);
     insertRecords(userId, records);
   });
 }
@@ -112,7 +151,7 @@ export function readMeta(userId: string): Meta {
   return { ...m, extracted: m.extracted && typeof m.extracted === "object" ? m.extracted : {} };
 }
 
-export function patchMeta(userId: string, patch: Partial<Meta>): void {
+export function patchMeta(userId: string, patch: { [K in keyof Meta]?: Meta[K] | undefined }): void {
   writeMeta(userId, { ...readMeta(userId), ...patch });
 }
 
@@ -133,8 +172,10 @@ export function markExtracted(userId: string, key: string, upTo: number): void {
 export function purgeHistory(userId: string): void {
   checkUser(userId);
   transaction(() => {
+    sql("DELETE FROM history_fts WHERE rowid IN (SELECT id FROM history WHERE user_id = ?)").run(userId);
     sql("DELETE FROM history WHERE user_id = ?").run(userId);
     sql("DELETE FROM history_meta WHERE user_id = ?").run(userId);
+    sql("DELETE FROM search_stats WHERE user_id = ?").run(userId);
   });
 }
 
@@ -148,43 +189,20 @@ export function pendingConversations(
   now = Date.now(),
 ): { key: string; records: HistoryRecord[]; last: number }[] {
   const meta = readMeta(userId);
-  // 每条对话整理到的时刻在 meta 里，交给 json_each 在库里比，只取还没整理过的
-  const rows = sql(
-    `SELECT h.id, h.conv_key, h.agent, h.role, h.text, h.ts, h.msg_id FROM history h LEFT JOIN json_each(?) e ON e.key = h.conv_key
-     WHERE h.user_id = ? AND h.ts > coalesce(e.value, 0) ORDER BY h.id`,
-  ).all(JSON.stringify(meta.extracted), userId) as Row[];
-  const byKey = new Map<string, HistoryRecord[]>();
-  for (const r of rows.map(toRecord)) {
-    let list = byKey.get(r.k);
-    if (!list) byKey.set(r.k, (list = []));
-    list.push(r);
-  }
+  // 先只看每段对话的最后一句（走覆盖索引，不读正文），再去读真正要整理的那几段。
+  // 不能把 extracted 交给库去 JOIN：json_each 没有索引，句数 × 对话数，几年后要跑几分钟还卡住主进程
+  const convs = sql("SELECT conv_key, max(ts) AS last FROM history WHERE user_id = ? GROUP BY conv_key").all(userId) as { conv_key: string; last: number }[];
   const out: { key: string; records: HistoryRecord[]; last: number }[] = [];
-  for (const [key, records] of byKey) {
-    const last = Math.max(...records.map((r) => r.ts));
-    if (now - last >= idleMs) out.push({ key, records, last });
+  const rows = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND ts > ? ORDER BY id`);
+  for (const { conv_key: key, last } of convs.sort((a, b) => a.last - b.last)) {
+    const done = meta.extracted[key] ?? 0;
+    if (last <= done || now - last < idleMs) continue;
+    out.push({ key, records: (rows.all(userId, key, done) as Row[]).map(toRecord), last });
   }
   return out;
 }
 
 // ---------- 搜索 ----------
-
-/** 把查询拆成词：按空白和标点切开。中文不切词，长的中文词另外拆成两字一组做模糊匹配 */
-function terms(query: string): string[] {
-  return query
-    .toLowerCase()
-    .split(/[\s,，。.!！?？、;；:："'“”‘’()（）[\]【】<>《》/\\|]+/)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
-const isCjk = (s: string) => /[㐀-鿿]/.test(s);
-
-function bigrams(s: string): string[] {
-  const out: string[] = [];
-  for (let i = 0; i + 2 <= s.length; i++) out.push(s.slice(i, i + 2));
-  return out;
-}
 
 function occurrences(hay: string, needle: string, cap = 5): number {
   let n = 0;
@@ -234,27 +252,124 @@ function snippet(text: string, query: string, max: number): string {
   return `${start > 0 ? "…" : ""}${flat.slice(start, start + max)}${start + max < flat.length ? "…" : ""}`;
 }
 
-export type SearchHit = { key: string; ts: number; user?: string; assistant?: string; score: number };
+// ---------- 全文索引的进度 ----------
+
+const INDEX_BATCH = 2000;
+const INDEX_NAME = "history_fts";
+
+function indexedUpTo(): number {
+  return (sql("SELECT upto FROM index_state WHERE name = ?").get(INDEX_NAME) as { upto: number } | undefined)?.upto ?? 0;
+}
+
+/** 补一批，一批一个事务：锁拿得短，别的进程不用等太久。返回补了几句 */
+function indexBatch(): number {
+  const top = (sql("SELECT max(id) AS m FROM history").get() as { m: number | null }).m ?? 0;
+  if (top <= indexedUpTo()) return 0;
+  return transaction(() => {
+    const rows = sql("SELECT id, text FROM history WHERE id > ? ORDER BY id LIMIT ?").all(indexedUpTo(), INDEX_BATCH) as { id: number; text: string }[];
+    if (rows.length === 0) return 0;
+    const insert = sql("INSERT INTO history_fts (rowid, text) VALUES (?, ?)");
+    for (const r of rows) insert.run(r.id, ftsIndexText(r.text));
+    sql("INSERT OR REPLACE INTO index_state (name, upto) VALUES (?, ?)").run(INDEX_NAME, rows[rows.length - 1]!.id);
+    return rows.length;
+  });
+}
+
+/** 把还没进索引的句子补进去。搜索前都会调一次，平时只多一次查询 */
+export function syncHistoryIndex(): number {
+  let total = 0;
+  for (let n = indexBatch(); n > 0; n = indexBatch()) total += n;
+  return total;
+}
+
+/** 启动时用：分批补，每批之间让出事件循环。第一次升级要给全部老记录建索引，不能卡住服务 */
+export async function buildHistoryIndex(): Promise<number> {
+  let total = 0;
+  for (let n = indexBatch(); n > 0; n = indexBatch()) {
+    total += n;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return total;
+}
+
+export type SearchHit = { key: string; ts: number; user?: string; assistant?: string; score: number; rowId: number };
+
+export type SearchOptions = {
+  limit?: number;
+  skip?: (key: string) => boolean;
+  now?: number;
+  /** 只要这个时间之后的（含） */
+  after?: number;
+  /** 只要这个时间之前的（不含） */
+  before?: number;
+  /** 同一段对话最多给几条，免得结果全挤在一段里 */
+  perConv?: number;
+};
+
+/** FTS 交给打分的候选上限：最相关的这么多句，加最新的这么多句 */
+const CANDIDATES = 2000;
+const CANDIDATES_RECENT = 500;
+/** 跳过的太多时最多往后翻这么多句，防止一个词命中全库时翻个没完 */
+const SCAN_MAX = 100_000;
+/** 兜底扫描最多扫最近这么多句 */
+const SCAN_RECENT = 20_000;
+
+/** 英文词中间的片段 FTS 查不到：最近的记录再扫一遍。中文已经按字索引，不用 */
+function scanRecent(userId: string, query: string, timeSql: string, timeArgs: number[]): Row[] {
+  const latin = needles(query).filter((n) => !isCjk(n));
+  if (latin.length === 0) return [];
+  const floor = (sql("SELECT id FROM history WHERE user_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?").get(userId, SCAN_RECENT - 1) as { id: number } | undefined)?.id ?? 0;
+  return sql(
+    `SELECT ${COLUMNS} FROM history WHERE user_id = ? AND id >= ?${timeSql} AND (${latin.map(() => "instr(lower(text), ?) > 0").join(" OR ")})`,
+  ).all(userId, floor, ...timeArgs, ...latin) as Row[];
+}
 
 /**
  * 在这个用户的聊天记录里搜。结果是一问一答为单位，相关的在前（同样相关的新的在前）。
  * skip：不要的对话（被删掉的、当前这条）。
  */
-export function searchHistory(
-  userId: string,
-  query: string,
-  opts: { limit?: number; skip?: (key: string) => boolean; now?: number } = {},
-): SearchHit[] {
+export function searchHistory(userId: string, query: string, opts: SearchOptions = {}): SearchHit[] {
   checkUser(userId);
-  // 能得分的句子至少含有一个词（长的中文词是至少含有它的一个两字组合），先在库里筛出来
-  const needles = [...new Set(terms(query).flatMap((t) => (isCjk(t) && t.length >= 4 ? [t, ...bigrams(t)] : [t])))].slice(0, 200);
-  if (needles.length === 0) return [];
-  const rows = sql(
-    `SELECT ${COLUMNS} FROM history WHERE user_id = ? AND (${needles.map(() => "instr(lower(text), ?) > 0").join(" OR ")})`,
-  ).all(userId, ...needles) as Row[];
+  const match = ftsMatch(query);
+  if (!match && needles(query).length === 0) return [];
+  const limit = opts.limit ?? 6;
+  const time: string[] = [];
+  const timeArgs: number[] = [];
+  if (opts.after !== undefined) {
+    time.push(" AND ts >= ?");
+    timeArgs.push(opts.after);
+  }
+  if (opts.before !== undefined) {
+    time.push(" AND ts < ?");
+    timeArgs.push(opts.before);
+  }
+  const timeSql = time.join("");
+  syncHistoryIndex();
+  const byId = new Map<number, Row>();
+  if (match) {
+    // CROSS JOIN 固定先查索引：普通 JOIN 时规划器会选「扫这个人的全部记录，每行跑一次 FTS」，慢上千倍
+    const from = `SELECT h.id, h.conv_key, h.agent, h.role, h.text, h.ts, h.msg_id FROM history_fts CROSS JOIN history h ON h.id = history_fts.rowid
+       WHERE history_fts MATCH ? AND h.user_id = ?${timeSql.replace(/ ts /g, " h.ts ")}`;
+    // 边读边过滤，名额只算 skip 留下的：不然常见词的候选可能全是要跳过的对话（按专家筛选时、当前对话很长时），结果就空了
+    const take = (order: string, quota: number) => {
+      let kept = 0;
+      let seen = 0;
+      for (const r of sql(`${from} ORDER BY ${order}`).iterate(match, userId, ...timeArgs) as Iterable<Row>) {
+        if (++seen > SCAN_MAX || kept >= quota) break;
+        if (opts.skip?.(r.conv_key)) continue;
+        byId.set(r.id, r);
+        kept++;
+      }
+    };
+    // 最相关的一批，再加最新的一批：相关度差不多时新的该靠前，不能因为排不进前面就连候选都不是
+    take("history_fts.rank", CANDIDATES);
+    take("history_fts.rowid DESC", CANDIDATES_RECENT);
+  }
+  // 候选不够用才扫：常见词候选早就够了，不多花这一遍
+  if (byId.size < Math.max(limit, 50)) for (const r of scanRecent(userId, query, timeSql, timeArgs)) byId.set(r.id, r);
   const now = opts.now ?? Date.now();
   const scored: { row: Row; score: number }[] = [];
-  for (const row of rows) {
+  for (const row of byId.values()) {
     if (opts.skip?.(row.conv_key)) continue;
     const s = scoreText(row.text, query);
     if (s === 0) continue;
@@ -265,17 +380,20 @@ export function searchHistory(
   scored.sort((a, b) => b.score - a.score || b.row.ts - a.row.ts || a.row.id - b.row.id);
   const out: SearchHit[] = [];
   const used = new Set<number>();
-  const limit = opts.limit ?? 6;
-  const next = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND id > ? ORDER BY id LIMIT 1`);
-  const prev = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT 1`);
+  const perConv = new Map<string, number>();
+  // 配对在同一段对话里找：同时开着几段对话时，用户记录里紧挨着的下一句可能是别的对话的
+  const next = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND id > ? ORDER BY id LIMIT 1`);
+  const prev = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND id < ? ORDER BY id DESC LIMIT 1`);
   for (const { row, score } of scored) {
     if (out.length >= limit) break;
     if (used.has(row.id)) continue;
+    if (opts.perConv && (perConv.get(row.conv_key) ?? 0) >= opts.perConv) continue;
     // 配上同一条对话里紧挨着的另一半：问配答，答配问
-    const pair = (row.role === "u" ? next : prev).get(userId, row.id) as Row | undefined;
-    const partner = pair && pair.conv_key === row.conv_key && pair.role !== row.role ? pair : undefined;
+    const pair = (row.role === "u" ? next : prev).get(userId, row.conv_key, row.id) as Row | undefined;
+    const partner = pair && pair.role !== row.role ? pair : undefined;
     used.add(row.id);
     if (partner) used.add(partner.id);
+    perConv.set(row.conv_key, (perConv.get(row.conv_key) ?? 0) + 1);
     const user = row.role === "u" ? row : partner;
     const assistant = row.role === "a" ? row : partner;
     out.push({
@@ -284,7 +402,57 @@ export function searchHistory(
       ...(user ? { user: snippet(user.text, query, 300) } : {}),
       ...(assistant ? { assistant: snippet(assistant.text, query, 600) } : {}),
       score,
+      rowId: row.id,
     });
   }
   return out;
+}
+
+/** 读一段对话的原话。around：以这句为中心；否则从 offset 开始（从头数）。total 是这段一共几句 */
+export function readConversationRecords(
+  userId: string,
+  key: string,
+  opts: { around?: number; offset?: number; limit?: number } = {},
+): { rows: (HistoryRecord & { rowId: number })[]; total: number; offset: number } {
+  checkUser(userId);
+  const limit = Math.max(1, Math.min(100, Math.round(Number(opts.limit ?? 20)) || 20));
+  const total = (sql("SELECT count(*) AS n FROM history WHERE user_id = ? AND conv_key = ?").get(userId, key) as { n: number }).n;
+  let offset = Math.max(0, Math.round(Number(opts.offset ?? 0)) || 0);
+  if (opts.around !== undefined && Number.isFinite(opts.around)) {
+    const before = (sql("SELECT count(*) AS n FROM history WHERE user_id = ? AND conv_key = ? AND id < ?").get(userId, key, opts.around) as { n: number }).n;
+    offset = Math.max(0, before - Math.floor(limit / 2));
+  }
+  const rows = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? ORDER BY id LIMIT ? OFFSET ?`).all(userId, key, limit, offset) as Row[];
+  return { rows: rows.map((r) => ({ ...toRecord(r), rowId: r.id })), total, offset };
+}
+
+/** 按顺序一批批读出全部记录（导出用），不用一次读进内存 */
+export function* iterateRecords(userId: string, batch = 1000): Generator<HistoryRecord[]> {
+  checkUser(userId);
+  const stmt = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND id > ? ORDER BY id LIMIT ?`);
+  let after = 0;
+  for (;;) {
+    const rows = stmt.all(userId, after, batch) as Row[];
+    if (rows.length === 0) return;
+    after = rows[rows.length - 1]!.id;
+    yield rows.map(toRecord);
+  }
+}
+
+// ---------- 搜索统计 ----------
+//
+// agent 搜了多少次、多少次没结果。用来判断关键词加摘要够不够用，要不要上语义检索。
+
+export function recordSearch(userId: string, empty: boolean, day: string): void {
+  checkUser(userId);
+  sql(
+    `INSERT INTO search_stats (user_id, day, searches, empty) VALUES (?, ?, 1, ?)
+     ON CONFLICT (user_id, day) DO UPDATE SET searches = searches + 1, empty = empty + excluded.empty`,
+  ).run(userId, day, empty ? 1 : 0);
+}
+
+export function searchStats(userId: string, sinceDay: string): { searches: number; empty: number } {
+  checkUser(userId);
+  const row = sql("SELECT coalesce(sum(searches), 0) AS s, coalesce(sum(empty), 0) AS e FROM search_stats WHERE user_id = ? AND day >= ?").get(userId, sinceDay) as { s: number; e: number };
+  return { searches: row.s, empty: row.e };
 }

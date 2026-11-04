@@ -69,7 +69,7 @@ const RUNS_KEPT = 20;
 export const PROMPT_MAX = 4000;
 export const TITLE_MAX = 60;
 
-export const taskEvents = new EventEmitter<{ changed: [owner: string] }>();
+export const taskEvents = new EventEmitter<{ changed: [owner: string, convKeys?: string[]] }>();
 
 const storePath = path.join(dataDir, "tasks.json");
 let cache: Task[] | null = null;
@@ -101,9 +101,9 @@ export function taskExpertId(t: Pick<Task, "agent" | "expert">): string {
   return t.expert ?? t.agent;
 }
 
-function save(owner?: string): void {
+function save(owner?: string, convKeys?: (string | undefined)[]): void {
   writeJsonAtomic(storePath, load());
-  if (owner) taskEvents.emit("changed", owner);
+  if (owner) taskEvents.emit("changed", owner, convKeys?.filter((key): key is string => !!key));
 }
 
 export function resetTasksForTest(): void {
@@ -216,7 +216,7 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
   };
   task.nextRunAt = task.enabled ? nextRun(schedule, now) : undefined;
   load().push(task);
-  save(owner);
+  save(owner, [task.target.key]);
   return task;
 }
 
@@ -224,6 +224,7 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
 export function updateTask(owner: string, id: string, patch: TaskInput, now = Date.now()): Task {
   const task = getTask(owner, id);
   if (!task) throw new Error("这个任务不存在");
+  const beforeKey = task.target.key;
   const next: Task = { ...task };
   if (patch.prompt !== undefined) next.prompt = cleanPrompt(patch.prompt);
   if (patch.title !== undefined) next.title = cleanTitle(patch.title, next.prompt);
@@ -271,7 +272,7 @@ export function updateTask(owner: string, id: string, patch: TaskInput, now = Da
   // 整个换成 next：Object.assign 不会删掉 next 里去掉了的字段（清空目录 / 模型时）
   for (const k of Object.keys(task) as (keyof Task)[]) if (!(k in next) || next[k] === undefined) delete task[k];
   Object.assign(task, next);
-  save(owner);
+  save(owner, [beforeKey, task.target.key]);
   return task;
 }
 
@@ -280,7 +281,7 @@ export function deleteTask(owner: string, id: string): Task | undefined {
   const i = list.findIndex((t) => t.id === id && t.owner === owner);
   if (i < 0) return undefined;
   const [removed] = list.splice(i, 1);
-  save(owner);
+  save(owner, [removed?.target.key]);
   return removed;
 }
 
@@ -291,7 +292,7 @@ export function deleteUserTasks(owner: string): number {
   const n = list.length - kept.length;
   if (n === 0) return 0;
   cache = kept;
-  save(owner);
+  save(owner, list.filter((t) => t.owner === owner).map((t) => t.target.key));
   return n;
 }
 

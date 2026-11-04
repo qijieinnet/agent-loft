@@ -20,7 +20,7 @@ export type StdioSpawn = { command: string; args: string[]; env: Record<string, 
 
 /**
  * via：日志里标一下是哪个 agent 在写（方便排查），不影响写给谁。
- * search：给不给 search_past_chats；convKey：当前这条对话，搜索时跳过它（它本来就在上下文里）。
+ * search：给不给搜聊天记录的工具（search_past_chats、read_past_chat、memory_timeline）；convKey：当前这条对话，搜索时跳过它（它本来就在上下文里）。
  */
 export function memoryMcpSpawn(userId: string, via: string, opts: { search?: boolean; convKey?: string } = {}): StdioSpawn {
   return {

@@ -665,3 +665,30 @@
   border-top: 1px solid var(--border);
   padding-top: 14px;
 }
+
+/* 记忆页：点开才读的区块（归档、回收站、改动记录、摘要） */
+.memory-more {
+  cursor: pointer;
+  font-weight: 600;
+  user-select: none;
+}
+.memory-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+/* 一条记忆的按钮多，窄屏上文字占一整行，按钮换到下面 */
+.memory-item {
+  flex-wrap: wrap;
+}
+.memory-item > .grow {
+  flex: 1 1 280px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* 导出是下载链接，长得和旁边的按钮一样 */
+a.memory-link {
+  color: inherit;
+  text-decoration: none;
+}

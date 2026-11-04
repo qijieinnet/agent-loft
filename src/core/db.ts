@@ -2,7 +2,8 @@
 //
 // 放在这里的是会越用越多、或者好几个进程都要写的：会话（conversations）、会话归属（session_owners）、
 // 聊天记录索引（history / history_meta）、每轮回复的脚注（footers）、用量（usage_sessions / usage_daily）、
-// 每个人的记忆（memory）、资料库里的文件索引（files，文件本身还在上传目录里，见 library.ts）。
+// 每个人的记忆（memory 存设置和「关于我」，memory_items 存条目，memory_log 存改动记录，
+// memory_summaries 存摘要）、资料库里的文件索引（files，文件本身还在上传目录里，见 library.ts）。
 // 设置、用户、专家这类小配置还是 JSON 文件，方便直接打开看、手改。
 //
 // 主进程和每个会话的记忆工具子进程（mcp/memory-server.ts）会同时打开它：WAL 模式下读不挡写，
@@ -62,6 +63,21 @@ CREATE TABLE IF NOT EXISTS history (
 );
 CREATE INDEX IF NOT EXISTS history_user ON history (user_id, id);
 CREATE INDEX IF NOT EXISTS history_user_conv ON history (user_id, conv_key);
+-- 查「每段对话最后一句是什么时候」只走这个索引，不用读正文（见 chat-history.ts 的 pendingConversations）
+CREATE INDEX IF NOT EXISTS history_user_conv_ts ON history (user_id, conv_key, ts);
+
+-- 聊天记录的全文索引：只存索引不存原文（原文在 history 里），rowid 就是 history.id。
+-- 写入时不碰它，搜索和启动时按 index_state 里的进度补上（见 chat-history.ts 的 syncHistoryIndex）
+CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5(text, content='', contentless_delete=1, tokenize='unicode61');
+CREATE TABLE IF NOT EXISTS index_state (name TEXT PRIMARY KEY, upto INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS search_stats (
+  user_id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  searches INTEGER NOT NULL,
+  empty INTEGER NOT NULL,
+  PRIMARY KEY (user_id, day)
+);
 
 CREATE TABLE IF NOT EXISTS history_meta (
   user_id TEXT PRIMARY KEY,
@@ -95,6 +111,58 @@ CREATE TABLE IF NOT EXISTS memory (
   user_id TEXT PRIMARY KEY,
   data TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS memory_items (
+  user_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  source TEXT NOT NULL,
+  tier TEXT NOT NULL,
+  locked INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  observed_at INTEGER,
+  valid_until INTEGER,
+  source_conv TEXT,
+  deleted_at INTEGER,
+  PRIMARY KEY (user_id, id)
+);
+CREATE INDEX IF NOT EXISTS memory_items_live ON memory_items (user_id, deleted_at, tier);
+
+CREATE TABLE IF NOT EXISTS memory_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  old_text TEXT,
+  new_text TEXT,
+  old_tier TEXT,
+  new_tier TEXT,
+  conv_key TEXT,
+  note TEXT,
+  at INTEGER NOT NULL,
+  undone_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS memory_log_user ON memory_log (user_id, id);
+CREATE INDEX IF NOT EXISTS memory_log_item ON memory_log (user_id, item_id);
+
+CREATE TABLE IF NOT EXISTS memory_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  title TEXT NOT NULL,
+  text TEXT NOT NULL,
+  project TEXT,
+  from_ts INTEGER NOT NULL,
+  to_ts INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (user_id, kind, scope)
+);
+CREATE INDEX IF NOT EXISTS memory_summaries_time ON memory_summaries (user_id, kind, to_ts);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(text, content='', contentless_delete=1, tokenize='unicode61');
 
 CREATE TABLE IF NOT EXISTS files (
   id TEXT PRIMARY KEY,
@@ -130,6 +198,9 @@ export function database(): DatabaseSync {
   importLegacy(opened);
   return opened;
 }
+
+/** memory 表里哪些行还带着老格式的条目。坏掉的 JSON 不能让 json_type 抛错：一行坏数据不该让服务起不来 */
+export const LEGACY_MEMORY_ITEMS = "CASE WHEN json_valid(data) THEN json_type(data, '$.items') END = 'array'";
 
 /** 「记忆改成默认关」的升级迁移跑过了（见 memory.ts 的 migrateMemoryDefault） */
 export const MEMORY_DEFAULT_OFF = "memory-default-off";

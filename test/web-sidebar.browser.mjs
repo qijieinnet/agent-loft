@@ -140,6 +140,22 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
 
 const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.group));
 
+test("侧栏时钟：专用对话和当前聊天关联的定时任务均显示，移除关联后隐藏", async (t) => {
+  const { page } = await fixture(t);
+  const mark = page.locator('.conv-item[data-key="web:1"] .task-mark');
+  assert.equal(await mark.count(), 0);
+  for (const patch of [{ hasTasks: true }, { taskId: "t_dedicated" }, {}]) {
+    await page.evaluate((patch) => {
+      const conv = S.convs.get("web:1");
+      delete conv.hasTasks;
+      delete conv.taskId;
+      Object.assign(conv, patch);
+      window.renderSidebar();
+    }, patch);
+    assert.equal(await mark.count(), Object.keys(patch).length ? 1 : 0);
+  }
+});
+
 for (const mobile of [false, true]) {
   for (const existing of [false, true]) {
     test(`${mobile ? "触屏" : "桌面"}终端${existing ? "有后台会话" : "无后台会话"}：进入和刷新不连接，点击后连接，切回保留`, async (t) => {

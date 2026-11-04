@@ -8,7 +8,7 @@ import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
-import { agentBinding, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
+import { agentBinding, conversationLabels, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
 import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import { mentions, replyFileType, resolveReplyFile } from "../../core/reply-files.js";
@@ -34,17 +34,30 @@ import { appendDirOrder, getDirOrder, getSidebarNav, setDirOrder, setSidebarNav 
 import {
   addMemoryItem,
   clearMemory,
+  countMemoryItems,
+  exportMemory,
+  getMemoryItem,
+  importMemory,
+  listMemoryItems,
+  localDate,
   MEMORY_LIMITS,
+  purgeMemoryItem,
   readMemory,
+  readMemoryLog,
   removeMemoryItem,
+  restoreMemoryItem,
   setMemoryOptions,
+  setMemoryTier,
+  undoMemoryChange,
   updateMemoryItem,
   type CurateSettings,
 } from "../../core/memory.js";
 import { createLinkCode, listLinks, unlink, unlinkUser } from "../../core/feishu-links.js";
 import { getWeixinAccount, removeWeixinAccount, weixinKey } from "../../core/weixin-accounts.js";
-import { purgeUserData } from "../../core/personal.js";
-import { countRecords, purgeHistory, readMeta, searchHistory, writeMeta } from "../../core/chat-history.js";
+import { purgeConversationData, purgeUserData } from "../../core/personal.js";
+import { countRecords, iterateRecords, purgeHistory, readMeta, searchHistory, searchStats, writeMeta } from "../../core/chat-history.js";
+import { backupNow, backupStatus } from "../../core/backup.js";
+import { countSummaries, deleteSummary, exportSummaries, listSummaries, purgeSummaries, readSummary, upsertSummary, type MemorySummary } from "../../core/memory-summaries.js";
 import { curateNow, pendingCount } from "../../core/memory-curator.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
 import { isPermissionLevel, type PermissionLevel } from "../../core/permission.js";
@@ -106,7 +119,16 @@ const uploads = new Map<string, { key: string; attachment: SavedAttachment; at: 
 
 /** 单条删除和项目批量删除共用清理规则，保留 agent 自己的文字记录。 */
 function hideConversation(key: string): void {
+  const conv = getConversation(key);
   updateConversation(key, { hidden: true });
+  // 删对话：聊天记录索引和摘要真的删掉，不只是搜不到（agent 自己的文字记录还留着，它们不归这里管）
+  if (conv) {
+    try {
+      purgeConversationData(conv);
+    } catch (err) {
+      console.warn(`[记忆] 清理 ${key} 的聊天记录失败:`, err);
+    }
+  }
   deleteConversationFiles(key);
   for (const [id, entry] of uploads) if (entry.key === key) uploads.delete(id);
   clearScheduled(key);
@@ -1409,10 +1431,122 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 200, {
       ...readMemory(user.id),
       limits: MEMORY_LIMITS,
+      counts: countMemoryItems(user.id),
+      summaries: countSummaries(user.id),
       // 等着整理的对话有几段、上次整理的结果（设置页显示）
       pending: pendingCount(user.id),
       ...(meta.lastCuration ? { lastCuration: meta.lastCuration } : {}),
+      ...(meta.curateRetry ? { curateRetry: meta.curateRetry } : {}),
+      // 近 30 天 agent 搜聊天记录的次数和没搜到的次数：判断关键词搜索够不够用
+      searchStats: searchStats(user.id, localDate(Date.now() - 30 * 86400_000)),
+      // 备份是整个数据库的，只给管理员看
+      ...(isAdmin(user) ? { backup: backupStatus() } : {}),
     });
+    return;
+  }
+  if (p === "/api/account/memory/backup" && method === "POST") {
+    if (!isAdmin(user)) throw new HttpError(403, "只有管理员能备份");
+    try {
+      await backupNow();
+    } catch (err) {
+      throw new HttpError(500, err instanceof Error ? err.message : String(err));
+    }
+    sendJson(res, 200, backupStatus());
+    return;
+  }
+  if (p === "/api/account/memory/items" && method === "GET") {
+    const view = url.searchParams.get("view");
+    if (view !== "archive" && view !== "trash") throw new HttpError(400, "view 只能是 archive 或 trash");
+    sendJson(res, 200, { items: listMemoryItems(user.id, view) });
+    return;
+  }
+  if (p === "/api/account/memory/log" && method === "GET") {
+    const before = Number(url.searchParams.get("before"));
+    sendJson(res, 200, { log: readMemoryLog(user.id, { limit: 30, ...(before > 0 ? { before } : {}) }) });
+    return;
+  }
+  {
+    const m = /^\/api\/account\/memory\/log\/(\d+)\/undo$/.exec(p);
+    if (m && method === "POST") {
+      sendJson(res, 200, memoryOp(user.id, () => undoMemoryChange(user.id, Number(m[1]))));
+      return;
+    }
+  }
+  if (p === "/api/account/memory/summaries" && method === "GET") {
+    const kind = url.searchParams.get("kind");
+    const offset = Number(url.searchParams.get("offset")) || 0;
+    const rows = listSummaries(user.id, { ...(kind === "conv" || kind === "month" ? { kind } : {}), limit: 30, offset });
+    const labels = conversationLabels();
+    sendJson(res, 200, {
+      summaries: rows
+        .filter((s) => s.kind === "month" || !labels.get(s.scope)?.hidden)
+        .map((s) => ({ ...s, ...(s.kind === "conv" ? { convTitle: labels.get(s.scope)?.title ?? "" } : {}) })),
+    });
+    return;
+  }
+  {
+    const m = /^\/api\/account\/memory\/summaries\/(\d+)$/.exec(p);
+    if (m && method === "DELETE") {
+      sendJson(res, 200, { ok: deleteSummary(user.id, Number(m[1])) });
+      return;
+    }
+  }
+  if (p === "/api/account/memory/export" && method === "GET") {
+    const body = JSON.stringify({ ...exportMemory(user.id), summaries: exportSummaries(user.id) }, null, 2);
+    res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Disposition": `attachment; filename="agent-loft-memory-${localDate(Date.now())}.json"`,
+      "Cache-Control": "no-store",
+    });
+    res.end(body);
+    return;
+  }
+  if (p === "/api/account/history/export" && method === "GET") {
+    // 一行一句的 JSONL：聊天记录可能很多，边读边发，不一次读进内存
+    res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Content-Disposition": `attachment; filename="agent-loft-chats-${localDate(Date.now())}.jsonl"`,
+      "Cache-Control": "no-store",
+    });
+    try {
+      for (const rows of iterateRecords(user.id)) {
+        if (res.destroyed) return;
+        const chunk = rows.map((r) => JSON.stringify({ conversation: r.k, agent: r.a, role: r.r === "u" ? "user" : "assistant", text: r.t, at: r.ts })).join("\n");
+        if (!res.write(`${chunk}\n`)) await new Promise<void>((resolve) => {
+          res.once("drain", resolve);
+          res.once("close", resolve);
+        });
+      }
+      res.end();
+    } catch (err) {
+      // 响应头已经发了，只能断开：对方看到的是下载失败，不是一个缺了后半截的「成功」文件
+      console.warn("[记忆] 导出聊天记录失败:", err);
+      res.destroy();
+    }
+    return;
+  }
+  if (p === "/api/account/memory/import" && method === "POST") {
+    const body = await readJsonBody<{ summaries?: unknown }>(req, 50 * 1024 * 1024);
+    const result = memoryOp(user.id, () => importMemory(user.id, body));
+    let summaries = 0;
+    for (const s of Array.isArray(body.summaries) ? (body.summaries as Partial<MemorySummary>[]) : []) {
+      if ((s?.kind !== "conv" && s?.kind !== "month") || typeof s.scope !== "string" || typeof s.text !== "string" || !s.text.trim()) continue;
+      // 只补没有的：这里已经有的摘要比导入的新
+      if (readSummary(user.id, s.kind, s.scope)) continue;
+      upsertSummary(user.id, {
+        kind: s.kind,
+        scope: s.scope,
+        title: typeof s.title === "string" ? s.title : "",
+        text: s.text,
+        ...(typeof s.project === "string" ? { project: s.project } : {}),
+        fromTs: Number(s.fromTs) || 0,
+        toTs: Number(s.toTs) || 0,
+      });
+      summaries++;
+    }
+    sendJson(res, 200, { ...result, summaries });
     return;
   }
   if (p === "/api/account/memory/curate" && method === "POST") {
@@ -1446,6 +1580,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p === "/api/account/history" && method === "DELETE") {
     // 清掉聊天记录索引。不再回填：清了就是不想让以前的聊天被搜到，只记以后的
     purgeHistory(user.id);
+    // 摘要是从聊天记录写出来的，一起清
+    purgeSummaries(user.id);
     writeMeta(user.id, { backfilled: true, extracted: {} });
     sendJson(res, 200, { ok: true });
     return;
@@ -1463,12 +1599,28 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   {
     const m = /^\/api\/account\/memory\/items\/(m_[a-f0-9]+)$/.exec(p);
     if (m && method === "PATCH") {
-      const body = await readJsonBody<{ text?: string }>(req);
-      sendJson(res, 200, memoryOp(user.id, () => updateMemoryItem(user.id, m[1]!, String(body.text ?? ""))));
+      const body = await readJsonBody<{ text?: string; tier?: string }>(req);
+      const tier = body.tier === "core" || body.tier === "active" || body.tier === "archive" ? body.tier : undefined;
+      if (body.tier !== undefined && !tier) throw new HttpError(400, "tier 只能是 core、active 或 archive");
+      sendJson(
+        res,
+        200,
+        memoryOp(user.id, () => {
+          if (tier) setMemoryTier(user.id, m[1]!, tier);
+          return typeof body.text === "string" ? updateMemoryItem(user.id, m[1]!, body.text) : getMemoryItem(user.id, m[1]!);
+        }),
+      );
       return;
     }
     if (m && method === "DELETE") {
-      sendJson(res, 200, { ok: !!memoryOp(user.id, () => removeMemoryItem(user.id, m[1]!)) });
+      // ?purge=1：回收站里的彻底删除，连改动记录一起；否则进回收站
+      const purge = url.searchParams.get("purge") === "1";
+      sendJson(res, 200, { ok: !!memoryOp(user.id, () => (purge ? purgeMemoryItem(user.id, m[1]!) : removeMemoryItem(user.id, m[1]!))) });
+      return;
+    }
+    const restore = /^\/api\/account\/memory\/items\/(m_[a-f0-9]+)\/restore$/.exec(p);
+    if (restore && method === "POST") {
+      sendJson(res, 200, memoryOp(user.id, () => restoreMemoryItem(user.id, restore[1]!)));
       return;
     }
   }

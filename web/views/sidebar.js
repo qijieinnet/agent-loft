@@ -575,7 +575,7 @@ export function renderSidebar() {
       h("span", { class: "title" }, convTitle(c)),
       fold ? caret(fold.folded, fold.toggle) : null,
       convExpertMark(c),
-      c.taskId ? h("span", { class: "brand-icon task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
+      c.taskId || c.hasTasks ? h("span", { class: "brand-icon task-mark", title: "定时任务的对话", html: ICON.clock }) : null,
       status(fold?.folded ? fold.keys : [c.key]),
     );
 

@@ -67,6 +67,44 @@ test("星期多选：保存、修改后按所选星期计算下次执行时间",
   tasks.deleteUserTasks(weeklyOwner!);
 });
 
+test("当前聊天的定时任务：创建、暂停、迁移和删除同步会话标记，多任务互不覆盖", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  const { createUser } = await import("../src/core/users.js");
+  const owner = createUser({ name: "task-marks", password: "password-123" }).id;
+  const keys = ["web:task-mark-a", "web:task-mark-b"];
+  for (const key of keys) hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude", owner });
+  const refreshed: string[] = [];
+  const listener = (env: { key: string; ev: { type: string } }) => {
+    if (env.ev.type === "meta" && keys.includes(env.key)) refreshed.push(env.key);
+  };
+  hub.on("event", listener);
+  const input = { prompt: "检查", schedule: { kind: "daily", time: "08:00" }, target: { kind: "conv", key: keys[0] } };
+  try {
+    assert.equal(hub.info(keys[0]!)?.hasTasks, undefined);
+    const first = tasks.createTask(owner, input, "agent");
+    assert.deepEqual(refreshed.splice(0), [keys[0]]);
+    assert.equal(hub.info(keys[0]!)?.hasTasks, true);
+    assert.equal(hub.info(keys[0]!)?.taskId, undefined, "普通对话的权限不改为跟随任务");
+    const second = tasks.createTask(owner, input, "user");
+    tasks.updateTask(owner, first.id, { enabled: false });
+    assert.equal(hub.info(keys[0]!)?.hasTasks, true, "暂停的任务仍然关联对话");
+    refreshed.length = 0;
+    tasks.updateTask(owner, first.id, { target: { kind: "conv", key: keys[1] } });
+    assert.deepEqual(refreshed.splice(0), keys, "迁移同时刷新新旧对话");
+    assert.equal(hub.info(keys[0]!)?.hasTasks, true, "原对话还有第二个任务");
+    assert.equal(hub.info(keys[1]!)?.hasTasks, true);
+    tasks.deleteTask(owner, second.id);
+    assert.equal(hub.info(keys[0]!)?.hasTasks, undefined);
+    assert.deepEqual(refreshed.splice(0), [keys[0]]);
+    tasks.deleteUserTasks(owner);
+    assert.equal(hub.info(keys[1]!)?.hasTasks, undefined);
+    assert.deepEqual(refreshed.splice(0), [keys[1]]);
+  } finally {
+    hub.off("event", listener);
+    tasks.deleteUserTasks(owner);
+  }
+});
+
 test("提示词：说明附在后面、给人看时剥掉；静默暗号", () => {
   const msg = taskMessage({ title: "查更新", prompt: "看看有没有新版本", notify: "smart" }, { now: at(2026, 10, 23, 2, 0) });
   assert.match(msg, /\[\[静默\]\]/);
