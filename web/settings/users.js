@@ -151,6 +151,25 @@ export async function usersTab(page) {
         }),
       });
     }
+    // 连 Git 远程：用的是服务器的凭据，默认谁都没有，开了工作区面板的成员才用得上
+    if (u.role !== "admin" && (u.files || u.gitRemote)) {
+      items.push({
+        label: u.gitRemote ? "关闭 Git 远程操作" : "开通 Git 远程操作…",
+        onclick: act(async () => {
+          if (!u.gitRemote) {
+            const sure = await confirmDialog({
+              title: `给「${u.name}」开通 Git 远程操作？`,
+              message: "他能在工作区面板里获取、拉取、推送，用的是这台服务器上配置的 Git 账号和密钥，提交会以这个账号的权限推到远程。不会强制推送。只开给你信任的人。",
+              confirmText: "开通",
+              danger: true,
+            });
+            if (!sure) return false;
+          }
+          await patch(u, { gitRemote: !u.gitRemote });
+          toast(u.gitRemote ? "已关闭" : "已开通");
+        }),
+      });
+    }
     items.push("sep");
     if (u.feishuLinks) {
       items.push({
@@ -227,6 +246,7 @@ export async function usersTab(page) {
             u.disabled ? h("span", { class: "status-tag bad" }, "已停用") : null,
             u.role !== "admin" && u.remote ? h("span", { class: "status-tag" }, "远程控制") : null,
             u.role !== "admin" && u.files ? h("span", { class: "status-tag" }, "工作区面板") : null,
+            u.role !== "admin" && u.files && u.gitRemote ? h("span", { class: "status-tag" }, "Git 远程") : null,
           ),
           h("div", { class: "s" }, `创建于 ${relTime(u.createdAt)} · ${u.devices} 台设备已登录${u.feishuLinks ? ` · 绑定了 ${u.feishuLinks} 个飞书账号` : ""}`),
         ),
@@ -247,9 +267,11 @@ export async function usersTab(page) {
     const permissions = permissionFields(data.resources);
     const remote = h("input", { type: "checkbox" });
     const files = h("input", { type: "checkbox" });
+    const gitRemote = h("input", { type: "checkbox" });
     const memberOptions = h("div", { class: "user-permissions" }, permissions.el,
       h("div", { class: "field" }, h("span", {}, "远程权限"), h("label", { class: "check-item" }, remote, h("span", {}, "允许使用终端和桌面"))),
-      h("div", { class: "field" }, h("span", {}, "文件权限"), h("label", { class: "check-item" }, files, h("span", {}, "允许用工作区面板读写文件、操作 Git"))));
+      h("div", { class: "field" }, h("span", {}, "文件权限"), h("label", { class: "check-item" }, files, h("span", {}, "允许用工作区面板读写文件、操作 Git"))),
+      h("div", { class: "field" }, h("span", {}, "Git 远程权限"), h("label", { class: "check-item" }, gitRemote, h("span", {}, "允许用服务器的 Git 账号获取、拉取、推送（还要开文件权限）"))));
     role.onchange = () => { memberOptions.hidden = role.value === "admin"; };
     fill(
       addBox,
@@ -266,8 +288,13 @@ export async function usersTab(page) {
             message: "他能以运行 agent-loft 的系统用户直接使用终端和桌面，读写服务器上的文件、安装软件、停止服务，不经过授权卡。只开给完全信任的人。",
             confirmText: "开通并添加", danger: true,
           }))) return false;
+          if (role.value === "member" && gitRemote.checked && !(await confirmDialog({
+            title: `给「${name.value.trim()}」开通 Git 远程操作？`,
+            message: "他能用这台服务器上配置的 Git 账号和密钥获取、拉取、推送。不会强制推送。只开给你信任的人。",
+            confirmText: "开通并添加", danger: true,
+          }))) return false;
           await api("/api/users", { method: "POST", body: { name: name.value.trim(), password: pw.value, role: role.value,
-            ...(role.value === "member" ? { remote: remote.checked, files: files.checked, permissions: permissions.value() } : {}) } });
+            ...(role.value === "member" ? { remote: remote.checked, files: files.checked, gitRemote: gitRemote.checked, permissions: permissions.value() } : {}) } });
           toast(`已添加「${name.value.trim()}」`);
           close();
           reload();

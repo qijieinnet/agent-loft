@@ -14,6 +14,9 @@ import {
   gitCreateBranch,
   gitDiff,
   gitDiscard,
+  gitFetch,
+  gitPull,
+  gitPush,
   GitError,
   gitLog,
   gitStage,
@@ -24,7 +27,7 @@ import {
 import { hub } from "../../core/hub.js";
 import { revertTurn, turnFileDiff, turnState } from "../../core/turn-changes.js";
 import { listConversations, type Conversation } from "../../core/store.js";
-import { canUseFiles, type User } from "../../core/users.js";
+import { canUseFiles, canUseGitRemote, type User } from "../../core/users.js";
 import {
   createWorkspaceEntry,
   deleteWorkspaceEntry,
@@ -62,6 +65,9 @@ const ROUTES: Record<string, string> = {
   "git-commit": "POST",
   "git-switch": "POST",
   "git-branch-new": "POST",
+  "git-fetch": "POST",
+  "git-pull": "POST",
+  "git-push": "POST",
   "git-turn-revert": "POST",
   "workspace-save": "POST",
   "workspace-new": "POST",
@@ -203,13 +209,20 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     return true;
   }
   if (req.method === "POST") {
+    if ((sub === "git-fetch" || sub === "git-pull" || sub === "git-push") && !canUseGitRemote(user)) {
+      throw new HttpError(403, "你没有连接 Git 远程的权限，找管理员在 设置 → 用户 里开通");
+    }
     const body = await readJsonBody<{ paths?: unknown; message?: unknown; hooks?: unknown; branch?: unknown; name?: unknown; id?: unknown; direction?: unknown; force?: unknown }>(req);
     const root = repo.root;
     await gitAction(res, async () => {
       if (sub === "git-stage") return gitStage(root, body.paths);
       if (sub === "git-unstage") return gitUnstage(root, body.paths);
       if (sub === "git-commit") return gitCommit(root, body.message, { hooks: body.hooks === true });
+      // 获取和推送不动工作区，agent 干活时也能做
+      if (sub === "git-fetch") return gitFetch(root);
+      if (sub === "git-push") return gitPush(root, { hooks: body.hooks === true });
       assertIdle(root);
+      if (sub === "git-pull") return gitPull(root);
       if (sub === "git-discard") return gitDiscard(root, body.paths);
       if (sub === "git-switch") return gitSwitch(root, body.branch);
       if (sub === "git-branch-new") return gitCreateBranch(root, body.name);

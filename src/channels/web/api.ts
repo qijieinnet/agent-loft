@@ -17,6 +17,7 @@ import {
   createUser,
   getUser,
   canUseFiles,
+  canUseGitRemote,
   isAdmin,
   legacyOwnerId,
   listUsers,
@@ -492,8 +493,8 @@ function adminOnly(p: string): boolean {
   );
 }
 
-function publicMe(user: Pick<User, "id" | "name" | "role" | "disabled" | "files">) {
-  return { id: user.id, name: user.name, role: user.role, ...(canUseFiles(user) ? { files: true } : {}) };
+function publicMe(user: Pick<User, "id" | "name" | "role" | "disabled" | "files" | "gitRemote">) {
+  return { id: user.id, name: user.name, role: user.role, ...(canUseFiles(user) ? { files: true } : {}), ...(canUseGitRemote(user) ? { gitRemote: true } : {}) };
 }
 
 /** users.ts 抛的是给人看的错误，转成 400 */
@@ -1715,11 +1716,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
   }
   if (p === "/api/users" && method === "POST") {
-    const body = await readJsonBody<{ name?: string; password?: string; role?: Role; remote?: boolean; files?: boolean; permissions?: unknown }>(req);
+    const body = await readJsonBody<{ name?: string; password?: string; role?: Role; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown }>(req);
     sendJson(
       res,
       200,
-      userOp(() => createUser({ name: String(body.name ?? ""), password: String(body.password ?? ""), role: body.role === "admin" ? "admin" : "member", ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}), ...(typeof body.files === "boolean" ? { files: body.files } : {}), ...(body.permissions !== undefined ? { permissions: body.permissions } : {}) })),
+      userOp(() => createUser({ name: String(body.name ?? ""), password: String(body.password ?? ""), role: body.role === "admin" ? "admin" : "member", ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}), ...(typeof body.files === "boolean" ? { files: body.files } : {}), ...(typeof body.gitRemote === "boolean" ? { gitRemote: body.gitRemote } : {}), ...(body.permissions !== undefined ? { permissions: body.permissions } : {}) })),
     );
     return;
   }
@@ -1728,7 +1729,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const id = userMatch[1]!;
     if (!getUser(id)) throw new HttpError(404, "用户不存在");
     if (method === "PATCH") {
-      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; files?: boolean; permissions?: unknown }>(req);
+      const body = await readJsonBody<{ name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown }>(req);
       if (id === user.id && (body.disabled === true || (body.role !== undefined && body.role !== "admin"))) {
         throw new HttpError(400, "不能停用自己，也不能取消自己的管理员");
       }
@@ -1741,6 +1742,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
           ...(typeof body.password === "string" ? { password: body.password } : {}),
           ...(typeof body.remote === "boolean" ? { remote: body.remote } : {}),
           ...(typeof body.files === "boolean" ? { files: body.files } : {}),
+          ...(typeof body.gitRemote === "boolean" ? { gitRemote: body.gitRemote } : {}),
           ...(body.permissions !== undefined ? { permissions: body.permissions } : {}),
         }),
       );

@@ -32,6 +32,8 @@ export type User = {
   remote?: boolean;
   /** 成员能不能用工作区面板（浏览文件、看 Git 改动）。管理员一直能用，不看这个 */
   files?: boolean;
+  /** 成员能不能在工作区面板里获取、拉取、推送（用的是服务器上的 Git 凭据）。管理员一直能用，不看这个 */
+  gitRemote?: boolean;
   permissions?: ResourcePermissions;
 };
 
@@ -185,6 +187,12 @@ export function canUseFiles(user: Pick<User, "role" | "disabled" | "files"> | un
   return user.role === "admin" || user.files === true;
 }
 
+/** 能不能在工作区面板里连远程：用的是服务器主人的 Git 身份，所以比面板本身多一道开关。成员要两个都开 */
+export function canUseGitRemote(user: Pick<User, "role" | "disabled" | "files" | "gitRemote"> | undefined): boolean {
+  if (!canUseFiles(user)) return false;
+  return user!.role === "admin" || user!.gitRemote === true;
+}
+
 export function canUseResource(user: Pick<User, "role" | "disabled" | "permissions"> | undefined, kind: ResourceKind, id: string): boolean {
   if (!user || user.disabled) return false;
   return user.role === "admin" || user.permissions?.[kind] == null || user.permissions[kind]!.includes(id);
@@ -241,7 +249,7 @@ function assertAdminLeft(list: User[]): void {
   if (!list.some((u) => u.role === "admin" && !u.disabled)) throw new Error("至少要保留一个能登录的管理员");
 }
 
-export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; files?: boolean; permissions?: unknown }): PublicUser {
+export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown }): PublicUser {
   const list = load();
   const name = checkName(params.name);
   if (list.some((u) => u.name.toLowerCase() === name.toLowerCase())) throw new Error(`用户名「${name}」已经有人用了`);
@@ -254,6 +262,7 @@ export function createUser(params: { name: string; password: string; role?: Role
     createdAt: Date.now(),
     ...(params.remote === true ? { remote: true } : {}),
     ...(params.files === true ? { files: true } : {}),
+    ...(params.gitRemote === true ? { gitRemote: true } : {}),
     ...(params.permissions !== undefined ? { permissions: cleanPermissions(params.permissions) } : {}),
   };
   save([...list, user]);
@@ -262,7 +271,7 @@ export function createUser(params: { name: string; password: string; role?: Role
 
 export function updateUser(
   id: string,
-  patch: { name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; files?: boolean; permissions?: unknown },
+  patch: { name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown },
 ): PublicUser {
   const list = load().map((u) => ({ ...u }));
   const user = list.find((u) => u.id === id);
@@ -284,6 +293,10 @@ export function updateUser(
   if (patch.files !== undefined) {
     if (patch.files) user.files = true;
     else delete user.files;
+  }
+  if (patch.gitRemote !== undefined) {
+    if (patch.gitRemote) user.gitRemote = true;
+    else delete user.gitRemote;
   }
   if (patch.permissions !== undefined) user.permissions = cleanPermissions(patch.permissions, user.permissions);
   if (patch.password !== undefined) {

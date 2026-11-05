@@ -627,6 +627,43 @@ function branchBar(s) {
   );
 }
 
+// 和远程同步：要连网，可能要跑很久，同一时间只做一个。显示连到哪，别人的仓库配置可能把地址改了
+let syncBusy = null;
+
+async function sync(kind) {
+  if (syncBusy) return;
+  syncBusy = kind;
+  renderChanges();
+  const body = kind === "push" ? { hooks: commitUi.hooks.checked } : {};
+  const result = await gitAct(`git-${kind}`, body);
+  syncBusy = null;
+  renderChanges();
+  if (!result) return;
+  if (kind === "fetch") toast(result.behind ? `已获取 ${result.remote}，落后 ${result.behind} 个提交` : `已获取 ${result.remote}`);
+  else if (kind === "pull") toast(result.updated ? `已快进到 ${result.short}` : "已经是最新的");
+  else toast(result.published ? `已发布到 ${result.remote}/${result.branch}` : `已推送到 ${result.remote}/${result.branch}`);
+}
+
+function syncBar(s) {
+  if (!S.user?.gitRemote || !s.pushUrl) return null;
+  const button = (kind, label, busyLabel, title, enabled = true) =>
+    h("button", { class: "btn small", title, disabled: !!syncBusy || !enabled, onclick: () => void sync(kind) }, syncBusy === kind ? busyLabel : label);
+  return h(
+    "div",
+    { class: "ws-sync-bar" },
+    h("span", { class: "ws-sync-url", title: `推送到 ${s.pushUrl}` }, s.pushUrl),
+    button("fetch", "获取", "获取中…", "更新远程分支的信息，不动工作区"),
+    button("pull", s.behind ? `拉取 ↓${s.behind}` : "拉取", "拉取中…", s.upstream ? "只做快进；本地和远程分叉时不会合并" : "这个分支还没有上游", !!s.branch && !!s.upstream),
+    button(
+      "push",
+      !s.upstream ? "发布分支" : s.ahead ? `推送 ↑${s.ahead}` : "推送",
+      "推送中…",
+      s.branch ? "不会强制推送。勾选了「运行 Git 钩子」时会跑 pre-push 钩子" : "现在不在任何分支上",
+      !!s.branch && !!s.head && (!s.upstream || s.ahead > 0),
+    ),
+  );
+}
+
 // 提交框：一直是同一组元素。改动列表刷新时不动它，打到一半的字和光标都还在
 const HOOKS_KEY = "aim.wsCommitHooks";
 const commitUi = {
@@ -707,7 +744,7 @@ function renderChanges() {
   const untracked = s.files.filter((f) => f.unstaged === "untracked");
   commitUi.stagedCount = staged.length;
   updateCommitButton();
-  fill(ui.wsBranchSlot, branchBar(s));
+  fill(ui.wsBranchSlot, branchBar(s), syncBar(s));
 
   const paths = (files) => files.filter((f) => !f.sensitive).map((f) => f.path);
   const stageAll = (files) => (paths(files).length ? { title: "全部暂存", icon: "plus", onclick: () => void gitAct("git-stage", { paths: paths(files) }) } : null);

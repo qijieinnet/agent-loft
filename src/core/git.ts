@@ -9,7 +9,7 @@
 //   - 去掉继承来的 GIT_* 环境变量，从 git 钩子里启动服务时也不会指到别的仓库；
 //   - 本服务自己的凭据不传下去（和 agent 子进程一样，见 agent-env.ts）：用户勾选了运行钩子时，钩子也拿不到；
 //   - 不连网（GIT_ALLOW_PROTOCOL、GIT_NO_LAZY_FETCH）：部分克隆缺对象时 git 会去远程地址拿，
-//     而地址是配置里写的，ext:: 这种地址就是一条命令；
+//     而地址是配置里写的，ext:: 这种地址就是一条命令。只有用户点的获取、拉取、推送例外，见 networkEnv；
 //   - 不抢索引锁（GIT_OPTIONAL_LOCKS=0）：面板在后台刷新，不能和正在干活的 agent 抢。
 //
 // 路径都相对仓库根目录。
@@ -39,7 +39,7 @@ function gitEnv(): NodeJS.ProcessEnv {
   for (const [k, v] of Object.entries(agentEnvironment())) if (!k.startsWith("GIT_")) env[k] = v;
   env.GIT_OPTIONAL_LOCKS = "0";
   env.GIT_NO_LAZY_FETCH = "1";
-  // 这里用到的命令都不需要连网。没有哪个协议叫这个名字，所以都不允许
+  // 除了获取、拉取、推送（见 networkEnv），这里用到的命令都不需要连网。没有哪个协议叫这个名字，所以都不允许
   env.GIT_ALLOW_PROTOCOL = "none";
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_PAGER = "cat";
@@ -208,6 +208,8 @@ export type GitStatus = {
   upstream?: string;
   ahead: number;
   behind: number;
+  /** 推送会连到的地址（去掉了里面的账号密码）。只在要 stats 时给；没有远程时没有 */
+  pushUrl?: string;
   files: GitFileChange[];
   truncated: boolean;
   /** 工作区相对 HEAD 的总行数变化（含未跟踪文件，不含敏感文件、二进制）。 */
@@ -279,6 +281,10 @@ export async function gitStatus(root: string, options: { stats?: boolean } = {})
     if (isSensitivePath(path.join(root, f.path)) || (f.oldPath && isSensitivePath(path.join(root, f.oldPath)))) f.sensitive = true;
   }
   if (options.stats && !status.truncated) status.stats = await workingTreeStats(root, status, safe).catch(() => undefined);
+  if (options.stats) {
+    const url = await currentPushUrl(root, status.branch).catch(() => undefined);
+    if (url) status.pushUrl = url;
+  }
   return status;
 }
 
@@ -794,6 +800,190 @@ export async function gitCreateBranch(root: string, name: unknown): Promise<void
   const valid = await run(root, ["check-ref-format", "--branch", branch], 1024);
   if (valid.code !== 0) throw new GitError(400, "分支名不合法");
   await write(root, ["checkout", "-q", "-b", branch], "新建分支失败");
+}
+
+// ---------- 和远程同步 ----------
+//
+// 用的是这台机器全局配置里的凭据，地址和其他设置却可能来自不可信的 .git/config，所以：
+//   - 只放行 https、http、ssh，ext:: 这种能跑命令的地址和本地路径都不行；
+//   - 仓库配置里有能跑程序、能改去向的项就不操作，让用户去终端（assertNetworkSafe）；
+//   - 钩子照旧不跑（推送可以勾选），不碰子模块；
+//   - 只做快进拉取和不强制的推送：不会产生冲突，也不会覆盖别人的提交。
+
+const NETWORK_TIMEOUT_MS = 5 * 60_000;
+const NETWORK_MAX_BYTES = 8 * 1024 * 1024;
+
+/** 仓库自己的配置里连网时不能信的项（键名是小写的，http 的单独看，见 unsafeNetworkKey） */
+const UNSAFE_NETWORK_CONFIG =
+  /^(credential\.|protocol\.|ssh\.|url\.|core\.(sshcommand|gitproxy|askpass|alternaterefscommand)$|remote\..*\.(uploadpack|receivepack|proxy|vcs)$|merge\..*\.driver$|gpg\.(.*\.)?program$|gpg\.ssh\.defaultkeycommand$|lfs\.(url$|pushurl$|standalonetransferagent$|customtransfer\.|extension\.))/;
+
+function unsafeNetworkKey(key: string): boolean {
+  const k = key.toLowerCase();
+  // 代理、自定义请求头、证书校验都能把请求或凭据转走。只调传输参数的放行
+  if (k.startsWith("http.")) return !/\.(postbuffer|lowspeedlimit|lowspeedtime|version)$/.test(k);
+  return UNSAFE_NETWORK_CONFIG.test(k);
+}
+
+/** 地址里可能带着账号密码（https://user:token@host/…），不能出现在页面上 */
+function redactUrls(text: string): string {
+  return text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1");
+}
+
+async function assertNetworkSafe(root: string): Promise<void> {
+  const unsafe = (await repoConfig(root, ".")).find((c) => unsafeNetworkKey(c.key));
+  if (unsafe) throw new GitError(409, `这个仓库的配置里有「${redactUrls(unsafe.key)}」，它能运行程序或改变连接的去向，面板不会带着凭据去连。确认没问题的话请在终端里操作`);
+}
+
+/** 连网命令的环境，换掉 gitEnv 里禁止连网的设置。assertNetworkSafe 之后才能调：这里读到的 core.sshCommand 是全局配置的 */
+async function networkEnv(root: string): Promise<NodeJS.ProcessEnv> {
+  const ssh = await configValue(root, "core.sshCommand");
+  return {
+    GIT_ALLOW_PROTOCOL: "https:http:ssh",
+    // 部分克隆拉取后检出时要按需下载对象
+    GIT_NO_LAZY_FETCH: undefined,
+    // 没人能回答提示：要输密码、确认主机指纹的直接失败，不要等到超时
+    GIT_SSH_COMMAND: `${ssh || "ssh"} -o BatchMode=yes`,
+    SSH_ASKPASS: undefined,
+  };
+}
+
+function explainNetwork(stderr: string, fallback: string): string {
+  const text = redactUrls(stderr);
+  if (/transport '.*' not allowed/i.test(text)) return "面板只连 https、http、ssh 地址的远程，这个地址请在终端里操作";
+  if (/authentication failed|could not read (username|password)|terminal prompts disabled|permission denied \(|host key verification failed|invalid username or|returned error: 40[13]/i.test(text)) {
+    return "远程的认证没通过：服务器上的 git 没有这个仓库的凭据，或者没有权限。先在服务器终端里配置好（比如 gh auth login、SSH 密钥、known_hosts）";
+  }
+  if (/not possible to fast-forward/i.test(text)) return "本地和远程已经分叉，面板只支持快进拉取。请在终端里合并，或者交给 agent";
+  if (/\[rejected\]|non-fast-forward|fetch first/i.test(text)) return "远程有本地没有的提交，先拉取再推送";
+  if (/could not resolve host|could not connect|failed to connect|connection (timed out|refused)|network is unreachable/i.test(text)) return "连不上远程，检查一下这台服务器的网络和远程地址";
+  return explain(text, fallback);
+}
+
+async function network(root: string, args: string[], fallback: string, opts: { hooks?: boolean } = {}): Promise<void> {
+  const hookArgs = opts.hooks ? ["-c", `core.hooksPath=${await hooksDir(root)}`] : [];
+  const prefix = [...(await safeArgs(root)), "-c", "submodule.recurse=false", ...hookArgs];
+  let out: RunResult;
+  try {
+    out = await run(root, [...prefix, ...args], NETWORK_MAX_BYTES, { env: await networkEnv(root), timeoutMs: NETWORK_TIMEOUT_MS });
+  } catch (err) {
+    throw new GitError(504, redactUrls(err instanceof Error ? err.message : String(err)));
+  }
+  // 超过缓冲区时 git 被杀掉了，run 报的 code 0 不代表成功
+  if (out.truncated) throw new GitError(502, "git 的输出太多，操作被中断了。请刷新确认结果，或者在终端里操作");
+  if (out.code !== 0) throw new GitError(409, explainNetwork(out.stderr, fallback));
+}
+
+async function configValue(root: string, key: string): Promise<string | undefined> {
+  const out = await run(root, ["config", "--get", key], 64 * 1024);
+  return out.code === 0 ? out.stdout.trim() || undefined : undefined;
+}
+
+async function remoteNames(root: string): Promise<string[]> {
+  const out = await run(root, ["remote"], 256 * 1024);
+  // 不会用「-」开头的名字：放到命令行上就成了选项
+  const names = out.code === 0 ? out.stdout.split("\n").filter((n) => n && !n.startsWith("-")) : [];
+  if (!names.length) throw new GitError(409, "这个仓库还没有配置远程");
+  return names;
+}
+
+/** 当前分支跟踪的远程，没有就是 origin，再没有就是唯一的那个 */
+async function fetchRemote(root: string, branch: string | null, remotes: string[]): Promise<string> {
+  const tracked = branch ? await configValue(root, `branch.${branch}.remote`) : undefined;
+  if (tracked && remotes.includes(tracked)) return tracked;
+  if (remotes.includes("origin")) return "origin";
+  if (remotes.length === 1) return remotes[0]!;
+  throw new GitError(409, "这个仓库有多个远程，不知道该连哪个。请先给当前分支设置上游，或者在终端里操作");
+}
+
+/** 推送的目标和 git 自己的优先级一样：branch.<名字>.pushRemote、remote.pushDefault，然后才是跟踪的远程 */
+async function pushRemote(root: string, branch: string | null, remotes: string[]): Promise<string> {
+  const explicit = (branch ? await configValue(root, `branch.${branch}.pushRemote`) : undefined) ?? (await configValue(root, "remote.pushDefault"));
+  if (explicit && remotes.includes(explicit)) return explicit;
+  return fetchRemote(root, branch, remotes);
+}
+
+async function currentPushUrl(root: string, branch: string | null): Promise<string | undefined> {
+  const remote = await pushRemote(root, branch, await remoteNames(root));
+  const out = await run(root, ["remote", "get-url", "--push", remote], 64 * 1024);
+  return out.code === 0 ? redactUrls(out.stdout.trim()) || undefined : undefined;
+}
+
+/** 更新远程分支的引用，不动工作区和本地分支 */
+export async function gitFetch(root: string): Promise<{ remote: string; ahead: number; behind: number }> {
+  await assertNetworkSafe(root);
+  const { branch } = await gitStatus(root);
+  const remote = await fetchRemote(root, branch, await remoteNames(root));
+  await network(root, ["fetch", "--no-recurse-submodules", remote], "获取失败");
+  const { ahead, behind } = await gitStatus(root);
+  return { remote, ahead, behind };
+}
+
+/** 拉取，只做快进：本地也有新提交（分叉）时不合并，不会把工作区弄成冲突状态 */
+export async function gitPull(root: string): Promise<{ updated: boolean; short: string | null }> {
+  await assertWritable(root);
+  await assertNetworkSafe(root);
+  const before = await gitStatus(root);
+  if (!before.branch) throw new GitError(409, "现在不在任何分支上（分离头指针），没法拉取");
+  if (!before.upstream) throw new GitError(409, `分支「${before.branch}」还没有上游，没有可以拉取的地方`);
+  const tracked = await configValue(root, `branch.${before.branch}.remote`);
+  // 「.」是跟踪本地分支，不用连网
+  if (tracked && tracked !== ".") {
+    if (!(await remoteNames(root)).includes(tracked)) throw new GitError(409, `上游的远程「${redactUrls(tracked)}」不是这个仓库配置的远程，请在终端里操作`);
+    await network(root, ["fetch", "--no-recurse-submodules", tracked], "获取失败");
+  }
+  const after = await gitStatus(root);
+  if (!after.behind) return { updated: false, short: after.head };
+  if (after.ahead) throw new GitError(409, `本地和远程已经分叉（领先 ${after.ahead}，落后 ${after.behind}），面板只支持快进拉取。请在终端里合并，或者交给 agent`);
+  await network(root, ["merge", "--ff-only", "--no-stat", "--no-edit", "@{upstream}"], "拉取失败");
+  return { updated: true, short: (await gitStatus(root)).head };
+}
+
+/** 用了 Git LFS 的仓库：大文件靠 pre-push 钩子上传，钩子不跑的话远程只收到指针 */
+async function usesLfs(root: string): Promise<boolean> {
+  const dir = await run(root, ["rev-parse", "--git-path", "lfs"], 4096);
+  if (dir.code === 0 && fs.existsSync(path.resolve(root, dir.stdout.trim()))) return true;
+  const attributes = await run(root, ["cat-file", "blob", "HEAD:.gitattributes"], 1024 * 1024);
+  return attributes.code === 0 && /\bfilter=lfs\b/.test(attributes.stdout);
+}
+
+/**
+ * 面板不让提交敏感文件，它们可能是 agent 或终端提交的；推出去就收不回来了，所以也拦一道。
+ * 文件太多看不完时同样拒绝：不能在没看完的情况下放行
+ */
+async function assertNoSensitiveOutgoing(root: string, remote: string): Promise<void> {
+  const out = await run(root, [...(await safeArgs(root)), "log", "-z", "--name-only", "--no-renames", "--diff-filter=d", "--format=", "HEAD", "--not", `--remotes=${remote}`], STATUS_MAX_BYTES);
+  if (out.code !== 0) throw new GitError(409, redactUrls(out.stderr.trim()) || "读取要推送的提交失败");
+  if (out.truncated) throw new GitError(409, "要推送的提交涉及的文件太多，没法检查里面有没有敏感文件，请在终端里推送");
+  const secret = out.stdout.split("\0").map((f) => f.trim()).find((f) => f && isSensitivePath(path.join(root, f)));
+  if (secret) throw new GitError(403, `要推送的提交里有「${secret}」，是密钥一类的敏感文件，不能在面板里推送。确认没问题的话请在终端里操作`);
+}
+
+/**
+ * 推送当前分支到同名的远程分支，从不强制。还没有上游时顺手设置。
+ * 写明 refspec：不受仓库配置里的 push.default、remote.*.push 影响，点一次只动这一个分支
+ */
+export async function gitPush(root: string, opts: { hooks?: boolean } = {}): Promise<{ remote: string; branch: string; published: boolean }> {
+  await assertNetworkSafe(root);
+  const status = await gitStatus(root);
+  const branch = status.branch;
+  if (!branch) throw new GitError(409, "现在不在任何分支上（分离头指针），没法推送");
+  if (!status.head) throw new GitError(409, "这个分支还没有提交，没有可以推送的内容");
+  const remote = await pushRemote(root, branch, await remoteNames(root));
+  // 和 git 默认的 push.default=simple 一样：跟踪的分支名字不同（比如 feature 跟踪 origin/main）时不猜
+  if (status.upstream && (await configValue(root, `branch.${branch}.remote`)) === remote) {
+    const merge = await configValue(root, `branch.${branch}.merge`);
+    if (merge !== `refs/heads/${branch}`) throw new GitError(409, `分支「${branch}」跟踪的是「${status.upstream}」，名字不一样。为了不推错地方，请在终端里操作`);
+  }
+  if (!opts.hooks && (await usesLfs(root))) throw new GitError(409, "这个仓库用了 Git LFS，不跑钩子时大文件传不上去。请勾选「运行 Git 钩子」，或者在终端里推送");
+  await assertNoSensitiveOutgoing(root, remote);
+  const published = !status.upstream;
+  await network(
+    root,
+    ["push", "--recurse-submodules=no", "--no-signed", ...(published ? ["--set-upstream"] : []), remote, `refs/heads/${branch}:refs/heads/${branch}`],
+    "推送失败",
+    opts,
+  );
+  return { remote, branch, published };
 }
 
 // ---------- 撤销一轮 ----------
