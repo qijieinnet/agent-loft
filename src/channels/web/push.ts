@@ -40,6 +40,8 @@ export type RelayInfo = {
   server: string;
   /** 外壳列表里这台的图标和名字，加在通知标题前面 */
   label: string;
+  /** 单独的服务器名：苹果设备的通知不带图标；旧订阅可能没有 */
+  name?: string;
 };
 
 /** 按订阅的主人筛选：拿到的是订阅里记的 userId（可能没有） */
@@ -237,7 +239,7 @@ export function addRelaySubscription(
   const sub = input.subscription;
   if (!validSubscription(sub)) throw new Error("订阅信息不完整");
   if (!validVapid(input.vapid)) throw new Error("推送密钥不对");
-  const via = (input.via ?? {}) as { origin?: unknown; server?: unknown; label?: unknown };
+  const via = (input.via ?? {}) as { origin?: unknown; server?: unknown; label?: unknown; name?: unknown };
   const origin = String(via.origin ?? "");
   if (!embedders.includes(origin)) throw new Error(`这台没有允许 ${origin || "这个地址"} 嵌入，收不了它转来的通知订阅`);
   const server = String(via.server ?? "");
@@ -255,6 +257,7 @@ export function addRelaySubscription(
       origin,
       server,
       label: clip(via.label, 60),
+      ...(typeof via.name === "string" ? { name: clip(via.name, 40) } : {}),
     },
   };
   s.subscriptions = [...s.subscriptions.filter((x) => x.endpoint !== sub.endpoint), record];
@@ -289,6 +292,11 @@ export function hasSubscriptions(): boolean {
 
 const prefixed = (label: string, title: string) => (label ? `${label} · ${title}` : title);
 
+function isAppleDevice(sub: PushSubscriptionRecord): boolean {
+  // Mac 上的 Chrome / Firefox 使用各自的推送服务，要同时看订阅时记下的设备类型。
+  return /^(?:iPhone|iPad|Mac)(?: ·|$)/.test(sub.label) || new URL(sub.endpoint).hostname.endsWith(".push.apple.com");
+}
+
 /**
  * 真正推出去的内容。加了别的服务器（这台是外壳）时标题前面带上这台的名字，好分清是哪台的；
  * 外壳转来的订阅带上外壳列表里这台的名字，tag 加上这台的 id（各台的会话 key 可能撞上），
@@ -296,16 +304,20 @@ const prefixed = (label: string, title: string) => (label ? `${label} · ${title
  */
 export function payloadFor(sub: PushSubscriptionRecord, payload: PushPayload): PushPayload {
   const relay = sub.relay;
+  const apple = isAppleDevice(sub);
   if (!relay) {
     const servers = config().servers;
     if (!servers.list.length) return payload;
-    return { ...payload, title: prefixed(`${servers.selfIcon} ${selfName(servers)}`.trim(), payload.title) };
+    const label = apple ? selfName(servers) : `${servers.selfIcon} ${selfName(servers)}`.trim();
+    return { ...payload, title: prefixed(label, payload.title) };
   }
+  // 旧外壳只传合并后的 label，兼容去掉开头的 emoji 图标；新外壳直接传名字。
+  const label = apple ? relay.name ?? relay.label.replace(/^[^\s]*[\p{Extended_Pictographic}\p{Regional_Indicator}][^\s]*\s+/u, "") : relay.label;
   const url = new URL(payload.url ?? "/", "http://relay");
   url.searchParams.set("srv", relay.server);
   return {
     ...payload,
-    title: prefixed(relay.label, payload.title),
+    title: prefixed(label, payload.title),
     ...(payload.tag ? { tag: `srv:${relay.server}:${payload.tag}` } : {}),
     url: `${url.pathname}${url.search}${url.hash}`,
   };

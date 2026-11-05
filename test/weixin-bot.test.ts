@@ -80,6 +80,7 @@ const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 const outcomes: InteractionOutcome[] = [];
 const LONG = Array.from({ length: 6 }, (_, i) => `第${i}段`.padEnd(3700, "字")).join("\n");
 let sessionSeq = 0;
+let slowReply: Promise<void> | undefined;
 const histories = new Map<string, import("../src/core/types.js").HistoryMessage[]>();
 
 function fakeDriver(): AgentDriver {
@@ -113,7 +114,7 @@ function fakeDriver(): AgentDriver {
                 }),
               );
             }
-            if (input.text.includes("慢")) await tick(150);
+            if (input.text.includes("慢")) await slowReply;
             const text = input.text.includes("长回复") ? LONG : input.text.includes("二十段") ? "x\n".repeat(30000) : `收到：${input.text}`;
             events.onText(text);
             histories.get(sessionId)!.push({ role: "assistant", text });
@@ -348,14 +349,24 @@ test("微信分叉、恢复及切目录保留原记录，完全允许不带入�
 });
 
 test("处理得久时显示正在输入，结束时取消，都带 typing_ticket", async () => {
-  await turn("慢一点");
-  await until(() => requests.some((r) => r.path === "/ilink/bot/sendtyping" && r.body.status === 2), "取消输入");
-  const typing = requests.filter((r) => r.path === "/ilink/bot/sendtyping");
-  assert.equal(typing[0]!.body.status, 1);
-  assert.equal(typing[0]!.body.typing_ticket, "ticket");
-  assert.equal(typing[0]!.body.ilink_user_id, WX);
-  const config = requests.find((r) => r.path === "/ilink/bot/getconfig")!;
-  assert.match(config.body.context_token, /^ctx/);
+  let release!: () => void;
+  slowReply = new Promise<void>((resolve) => { release = resolve; });
+  const before = requests.length;
+  try {
+    say("慢一点");
+    await until(() => requests.slice(before).some((r) => r.path === "/ilink/bot/sendtyping" && r.body.status === 1), "开始输入");
+    const start = requests.findIndex((r, i) => i >= before && r.path === "/ilink/bot/sendtyping" && r.body.status === 1);
+    assert.equal(requests[start]!.body.typing_ticket, "ticket");
+    assert.equal(requests[start]!.body.ilink_user_id, WX);
+    const config = requests.find((r) => r.path === "/ilink/bot/getconfig")!;
+    assert.match(config.body.context_token, /^ctx/);
+    release();
+    await until(() => requests.slice(start + 1).some((r) => r.path === "/ilink/bot/sendtyping" && r.body.status === 2), "取消输入");
+    await until(() => sentTexts().at(-1) === "收到：慢一点", "慢消息回复");
+  } finally {
+    release();
+    slowReply = undefined;
+  }
 });
 
 test("只认扫码的微信号：陌生人、群消息、bot 自己的消息和重投都不处理", async () => {

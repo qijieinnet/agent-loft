@@ -193,6 +193,7 @@ test("外壳开关通知后远端订阅跟着撤销和恢复，服务器改名�
   await frame.evaluate(() => new Promise((r) => setTimeout(r, 100)));
   const registrations = calls.filter((c) => c.path === "/api/push/relay");
   assert.equal(registrations.at(-1).body.via.label, "Renamed");
+  assert.equal(registrations.at(-1).body.via.name, "Renamed");
   assert.equal(calls.filter((c) => c.path === "/api/push/unsubscribe").length, 1);
 });
 

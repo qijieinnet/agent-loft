@@ -502,13 +502,14 @@ function applyRelayPush() {
   if (SH.role !== "guest" || !SH.push || !S.user || relayStopped) return;
   const me = SH.servers.find((s) => s.id === SH.self);
   const label = me ? `${me.icon} ${me.name}`.trim() : "";
-  const mark = JSON.stringify([S.user.id, SH.push.subscription.endpoint, SH.self, label]);
+  const name = me?.name || "";
+  const mark = JSON.stringify([S.user.id, SH.push.subscription.endpoint, SH.self, label, name]);
   if (relayed === mark) return;
   relayed = mark;
   const body = {
     subscription: SH.push.subscription,
     vapid: SH.push.vapid,
-    via: { origin: SH.hostOrigin, server: SH.self, label },
+    via: { origin: SH.hostOrigin, server: SH.self, label, name },
   };
   relayWork = relayWork.catch(() => {}).then(() => api("/api/push/relay", {
     method: "POST",

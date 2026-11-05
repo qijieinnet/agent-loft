@@ -121,7 +121,7 @@ function subscription() {
 test("外壳转来的订阅：要是允许嵌入的地址、密钥要对得上，同一个订阅再转一次就换掉", () => {
   const vapid = push.vapidKeyPair();
   const sub = subscription();
-  const via = { origin: "https://loft.example.com", server: "a1b2c3d4", label: "🗄️ NAS" };
+  const via = { origin: "https://loft.example.com", server: "a1b2c3d4", label: "🗄️ NAS", name: "NAS" };
   const embedders = ["https://loft.example.com"];
   assert.throws(() => push.addRelaySubscription({ subscription: sub, vapid, via }, "", "u1", []), /没有允许/);
   assert.throws(() => push.addRelaySubscription({ subscription: sub, vapid: { ...vapid, publicKey: "AAAA" }, via }, "", "u1", embedders), /密钥/);
@@ -131,6 +131,7 @@ test("外壳转来的订阅：要是允许嵌入的地址、密钥要对得上�
 
   const record = push.addRelaySubscription({ subscription: sub, vapid, via }, "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Safari/604.1", "u1", embedders);
   assert.equal(record.label, "iPhone · Safari · 经 loft.example.com");
+  assert.equal(record.relay?.name, "NAS");
   push.addRelaySubscription({ subscription: sub, vapid, via }, "", "u2", embedders);
   const mine = push.listSubscriptions((owner) => owner === "u2");
   assert.equal(mine.length, 1, "换了账号再转：归新账号");
@@ -144,7 +145,7 @@ test("推出去的内容：转来的订阅带上这台的名字、srv 和带前�
   const relay = { vapid, origin: "https://loft.example.com", server: "a1b2c3d4", label: "🗄️ NAS" };
   const record = { ...subscription(), label: "", createdAt: 0, relay };
   const out = push.payloadFor(record, { title: "对话 · 回复完成", body: "好了", tag: "reply:web:1", url: "/#web%3A1" });
-  assert.equal(out.title, "🗄️ NAS · 对话 · 回复完成");
+  assert.equal(out.title, "NAS · 对话 · 回复完成");
   assert.equal(out.tag, "srv:a1b2c3d4:reply:web:1");
   assert.equal(out.url, "/?srv=a1b2c3d4#web%3A1");
   assert.equal(push.payloadFor(record, { title: "t", body: "" }).url, "/?srv=a1b2c3d4");
@@ -157,7 +158,20 @@ test("推出去的内容：转来的订阅带上这台的名字、srv 和带前�
     ...structuredClone(config()),
     servers: { selfName: "Mac", selfIcon: "💻", list: [{ id: "x1", name: "NAS", icon: "", url: "https://nas.example.com" }], embedders: [] },
   });
-  assert.equal(push.payloadFor(own, { title: "t", body: "" }).title, "💻 Mac · t");
+  assert.equal(push.payloadFor(own, { title: "t", body: "" }).title, "Mac · t");
+
+  // 苹果推送服务，以及 Mac 上使用其他推送服务的浏览器，都隐藏服务器图标。
+  for (const label of ["iPhone · Safari", "iPad · Safari", "Mac · Chrome", "Mac · Firefox"]) {
+    const device = { ...own, endpoint: "https://fcm.googleapis.com/device", label };
+    assert.equal(push.payloadFor(device, { title: "t", body: "" }).title, "Mac · t");
+    assert.equal(push.payloadFor({ ...device, relay }, { title: "t", body: "" }).title, "NAS · t");
+  }
+  const android = { ...own, endpoint: "https://fcm.googleapis.com/android", label: "Android · Chrome" };
+  assert.equal(push.payloadFor(android, { title: "t", body: "" }).title, "💻 Mac · t");
+  assert.equal(push.payloadFor({ ...android, relay }, { title: "t", body: "" }).title, "🗄️ NAS · t");
+  // 独立传名字后，图标可以包含空格，名字本身的 emoji 也不会被误删。
+  const namedRelay = { ...relay, label: "A B 🧑‍💻 工作站", name: "🧑‍💻 工作站" };
+  assert.equal(push.payloadFor({ ...own, relay: namedRelay }, { title: "t", body: "" }).title, "🧑‍💻 工作站 · t");
 
   // 签名：用传进来的那把密钥，k= 是它的公钥
   const other = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ format: "jwk" });

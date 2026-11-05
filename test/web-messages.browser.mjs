@@ -77,6 +77,34 @@ async function fixture(t, viewport) {
   return page;
 }
 
+for (const width of [1280, 390]) test(`用户消息：宽度恢复后撤下短消息的展开按钮，长消息仍可展开收起（${width}px）`, async (t) => {
+  const page = await fixture(t, { width, height: 800 });
+  const initial = await page.evaluate(() => {
+    // 模拟首次排版时消息区域还很窄，随后恢复正常宽度。
+    window.ui.msgInner.style.width = "72px";
+    window.shortUser = window.messages.addItem({ type: "user", text: "苹果设备推送消息的时候，不要显示服务器的图标" });
+    const measured = window.shortUser.bubble.scrollHeight;
+    const clamped = window.shortUser.bubble.classList.contains("clamped");
+    window.ui.msgInner.style.width = "";
+    return { measured, clamped };
+  });
+  assert.ok(initial.measured > 320);
+  assert.equal(initial.clamped, true);
+  await page.waitForFunction(() => !window.shortUser.el.querySelector(".msg-more"), null, { timeout: 2000 });
+  assert.equal(await page.evaluate(() => window.shortUser.bubble.classList.contains("clamped")), false);
+  await page.evaluate(() => {
+    window.longUser = window.messages.addItem({ type: "user", text: "一条确实很长的消息\n".repeat(30) });
+  });
+  const more = page.locator(".msg-user-group").last().locator(".msg-more");
+  await more.click();
+  assert.equal(await more.textContent(), "收起");
+  await page.setViewportSize({ width: width + 100, height: 750 });
+  await page.waitForFunction(() => !window.longUser.bubble.classList.contains("clamped"));
+  assert.equal(await more.textContent(), "收起", "重排不能把用户展开的消息收回去");
+  await more.click();
+  assert.equal(await page.evaluate(() => window.longUser.bubble.classList.contains("clamped")), true);
+});
+
 test("Todo 顶部：多项进行中、完成计数、折叠后更新和全部完成", async (t) => {
   const page = await fixture(t, { width: 1280, height: 800 });
   const update = (statuses) => page.evaluate((statuses) => {

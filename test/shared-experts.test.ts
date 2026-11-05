@@ -62,6 +62,13 @@ function driver(id: string): AgentDriver {
 hub.registerDriver(driver("claude"));
 hub.registerDriver(driver("codex"));
 const tick = () => new Promise((resolve) => setTimeout(resolve, 40));
+async function waitUntil(ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!ready()) {
+    assert.ok(Date.now() < deadline, "等待假驱动收到输入超时");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 const done = (state: State) => state.events.onResult({ text: "done", durationMs: 1 });
 const origin = { channel: "web", channelId: "web" };
 
@@ -132,7 +139,7 @@ test("两个人同时使用同一个专家：记忆、技能变量、MCP 独立�
     hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude", owner, expert: shared.id });
     hub.send(key, { text: "hello", attachments: [] }, origin);
   }
-  await tick();
+  await waitUntil(() => [creator.id, family.id].every((id) => states.some((s) => s.opts.memory?.userId === id && s.sent.includes("hello"))));
   const mine = states.find((s) => s.opts.memory?.userId === creator.id)!;
   const theirs = states.find((s) => s.opts.memory?.userId === family.id)!;
   assert.ok(mine && theirs && mine !== theirs);
@@ -150,7 +157,8 @@ test("两个人同时使用同一个专家：记忆、技能变量、MCP 独立�
   assert.equal(theirs.disposed, true);
   assert.equal(mine.disposed, false, "别人的工具变化不影响我的会话");
   const familyKey = `web:shared-${family.id}`;
-  hub.send(familyKey, { text: "next", attachments: [] }, origin); await tick();
+  hub.send(familyKey, { text: "next", attachments: [] }, origin);
+  await waitUntil(() => states.some((s) => s.sent.includes("next")));
   const next = states.at(-1)!;
   assert.deepEqual(next.opts.expert?.mcp, {});
   assert.deepEqual(next.opts.skills?.list, []);
@@ -160,13 +168,15 @@ test("两个人同时使用同一个专家：记忆、技能变量、MCP 独立�
   experts.updateExpert(creator.id, shared.id, { prompt: "新的共同设定" });
   assert.equal(next.disposed, false);
   done(next); await tick();
-  hub.send(familyKey, { text: "new prompt", attachments: [] }, origin); await tick();
+  hub.send(familyKey, { text: "new prompt", attachments: [] }, origin);
+  await waitUntil(() => states.some((s) => s.sent.includes("new prompt")));
   const updated = states.at(-1)!;
   assert.equal(updated.opts.expert?.prompt, "新的共同设定");
   done(updated); await tick();
   experts.updateExpert(creator.id, shared.id, { model: "" }); await tick();
   assert.equal(updated.disposed, true, "清空模型等可选字段也要更新所有使用者");
-  hub.send(familyKey, { text: "one last turn", attachments: [] }, origin); await tick();
+  hub.send(familyKey, { text: "one last turn", attachments: [] }, origin);
+  await waitUntil(() => states.some((s) => s.sent.includes("one last turn")));
   const running = states.at(-1)!;
   assert.equal(running.opts.model, undefined);
   const sentBefore = running.sent.length;
@@ -238,7 +248,8 @@ test("HTTP：共享专家可选，设定只读；个人工具接口不返回他�
   assert.equal(getConversation(wxKey)?.owner, family.id, "请求不能篡改会话归属");
   await ensureWeixinConversation(family.id);
   assert.equal(getConversation(wxKey)?.expert, shared.id, "下次微信入站保留设置页选择");
-  hub.send(wxKey, { text: "test wx settings", attachments: [] }, { channel: "weixin", channelId: family.id }); await tick();
+  hub.send(wxKey, { text: "test wx settings", attachments: [] }, { channel: "weixin", channelId: family.id });
+  await waitUntil(() => states.some((s) => s.sent.includes("test wx settings")));
   const wxRunning = states.at(-1)!;
   assert.equal(wxRunning.opts.expert?.id, shared.id);
   const switched = await request(wxUrl, "PATCH", { expert: "claude" });
@@ -283,7 +294,9 @@ test("HTTP：共享专家可选，设定只读；个人工具接口不返回他�
   runner.startTaskRunner();
   t.after(() => runner.stopTaskRunner());
   const task = tasks.getTask(family.id, taskView.id)!;
-  assert.equal(runner.runTaskNow(task), undefined); await tick();
+  const before = states.length;
+  assert.equal(runner.runTaskNow(task), undefined);
+  await waitUntil(() => states.length > before && states.at(-1)!.sent.length > 0);
   const state = states.at(-1)!;
   assert.equal(state.opts.memory?.userId, family.id);
   assert.match(JSON.stringify(state.opts.expert?.mcp), /family-secret/);

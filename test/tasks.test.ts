@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { once } from "node:events";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "aim-tasks-"));
 process.env.AGENT_LOFT_HOME = home;
@@ -170,8 +171,10 @@ test("运行：不携带上下文时每次换新会话，留在同一条对话�
   try {
     const task = tasks.createTask(owner.id, { title: "不带", prompt: "看看", schedule: { kind: "daily", time: "02:00" }, freshContext: true, model: "m1" }, "user");
     for (let i = 0; i < 3; i++) {
+      const completed = once(hub, "task", { signal: AbortSignal.timeout(5000) });
       assert.equal(runner.runTaskNow(task), undefined);
-      await new Promise((r) => setTimeout(r, 60));
+      const [result] = await completed;
+      assert.equal(result.taskId, task.id);
       assert.equal(tasks.getTask(owner.id, task.id)!.runs[0]!.status, "notified");
     }
     const key = task.target.key!;

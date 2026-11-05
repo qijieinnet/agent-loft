@@ -370,7 +370,10 @@ export function bindScrollWatch() {
     }
   });
   // 消息区变高（发送后输入框清空变矮）、内容变高都要重算留白；窗口 resize 管不到元素自己变尺寸
-  const ro = new ResizeObserver(() => afterLayout());
+  const ro = new ResizeObserver(() => {
+    clampLongUsers(S.items);
+    afterLayout();
+  });
   ro.observe(m);
   ro.observe(ui.msgInner);
 }
@@ -525,14 +528,25 @@ const USER_CLAMP = 260;
 
 /** 太长的用户消息收起来，下面放「展开显示」。先把高度都量完再统一改，只排版一次 */
 function clampLongUsers(items) {
-  const long = items.filter((it) => {
-    if (it.type !== "user" || !it.bubble || it.clampChecked) return false;
-    it.clampChecked = true;
-    return it.bubble.scrollHeight > USER_CLAMP + 60;
-  });
-  for (const it of long) {
+  // 隐藏的服务器页面暂时没有可用宽度，等显示后再量；宽度没变时不重复量每条消息。
+  const width = ui.msgInner.clientWidth;
+  if (!width) return;
+  const measured = [];
+  for (const it of items) {
+    if (it.type !== "user" || !it.bubble || it.clampWidth === width) continue;
+    it.clampWidth = width;
+    measured.push({ it, long: it.bubble.scrollHeight > USER_CLAMP + 60 });
+  }
+  for (const { it, long } of measured) {
     const bubble = it.bubble;
-    bubble.classList.add("clamped");
+    if (!long) {
+      bubble.classList.remove("clamped");
+      it.clampButton?.remove();
+      it.clampButton = null;
+      continue;
+    }
+    if (it.clampButton) continue;
+    bubble.classList.toggle("clamped", !it.clampExpanded);
     const btn = h(
       "button",
       {
@@ -541,13 +555,15 @@ function clampLongUsers(items) {
           // 自己展开 / 收起：别被自动滚动拉回底部
           userScrolled();
           const open = !bubble.classList.toggle("clamped");
+          it.clampExpanded = open;
           btn.textContent = open ? "收起" : "展开显示";
           // 收起后按钮可能跑到视口上面去了：拉回来
           if (!open) btn.scrollIntoView({ block: "nearest" });
         },
       },
-      "展开显示",
+      it.clampExpanded ? "收起" : "展开显示",
     );
+    it.clampButton = btn;
     bubble.after(btn);
   }
 }
