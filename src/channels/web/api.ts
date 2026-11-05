@@ -1151,6 +1151,25 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, { info: hub.info(newKey) });
       return;
     }
+    if (sub === "handoff" && method === "POST") {
+      // 交接给别的智能体：expert 是内置的 claude / codex，或者自己的、共享的专家 id
+      const body = await readJsonBody<{ expert?: unknown; stop?: unknown }>(req);
+      if (conv.hidden) throw new HttpError(404, "会话已删除");
+      const expertId = typeof body.expert === "string" ? body.expert : "";
+      if (!expertId || !canUseExpert(user.id, expertId)) throw new HttpError(400, "这个专家或 Agent 不存在、已取消共享或未获授权");
+      const custom = isBuiltin(expertId) ? undefined : getExpert(expertId);
+      const agent = custom ? custom.engine : expertId;
+      if (!hub.enabledAgents().some((d) => d.id === agent)) throw new HttpError(400, `${hub.label(agent)} 没有启用，用不了这个专家`);
+      const newKey = await hub.handoffConversation(
+        key,
+        { agent, ...(custom ? { expert: custom.id } : {}), label: custom ? custom.name : hub.label(agent) },
+        { owner: user.id, stop: body.stop === true },
+      ).catch((err: unknown) => {
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      });
+      sendJson(res, 200, { info: hub.info(newKey) });
+      return;
+    }
     if (sub === "feishu" && method === "POST") {
       // 在飞书继续：把选中的飞书聊天挂到这条 Web 会话上。飞书机器人是管理员的
       if (!admin) throw new HttpError(403, "只有管理员能用飞书机器人");

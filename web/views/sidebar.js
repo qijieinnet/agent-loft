@@ -215,7 +215,7 @@ let clipObserver = null;
 function forkNote(c) {
   if (!c.forkOf) return "";
   const parent = S.convs.get(c.forkOf);
-  return `\n分叉自「${parent ? convTitle(parent) : "已删除的对话"}」`;
+  return `\n${c.handoff ? "交接自" : "分叉自"}「${parent ? convTitle(parent) : "已删除的对话"}」`;
 }
 
 export function convTitle(c) {

@@ -45,6 +45,30 @@ export async function forkConversation(anchor, key = S.current) {
   }
 }
 
+/** 交接：另开一条新对话，由 expert 带着之前的记录接着做，然后切过去。原对话保留 */
+export async function handoffConversation(expert, key = S.current) {
+  const busy = S.convs.get(key)?.busy;
+  if (busy) {
+    const ok = await confirmDialog({
+      title: `停止并交接给 ${expert.name}？`,
+      message: "这条对话还在回复。交接前要先停止它和排队中的消息，免得两个智能体同时改同一个目录。",
+      confirmText: "停止并交接",
+    });
+    if (!ok) return;
+  }
+  try {
+    const res = await api(`/api/conversations/${encodeURIComponent(key)}/handoff`, {
+      method: "POST",
+      body: { expert: expert.id, stop: !!busy },
+    });
+    S.convs.set(res.info.key, res.info);
+    toast(`已交接给 ${expert.name}，原对话保留`);
+    await openConversation(res.info.key);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 /** 新对话里选专家（进了对话就不能换了：要换专家新建对话） */
 export function switchAgent(id) {
   if (S.current) return;

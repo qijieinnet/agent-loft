@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config, onConfigChange, resolveWorkspacePath } from "./config.js";
 import { attachFooters, copyFooters, formatDuration, recordFooter, setFooterChanges } from "./footers.js";
+import { buildHandoffContext, handoffMessage, readHandoffGit, type UnfinishedTurn } from "./handoff.js";
 import { beginTurnSnapshot, finishTurnSnapshot } from "./turn-changes.js";
 import { removeHistoryRecord, replaceConversationRecords } from "./chat-history.js";
 import { recordUsage, usageOf, type UsageTotals } from "./usage.js";
@@ -193,6 +194,10 @@ export type ConversationInfo = {
   hidden?: boolean;
   /** 从哪条对话分叉出来的 */
   forkOf?: string;
+  /** 这条是交接来的（forkOf 记着原对话） */
+  handoff?: boolean;
+  /** 已经有内容，可以交接给别的智能体 */
+  canHandoff?: boolean;
   /** 当前 agent 能不能从某条回复处分叉成新对话 */
   canFork?: boolean;
   /** 这条对话实际的权限级别（没选过就是引擎默认对应的那一级） */
@@ -674,6 +679,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       ...(conv.hidden ? { hidden: true } : {}),
       ...(conv.forkOf ? { forkOf: conv.forkOf } : {}),
       ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
+      ...(conv.handoff ? { handoff: true } : {}),
+      ...(binding.sessionId || binding.forkFrom || binding.parked || binding.pastSessions?.length ? { canHandoff: true } : {}),
       permission: this.permissionOf(conv),
       permissionMax: this.permissionMax(conv),
       expert: this.expertBadge(conv),
@@ -2086,6 +2093,88 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       },
     });
     this.emitEvent(newKey, { type: "meta" });
+    return newKey;
+  }
+
+  /** 这一轮已经流出来的内容和排队中的消息：停掉之后就拿不到了 */
+  private unfinishedWork(key: string): { unfinished: UnfinishedTurn; queued: string[] } {
+    const parts: string[] = [];
+    const steps: string[] = [];
+    let streaming = "";
+    for (const { ev } of this.liveTurn(key)) {
+      if (ev.type === "delta") streaming += ev.text;
+      else if (ev.type === "text") {
+        // 整段文字和它之前的逐字片段是同一份
+        parts.push(ev.text);
+        streaming = "";
+      } else if (ev.type === "step" && ev.kind !== "thinking") steps.push(ev.text);
+    }
+    const waiting = [...(this.pendingInputs.get(key)?.values() ?? [])].filter((w) => !w.cancelled).map((w) => w.input);
+    const queued = [...(this.turnFifo.get(key) ?? []).slice(1).map((e) => e.input), ...waiting];
+    return { unfinished: { text: [...parts, streaming].join("\n"), steps }, queued: queued.map((i) => stripContext(i.text)) };
+  }
+
+  /**
+   * 交接：另开一条新对话，由目标专家带着之前的记录接着做。原对话不动，以后还能接着用。
+   * 还在回复时必须给 stop：两个智能体同时改同一个目录会互相踩。
+   */
+  async handoffConversation(
+    key: string,
+    target: { agent: string; expert?: string; label: string },
+    opts: { owner?: string; stop?: boolean } = {},
+  ): Promise<string> {
+    const conv = getConversation(key);
+    if (!conv) throw new Error(`会话不存在：${key}`);
+    if (this.rewinding.has(key)) throw new Error("会话正在回退，请稍后再交接");
+    if (expertIdOf(conv) === (target.expert ?? target.agent)) throw new Error(`这条对话已经是 ${target.label} 了`);
+    this.requireDriver(target.agent);
+    const busy = this.isBusy(key) || (this.waitingSends.get(key) ?? 0) > 0;
+    if (busy && !opts.stop) throw new Error("这条对话还在回复，请确认停止后再交接");
+
+    // 先读后停会漏掉最后的输出，先停后读又拿不到排队的消息：停之前记下，停完再读记录
+    const work = busy ? this.unfinishedWork(key) : undefined;
+    if (busy) await withTimeout(this.stop(key), "停止当前回复");
+
+    const binding = agentBinding(conv);
+    const chat = binding.parked ?? binding;
+    let messages = await withTimeout(this.history(key), "读取对话记录");
+    // /fork 之后还没发消息：内容还在被分叉的会话里
+    if (!messages.length && chat.forkFrom) messages = await withTimeout(this.requireDriver(conv.agent).readHistory(chat.forkFrom, conv.cwd), "读取对话记录");
+    if (!messages.length && !work?.unfinished.text.trim()) throw new Error("这条对话还没有可以交接的内容");
+
+    const title = conv.title ?? "会话";
+    const from = this.label(conv.agent);
+    const git = await readHandoffGit(conv.cwd);
+    const owner = opts.owner ?? conv.owner;
+    const newKey = `web:${crypto.randomBytes(6).toString("hex")}`;
+    ensureConversation({
+      key: newKey,
+      channel: "web",
+      channelId: "web",
+      agent: target.agent,
+      ...(target.expert ? { expert: target.expert } : {}),
+      ...(owner ? { owner } : {}),
+    });
+    updateConversation(newKey, {
+      title: `${title} · 交接`.slice(0, 80),
+      // 任务的文件在原来的目录里：不用专家默认的目录
+      cwd: conv.cwd,
+      ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
+      // 和分叉一样，「完全允许」不跟过去
+      ...(requestedPermission(conv) === "edit" ? { permission: "edit" as const } : {}),
+      forkOf: key,
+      handoff: true,
+    });
+    const context = buildHandoffContext({
+      title,
+      from,
+      history: messages,
+      ...(work ? { unfinished: work.unfinished, queued: work.queued } : {}),
+      ...(git ? { git } : {}),
+    });
+    this.emitEvent(newKey, { type: "meta" });
+    this.send(newKey, { text: `${handoffMessage(title, from)}\n\n${wrapContext(context)}`, attachments: [] }, { channel: "web", channelId: "web", name: "交接" });
+    this.emitEvent(key, { type: "notice", text: `已交接给 ${target.label}，在新对话里继续。这条对话保留，还可以接着用。` });
     return newKey;
   }
 

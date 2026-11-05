@@ -378,6 +378,37 @@ button.list-item:hover {
   color: var(--danger);
 }
 
+.menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: none;
+}
+
+.menu.submenu {
+  z-index: 51;
+  min-width: 160px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+
+.submenu .agent-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.submenu .agent-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.submenu-arrow {
+  margin-left: auto;
+  color: var(--fg-soft);
+}
+
 /* 贴着按钮弹出的选择面板（模型 / agent） */
 .popover {
   min-width: 220px;

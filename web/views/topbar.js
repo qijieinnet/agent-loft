@@ -4,10 +4,10 @@ import { relTime } from "../lib/time.js";
 import { desktop, desktopMenu, isAdmin, S, ui } from "../state.js";
 import { agentLabel, convTitle, openSide } from "./sidebar.js";
 import { convExpert, expertChoices, expertIcon, findExpert } from "./experts.js";
-import { closeMenu, modal, placePopover, showMenu, showPopover } from "../lib/overlay.js";
+import { closeMenu, modal, placePopover, showMenu, showPopover, submenuButton } from "../lib/overlay.js";
 import { openConversation } from "./messages.js";
 import { openSchedule } from "./schedule.js";
-import { changeCwd, deleteConv, doAction, forkConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
+import { changeCwd, deleteConv, doAction, forkConversation, handoffConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
 import { capOfAccess, minPermission, PERMISSION_ORDER, PERMISSIONS } from "../lib/permission.js";
 import { canSeeChanges, syncWorkspace, toggleWorkspace, workspaceButtons, workspaceStats } from "./workspace-entry.js";
 
@@ -169,14 +169,16 @@ function openTopMore(anchor) {
     topMenuItems().map((it) =>
       it === "sep"
         ? h("div", { class: "sep" })
-        : h(
-            "button",
-            { class: `pop-item${it.checked ? " on" : ""}${it.danger ? " danger" : ""}`, "aria-label": it.detail ? it.label : null, onclick: () => (closeMenu(), it.onclick()) },
-            icon(it.icon),
-            h("span", { class: "grow" }, it.label),
-            it.detail ?? null,
-            it.checked ? h("span", { class: "check" }, "✓") : null,
-          ),
+        : it.children
+          ? submenuButton(it, { class: "pop-item" }, icon(it.icon), h("span", { class: "grow" }, it.label))
+          : h(
+              "button",
+              { class: `pop-item${it.checked ? " on" : ""}${it.danger ? " danger" : ""}`, "aria-label": it.detail ? it.label : null, onclick: () => (closeMenu(), it.onclick()) },
+              icon(it.icon),
+              h("span", { class: "grow" }, it.label),
+              it.detail ?? null,
+              it.checked ? h("span", { class: "check" }, "✓") : null,
+            ),
     ),
   );
   placePopover(pop, anchor);
@@ -500,6 +502,23 @@ function withTasks(fn) {
   return import("./tasks.js").then(fn, (err) => toast(`定时任务页加载失败，刷新页面再试：${err.message}`));
 }
 
+/** 「交接给」：列出除当前之外能用的智能体和专家。没有别的可选就不显示 */
+function handoffItem(c) {
+  const current = convExpert(c).id;
+  const targets = expertChoices().filter((e) => e.id !== current);
+  if (!targets.length) return [];
+  return [
+    {
+      id: "handoff",
+      label: "交接给",
+      icon: "handoff",
+      disabled: !c.canHandoff,
+      disabledReason: "这条对话还没有可以交接的内容",
+      children: targets.map((e) => ({ label: e.name, leading: expertIcon(e), onclick: () => handoffConversation(e, c.key) })),
+    },
+  ];
+}
+
 /** 顶栏和侧栏共用的会话操作，显示条件和行为保持一致。 */
 function convMenuItems(key) {
   const c = S.convs.get(key);
@@ -525,6 +544,7 @@ function convMenuItems(key) {
         await doAction("fork");
       },
     },
+    ...handoffItem(c),
     { id: "rename", label: "重命名", icon: "edit", onclick: () => renameConv(key) },
     ...(c.channel === "web" && S.bots.length > 0 ? [{ id: "feishu", label: "在飞书继续", icon: "feishu", onclick: () => continueInFeishu(key) }] : []),
     ...(c.channel === "web" ? [{ id: "delete", label: "删除", icon: "trash", danger: true, onclick: () => deleteConv(key) }] : []),

@@ -9,17 +9,19 @@ export function showMenu(anchor, items) {
     items.map((it) =>
       it === "sep"
         ? h("div", { class: "sep" })
-        : h(
-            "button",
-            {
-              class: [it.danger ? "danger" : "", it.class ?? ""].join(" ").trim(),
-              onclick: () => {
-                closeMenu();
-                it.onclick();
+        : it.children
+          ? submenuButton(it, { class: it.class ?? "" }, it.label)
+          : h(
+              "button",
+              {
+                class: [it.danger ? "danger" : "", it.class ?? ""].join(" ").trim(),
+                onclick: () => {
+                  closeMenu();
+                  it.onclick();
+                },
               },
-            },
-            it.label,
-          ),
+              it.label,
+            ),
     ),
   );
   document.body.append(menu);
@@ -36,16 +38,115 @@ export function showMenu(anchor, items) {
   }, 0);
 }
 
+/** 离开后留一点时间，鼠标从菜单项斜着移到子菜单时不会收起来 */
+const SUBMENU_LEAVE_MS = 200;
+
+/**
+ * 带子菜单的一项：it.children 是 { label, leading?, onclick }。鼠标悬停展开，点击也能展开（触屏没有悬停）。
+ * it.disabled 时只显示不能点。children 里的项点了之后关掉整个菜单。
+ */
+export function submenuButton(it, attrs, ...content) {
+  let timer = null;
+  let hovering = false;
+  const isOpen = () => ui.submenu?.trigger === button;
+  const cancelLeave = () => clearTimeout(timer);
+  const leaveSoon = () => {
+    cancelLeave();
+    timer = setTimeout(() => {
+      hovering = false;
+      if (isOpen()) closeSubmenu();
+    }, SUBMENU_LEAVE_MS);
+  };
+  const open = () => {
+    cancelLeave();
+    if (isOpen()) return;
+    closeSubmenu();
+    const sub = h(
+      "div",
+      { class: "menu submenu", role: "menu", onpointerenter: cancelLeave, onpointerleave: (e) => e.pointerType === "mouse" && leaveSoon() },
+      it.children.map((c) =>
+        h(
+          "button",
+          {
+            role: "menuitem",
+            onclick: () => {
+              closeMenu();
+              c.onclick();
+            },
+          },
+          c.leading ?? null,
+          h("span", { class: "grow" }, c.label),
+        ),
+      ),
+    );
+    sub.trigger = button;
+    document.body.append(sub);
+    ui.submenu = sub;
+    button.setAttribute("aria-expanded", "true");
+    const r = button.getBoundingClientRect();
+    const w = sub.offsetWidth;
+    const subH = sub.offsetHeight;
+    const clampTop = (y) => Math.max(8, Math.min(y, innerHeight - subH - 8));
+    const right = r.right + 4;
+    const left = r.left - w - 4;
+    if (right + w <= innerWidth - 8) {
+      sub.style.left = `${right}px`;
+      sub.style.top = `${clampTop(r.top - 6)}px`;
+    } else if (left >= 8) {
+      sub.style.left = `${left}px`;
+      sub.style.top = `${clampTop(r.top - 6)}px`;
+    } else {
+      // 手机上两边都放不下：放在这一项的下方（放不下就上方），不能盖住它，要留着点它收起
+      sub.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+      sub.style.top = `${clampTop(r.bottom + subH + 12 <= innerHeight ? r.bottom + 4 : r.top - subH - 4)}px`;
+    }
+  };
+  const button = h(
+    "button",
+    {
+      ...attrs,
+      "aria-haspopup": "menu",
+      "aria-expanded": "false",
+      disabled: it.disabled ? true : null,
+      title: it.disabled ? it.disabledReason : null,
+      onpointerenter: (e) => {
+        if (e.pointerType !== "mouse") return;
+        hovering = true;
+        open();
+      },
+      onpointerleave: (e) => e.pointerType === "mouse" && leaveSoon(),
+      onclick: (e) => {
+        e.stopPropagation();
+        // 悬停已经打开了：这次点击不收起。触屏和键盘再点一次才收起
+        if (isOpen() && !hovering) return closeSubmenu();
+        open();
+        // 键盘按回车打开的（detail 是 0）：焦点移进子菜单
+        if (e.detail === 0) ui.submenu?.querySelector("button")?.focus();
+      },
+    },
+    ...content,
+    h("span", { class: "submenu-arrow", "aria-hidden": "true" }, "›"),
+  );
+  return button;
+}
+
+function closeSubmenu() {
+  ui.submenu?.trigger?.setAttribute("aria-expanded", "false");
+  ui.submenu?.remove();
+  ui.submenu = null;
+}
+
 function onMenuKey(e) {
   if (e.key === "Escape") closeMenu();
 }
 
 function onOutsideMenu(e) {
   // 点的是打开它的那个按钮：交给按钮自己的 onclick 去收起，免得先关再开
-  if (ui.menu && !ui.menu.contains(e.target) && !ui.menu.anchor?.contains(e.target)) closeMenu();
+  if (ui.menu && !ui.menu.contains(e.target) && !ui.submenu?.contains(e.target) && !ui.menu.anchor?.contains(e.target)) closeMenu();
 }
 
 export function closeMenu() {
+  closeSubmenu();
   ui.menu?.onMenuClose?.();
   ui.menu?.remove();
   ui.menu = null;

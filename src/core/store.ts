@@ -68,6 +68,8 @@ export type Conversation = {
   autoEdit?: boolean;
   /** 从哪条对话分叉出来的（对话 key），列表里据此显示关联 */
   forkOf?: string;
+  /** 这条是交接来的（见 hub.handoffConversation）：forkOf 记的是交接前的对话 */
+  handoff?: boolean;
   /**
    * 谁的对话（用户 id，见 core/users.ts）。Web 上新建 / 分叉时记下；飞书私聊在发消息的人绑定了
    * 账号时记下（见 core/feishu-links.ts）。飞书群聊、没绑定的私聊和升级前就有的 Web 会话没有，归管理员。
