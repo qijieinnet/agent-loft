@@ -153,3 +153,25 @@ test("切换级别：调低后马上恢复询问，点过的全部允许也作�
   await clicked.session.setPermission("edit");
   assert.equal(clicked.session.allowAll, false);
 });
+
+test("计划模式：批准方案切回对话的级别并告诉核心；不批留在计划模式；完全允许也不替用户批，计划模式下不沿用全部放行", async () => {
+  const planModes: boolean[] = [];
+  const approved = permissionSession({ plan: true, permission: "auto" }, "allow-once");
+  approved.session.events.onPlanMode = (on: boolean) => planModes.push(on);
+  const res = (await approved.use("ExitPlanMode", { plan: "1. 改 a.ts" })) as any;
+  assert.equal(res.behavior, "allow");
+  assert.deepEqual(res.updatedPermissions, [{ type: "setMode", mode: "auto", destination: "session" }]);
+  const spec = approved.asked[0]!;
+  assert.ok(spec.kind === "approval" && spec.detail === "1. 改 a.ts" && spec.allowLabel === "开始执行" && !spec.allowSession);
+  assert.deepEqual(planModes, [false]);
+  assert.equal(approved.session.opts.plan, false);
+
+  const rejected = permissionSession({ plan: true, permission: "full" }, "deny");
+  assert.equal((await rejected.use("ExitPlanMode", { plan: "x" })).behavior, "deny");
+  assert.equal(rejected.asked.length, 1, "完全允许也要用户自己批方案");
+  assert.equal(rejected.session.opts.plan, true);
+  assert.equal((await rejected.use("Bash", { command: "echo hi > a" })).behavior, "deny", "计划模式下不沿用全部放行");
+  rejected.session.handle({ type: "system", subtype: "status", status: null, permissionMode: "default", uuid: "u", session_id: "s" });
+  assert.equal(rejected.session.opts.plan, false, "CLI 报模式变了就跟着走");
+  assert.equal((await rejected.use("Bash", { command: "echo hi > a" })).behavior, "allow");
+});

@@ -1,8 +1,9 @@
 import { fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { copyText } from "../lib/markdown.js";
-import { desktopQuota, S } from "../state.js";
-import { defaultEntryName, usableAgents } from "../views/topbar.js";
+import { desktopQuota, isAdmin, S } from "../state.js";
+import { defaultEntryName, renderContext, usableAgents } from "../views/topbar.js";
+import { DEFAULT_LEVELS, engineSupports, PERMISSIONS } from "../lib/permission.js";
 import { renderEmpty } from "../views/messages.js";
 import { field, saveButton, saveConfig } from "./common.js";
 import { modelPicker } from "./commands.js";
@@ -193,16 +194,25 @@ function builtinDefaultsSections(targets) {
       const machine = (data.machineMcp?.[engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, name: `${name}（本机）` }));
       const mcp = picker(`${label} MCP`, [...data.mcp, ...machine], prefs.mcp, data.machineMcp ? "沿用机器上的 MCP 配置" : null);
       const machineSkills = h("input", { type: "checkbox", checked: prefs.machineSkills });
-      fill(section, h("h4", {}, "默认加载"),
+      // 成员最高到自动改文件；自动判断只有 Claude 有
+      const levels = DEFAULT_LEVELS.filter((l) => engineSupports(engine, l) && (l !== "auto" || isAdmin()));
+      const permission = h("select", { "aria-label": `${label} 默认权限` },
+        h("option", { value: "", selected: !prefs.permission }, engine === "claude" ? "跟随 Claude Code（逐次询问）" : "跟随沙箱设置"),
+        levels.map((l) => h("option", { value: l, selected: l === prefs.permission }, `${PERMISSIONS[l].label}：${PERMISSIONS[l].desc}`)));
+      fill(section, h("h4", {}, "默认权限"),
+        field("新对话的权限", permission, "没单独选过权限的对话都按这一级（输入框里的盾牌按钮可以随时改）。自定义专家也按它，但不会超过专家自己的权限；定时任务按任务里选的。「完全允许」不能设成默认。"),
+        h("h4", {}, "默认加载"),
         h("p", { class: "skill-note" }, "仅影响你当前账号使用的这个内置 Agent，自定义专家使用各自的配置。保存后，下次发消息生效。"),
         skills.el,
         data.machineMcp ? h("label", { class: "check-item" }, machineSkills, "同时加载机器上的技能") : null,
         mcp.el,
         h("small", {}, "技能和 MCP 可分别全部取消。记忆、定时任务、技能管理等系统工具仍按功能设置提供。"),
         h("div", { class: "row" }, saveButton(async () => {
-          await api("/api/agents/defaults", { method: "PUT", body: { agents: { [engine]: { skills: skills.value(), machineSkills: machineSkills.checked, mcp: mcp.value() } } } });
+          const res = await api("/api/agents/defaults", { method: "PUT", body: { agents: { [engine]: { permission: permission.value || null, skills: skills.value(), machineSkills: machineSkills.checked, mcp: mcp.value() } } } });
+          S.defaultPermission = { ...S.defaultPermission, [engine]: res.agents?.[engine]?.permission ?? null };
+          renderContext();
           toast("已保存，下次发消息生效");
-        }, `保存 ${label} 默认加载`)));
+        }, `保存 ${label} 默认设置`)));
     }
     if (!Object.keys(data.agents).length) {
       const section = Object.values(targets)[0];

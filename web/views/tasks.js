@@ -456,7 +456,7 @@ export function openTaskForm(task, preset) {
   let permissionValue = src.permission ?? "";
   const syncPermission = () => {
     const max = minPermission(isAdmin() ? "full" : "edit", capOfAccess(findExpert(expert.value)?.access));
-    const levels = permissionsUpTo(max);
+    const levels = permissionsUpTo(max, findExpert(expert.value)?.engine);
     // 已经存着的级别高过现在的上限（被降级了、换了专家）：不留着，免得显示的和实际跑的不一样
     if (permissionValue && !levels.includes(permissionValue)) permissionValue = "";
     fill(
@@ -486,7 +486,7 @@ export function openTaskForm(task, preset) {
     const info = target.value === "dedicated" ? null : convTargetInfo(target.value, task);
     if (!info) return fill(convBox);
     const label = PERMISSIONS[info.permission]?.label ?? "默认";
-    const levels = info.max ? permissionsUpTo(info.max) : [];
+    const levels = info.max ? permissionsUpTo(info.max, info.expert?.engine) : [];
     if (!info.locked && levels.length > 1) {
       convPermission = h("select", { class: "task-conv-permission" }, levels.map((l) => h("option", { value: l, selected: l === info.permission }, `${PERMISSIONS[l].label}：${PERMISSIONS[l].desc}`)));
     }

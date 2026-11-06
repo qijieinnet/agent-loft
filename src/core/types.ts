@@ -60,6 +60,14 @@ export type InteractionSpec =
       alwaysGlobal?: boolean;
       /** 给了就显示「本会话全部允许」按钮。只有 agent 能真正兑现时才给 */
       allowSession?: boolean;
+      /** 「允许一次」「拒绝」按钮换个说法（批准计划：开始执行 / 继续改方案） */
+      allowLabel?: string;
+      denyLabel?: string;
+      /**
+       * 发起方不等这张卡（Codex 出完方案那一轮已经结束了）：用户另外发了消息就撤掉，
+       * 和不阻塞的提问一样（见 interactions.dismissDetached）
+       */
+      detached?: boolean;
     }
   | {
       kind: "question";
@@ -108,6 +116,8 @@ export type AgentEvents = {
   onTextDelta: (delta: string) => void;
   /** 一段完整的回复正文 */
   onText: (text: string) => void;
+  /** agent 自己进出了计划模式（用户批准了方案、Claude 自己进了计划模式）：核心据此更新对话上的开关 */
+  onPlanMode?: (on: boolean) => void;
   /** 用户回答了不阻塞的提问（detached）：把答案当下一条用户消息发出 */
   onFollowUp?: (text: string) => void;
   onResult: (result: TurnResult) => void;
@@ -223,6 +233,8 @@ export type SessionOptions = {
   uploadsDir: string;
   /** 权限级别（见 core/permission.ts），已按主人和专家封顶。不给 = 老行为：Claude 逐次询问，Codex 按设置里的沙箱 */
   permission?: PermissionLevel | undefined;
+  /** 计划模式：先出方案，用户批准了再按 permission 动手（见 store.ts 的 Conversation.plan） */
+  plan?: boolean;
   /** 不给「本会话全部允许」按钮：有主人的对话，主人不是管理员 */
   noSessionGrant?: boolean;
   /**
@@ -285,6 +297,8 @@ export interface AgentSession {
   dispose(): Promise<void>;
   /** 运行中切换权限级别。不追溯已经弹出的授权 */
   setPermission?(level: PermissionLevel | undefined): Promise<void>;
+  /** 开关计划模式。Claude 立即生效，Codex 下一轮生效 */
+  setPlan?(on: boolean): Promise<void>;
 }
 
 export type Diagnosis = {

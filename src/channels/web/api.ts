@@ -31,6 +31,7 @@ import {
 import type { AttachmentInfo, SavedAttachment } from "../../core/types.js";
 import { dailyUsage } from "../../core/usage.js";
 import { localUsage } from "../../core/local-usage.js";
+import { builtinAgentDefaults } from "../../core/builtin-agents.js";
 import { appendDirOrder, getDirOrder, getSidebarNav, setDirOrder, setSidebarNav } from "../../core/ui-prefs.js";
 import {
   addMemoryItem,
@@ -726,6 +727,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       // 项目和飞书分组的混合顺序，跟着账号走；沿用目录排序字段兼容旧数据
       dirOrder: getDirOrder(user.id) ?? null,
       sidebarNav: getSidebarNav(user.id),
+      // 新对话没选级别时按哪一级（设置 → Agent），按引擎
+      defaultPermission: Object.fromEntries(Object.entries(builtinAgentDefaults(user.id)).map(([engine, d]) => [engine, d.permission])),
       pending,
       user: publicMe(user),
       remote: remoteStatus(user),
@@ -1224,6 +1227,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         case "permission": {
           if (value && !isPermissionLevel(value)) throw new HttpError(400, "权限级别不对");
           text = await hub.setPermission(key, value ? (value as PermissionLevel) : undefined, admin);
+          break;
+        }
+        case "plan": {
+          if (value && value !== "on" && value !== "off") throw new HttpError(400, "计划模式只能是 on 或 off");
+          text = await hub.setPlan(key, value ? value === "on" : undefined);
           break;
         }
         // 换专家（开新会话）：只有飞书的对话能换，网页上的 hub 会拒绝

@@ -8,7 +8,7 @@ import { closeMenu, confirmDialog, modal, placePopover, showPopover } from "../l
 import { newDraft, openConversation, renderEmpty } from "./messages.js";
 import { setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
-import { FULL_WARNING, PERMISSIONS, permissionsUpTo } from "../lib/permission.js";
+import { FULL_WARNING, PERMISSIONS, permissionsUpTo, PLAN_INFO } from "../lib/permission.js";
 
 // ---------- 会话操作 ----------
 
@@ -169,8 +169,11 @@ export async function openModelPicker(anchor = ui.modelSlot) {
   render();
 }
 
-/** 权限级别：已有对话直接切，新对话先记下，建好对话后带过去。max、current 由输入框上的按钮算好传进来 */
-export function openPermissionPicker(anchor, { current, max }) {
+/**
+ * 权限级别 + 计划模式开关：已有对话直接切，新对话先记下，建好对话后带过去。
+ * max、current、agent、plan 由输入框上的按钮算好传进来（自动判断只有 Claude 有）
+ */
+export function openPermissionPicker(anchor, { current, max, agent, plan }) {
   if (ui.menu?.dataset.for === "permission") return closeMenu();
   const pop = showPopover(anchor, { align: "left" });
   pop.dataset.for = "permission";
@@ -186,16 +189,33 @@ export function openPermissionPicker(anchor, { current, max }) {
       renderContext();
     }
   };
+  const togglePlan = async (on) => {
+    closeMenu();
+    if (S.current) {
+      await doAction("plan", on ? "on" : "off");
+    } else {
+      S.draftPlan = on;
+      renderContext();
+    }
+  };
   fill(
     pop,
     h("div", { class: "pop-head" }, "权限"),
-    permissionsUpTo(max).map((level) =>
+    permissionsUpTo(max, agent).map((level) =>
       h(
         "button",
         { class: `pop-item${level === current ? " on" : ""}`, onclick: () => void choose(level) },
         h("span", { class: "grow" }, h("span", { class: "t" }, PERMISSIONS[level].label), h("span", { class: "s" }, PERMISSIONS[level].desc)),
         level === current ? h("span", { class: "check" }, "✓") : null,
       ),
+    ),
+    h("div", { class: "sep" }),
+    // 整行是一个按钮，开关只是显示状态
+    h(
+      "button",
+      { class: "pop-item perm-plan", role: "switch", "aria-checked": String(!!plan), onclick: () => void togglePlan(!plan) },
+      h("span", { class: "grow" }, h("span", { class: "t" }, PLAN_INFO.label), h("span", { class: "s" }, PLAN_INFO.desc)),
+      h("span", { class: "switch", "aria-hidden": "true" }, h("input", { type: "checkbox", checked: !!plan, tabindex: -1 }), h("span", { class: "slider" })),
     ),
   );
   placePopover(pop, anchor);

@@ -64,6 +64,11 @@ export type Conversation = {
    * 「自动改文件」跨 /new 保留，「完全允许」开新会话时清掉。实际生效的还要封顶，见 hub.permissionMax。
    */
   permission?: PermissionLevel;
+  /**
+   * 计划模式：agent 先出方案，用户批准了才按 permission 动手。和权限级别叠加，属于对话；
+   * 方案批准后自动关掉（见 hub 的 onPlanMode）
+   */
+  plan?: boolean;
   /** 以前 /autoedit 记的，只读不写（Claude 下等于 permission: "edit"）；选过级别就清掉 */
   autoEdit?: boolean;
   /** 从哪条对话分叉出来的（对话 key），列表里据此显示关联 */

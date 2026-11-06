@@ -232,7 +232,7 @@ function publicView(entry: Entry | Interaction): Interaction {
 }
 
 export function isDetached(interaction: Interaction): boolean {
-  return interaction.spec.kind === "question" && !!interaction.spec.detached;
+  return !!interaction.spec.detached;
 }
 
 export function unansweredCount(entry: Interaction): number {

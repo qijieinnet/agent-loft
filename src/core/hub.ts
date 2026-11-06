@@ -37,7 +37,7 @@ import {
 import { formatDateTime } from "./task-schedule.js";
 import { attachmentInfo, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import { memoryOwnerOf, sessionMemory } from "./personal.js";
-import { exceedsPermission, minPermission, PERMISSION_LABEL, permissionCapOfAccess, permissionOfSandbox, type PermissionLevel } from "./permission.js";
+import { engineSupports, exceedsPermission, forEngine, minPermission, PERMISSION_LABEL, permissionCapOfAccess, permissionOfSandbox, type PermissionLevel } from "./permission.js";
 import { readMemory } from "./memory.js";
 import { canUseFiles, getUser, userEvents } from "./users.js";
 import type {
@@ -61,7 +61,7 @@ import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
 import { expertSystemPrompt, searchLabel, stripContext, wrapContext } from "./expert-prompt.js";
 import { availableExperts, avatarUrl, canUseExpert, expertEvents, expertToolEvents, expertRuntime, getExpert, isBuiltin, type ExpertRuntime } from "./experts.js";
-import { builtinAgentDefaults, builtinAgentEvents, builtinAgentSession } from "./builtin-agents.js";
+import { builtinAgentDefaults, builtinAgentEvents, builtinAgentSession, defaultPermissionOf } from "./builtin-agents.js";
 import { mcpEvents } from "./mcp.js";
 import { isMachineCommand, sessionSkills } from "./skill-runtime.js";
 import { skillEvents } from "./skills.js";
@@ -204,6 +204,8 @@ export type ConversationInfo = {
   permission: PermissionLevel;
   /** 这条对话最高能选到哪一级 */
   permissionMax: PermissionLevel;
+  /** 计划模式开着：先出方案，批准了再动手 */
+  plan?: boolean;
   /** 这条对话的专家 */
   expert: ExpertBadge;
   /** 这条对话有主人、会用上主人的记忆（主人自己关了记忆的话实际不会注入，见 personal.ts） */
@@ -683,6 +685,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       ...(binding.sessionId || binding.forkFrom || binding.parked || binding.pastSessions?.length ? { canHandoff: true } : {}),
       permission: this.permissionOf(conv),
       permissionMax: this.permissionMax(conv),
+      ...(conv.plan ? { plan: true } : {}),
       expert: this.expertBadge(conv),
       ...(memoryOwnerOf(conv) ? { personal: true } : {}),
       ...(conv.taskId ? { taskId: conv.taskId } : {}),
@@ -788,6 +791,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         ...(resumeId ? { resumeId } : {}),
         ...(fork ? { fork: true } : {}),
         ...(permission ? { permission } : {}),
+        ...(conv.plan ? { plan: true } : {}),
         ...(taskOwner && getUser(taskOwner)?.role !== "admin" ? { noSessionGrant: true } : {}),
         ...(expert ? { expert } : {}),
         ...(memory ? { memory } : {}),
@@ -809,6 +813,11 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         onTodos: (todos) => alive() && this.emitEvent(key, { type: "todos", todos }),
         onTextDelta: (text) => alive() && this.emitEvent(key, { type: "delta", text }),
         onText: (text) => alive() && this.emitEvent(key, { type: "text", text }),
+        onPlanMode: (on) => {
+          if (!alive() || !!getConversation(key)?.plan === on) return;
+          updateConversation(key, { plan: on || undefined });
+          this.emitEvent(key, { type: "meta" });
+        },
         onFollowUp: (text) => {
           if (!alive()) return;
           try {
@@ -1499,7 +1508,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       channel: "weixin", channelId: conv.channelId,
       agent: conv.agent, expert: conv.expert, owner: conv.owner,
       cwd: conv.cwd, cwdExplicit: conv.cwdExplicit,
-      ...(requestedPermission(conv) === "edit" ? { permission: "edit" } : {}),
+      ...carriedPermission(conv),
       perAgent: {}, createdAt: now, activeAt: now,
       ...patch,
     };
@@ -1635,10 +1644,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     return !admin && conv.agent === "codex" ? minPermission(max, permissionOfSandbox(config().agents.codex.sandbox)) : max;
   }
 
-  /** 交给 session 的级别：选过的按上限封顶；没选过就是 undefined，走引擎默认 */
+  /**
+   * 交给 session 的级别：选过的按上限封顶，引擎不认的降一级（Codex 没有自动判断）；
+   * 没选过就按主人在设置里定的默认，也没有就是 undefined，走引擎默认。
+   * 定时任务的专用对话不用默认：级别只跟着任务走
+   */
   private effectivePermission(conv: Conversation): PermissionLevel | undefined {
-    const wanted = requestedPermission(conv);
-    return wanted ? minPermission(wanted, this.permissionMax(conv)) : undefined;
+    const wanted = requestedPermission(conv) ?? (conv.taskId ? undefined : defaultPermissionOf(memoryOwnerOf(conv), conv.agent));
+    return wanted ? forEngine(conv.agent, minPermission(wanted, this.permissionMax(conv))) : undefined;
   }
 
   /** 给人看的级别：没选过就换算引擎默认（Claude 逐次询问，Codex 看设置里的沙箱，不超过专家） */
@@ -1687,12 +1700,14 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
   private describePermission(key: string): string {
     const conv = getConversation(key)!;
     return [
-      `当前权限：${PERMISSION_LABEL[this.permissionOf(conv)]}。`,
+      `当前权限：${PERMISSION_LABEL[this.permissionOf(conv)]}${conv.plan ? "，计划模式开着" : ""}。`,
       "",
       "- `/permission ask`：逐次询问",
       "- `/permission edit`：自动改文件",
+      ...(engineSupports(conv.agent, "auto") ? ["- `/permission auto`：自动判断（Claude 逐个判断安不安全，拿不准再问你）"] : []),
       "- `/permission full`：完全允许",
-      "- `/permission default`：恢复默认",
+      "- `/permission default`：恢复默认（设置 → Agent 里定的默认权限）",
+      "- `/planmode on` / `/planmode off`：开关计划模式（先出方案，你批准了再动手）",
       "",
       `这条对话最高能到「${PERMISSION_LABEL[this.permissionMax(conv)]}」。`,
     ].join("\n");
@@ -1705,6 +1720,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       return `⚠️ 已切换为「完全允许」：agent 的操作不再询问，可以跑任意命令、改任意文件。提问和标了「调用前询问」的 MCP 照常询问；开新会话后恢复默认。${nextTurn}`;
     }
     if (level === "ask") return `已切换为「逐次询问」：改文件、跑命令都要先问你。${nextTurn}`;
+    if (level === "auto") return "已切换为「自动判断」：Claude 逐个判断操作安不安全，安全的直接做，拿不准的再问你。";
     return conv.agent === "codex"
       ? `已切换为「自动改文件」：工作目录（${conv.cwd}）内可以直接改文件、跑命令，超出沙箱的要先问你。${nextTurn}`
       : `已切换为「自动改文件」：修改工作目录（${conv.cwd}）内的文件不再询问；目录外的文件、Bash 命令照常询问。`;
@@ -1714,6 +1730,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     const conv = getConversation(key)!;
     if (conv.taskId) return "这是定时任务的专用对话，权限跟着任务走。到定时任务页面编辑这个任务来改。";
     if (level === "full" && !allowFull) return "只有管理员本人能选「完全允许」。飞书上要在私聊里、并且绑定了管理员账号。";
+    if (level && !engineSupports(conv.agent, level)) return `「${PERMISSION_LABEL[level]}」只有 Claude Code 能用。`;
     const max = this.permissionMax(conv);
     if (level && exceedsPermission(level, max)) return `这条对话最高只能到「${PERMISSION_LABEL[max]}」（看对话的主人和专家的权限）。`;
     this.applyPermission(key, level);
@@ -1723,6 +1740,31 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
   /** level 不给就是恢复默认。allowFull：操作的人是不是管理员本人（渠道核过的） */
   setPermission(key: string, level: PermissionLevel | undefined, allowFull: boolean): Promise<string> {
     return this.serial(key, async () => this.setPermissionNow(key, level, allowFull));
+  }
+
+  /** 计划模式。on 不给就是切换。不动权限级别：批准方案后按原来的级别干活 */
+  private setPlanNow(key: string, on: boolean | undefined): string {
+    const conv = getConversation(key)!;
+    if (conv.taskId) return "定时任务的专用对话到点就要直接干活，不能开计划模式。";
+    const next = on ?? !conv.plan;
+    if (next === !!conv.plan) return next ? "计划模式本来就开着。" : "计划模式本来就关着。";
+    updateConversation(key, { plan: next || undefined });
+    const live = this.live.get(key);
+    live?.session.setPlan?.(next)?.catch((err) => {
+      // 没切过去：不能让它照旧动手（或一直只出方案），空闲下来按新开关重新拉起
+      console.warn(`[${conv.agent}] ${key} 切换计划模式失败：`, err instanceof Error ? err.message : err);
+      this.staleLive.add(live.id);
+      this.dropIfStale(key);
+    });
+    this.emitEvent(key, { type: "meta" });
+    const nextTurn = conv.agent === "codex" ? "下一轮起生效。" : "";
+    return next
+      ? `已打开计划模式：先只读、出方案，你批准了再按「${PERMISSION_LABEL[this.permissionOf(conv)]}」动手。${nextTurn}`
+      : `已关闭计划模式。${nextTurn}`;
+  }
+
+  setPlan(key: string, on?: boolean): Promise<string> {
+    return this.serial(key, async () => this.setPlanNow(key, on));
   }
 
   /** /autoedit：on 不给就是切换。「自动改文件」的旧叫法，关掉就是恢复默认 */
@@ -2017,7 +2059,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       `目录：${conv.cwd}`,
       `模型：${runtime.model ?? "默认"}`,
       ...(runtime.effort ? [`思考程度：${runtime.effort}`] : []),
-      `权限：${PERMISSION_LABEL[this.permissionOf(conv)]}（/permission 切换）`,
+      `权限：${PERMISSION_LABEL[this.permissionOf(conv)]}${conv.plan ? "，计划模式" : ""}（/permission、/planmode 切换）`,
       ...(extra.length > 0 ? ["", ...extra] : []),
     ].join("\n");
   }
@@ -2081,7 +2123,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       cwd: conv.cwd,
       ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
       // 「完全允许」不跟着分叉过去
-      ...(requestedPermission(conv) === "edit" ? { permission: "edit" as const } : {}),
+      ...carriedPermission(conv),
       ...(conv.expert ? { expert: conv.expert } : {}),
       forkOf: key,
       perAgent: {
@@ -2161,7 +2203,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       cwd: conv.cwd,
       ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
       // 和分叉一样，「完全允许」不跟过去
-      ...(requestedPermission(conv) === "edit" ? { permission: "edit" as const } : {}),
+      ...carriedPermission(conv),
       forkOf: key,
       handoff: true,
     });
@@ -2250,6 +2292,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         return text(getConversation(key)!.cwd);
       case "autoedit":
         return text(await this.setAutoEdit(key, cmd.on));
+      case "plan":
+        return text(await this.setPlan(key, cmd.on));
       case "permission":
         return text(cmd.level ? await this.setPermission(key, cmd.level === "default" ? undefined : cmd.level, ctx.allowFullAccess === true) : this.describePermission(key));
       case "status":
@@ -2337,3 +2381,9 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
 }
 
 export const hub = new Hub();
+
+/** 分叉、交接、微信开新对话时带过去的级别：「完全允许」不跟过去，放手只是对原来那件事说的 */
+function carriedPermission(conv: Conversation): { permission?: PermissionLevel } {
+  const level = requestedPermission(conv);
+  return level && level !== "full" ? { permission: level } : {};
+}

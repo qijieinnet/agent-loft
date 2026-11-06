@@ -83,7 +83,8 @@ export type Thread = {
   updatedAt?: number;
 };
 
-export type ThreadResponse = { thread: Thread };
+/** collaborationMode 是实验字段（initialize 时开了 experimentalApi 才有）：这条 thread 上次停在哪个模式 */
+export type ThreadResponse = { thread: Thread; collaborationMode?: { mode?: string } | null };
 export type ThreadListResponse = { data: Thread[]; nextCursor?: string | null };
 
 /** 只列出我们会发的：文字，以及落在本机的图片。 */

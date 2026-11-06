@@ -62,10 +62,10 @@ export function approvalCard(interaction: Interaction, ctx: CardCtx) {
   if (spec.kind !== "approval") throw new Error("不是审批");
   const id = interaction.id;
   const buttons = [
-    button("允许一次", { a: "approval", r: id, d: "allow-once" }, ctx, "primary"),
+    button(spec.allowLabel ?? "允许一次", { a: "approval", r: id, d: "allow-once" }, ctx, "primary"),
     ...(spec.allowSession ? [button("本会话全部允许", { a: "approval", r: id, d: "allow-session" }, ctx)] : []),
     ...(spec.alwaysLabel ? [button(spec.alwaysLabel, { a: "approval", r: id, d: "allow-always" }, ctx)] : []),
-    button("拒绝", { a: "approval", r: id, d: "deny" }, ctx, "danger"),
+    button(spec.denyLabel ?? "拒绝", { a: "approval", r: id, d: "deny" }, ctx, "danger"),
   ];
   return card(
     [
@@ -131,10 +131,15 @@ export function settledCard(interaction: Interaction) {
   const by = settled?.by ?? "";
   if (interaction.spec.kind === "approval") {
     const ok = settlement === "allow-once" || settlement === "allow-always" || settlement === "allow-session";
+    const spec = interaction.spec;
     const label =
       settlement === "allow-always"
-        ? `已允许（${interaction.spec.alwaysLabel ?? "后续同类自动放行"}）`
-        : SETTLEMENT_LABEL[settlement];
+        ? `已允许（${spec.alwaysLabel ?? "后续同类自动放行"}）`
+        : settlement === "allow-once" && spec.allowLabel
+          ? `已选「${spec.allowLabel}」`
+          : settlement === "deny" && spec.denyLabel
+            ? `已选「${spec.denyLabel}」`
+            : SETTLEMENT_LABEL[settlement];
     return card([{ tag: "markdown", content: `请求 \`${interaction.id}\`　${by}` }], {
       title: `${label}：${interaction.spec.title.replace(/^需要授权：/, "")}`,
       template: ok ? "green" : "grey",

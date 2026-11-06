@@ -66,12 +66,12 @@ export function approvalPrompt(i: Interaction, isAdmin: boolean, timeoutMin: num
     clip(spec.detail, 2500),
     "",
     "回复数字：",
-    "1 允许一次",
+    `1 ${spec.allowLabel ?? "允许一次"}`,
     ...(spec.allowSession ? ["2 本会话全部允许"] : []),
     ...(canAlways(spec, isAdmin) ? [`3 ${spec.alwaysLabel}`] : []),
-    "0 拒绝",
+    `0 ${spec.denyLabel ?? "拒绝"}`,
     "",
-    `网页上也能处理。${timeoutMin} 分钟没回应按拒绝。`,
+    spec.detached ? "网页上也能处理。直接发消息就是不用这张卡。" : `网页上也能处理。${timeoutMin} 分钟没回应按拒绝。`,
   ].join("\n");
 }
 
@@ -80,8 +80,8 @@ export function parseApproval(text: string, i: Interaction, isAdmin: boolean): A
   const spec = i.spec;
   if (spec.kind !== "approval") return undefined;
   const t = text.trim();
-  if (t === "1" || t === "允许") return "allow-once";
-  if (t === "0" || t === "拒绝") return "deny";
+  if (t === "1" || t === "允许" || (!!spec.allowLabel && t === spec.allowLabel)) return "allow-once";
+  if (t === "0" || t === "拒绝" || (!!spec.denyLabel && t === spec.denyLabel)) return "deny";
   if (t === "2" && spec.allowSession) return "allow-session";
   if (t === "3" && canAlways(spec, isAdmin)) return "allow-always";
   return undefined;

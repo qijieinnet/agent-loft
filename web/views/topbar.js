@@ -8,7 +8,7 @@ import { closeMenu, modal, placePopover, showMenu, showPopover, submenuButton } 
 import { openConversation } from "./messages.js";
 import { openSchedule } from "./schedule.js";
 import { changeCwd, deleteConv, doAction, forkConversation, handoffConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
-import { capOfAccess, minPermission, PERMISSION_ORDER, PERMISSIONS } from "../lib/permission.js";
+import { capOfAccess, defaultPermissionFor, minPermission, permissionsUpTo, PERMISSIONS } from "../lib/permission.js";
 import { canSeeChanges, syncWorkspace, toggleWorkspace, workspaceButtons, workspaceStats } from "./workspace-entry.js";
 
 // ---------- 顶栏 ----------
@@ -429,26 +429,31 @@ export function renderContext() {
   );
 }
 
-/** 输入框里的权限按钮。只有一级可选（只能联网、只能读文件的专家）时不显示 */
+/** 输入框里的权限按钮（级别 + 计划模式）。只有一级可选（只能联网、只能读文件的专家）时不显示 */
 function renderPermission(c, expert) {
   if (!ui.permSlot) return;
+  const agent = c ? c.agent : S.draftAgent;
   const max = c ? c.permissionMax : minPermission(isAdmin() ? "full" : "edit", capOfAccess(expert?.access));
-  // 新对话选好后换了个权限低的专家：选的不再算数
-  if (!c && S.draftPermission && PERMISSION_ORDER.indexOf(S.draftPermission) > PERMISSION_ORDER.indexOf(max)) S.draftPermission = null;
-  const current = c ? c.permission : S.draftPermission;
-  if (max === "ask" && (!current || current === "ask")) return fill(ui.permSlot);
+  // 新对话选好后换了个权限低的专家、或换到了没有这一级的引擎：选的不再算数
+  if (!c && S.draftPermission && !permissionsUpTo(max, agent).includes(S.draftPermission)) S.draftPermission = null;
+  // 没选过就按设置里的默认权限（已有对话由服务端算好）
+  const current = c ? c.permission : (S.draftPermission ?? defaultPermissionFor(agent, max, S.defaultPermission));
+  const plan = c ? !!c.plan : !!S.draftPlan;
+  if (max === "ask" && (!current || current === "ask") && !plan) return fill(ui.permSlot);
   const locked = !!c?.taskId;
+  const name = current ? PERMISSIONS[current].short : "默认权限";
   fill(
     ui.permSlot,
     h(
       "button",
       {
-        class: `perm-pill${current === "full" ? " danger" : ""}`,
-        title: locked ? "定时任务的专用对话：权限在任务设置里改" : `权限：${current ? PERMISSIONS[current].label : "默认"}，点击切换`,
-        onclick: (e) => (locked ? toast("这是定时任务的专用对话，权限在任务设置里改") : openPermissionPicker(e.currentTarget, { current, max })),
+        class: `perm-pill${current === "full" ? " danger" : ""}${plan ? " plan" : ""}`,
+        title: locked ? "定时任务的专用对话：权限在任务设置里改" : `权限：${current ? PERMISSIONS[current].label : "默认"}${plan ? "，计划模式开着" : ""}，点击切换`,
+        onclick: (e) => (locked ? toast("这是定时任务的专用对话，权限在任务设置里改") : openPermissionPicker(e.currentTarget, { current, max, agent, plan })),
       },
       icon("shield"),
-      h("span", { class: "perm-name" }, current ? PERMISSIONS[current].short : "默认权限"),
+      h("span", { class: "perm-name" }, name),
+      plan ? h("span", { class: "perm-plan-tag" }, "计划") : null,
       locked ? null : icon("down"),
     ),
   );

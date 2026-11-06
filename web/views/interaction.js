@@ -45,7 +45,11 @@ export function insertCard(ix) {
 }
 
 /** 已处理：「已回答 · 已在 Web 处理」。从会话记录里还原的不知道是谁处理的，只写结果 */
-const settledText = (s) => [SETTLE_LABEL[s.settlement] ?? s.settlement, s.by].filter(Boolean).join(" · ");
+const settledText = (s, spec) => {
+  // 换过按钮文字的卡（批准方案）按按钮上的说法回显
+  const custom = s.settlement === "allow-once" ? spec?.allowLabel : s.settlement === "deny" ? spec?.denyLabel : undefined;
+  return [custom ? `已选「${custom}」` : (SETTLE_LABEL[s.settlement] ?? s.settlement), s.by].filter(Boolean).join(" · ");
+};
 
 function notifyIfHidden(ix) {
   // 桌面端由服务端的 notice 统一弹，这里再弹就重复了
@@ -87,22 +91,22 @@ export function renderInteraction(item) {
     return h(
       "div",
       { class: `ix-card${settled ? " settled" : ""}` },
-      h("div", { class: "ix-title" }, settled ? "" : "⚠️", spec.title),
+      h("div", { class: "ix-title" }, settled ? "" : spec.allowLabel ? "📋" : "⚠️", spec.title),
       h("div", { class: "ix-detail" }, renderMarkdown(spec.detail)),
       settled
-        ? h("div", { class: "ix-meta" }, settledText(settled))
+        ? h("div", { class: "ix-meta" }, settledText(settled, spec))
         : h(
             "div",
             { class: "ix-buttons" },
             spec.allowSession
               ? h("button", { class: "btn primary", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
               : null,
-            h("button", { class: `btn${spec.allowSession ? "" : " accent"}`, onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, "允许一次"),
+            h("button", { class: `btn${spec.allowSession ? "" : " accent"}`, onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, spec.allowLabel ?? "允许一次"),
             // 会落盘、对所有人生效的「总是允许」只给管理员
             spec.alwaysLabel && (!spec.alwaysGlobal || isAdmin())
               ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-always" }) }, spec.alwaysLabel)
               : null,
-            h("button", { class: "btn danger", onclick: () => ixOp(ix.id, "decide", { decision: "deny" }) }, "拒绝"),
+            h("button", { class: `btn${spec.denyLabel ? "" : " danger"}`, onclick: () => ixOp(ix.id, "decide", { decision: "deny" }) }, spec.denyLabel ?? "拒绝"),
           ),
     );
   }

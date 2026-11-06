@@ -32,8 +32,8 @@ const server = mcp.createMcp(alice.id, { name: "remote", type: "http", url: "htt
 const otherServer = mcp.createMcp(bob.id, { name: "other", type: "http", url: "https://other.example/mcp" });
 
 test("内置默认配置按账号、引擎保存，拒绝跨账号、越权和错误输入，失败不保存半份配置", () => {
-  assert.deepEqual(defaults.builtinAgentDefaults(admin.id).claude, { skills: null, machineSkills: true, mcp: null });
-  assert.deepEqual(defaults.builtinAgentDefaults(alice.id).claude, { skills: null, machineSkills: false, mcp: [] });
+  assert.deepEqual(defaults.builtinAgentDefaults(admin.id).claude, { skills: null, machineSkills: true, mcp: null, permission: null });
+  assert.deepEqual(defaults.builtinAgentDefaults(alice.id).claude, { skills: null, machineSkills: false, mcp: [], permission: null });
   const saved = defaults.setBuiltinAgentDefaults(alice.id, { claude: { skills: [a.id], mcp: [server.id] }, codex: { skills: [], mcp: [] } });
   assert.deepEqual(defaults.builtinAgentDefaults(alice.id), saved);
   assert.equal(defaults.builtinAgentDefaults(bob.id).claude.skills, null);

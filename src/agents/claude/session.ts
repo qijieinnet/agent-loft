@@ -11,6 +11,7 @@ import {
   type McpServerConfigForProcessTransport,
   type ModelUsage,
   type Options,
+  type PermissionMode,
   type PermissionResult,
   type Query,
   type SDKMessage,
@@ -48,6 +49,16 @@ import {
   signatureOf,
 } from "./permissions.js";
 import { feedTodos, readTodos, TodoTracker } from "./todos.js";
+
+/**
+ * 级别 + 计划模式 → Claude 的 permissionMode。计划模式优先（只读、出方案）。
+ * acceptEdits 只放行工作目录（含附件目录）内的改文件；auto 由分类器逐个判断，拿不准的才走 canUseTool；
+ * 「完全允许」用 default，在 canUseTool 里全放行（bypassPermissions 会让 canUseTool 变成死代码）
+ */
+function modeOf(level: PermissionLevel | undefined, plan: boolean | undefined): PermissionMode {
+  if (plan) return "plan";
+  return level === "edit" ? "acceptEdits" : level === "auto" ? "auto" : "default";
+}
 
 export function toModelInfo(models: Awaited<ReturnType<Query["supportedModels"]>>): ModelInfo[] {
   return models.map((m) => ({
@@ -363,9 +374,8 @@ export class ClaudeSession implements AgentSession {
           ...(this.access === "web" ? {} : { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }),
           ...(this.access === "exec" ? (this.opts.skills?.env ?? {}) : {}),
         },
-        // 只能是 default 或 acceptEdits：bypassPermissions 会让 canUseTool 变成死代码（「完全允许」也在 canUseTool 里放行）。
-        // acceptEdits 只放行工作目录（含附件目录）内的改文件，其它照样走 canUseTool
-        permissionMode: this.opts.permission === "edit" ? "acceptEdits" : "default",
+        // 不用 bypassPermissions：它会让 canUseTool 变成死代码（「完全允许」也在 canUseTool 里放行）。见 modeOf
+        permissionMode: modeOf(this.opts.permission, this.opts.plan),
         // 逐字输出给 Web 用；飞书渠道直接忽略这些片段
         includePartialMessages: true,
         ...(this.opts.model ? { model: this.opts.model } : {}),
@@ -412,6 +422,12 @@ export class ClaudeSession implements AgentSession {
     if (message.type === "system" && message.subtype === "init") {
       this.runtime = { model: message.model, ...(message.effort ? { effort: message.effort } : {}) };
       this.events.onTurnStart?.();
+      return;
+    }
+
+    // 模式变了（Claude 自己调 EnterPlanMode 进了计划模式、批准方案后退出）：对话上的开关跟着走
+    if (message.type === "system" && message.subtype === "status") {
+      if (message.permissionMode) this.syncPlan(message.permissionMode === "plan");
       return;
     }
 
@@ -546,12 +562,15 @@ export class ClaudeSession implements AgentSession {
       const answered = await this.askQuestion(input);
       if (answered) return answered;
     }
+    // 批准方案也不是授权：完全允许、本会话全部允许都不能替用户批
+    if (toolName === "ExitPlanMode") return this.approvePlan(input);
 
     // 提问、批准计划这类不是「安全确认」，而是要用户真的做决定，全部允许也照样问。
     // 标了「调用前询问」的 MCP 是用户特意要每次把关的：全部允许、总是允许都不算数（和 Codex 一致）
     const asksFirst = this.mcpAsksFirst(toolName);
     const sessionable = isRememberable(toolName) && !asksFirst;
-    if (sessionable && this.allowAll) return { behavior: "allow", updatedInput: input };
+    // 计划模式下不沿用全部放行：只读是计划模式的前提，Bash 写文件不能因为放开过就直接跑
+    if (sessionable && this.allowAll && !this.opts.plan) return { behavior: "allow", updatedInput: input };
 
     const signature = signatureOf(toolName, input);
     const rememberable = !asksFirst && isRememberableSignature(toolName, signature);
@@ -600,6 +619,34 @@ export class ClaudeSession implements AgentSession {
   /** 内置专家算能跑命令 */
   private get access(): ExpertAccess {
     return this.opts.expert?.access ?? "exec";
+  }
+
+  /**
+   * ExitPlanMode：方案出好了，问用户按不按它做。批准就切回这条对话的权限级别接着干；
+   * 不批就留在计划模式，等用户说要怎么改。
+   */
+  private async approvePlan(input: Record<string, unknown>): Promise<PermissionResult> {
+    const plan = typeof input.plan === "string" && input.plan.trim() ? input.plan : "（Claude 没有附上方案正文）";
+    const outcome = await this.host({ kind: "approval", title: "方案出好了，按这个开始做？", detail: plan, allowLabel: "开始执行", denyLabel: "继续改方案" });
+    if (outcome.settlement === "allow-once" || outcome.settlement === "allow-always") {
+      this.syncPlan(false);
+      const mode = modeOf(this.opts.permission, false);
+      return { behavior: "allow", updatedInput: input, updatedPermissions: [{ type: "setMode", mode, destination: "session" }] };
+    }
+    const message =
+      outcome.settlement === "timeout"
+        ? "用户长时间没有回应这个方案（已超时）。留在计划模式，不要动手，等用户回来。"
+        : outcome.settlement === "cancelled"
+          ? "方案确认已被取消（用户中断了这一轮或切换了会话）。留在计划模式，不要动手。"
+          : "用户还不想按这个方案做。留在计划模式，不要动手；简短问一句要改哪里，等用户说明。";
+    return { behavior: "deny", message };
+  }
+
+  /** 记下是不是在计划模式，变了就告诉核心 */
+  private syncPlan(on: boolean): void {
+    if (!!this.opts.plan === on) return;
+    this.opts.plan = on;
+    this.events.onPlanMode?.(on);
   }
 
   /**
@@ -684,7 +731,12 @@ export class ClaudeSession implements AgentSession {
     this.opts.permission = level;
     this.allowAll = level === "full";
     // 还没起 CLI 就不用管：下次拉起时按 opts 来
-    if (this.q) await this.q.setPermissionMode(level === "edit" ? "acceptEdits" : "default");
+    if (this.q) await this.q.setPermissionMode(modeOf(level, this.opts.plan));
+  }
+
+  async setPlan(on: boolean): Promise<void> {
+    this.opts.plan = on;
+    if (this.q) await this.q.setPermissionMode(modeOf(this.opts.permission, on));
   }
 
   async setModel(model?: string, effort?: string): Promise<void> {

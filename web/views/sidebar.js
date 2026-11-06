@@ -446,6 +446,7 @@ export function bootstrapQuery() {
 
 export function applyBootstrap(data) {
   S.sidebarNav = data.sidebarNav ?? null;
+  S.defaultPermission = data.defaultPermission ?? null;
   S.convs = new Map(data.conversations.map((c) => [c.key, c]));
   pages.full = !data.sidebar;
   // bootstrap 只带 IM 分组最近/当前的一条；展开的列表需要重新补齐。

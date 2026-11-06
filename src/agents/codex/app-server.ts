@@ -125,7 +125,8 @@ export class AppServer {
 
     const result = (await this.request("initialize", {
       clientInfo: CLIENT_INFO,
-      capabilities: null,
+      // 计划模式（turn/start 的 collaborationMode）是实验接口，不声明就收不到
+      capabilities: { experimentalApi: true },
     })) as InitializeResult;
 
     // 握手的第二拍。少了它，服务端会一直当我们还没准备好。

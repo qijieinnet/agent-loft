@@ -30,7 +30,8 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "cd", args: "<相对目录>", description: "切换工作目录（限 workspace 内）" },
   { name: "pwd", description: "显示当前工作目录" },
   { name: "fork", description: "从当前会话分叉，原会话保留" },
-  { name: "permission", args: "[ask|edit|full|default]", description: "查看 / 切换本对话的权限级别（逐次询问、自动改文件、完全允许）" },
+  { name: "permission", args: "[ask|edit|auto|full|default]", description: "查看 / 切换本对话的权限级别（逐次询问、自动改文件、自动判断、完全允许）" },
+  { name: "planmode", args: "[on|off]", description: "开关计划模式：先出方案，批准了再动手" },
   { name: "autoedit", args: "[on|off]", description: "本对话自动允许改工作目录内的文件（等于 /permission edit）" },
   // 网页上的对话中途不能换专家（新建对话时选），这几个只在飞书、微信里有
   { name: "expert", args: "[名称]", description: "查看 / 换专家（换了会开新会话）", chatOnly: true },

@@ -8,6 +8,7 @@ import { activeSkills } from "./skills.js";
 import { sessionSkills } from "./skill-runtime.js";
 import { getUser } from "./users.js";
 import type { SessionOptions } from "./types.js";
+import { DEFAULT_PERMISSION_LEVELS, engineSupports, type PermissionLevel } from "./permission.js";
 
 export type BuiltinAgentDefaults = {
   /** null = 全部已启用的个人技能；[] = 不加载个人技能 */
@@ -15,18 +16,42 @@ export type BuiltinAgentDefaults = {
   machineSkills: boolean;
   /** null = 沿用机器配置；[] = 不加载 MCP（系统工具除外） */
   mcp: string[] | null;
+  /**
+   * 这个人用这个引擎的对话默认按哪一级权限（没单独选过级别的对话都按它，专家照样按自己的权限封顶）。
+   * null = 跟随引擎（Claude 逐次询问，Codex 按设置里的沙箱）。和技能、MCP 不同，自定义专家的对话也按它
+   */
+  permission: PermissionLevel | null;
 };
 type Defaults = Record<Engine, BuiltinAgentDefaults>;
 const file = path.join(dataDir, "builtin-agents.json");
 export const builtinAgentEvents = new EventEmitter<{ changed: [owner: string] }>();
 
+// 对话列表里每条都要算默认权限，不能每次都读盘。只有本文件写它
+let cache: Record<string, Partial<Defaults>> | null = null;
+function readAll(): Record<string, Partial<Defaults>> {
+  return (cache ??= readJson<Record<string, Partial<Defaults>>>(file, {}));
+}
+function writeAll(all: Record<string, Partial<Defaults>>): void {
+  writeJsonAtomic(file, all);
+  cache = all;
+}
+
+function storedPermission(value: unknown, engine: Engine, admin: boolean): PermissionLevel | null {
+  if (!(DEFAULT_PERMISSION_LEVELS as readonly unknown[]).includes(value)) return null;
+  const level = value as PermissionLevel;
+  // 成员最高到自动改文件（见 hub.permissionMax）；管理员降级成成员后，以前存的高一级不再算数
+  if (!engineSupports(engine, level) || (level === "auto" && !admin)) return null;
+  return level;
+}
+
 export function builtinAgentDefaults(owner: string): Defaults {
   const admin = getUser(owner)?.role === "admin";
-  const stored = readJson<Record<string, Partial<Defaults>>>(file, {})[owner];
+  const stored = readAll()[owner];
   const defaults = (engine: Engine): BuiltinAgentDefaults => ({
     skills: stored?.[engine]?.skills ?? null,
     machineSkills: admin && stored?.[engine]?.machineSkills !== false,
     mcp: stored?.[engine]?.mcp ?? (admin ? null : []),
+    permission: storedPermission(stored?.[engine]?.permission, engine, admin),
   });
   return { claude: defaults("claude"), codex: defaults("codex") };
 }
@@ -70,10 +95,16 @@ export function setBuiltinAgentDefaults(owner: string, patch: unknown): Defaults
       }
       current.mcp = ids;
     }
+    if (p.permission !== undefined) {
+      if (p.permission !== null && !(DEFAULT_PERMISSION_LEVELS as readonly unknown[]).includes(p.permission)) throw new Error("默认权限只能是逐次询问、自动改文件或自动判断");
+      const level = p.permission as PermissionLevel | null;
+      if (level && !engineSupports(engine, level)) throw new Error("「自动判断」只有 Claude Code 能用");
+      if (level === "auto" && user.role !== "admin") throw new Error("只有管理员能把「自动判断」设成默认");
+      current.permission = level;
+    }
   }
-  const all = readJson<Record<string, Defaults>>(file, {});
-  all[owner] = next;
-  writeJsonAtomic(file, all);
+  const all = { ...readAll(), [owner]: next };
+  writeAll(all);
   builtinAgentEvents.emit("changed", owner);
   return next;
 }
@@ -88,9 +119,19 @@ export function builtinAgentSession(owner: string | undefined, engine: Engine): 
   };
 }
 
+/** 对话没单独选过级别时按哪一级（没主人的对话没有默认） */
+export function defaultPermissionOf(owner: string | undefined, engine: string): PermissionLevel | undefined {
+  if (!owner || !getUser(owner) || !(ENGINES as readonly string[]).includes(engine)) return undefined;
+  return builtinAgentDefaults(owner)[engine as Engine].permission ?? undefined;
+}
+
 export function deleteBuiltinAgentDefaults(owner: string): void {
-  const all = readJson<Record<string, Defaults>>(file, {});
+  const all = { ...readAll() };
   if (!(owner in all)) return;
   delete all[owner];
-  writeJsonAtomic(file, all);
+  writeAll(all);
+}
+
+export function resetBuiltinAgentCacheForTest(): void {
+  cache = null;
 }

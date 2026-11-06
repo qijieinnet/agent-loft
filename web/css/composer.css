@@ -520,6 +520,21 @@ textarea.sending {
   min-width: 260px;
 }
 
+/* 计划模式那一行：开关只显示状态，点的是整行 */
+.perm-pop .perm-plan .switch {
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.perm-plan-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
 @media (max-width: 480px) {
   /* 窄屏只留盾牌，把地方让给模型按钮；完全允许仍然保留文字 */
   .perm-pill:not(.danger) .perm-name {

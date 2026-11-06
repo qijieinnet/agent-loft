@@ -19,10 +19,11 @@ const runner = await import("../src/core/task-runner.js");
 const store = await import("../src/core/store.js");
 const { hub } = await import("../src/core/hub.js");
 const { parseCommand } = await import("../src/core/commands.js");
+const builtinDefaults = await import("../src/core/builtin-agents.js");
 const auth = await import("../src/channels/web/auth.js");
 const { startWeb, stopWeb } = await import("../src/channels/web/server.js");
 
-type Live = { agent: string; opts: SessionOptions; set: (string | undefined)[]; failSet?: boolean; disposed: boolean };
+type Live = { agent: string; opts: SessionOptions; set: (string | undefined)[]; plans: boolean[]; events: Parameters<AgentDriver["createSession"]>[1]; failSet?: boolean; disposed: boolean };
 const lives: Live[] = [];
 for (const id of ["claude", "codex"]) {
   const driver: AgentDriver = {
@@ -31,7 +32,7 @@ for (const id of ["claude", "codex"]) {
     readHistory: async () => [], listModels: async () => [], catalog: async () => [], defaults: async () => ({}), statusLines: async () => [],
     diagnose: (e) => ({ kind: "test", chatMessage: String(e), consoleHint: "test" }),
     createSession(opts, events) {
-      const live: Live = { agent: id, opts: { ...opts }, set: [], disposed: false };
+      const live: Live = { agent: id, opts: { ...opts }, set: [], plans: [], events, disposed: false };
       lives.push(live);
       return {
         sessionId: undefined,
@@ -41,6 +42,9 @@ for (const id of ["claude", "codex"]) {
         setPermission: async (level) => {
           live.set.push(level);
           if (live.failSet) throw new Error("切换失败");
+        },
+        setPlan: async (on) => {
+          live.plans.push(on);
         },
       };
     },
@@ -321,4 +325,89 @@ test("HTTP：完全允许只给管理员；改任务马上生效，换对话收�
   assert.equal((await call(`/api/users/${demoted.id}`, "PATCH", { role: "member" }, asAdmin)).status, 200);
   await tick();
   assert.equal(running.disposed, true);
+});
+
+test("/permission auto、/planmode 解析；/plan 不占用，留给自定义命令", () => {
+  assert.deepEqual(parseCommand("/permission auto"), { kind: "permission", level: "auto" });
+  assert.deepEqual(parseCommand("/permission 自动判断"), { kind: "permission", level: "auto" });
+  assert.deepEqual(parseCommand("/planmode"), { kind: "plan" });
+  assert.deepEqual(parseCommand("/planmode on"), { kind: "plan", on: true });
+  assert.deepEqual(parseCommand("/planmode 关"), { kind: "plan", on: false });
+  assert.deepEqual(parseCommand("/planmode maybe"), { kind: "chat", text: "/planmode maybe" });
+  assert.deepEqual(parseCommand("/plan"), { kind: "chat", text: "/plan" });
+});
+
+test("自动判断：只有 Claude 能选、成员到不了；Codex 对话里留着的按自动改文件算", async () => {
+  const key = webConv(admin.id);
+  hub.session(key);
+  assert.match(await hub.setPermission(key, "auto", true), /自动判断/);
+  assert.equal(lastLive().set.at(-1), "auto");
+  assert.equal(hub.info(key)!.permission, "auto");
+
+  const codex = webConv(admin.id, { agent: "codex" });
+  assert.match(await hub.setPermission(codex, "auto", true), /只有 Claude Code/);
+  assert.equal(conv(codex).permission, undefined);
+  // 从 Claude 换到 Codex 的对话：存着的自动判断降成自动改文件交给 Codex
+  store.updateConversation(codex, { permission: "auto" });
+  hub.session(codex);
+  assert.equal(lastLive().opts.permission, "edit");
+  assert.equal(hub.info(codex)!.permission, "edit");
+
+  const theirs = webConv(member.id);
+  assert.match(await hub.setPermission(theirs, "auto", false), /最高只能到/);
+});
+
+test("默认权限：按账号、引擎存；没选过的对话按它，选过的、定时任务的专用对话不按；不能把完全允许设成默认", async () => {
+  assert.throws(() => builtinDefaults.setBuiltinAgentDefaults(admin.id, { claude: { permission: "full" } }), /默认权限/);
+  assert.throws(() => builtinDefaults.setBuiltinAgentDefaults(admin.id, { codex: { permission: "auto" } }), /只有 Claude Code/);
+  assert.throws(() => builtinDefaults.setBuiltinAgentDefaults(member.id, { claude: { permission: "auto" } }), /只有管理员/);
+  builtinDefaults.setBuiltinAgentDefaults(admin.id, { claude: { permission: "auto" }, codex: { permission: "ask" } });
+  builtinDefaults.setBuiltinAgentDefaults(member.id, { claude: { permission: "edit" } });
+  await tick();
+
+  const key = webConv(admin.id);
+  hub.session(key);
+  assert.equal(lastLive().opts.permission, "auto");
+  assert.equal(hub.info(key)!.permission, "auto");
+  await hub.setPermission(key, "ask", true);
+  assert.equal(hub.info(key)!.permission, "ask", "选过的按选的");
+  assert.match(await hub.setPermission(key, undefined, true), /已恢复默认：自动判断/);
+
+  const codex = webConv(admin.id, { agent: "codex" });
+  assert.equal(hub.info(codex)!.permission, "ask", "Codex 按它自己的默认，不按沙箱");
+  assert.equal(hub.info(webConv(member.id))!.permission, "edit");
+
+  const task = webConv(admin.id);
+  store.updateConversation(task, { taskId: "t-default" });
+  assert.equal(hub.info(task)!.permission, "ask", "专用对话只跟着任务");
+
+  builtinDefaults.setBuiltinAgentDefaults(admin.id, { claude: { permission: null }, codex: { permission: null } });
+  builtinDefaults.setBuiltinAgentDefaults(member.id, { claude: { permission: null } });
+  assert.equal(hub.info(key)!.permission, "ask");
+});
+
+test("计划模式：记在对话上、告诉活着的会话；agent 批准方案退出时跟着关；定时任务的专用对话开不了", async () => {
+  const key = webConv(admin.id);
+  hub.session(key);
+  const live = lastLive();
+  assert.match(await hub.setPlan(key, true), /已打开计划模式/);
+  assert.equal(conv(key).plan, true);
+  assert.equal(hub.info(key)!.plan, true);
+  assert.deepEqual(live.plans, [true]);
+  assert.match(await hub.setPlan(key, true), /本来就开着/);
+
+  live.events.onPlanMode?.(false);
+  assert.equal(conv(key).plan, undefined);
+  assert.equal(hub.info(key)!.plan, undefined);
+
+  assert.match(await hub.setPlan(key), /已打开/, "不给就是切换");
+  live.disposed = true;
+  await hub.newSession(key);
+  hub.session(key);
+  assert.equal(lastLive().opts.plan, true, "新拉起的会话带着计划模式");
+
+  const task = webConv(admin.id);
+  store.updateConversation(task, { taskId: "t-plan" });
+  assert.match(await hub.setPlan(task, true), /不能开计划模式/);
+  assert.equal(conv(task).plan, undefined);
 });

@@ -226,10 +226,11 @@ export async function ensureConversation() {
   S.draftCwdPicked = false;
   // 新对话里选过模型 / 思考程度：建好会话后先切过去再发消息
   // 权限只对这一条新对话有效，不留给下一条（不放进按专家记住的 draftPick）
-  const pick = { ...draftPick(), permission: S.draftPermission };
+  const pick = { ...draftPick(), permission: S.draftPermission, plan: S.draftPlan ? "on" : null };
   S.draftPermission = null;
-  const FAILED = { model: "切换模型", effort: "切换思考程度", permission: "设置权限" };
-  for (const [action, value] of [["model", pick.model], ["effort", pick.effort], ["permission", pick.permission]]) {
+  S.draftPlan = false;
+  const FAILED = { model: "切换模型", effort: "切换思考程度", permission: "设置权限", plan: "打开计划模式" };
+  for (const [action, value] of [["model", pick.model], ["effort", pick.effort], ["permission", pick.permission], ["plan", pick.plan]]) {
     if (!value) continue;
     try {
       const res = await api(`/api/conversations/${encodeURIComponent(info.key)}/action`, { method: "POST", body: { action, value } });

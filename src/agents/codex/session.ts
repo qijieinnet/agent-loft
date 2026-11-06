@@ -156,7 +156,8 @@ export function codexMcp(mcp: ExpertRuntime["mcp"], ask: readonly string[] = [])
 }
 
 const SANDBOX_RANK = ["read-only", "workspace-write", "danger-full-access"];
-const PERMISSION_SANDBOX: Record<PermissionLevel, string> = { ask: "read-only", edit: "workspace-write", full: "danger-full-access" };
+// Codex 没有自动判断，按自动改文件算（hub 交过来之前已经降过级，这里兜底）
+const PERMISSION_SANDBOX: Record<PermissionLevel, string> = { ask: "read-only", edit: "workspace-write", auto: "workspace-write", full: "danger-full-access" };
 
 /** 用户自己配的 MCP 服务（config.toml 里的 mcp_servers）。名字因人而异，只能读出来再逐个关 */
 let userMcpCache: { names: string[]; at: number } | null = null;
@@ -318,6 +319,14 @@ export class CodexSession implements AgentSession {
   /** 全部放行：对话选了「完全允许」，或者用户点过「本会话全部允许」（点出来的只在内存里，会话对象一换就重新逐条询问）。 */
   private allowAll = false;
   private replyText = "";
+  /** 这一轮是按计划模式跑的；planText 是它出的方案，轮次结束后拿来问用户开不开始做 */
+  private turnPlan = false;
+  private planText = "";
+  /**
+   * 这条 thread 当前停在计划模式：collaborationMode 会留在 thread 上，关掉计划模式后要显式切回 default 一次。
+   * 恢复 thread 时按响应里的 collaborationMode 定
+   */
+  private planOnThread = false;
   /** 本轮所有模型请求的用量，和会话汇总使用相同的输入 / 缓存 / 输出口径。 */
   private turnTokens: number | undefined;
   /** 上次看到的 thread 累计 token 数：变了才说明有新的模型请求（同一次请求可能报好几遍） */
@@ -549,6 +558,7 @@ export class CodexSession implements AgentSession {
       throw new DisposedError();
     }
     this.adopt(res.thread);
+    this.planOnThread = res.collaborationMode?.mode === "plan";
     // 到这里分叉才算完成；之前任何一步失败，下次重试都还会走 thread/fork，绝不会续写原会话
     if (fork) this.forked = true;
     return res.thread.id;
@@ -608,6 +618,8 @@ export class CodexSession implements AgentSession {
   private startTurn(input: UserInput): void {
     this.currentInput = input;
     this.replyText = "";
+    this.planText = "";
+    this.turnPlan = false;
     this.turnTokens = undefined;
     this.turnSeen = false;
     this.phase = "starting";
@@ -633,6 +645,7 @@ export class CodexSession implements AgentSession {
         if (this.disposed) throw new DisposedError();
         if (token !== this.turnSeq) throw new DisposedError(); // 等 thread 期间被停止了
         startedOn = threadId;
+        const collaborationMode = this.collaborationMode();
         return appServer.call<{ turn?: { id?: string } }>("turn/start", {
           threadId,
           input: [
@@ -646,6 +659,7 @@ export class CodexSession implements AgentSession {
           sandboxPolicy: sandboxPolicyFor(this.sandboxMode, this.opts.cwd),
           ...(this.opts.model ? { model: this.opts.model } : {}),
           ...(this.opts.effort ? { effort: this.opts.effort } : {}),
+          ...(collaborationMode ? { collaborationMode } : {}),
         });
       })
       .then((res) => {
@@ -681,6 +695,47 @@ export class CodexSession implements AgentSession {
       this.stopRequested = false;
       void this.interrupt();
     }
+  }
+
+  /**
+   * 这一轮要带的 collaborationMode：开着计划模式就是 plan；刚关掉的话切回 default 一次（模式会留在 thread 上）。
+   * settings.model 是必填的，按这条会话当前的模型给（thread 打开后一定知道）；developer_instructions 给 null 用 Codex 内置的说明
+   */
+  private collaborationMode(): Record<string, unknown> | undefined {
+    const plan = !!this.opts.plan;
+    if (!plan && !this.planOnThread) return undefined;
+    const model = this.opts.model ?? this.runtime.model;
+    if (!model) return undefined;
+    this.turnPlan = plan;
+    this.planOnThread = plan;
+    return { mode: plan ? "plan" : "default", settings: { model, reasoning_effort: this.opts.effort ?? this.runtime.effort ?? null, developer_instructions: null } };
+  }
+
+  /** 下一轮生效 */
+  async setPlan(on: boolean): Promise<void> {
+    this.opts.plan = on;
+  }
+
+  /**
+   * 计划模式那一轮只出方案就结束了：弹一张不阻塞的卡问开不开始做（和 Codex 自己界面上的「按这个方案实施？」一样）。
+   * 批准就关掉计划模式，替用户发一句「开始执行」；用户另外发了消息（比如说要改哪里）卡就撤掉，照旧留在计划模式
+   */
+  private askPlanApproval(): void {
+    void this.host({
+      kind: "approval",
+      title: "方案出好了，按这个开始做？",
+      detail: "方案见上面的回复。开始执行后关闭计划模式，按这条对话的权限动手；想改的话直接发消息说。",
+      allowLabel: "开始执行",
+      denyLabel: "继续改方案",
+      detached: true,
+    })
+      .then((outcome) => {
+        if (this.disposed || (outcome.settlement !== "allow-once" && outcome.settlement !== "allow-always")) return;
+        this.opts.plan = false;
+        this.events.onPlanMode?.(false);
+        this.events.onFollowUp?.("按这个方案开始执行。");
+      })
+      .catch((err) => console.warn("[codex] 方案确认卡没能弹出：", err));
   }
 
   /** 记下来，下一轮 turn/start 带上即可。 */
@@ -974,6 +1029,8 @@ export class CodexSession implements AgentSession {
             ...(this.turnTokens !== undefined ? { tokens: this.turnTokens } : {}),
             ...(turn.id ? { anchor: turn.id } : {}),
           });
+          // 用户已经排了下一条（多半就是要改方案）就不问了；计划模式期间又被关掉的也不问
+          if (this.turnPlan && this.planText && this.opts.plan && this.queue.length === 0) this.askPlanApproval();
         }
         this.drainQueue();
         return;
@@ -1071,6 +1128,13 @@ export class CodexSession implements AgentSession {
       case "plan": {
         if (phase !== "completed") return;
         const plan = item as Extract<ThreadItem, { type: "plan" }>;
+        // 计划模式出的方案就是这一轮的回复（实测这一轮往往没有别的正文）
+        if (this.turnPlan && plan.text.trim()) {
+          this.planText = plan.text;
+          this.replyText += (this.replyText ? "\n\n" : "") + plan.text;
+          this.events.onText(plan.text);
+          return;
+        }
         this.events.onStep("note", `📋 ${summarize(plan.text, 90)}`);
         return;
       }

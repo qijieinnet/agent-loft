@@ -19,6 +19,8 @@ export type ParsedCommand =
   | { kind: "status" }
   | { kind: "pwd" }
   | { kind: "autoedit"; on?: boolean }
+  /** 计划模式；on 不给就是切换 */
+  | { kind: "plan"; on?: boolean }
   /** default：恢复默认；不给就是看当前级别 */
   | { kind: "permission"; level?: PermissionLevel | "default" }
   | { kind: "help" }
@@ -30,6 +32,7 @@ export type ParsedCommand =
 const PERMISSION_ARGS: Record<string, PermissionLevel | "default"> = {
   ask: "ask", 询问: "ask", 逐次询问: "ask",
   edit: "edit", 自动改文件: "edit",
+  auto: "auto", 自动判断: "auto",
   full: "full", 完全允许: "full",
   default: "default", 默认: "default",
 };
@@ -79,6 +82,14 @@ export function parseCommand(raw: string): ParsedCommand {
       if (!v) return { kind: "autoedit" };
       if (["on", "开", "1", "true"].includes(v)) return { kind: "autoedit", on: true };
       if (["off", "关", "0", "false"].includes(v)) return { kind: "autoedit", on: false };
+      return { kind: "chat", text };
+    }
+    // 不叫 /plan：那是很常见的自定义命令名，内置了会把用户已有的挤掉
+    case "planmode": {
+      const v = arg.toLowerCase();
+      if (!v) return { kind: "plan" };
+      if (["on", "开", "1", "true"].includes(v)) return { kind: "plan", on: true };
+      if (["off", "关", "0", "false"].includes(v)) return { kind: "plan", on: false };
       return { kind: "chat", text };
     }
     case "permission": {

@@ -656,3 +656,52 @@ test("成员的对话不给「本会话全部允许」按钮", async () => {
   assert.ok(seen[0]!.kind === "approval" && !seen[0]!.allowSession);
   await session.dispose();
 });
+
+test("计划模式：这一轮带 collaborationMode=plan，方案当回复；问开不开始做，批准就关掉、切回 default 一次、替用户发「开始执行」", async () => {
+  calls.length = 0;
+  const asked: InteractionSpec[] = [];
+  const { session, log, events } = makeSession({ plan: true, permission: "edit" }, async (spec) => {
+    asked.push(spec);
+    return { settlement: "allow-once", answers: {} };
+  });
+  const planModes: boolean[] = [];
+  const followUps: string[] = [];
+  events.onPlanMode = (on) => planModes.push(on);
+  events.onFollowUp = (text) => followUps.push(text);
+  session.send({ text: "加个按钮", attachments: [] });
+  await tick();
+  take("thread/start").resolve({ thread: { id: "th-plan", model: "gpt-test", reasoningEffort: "high" } });
+  await tick();
+  const start = take("turn/start");
+  assert.deepEqual(start.params.collaborationMode, { mode: "plan", settings: { model: "gpt-test", reasoning_effort: "high", developer_instructions: null } });
+  start.resolve({ turn: { id: "tu-plan" } });
+  await tick();
+  notify("item/completed", { threadId: "th-plan", item: { type: "plan", id: "p1", text: "1. 改 a.ts" } });
+  notify("turn/completed", { threadId: "th-plan", turn: { id: "tu-plan", status: "completed" } });
+  await tick();
+  assert.ok(log.includes("result:1. 改 a.ts"), "方案就是这一轮的回复");
+  assert.equal(asked.length, 1);
+  const spec = asked[0]!;
+  assert.ok(spec.kind === "approval" && spec.detached && spec.allowLabel === "开始执行");
+  assert.deepEqual(planModes, [false]);
+  assert.deepEqual(followUps, ["按这个方案开始执行。"]);
+
+  session.send({ text: "按这个方案开始执行。", attachments: [] });
+  await tick();
+  const next = take("turn/start");
+  assert.equal(next.params.collaborationMode.mode, "default", "模式留在 thread 上，要显式切回");
+  next.resolve({ turn: { id: "tu-go" } });
+  await tick();
+  notify("turn/completed", { threadId: "th-plan", turn: { id: "tu-go", status: "completed" } });
+  await tick();
+  session.send({ text: "再来", attachments: [] });
+  await tick();
+  const third = take("turn/start");
+  assert.equal(third.params.collaborationMode, undefined, "切回过一次就不再带");
+  assert.equal(asked.length, 1, "不是计划模式的轮次不问");
+  third.resolve({ turn: { id: "tu-3" } });
+  await tick();
+  notify("turn/completed", { threadId: "th-plan", turn: { id: "tu-3", status: "completed" } });
+  await tick();
+  void session.dispose();
+});

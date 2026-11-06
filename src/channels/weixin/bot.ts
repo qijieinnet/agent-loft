@@ -307,7 +307,8 @@ export class WeixinBot {
     if (i.spec.kind === "approval") {
       const decision = parseApproval(text, i, this.admin);
       if (decision === undefined) {
-        this.say(`还有一个授权在等你：回复 1 允许一次，回复 0 拒绝。这条消息已排队，处理完授权才会发给 agent。`);
+        // 不阻塞的卡（Codex 出完方案问开不开始做）：另外发消息就是不用它了，照常发给 agent
+        if (!i.spec.detached) this.say(`还有一个授权在等你：回复 1 ${i.spec.allowLabel ?? "允许一次"}，回复 0 ${i.spec.denyLabel ?? "拒绝"}。这条消息已排队，处理完授权才会发给 agent。`);
         return false;
       }
       if (tooSoon) {
