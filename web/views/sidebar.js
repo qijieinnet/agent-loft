@@ -238,7 +238,7 @@ function convExpertMark(c) {
 }
 
 function agentShort(id) {
-  return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id;
+  return id === "claude" ? "Claude" : id === "codex" ? "Codex" : id === "workbuddy" ? "WorkBuddy" : id;
 }
 
 /** 侧栏状态：order 混排目录路径和渠道分组，兼容原有的顺序。 */

@@ -5,6 +5,7 @@ import { flushStore, getConversation } from "./core/store.js";
 import { backfillLibrary, startLibraryCapture, tidyLibrary } from "./core/library.js";
 import { ClaudeDriver } from "./agents/claude/driver.js";
 import { CodexDriver } from "./agents/codex/driver.js";
+import { WorkBuddyDriver } from "./agents/workbuddy/driver.js";
 import { agentHealth } from "./agents/health.js";
 import { startFeishu, stopFeishu } from "./channels/feishu/index.js";
 import { startWeixin, stopWeixin } from "./channels/weixin/index.js";
@@ -20,7 +21,7 @@ import { startScheduler, stopScheduler } from "./core/scheduled.js";
 import { startTaskRunner, stopTaskRunner } from "./core/task-runner.js";
 import { startTasksBridge, stopTasksBridge } from "./core/tasks-bridge.js";
 
-async function startDriver(id: "claude" | "codex"): Promise<void> {
+async function startDriver(id: "claude" | "codex" | "workbuddy"): Promise<void> {
   const driver = hub.driver(id);
   if (!driver) return;
   try {
@@ -37,11 +38,14 @@ async function main(): Promise<void> {
 
   hub.registerDriver(new ClaudeDriver());
   hub.registerDriver(new CodexDriver());
+  hub.registerDriver(new WorkBuddyDriver());
   if (config().agents.claude.enabled) await startDriver("claude");
   if (config().agents.codex.enabled) await startDriver("codex");
-  // Web 上新启用了 Codex：现拉 app-server
+  if (config().agents.workbuddy.enabled) void startDriver("workbuddy");
+  // Web 上新启用了 Codex：现拉 app-server；WorkBuddy 预先加载 SDK
   onConfigChange((next, prev) => {
     if (next.agents.codex.enabled && !prev.agents.codex.enabled) void startDriver("codex");
+    if (next.agents.workbuddy.enabled && !prev.agents.workbuddy.enabled) void startDriver("workbuddy");
   });
 
   // 资料库：升级时把已有的附件收进来（只一次），再清掉对话没了的、上传了一直没发的

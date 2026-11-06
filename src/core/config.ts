@@ -61,6 +61,21 @@ export type AppConfig = {
       /** 生成会话名称用的模型，空 = Codex 默认模型 */
       titleModel: string;
     };
+    /** 腾讯 WorkBuddy（CodeBuddy Code）：SDK 自带 CLI，登录在 设置 → Agent 里用浏览器完成 */
+    workbuddy: {
+      enabled: boolean;
+      /**
+       * 账号所在站点：workbuddy 用本机 WorkBuddy 桌面版的 CLI（www.workbuddy.cn）；
+       * internal / external / ioa 用 SDK 自带的 CLI 连 CodeBuddy 国内版、国际版、腾讯内网
+       */
+      environment: "workbuddy" | "internal" | "external" | "ioa";
+      /** WorkBuddy 桌面版里 CLI 的路径，空 = 在常见位置自动找 */
+      cliPath: string;
+      defaultModel: string;
+      /** WorkBuddy 没有思考程度，留着和别的 agent 同形 */
+      defaultEffort: string;
+      models: string[];
+    };
   };
   web: {
     enabled: boolean;
@@ -80,7 +95,7 @@ export type AppConfig = {
     quotaEnabled: boolean;
   };
   /** 输入「/」时命令列表的顺序和隐藏项，按 agent 分开（设置 → 命令） */
-  commands: { claude: CommandPrefs; codex: CommandPrefs };
+  commands: { claude: CommandPrefs; codex: CommandPrefs; workbuddy: CommandPrefs };
   /** 远程控制：网页终端和远程桌面。管理员能用；成员要在 设置 → 用户 里单独开（users.json 的 remote） */
   remote: {
     terminal: boolean;
@@ -117,7 +132,7 @@ export type AppConfig = {
   };
 };
 
-export const AGENT_IDS = ["claude", "codex"] as const;
+export const AGENT_IDS = ["claude", "codex", "workbuddy"] as const;
 
 export function defaultConfig(): AppConfig {
   return {
@@ -137,9 +152,11 @@ export function defaultConfig(): AppConfig {
         autoTitle: false,
         titleModel: "",
       },
+      // 默认不开：要先在设置里登录
+      workbuddy: { enabled: false, environment: "workbuddy", cliPath: "", defaultModel: "", defaultEffort: "", models: [] },
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10, quotaEnabled: true },
-    commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] } },
+    commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] }, workbuddy: { order: [], hidden: [], custom: [] } },
     remote: {
       terminal: true,
       desktop: true,

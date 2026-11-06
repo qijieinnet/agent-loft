@@ -102,7 +102,7 @@ export type CurateSettings = {
   idleMinutes: number;
   dailyHour: number;
   /** auto：Claude 能用就用 Claude，否则 Codex */
-  agent: "auto" | "claude" | "codex";
+  agent: "auto" | "claude" | "codex" | "workbuddy";
   /** 空 = 这个 agent 最省的默认（Claude 用 Haiku，Codex 用默认模型、思考程度 low） */
   model: string;
 };
@@ -120,7 +120,7 @@ function cleanCurate(raw: Partial<CurateSettings> | undefined, base: CurateSetti
     : base.experts;
   const idle = Math.round(Number(r.idleMinutes ?? base.idleMinutes));
   const hour = Math.round(Number(r.dailyHour ?? base.dailyHour));
-  const agent = (["auto", "claude", "codex"] as const).find((a) => a === r.agent) ?? base.agent;
+  const agent = (["auto", "claude", "codex", "workbuddy"] as const).find((a) => a === r.agent) ?? base.agent;
   const model = typeof r.model === "string" ? r.model.trim().slice(0, 100) : base.model;
   return {
     when,

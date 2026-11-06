@@ -8,11 +8,15 @@ import path from "node:path";
 import { agentEnvironment } from "../core/agent-env.js";
 import { config } from "../core/config.js";
 import { withProbe } from "./claude/probe.js";
+import { onLoginDone, readAccount } from "./workbuddy/account.js";
+import { desktopCli, ENVIRONMENT_LABEL, environment } from "./workbuddy/sdk.js";
 
 const require = createRequire(import.meta.url);
 
 export type AgentFix = {
   action: "install" | "login";
+  /** 能在网页上直接完成（WorkBuddy 的浏览器登录）：设置页给按钮，不用去终端 */
+  web?: boolean;
   title: string;
   /** 每一条是一种做法，任选其一（比如 Homebrew 和 npm 两种装法） */
   commands: string[];
@@ -20,7 +24,7 @@ export type AgentFix = {
 };
 
 export type AgentHealth = {
-  id: "claude" | "codex";
+  id: "claude" | "codex" | "workbuddy";
   label: string;
   enabled: boolean;
   installed: boolean;
@@ -132,7 +136,69 @@ async function codexHealth(): Promise<AgentHealth> {
   };
 }
 
+/** WorkBuddy：SDK 自带 CLI，装了 agent-loft 就有；登录在网页上点 */
+async function workbuddyHealth(): Promise<AgentHealth> {
+  const base = { id: "workbuddy" as const, label: "WorkBuddy", enabled: config().agents.workbuddy.enabled };
+  const site = ENVIRONMENT_LABEL[environment()];
+  const loginFix: AgentFix = {
+    action: "login",
+    web: true,
+    title: "登录 WorkBuddy",
+    commands: [],
+    note: `点下面的按钮会打开 ${site} 的登录页，在浏览器里登录完回到这里点「重新检查」。也可以给 agent-loft 服务设 CODEBUDDY_API_KEY 环境变量用 API Key。`,
+  };
+  let version: string | undefined;
+  try {
+    // package.json 不在包的 exports 里，从入口（lib/index.js）往上找
+    const v = (require(path.join(path.dirname(require.resolve("@tencent-ai/agent-sdk")), "..", "package.json")) as { version?: string }).version;
+    version = v ? `SDK ${v}` : undefined;
+  } catch {
+    return {
+      ...base,
+      installed: false,
+      loggedIn: null,
+      problem: "找不到 @tencent-ai/agent-sdk",
+      fix: { action: "install", title: "安装 WorkBuddy SDK", commands: ["npm install"], note: "在 agent-loft 的目录里运行，装好后重启服务。" },
+    };
+  }
+  if (environment() === "workbuddy") {
+    const cli = desktopCli();
+    if (!cli) {
+      return {
+        ...base,
+        installed: false,
+        loggedIn: null,
+        problem: config().agents.workbuddy.cliPath ? `找不到 ${config().agents.workbuddy.cliPath}` : "没找到 WorkBuddy 桌面版",
+        fix: {
+          action: "install",
+          title: "安装 WorkBuddy 桌面版",
+          commands: [],
+          note: "agent-loft 调用的是 WorkBuddy 桌面版自带的 CLI（账号站点 www.workbuddy.cn）。在这台服务器上装好桌面版（workbuddy.cn 下载）；装在别处的话，在下面填「CLI 路径」（桌面版目录里的 resources/app.asar.unpacked/cli/bin/codebuddy）。不想装桌面版可以把账号站点换成 CodeBuddy。",
+        },
+      };
+    }
+    version = "WorkBuddy 桌面版 CLI";
+  }
+  try {
+    const acct = await Promise.race([readAccount(), timeout<never>(25_000, "读取 WorkBuddy 账号")]);
+    return {
+      ...base,
+      installed: true,
+      ...(version ? { version } : {}),
+      loggedIn: acct.loggedIn,
+      account: acct.account ? `${acct.account} · ${site}` : acct.loggedIn ? site : undefined,
+      ...(acct.loggedIn ? {} : { fix: loginFix }),
+    };
+  } catch (err) {
+    return { ...base, installed: true, ...(version ? { version } : {}), loggedIn: null, problem: err instanceof Error ? err.message : String(err), fix: loginFix };
+  }
+}
+
 let cache: { at: number; value: AgentHealth[] } | null = null;
+// 网页上登录完：下次体检别用缓存
+onLoginDone(() => {
+  cache = null;
+});
 
 /**
  * 不等体检、立刻给出的「这个 agent 能不能用」：用最近一次体检的结果（多旧都算），
@@ -157,7 +223,12 @@ let inflight: Promise<AgentHealth[]> | null = null;
 /** 两个 agent 一起查，结果缓存一分钟；refresh 跳过缓存（点了「重新检查」） */
 export function agentHealth(refresh = false): Promise<AgentHealth[]> {
   if (!refresh && cache && Date.now() - cache.at < 60_000) return Promise.resolve(cache.value);
-  inflight ??= Promise.all([claudeHealth(), codexHealth()])
+  // WorkBuddy 没启用就不去起它的 CLI（包很大，拉起要几秒）
+  const workbuddy = () =>
+    config().agents.workbuddy.enabled
+      ? workbuddyHealth()
+      : Promise.resolve<AgentHealth>({ id: "workbuddy", label: "WorkBuddy", enabled: false, installed: true, loggedIn: null });
+  inflight ??= Promise.all([claudeHealth(), codexHealth(), workbuddy()])
     .then((value) => {
       cache = { at: Date.now(), value };
       return value;

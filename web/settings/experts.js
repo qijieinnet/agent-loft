@@ -10,7 +10,7 @@ import { changeCwd } from "../views/conv-actions.js";
 // 专家 = 一份配置：引擎、提示词、权限、技能、MCP、子智能体。新建对话、定时任务时选，对话中途不能换。
 // 内置的 Claude Code / Codex 不在这里改（就是 agent 原装的样子）。
 
-const ENGINE_LABEL = { claude: "Claude", codex: "Codex" };
+const ENGINE_LABEL = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy" };
 /** 权限的几项勾选。读文件 → 改文件 → 跑命令一级包含一级（跑命令就等于能改任何文件） */
 const PERMS = [
   { id: "webSearch", label: "联网搜索", hint: "用搜索引擎查资料" },

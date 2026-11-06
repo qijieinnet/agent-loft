@@ -69,7 +69,7 @@ export function toModelInfo(models: Awaited<ReturnType<Query["supportedModels"]>
   }));
 }
 
-class AsyncQueue<T> {
+export class AsyncQueue<T> {
   private items: T[] = [];
   private waiting: ((result: IteratorResult<T>) => void)[] = [];
   private closed = false;

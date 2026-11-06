@@ -8,6 +8,17 @@ import { renderEmpty } from "../views/messages.js";
 import { field, saveButton, saveConfig } from "./common.js";
 import { modelPicker } from "./commands.js";
 
+const ENGINE_LABEL = { claude: "Claude Code", codex: "Codex", workbuddy: "WorkBuddy" };
+const ENGINES = Object.keys(ENGINE_LABEL);
+/** 设置里的默认权限「跟随」时实际是什么 */
+const FOLLOW_LABEL = { claude: "跟随 Claude Code（逐次询问）", codex: "跟随沙箱设置", workbuddy: "跟随 WorkBuddy（逐次询问）" };
+const WORKBUDDY_SITES = [
+  ["workbuddy", "WorkBuddy（www.workbuddy.cn，用本机的 WorkBuddy 桌面版）"],
+  ["internal", "CodeBuddy 国内版（copilot.tencent.com）"],
+  ["external", "CodeBuddy 国际版（codebuddy.ai）"],
+  ["ioa", "腾讯 iOA"],
+];
+
 /**
  * 设置 → Agent：勾选哪些模型出现在输入框的模型列表里。
  * 全部勾上存成空数组 = 「全部显示」，以后 agent 新增的模型也会自动出现；
@@ -115,13 +126,16 @@ function agentHealthSection() {
             ? h(
                 "div",
                 { class: "health-fix" },
-                h("div", {}, `${a.fix.title}：在运行 agent-loft 的机器上打开终端执行${a.fix.commands.length > 1 ? "（任选一条）" : ""}`),
+                a.fix.web || !a.fix.commands.length
+                  ? h("div", {}, `${a.fix.title}：`)
+                  : h("div", {}, `${a.fix.title}：在运行 agent-loft 的机器上打开终端执行${a.fix.commands.length > 1 ? "（任选一条）" : ""}`),
                 a.fix.commands.map((cmd) => {
                   const copy = h("button", { class: "btn small", onclick: () => copyText(cmd, copy) }, "复制");
                   return h("div", { class: "health-cmd" }, h("code", {}, cmd), copy);
                 }),
                 a.fix.note ? h("small", {}, a.fix.note) : null,
                 a.id === "codex" && a.fix.action === "install" ? installCodexButton(() => load(true)) : null,
+                a.id === "workbuddy" && a.fix.web ? workbuddyLoginButton(() => load(true)) : null,
               )
             : null,
         );
@@ -157,6 +171,57 @@ function installCodexButton(after) {
   return h("div", {}, btn);
 }
 
+/**
+ * WorkBuddy 网页登录：服务端拿到登录链接，在新标签页里打开（用的是你自己的浏览器，不是服务器的），
+ * 登录完这边轮询到结果就重新检查。弹窗被拦时把链接留在按钮下面，手动点
+ */
+function workbuddyLoginButton(after) {
+  const status = h("small", {});
+  const btn = h(
+    "button",
+    {
+      class: "btn small primary",
+      onclick: async () => {
+        // 先开空白页再填地址：等接口回来再 window.open 会被浏览器当成弹窗拦掉
+        const tab = window.open("", "_blank");
+        btn.disabled = true;
+        btn.textContent = "正在获取登录链接…";
+        try {
+          const { url } = await api("/api/agents/workbuddy/login", { method: "POST" });
+          if (tab) tab.location.href = url;
+          fill(status, "请在 1 分钟内在打开的页面里登录（超时要重新点），完成后这里会自动刷新。没弹出来的话点这里：", h("a", { href: url, target: "_blank", rel: "noopener" }, "打开登录页"));
+          btn.textContent = "等待登录…";
+          const started = Date.now();
+          const poll = async () => {
+            if (!btn.isConnected) return;
+            const st = await api("/api/agents/workbuddy/login").catch(() => null);
+            if (st?.status === "done") {
+              toast(`WorkBuddy 已登录：${st.user}`);
+              after();
+              return;
+            }
+            if (st?.status === "failed" || Date.now() - started > 3 * 60_000) {
+              fill(status, `登录没有完成：${st?.error ?? "超时"}。点「重新登录」再来一次，拿到链接后尽快登录`);
+              btn.disabled = false;
+              btn.textContent = "重新登录";
+              return;
+            }
+            setTimeout(poll, 2000);
+          };
+          setTimeout(poll, 2000);
+        } catch (err) {
+          tab?.close();
+          toast(err.message, 6000);
+          btn.disabled = false;
+          btn.textContent = "登录 WorkBuddy";
+        }
+      },
+    },
+    "登录 WorkBuddy",
+  );
+  return h("div", {}, btn, status);
+}
+
 /** 个人默认工具单独保存，避免改服务器配置时覆盖尚未保存的个人选择。 */
 function builtinDefaultsSections(targets) {
   const load = async () => {
@@ -189,7 +254,7 @@ function builtinDefaultsSections(targets) {
         if (section.parentElement?.dataset.personal) section.parentElement.hidden = true;
         continue;
       }
-      const label = engine === "claude" ? "Claude Code" : "Codex";
+      const label = ENGINE_LABEL[engine] ?? engine;
       const skills = picker(`${label} 技能`, data.skills, prefs.skills, "全部已启用的个人技能（含以后新增）");
       const machine = (data.machineMcp?.[engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, name: `${name}（本机）` }));
       const mcp = picker(`${label} MCP`, [...data.mcp, ...machine], prefs.mcp, data.machineMcp ? "沿用机器上的 MCP 配置" : null);
@@ -197,7 +262,7 @@ function builtinDefaultsSections(targets) {
       // 成员最高到自动改文件；自动判断只有 Claude 有
       const levels = DEFAULT_LEVELS.filter((l) => engineSupports(engine, l) && (l !== "auto" || isAdmin()));
       const permission = h("select", { "aria-label": `${label} 默认权限` },
-        h("option", { value: "", selected: !prefs.permission }, engine === "claude" ? "跟随 Claude Code（逐次询问）" : "跟随沙箱设置"),
+        h("option", { value: "", selected: !prefs.permission }, FOLLOW_LABEL[engine] ?? "跟随默认"),
         levels.map((l) => h("option", { value: l, selected: l === prefs.permission }, `${PERMISSIONS[l].label}：${PERMISSIONS[l].desc}`)));
       fill(section, h("h4", {}, "默认权限"),
         field("新对话的权限", permission, "没单独选过权限的对话都按这一级（输入框里的盾牌按钮可以随时改）。自定义专家也按它，但不会超过专家自己的权限；定时任务按任务里选的。「完全允许」不能设成默认。"),
@@ -227,19 +292,20 @@ function builtinDefaultsSections(targets) {
 }
 
 export function agentsTab(cfg, page) {
-  const targets = Object.fromEntries(["claude", "codex"].map((engine) => [engine, h("div", { class: "builtin-agent-defaults", "data-form": "" }, h("span", { class: "spinner" }))]));
+  const targets = Object.fromEntries(ENGINES.map((engine) => [engine, h("div", { class: "builtin-agent-defaults", "data-form": "" }, h("span", { class: "spinner" }))]));
   if (!cfg) {
-    for (const [engine, target] of Object.entries(targets)) page.append(h("div", { class: "section", "data-personal": "true", "data-agent": engine }, h("h4", {}, engine === "claude" ? "Claude Code" : "Codex"), target));
+    for (const [engine, target] of Object.entries(targets)) page.append(h("div", { class: "section", "data-personal": "true", "data-agent": engine }, h("h4", {}, ENGINE_LABEL[engine]), target));
     builtinDefaultsSections(targets);
     return;
   }
   page.append(agentHealthSection());
   const a = structuredClone(cfg.agents);
-  for (const engine of ["claude", "codex"]) {
-    const label = engine === "claude" ? "Claude Code" : "Codex";
+  for (const engine of ENGINES) {
+    const label = ENGINE_LABEL[engine];
     const settings = a[engine];
+    if (!settings) continue;
     const on = h("input", { type: "checkbox", checked: settings.enabled });
-    const pick = modelPicker(engine, settings.defaultModel, settings.defaultEffort, engine === "claude" ? "跟随 Claude Code 默认" : "跟随 config.toml");
+    const pick = modelPicker(engine, settings.defaultModel, settings.defaultEffort, engine === "claude" ? "跟随 Claude Code 默认" : engine === "workbuddy" ? "跟随 WorkBuddy 默认" : "跟随 config.toml");
     const models = modelChecklist(engine, settings.models ?? []);
     const config = h("div", { class: "agent-config", "data-form": "" },
       h("h4", {}, label, h("span", { class: "grow" }), h("label", { class: "check" }, on, "启用")));
@@ -257,7 +323,24 @@ export function agentsTab(cfg, page) {
       codex = { path, home, sandbox, titleOn, titlePick, titleModel };
       config.append(field("codex 可执行文件", path, "以系统服务运行时 PATH 很短，建议写绝对路径"), field("CODEX_HOME", home), field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"));
     }
-    config.append(field("默认模型", pick.modelEl), field("默认思考程度", pick.effortEl), h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
+    let site = null;
+    let cliPath = null;
+    if (engine === "workbuddy") {
+      site = h("select", {}, WORKBUDDY_SITES.map(([value, name]) => h("option", { value, selected: value === (settings.environment || "workbuddy") }, name)));
+      cliPath = h("input", { value: settings.cliPath ?? "", placeholder: "留空自动找（如 /opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy）" });
+      const cliField = field("WorkBuddy CLI 路径", cliPath, "WorkBuddy 桌面版里自带的 CLI，装在常见位置时不用填");
+      const syncSite = () => { cliField.hidden = site.value !== "workbuddy"; };
+      site.addEventListener("change", syncSite);
+      syncSite();
+      config.append(
+        h("p", { class: "muted" }, "腾讯 WorkBuddy：调用这台服务器上 WorkBuddy 桌面版自带的 CLI；也可以改用 CodeBuddy 的账号（用 agent-loft 自带的 CLI）。启用并保存后，到上面「运行环境」里登录——桌面版里登录过也要在这里再登一次，同一个账号就行。暂不支持自定义专家和分叉。"),
+        field("账号站点", site, "登录和对话都走这个站点。换了站点要重新登录"),
+        cliField,
+      );
+    }
+    config.append(field("默认模型", pick.modelEl));
+    if (engine !== "workbuddy") config.append(field("默认思考程度", pick.effortEl));
+    config.append(h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
     if (codex) config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, codex.titleOn, "自动生成会话名称"), codex.titleModel));
     config.append(h("div", { class: "row" }, saveButton(() => {
       const selected = models.value();
@@ -267,6 +350,7 @@ export function agentsTab(cfg, page) {
       }
       return saveConfig(cfg, { agents: { [engine]: {
         enabled: on.checked, defaultModel: pick.model(), defaultEffort: pick.effort(), models: selected,
+        ...(site ? { environment: site.value, cliPath: cliPath.value.trim() } : {}),
         ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value, autoTitle: codex.titleOn.checked, titleModel: codex.titlePick.model() } : {}),
       } } });
     }, `保存 ${label} 设置`)));

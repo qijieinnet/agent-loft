@@ -10,6 +10,7 @@ import {
   createExpert,
   canUseExpert,
   deleteExpert,
+  EXPERT_ENGINES,
   EXPERT_LIMITS,
   EXPERT_TEMPLATES,
   getExpert,
@@ -131,7 +132,8 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     sendJson(res, 200, {
       experts: availableExperts(user.id).map((e) => expertView(e, user.id)),
       builtin: enabled.filter((id) => canUseExpert(user.id, id)).map((id) => ({ id, name: hub.label(id), engine: id })),
-      engines: enabled,
+      // 能建自定义专家的引擎（WorkBuddy 只有内置专家）
+      engines: enabled.filter((id) => (EXPERT_ENGINES as readonly string[]).includes(id)),
       templates: EXPERT_TEMPLATES.map((t) => ({ id: t.id, label: t.label, expert: t.expert })),
       access: ACCESS_LEVELS.map((id) => ({ id, label: ACCESS_LABEL[id] })),
       skills: activeSkills(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),

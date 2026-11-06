@@ -106,7 +106,7 @@ test("HTTP 与运行时：按成员过滤资源，阻止越权、旧会话和任
     assert.equal(users.getUser(member.id)?.name, "member");
     const data = await (await call("/api/users", "GET", undefined, adminCookie)).json() as { resources: { experts: { id: string }[]; agents: { id: string }[]; servers: { id: string }[] } };
     assert.ok(data.resources.experts.some((e) => e.id === shared.id));
-    assert.deepEqual(data.resources.agents.map((a) => a.id), ["claude", "codex"]);
+    assert.deepEqual(data.resources.agents.map((a) => a.id), ["claude", "codex", "workbuddy"]);
     assert.equal(data.resources.servers.length, 2);
   });
 

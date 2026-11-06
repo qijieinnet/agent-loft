@@ -37,6 +37,7 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "expert", args: "[名称]", description: "查看 / 换专家（换了会开新会话）", chatOnly: true },
   { name: "claude", description: "换成 Claude Code 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
   { name: "codex", description: "换成 Codex 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
+  { name: "workbuddy", description: "换成 WorkBuddy 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
   { name: "web", description: "接上一条 Web 会话，在飞书里查看和回复", feishuOnly: true },
   { name: "detach", description: "不再接着 Web 会话，回到这个聊天自己的会话", feishuOnly: true },
   { name: "bind", args: "<绑定码>", description: "把这个飞书账号绑定到你的 agent-loft 用户（绑定码在 Web 的「设置 → 账号」里生成）", feishuOnly: true },
@@ -164,7 +165,7 @@ export function buildCatalog(params: {
       (!c.feishuOnly || params.channel === undefined || params.channel === "feishu") &&
       (!c.chatOnly || params.channel !== "web") &&
       // /claude /codex 只在这个渠道能用对应 agent 时才有意义
-      (!["claude", "codex"].includes(c.name) || params.allowedAgents.includes(c.name)),
+      (!["claude", "codex", "workbuddy"].includes(c.name) || params.allowedAgents.includes(c.name)),
   ).map((c) => ({
     name: c.name,
     ...(c.args ? { args: c.args } : {}),

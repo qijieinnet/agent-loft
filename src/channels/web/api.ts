@@ -64,6 +64,8 @@ import { curateNow, pendingCount } from "../../core/memory-curator.js";
 import { listAllowlist, setAllowlist } from "../../agents/claude/permissions.js";
 import { isPermissionLevel, type PermissionLevel } from "../../core/permission.js";
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
+import { loginState as workbuddyLoginState, logout as workbuddyLogout, startLogin as workbuddyLogin } from "../../agents/workbuddy/account.js";
+import { WORKBUDDY_ENVIRONMENTS } from "../../agents/workbuddy/sdk.js";
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
 import { weixinStatus } from "../weixin/index.js";
@@ -342,6 +344,14 @@ function applyConfig(input: Partial<AppConfig>, selfOrigin?: string): void {
       if (patch.models !== undefined) {
         patch.models = Array.isArray(patch.models) ? [...new Set(patch.models.filter((m) => typeof m === "string" && m))] : [];
       }
+      if (id === "workbuddy" && "environment" in patch && !(WORKBUDDY_ENVIRONMENTS as readonly unknown[]).includes(patch.environment)) {
+        throw new HttpError(400, "WorkBuddy 站点只能是 WorkBuddy、CodeBuddy 国内版、国际版或 iOA");
+      }
+      if (id === "workbuddy" && "cliPath" in patch) {
+        const cli = (patch as { cliPath?: unknown }).cliPath;
+        if (typeof cli !== "string" || cli.length > 500 || (cli.trim() && !path.isAbsolute(cli.trim()))) throw new HttpError(400, "CLI 路径要写绝对路径，留空自动找");
+        (patch as { cliPath: string }).cliPath = cli.trim();
+      }
       Object.assign(next.agents[id], patch);
     }
   }
@@ -486,6 +496,7 @@ function adminOnly(p: string): boolean {
     p === "/api/config" ||
     p === "/api/server/upgrade" ||
     p === "/api/agents/codex/install" ||
+    p.startsWith("/api/agents/workbuddy/") ||
     p.startsWith("/api/pairing") ||
     p.startsWith("/api/claude/") ||
     p.startsWith("/api/feishu/") ||
@@ -1288,6 +1299,27 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (result.ok) useInstalledCodex();
     invalidateHealth();
     sendJson(res, 200, result);
+    return;
+  }
+  // WorkBuddy 网页登录：先拿登录链接（用户在自己的浏览器里打开），之后轮询状态
+  if (p === "/api/agents/workbuddy/login" && method === "POST") {
+    try {
+      sendJson(res, 200, { url: await workbuddyLogin() });
+    } catch (err) {
+      throw new HttpError(400, `拿不到登录链接：${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  if (p === "/api/agents/workbuddy/login" && method === "GET") {
+    sendJson(res, 200, workbuddyLoginState());
+    return;
+  }
+  if (p === "/api/agents/workbuddy/logout" && method === "POST") {
+    await workbuddyLogout().catch((err) => {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    });
+    invalidateHealth();
+    sendJson(res, 200, { ok: true });
     return;
   }
   if (p === "/api/agents/health" && method === "GET") {

@@ -16,8 +16,10 @@ import { canUseMcp, claudeMachineMcp, getMcp, isMachineId, machineName, specOf, 
 import { activeSkills, canSee, getSkill } from "./skills.js";
 import { canUseResource, getUser } from "./users.js";
 
-export type Engine = "claude" | "codex";
-export const ENGINES: readonly Engine[] = ["claude", "codex"];
+export type Engine = "claude" | "codex" | "workbuddy";
+export const ENGINES: readonly Engine[] = ["claude", "codex", "workbuddy"];
+/** 能建自定义专家的引擎。WorkBuddy 目前只有内置专家（工具名、子智能体还没对齐） */
+export const EXPERT_ENGINES: readonly Engine[] = ["claude", "codex"];
 
 /** 一级包含一级：能跑命令就等于能改任何文件 */
 export type ExpertAccess = "web" | "read" | "edit" | "exec";
@@ -283,7 +285,7 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
   const name = text(pick("name"), EXPERT_LIMITS.name, "名字");
   if (!name) throw new Error("给专家起个名字");
   const engine = pick("engine");
-  if (engine !== "claude" && engine !== "codex") throw new Error("引擎只能是 Claude 或 Codex");
+  if (engine !== "claude" && engine !== "codex") throw new Error(engine === "workbuddy" ? "WorkBuddy 暂不支持自定义专家，用内置的 WorkBuddy 就好" : "引擎只能是 Claude 或 Codex");
   if (prev && prev.engine !== engine) throw new Error("建好之后不能换引擎（用这个专家的对话都是这个引擎的会话）");
   const access = pick("access");
   if (!ACCESS_LEVELS.includes(access as ExpertAccess)) throw new Error("权限不对");

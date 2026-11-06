@@ -75,7 +75,7 @@ export function modelPicker(agent, model, effort, defaultLabel) {
 }
 
 /** agent-loft 内置命令名（和服务端 BUILTIN_COMMANDS 一致），自定义命令不能用 */
-const BUILTIN_NAMES = ["new", "status", "stop", "model", "effort", "sessions", "resume", "fork", "agent", "claude", "codex", "cd", "pwd", "permission", "planmode", "autoedit", "web", "detach", "approve", "help"];
+const BUILTIN_NAMES = ["new", "status", "stop", "model", "effort", "sessions", "resume", "fork", "agent", "claude", "codex", "workbuddy", "cd", "pwd", "permission", "planmode", "autoedit", "web", "detach", "approve", "help"];
 
 /**
  * 添加 / 编辑一条自定义命令。onSave 返回 true 才关窗；失败（比如服务端校验没过）留着让用户改。

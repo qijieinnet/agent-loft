@@ -359,7 +359,7 @@ export async function sendMessage() {
 }
 
 /** 会改变当前会话（换会话、换目录、换 agent）的命令，执行完要重拉一遍 */
-const RELOADING_COMMANDS = new Set(["new", "fork", "resume", "agent", "claude", "codex", "cd"]);
+const RELOADING_COMMANDS = new Set(["new", "fork", "resume", "agent", "claude", "codex", "workbuddy", "cd"]);
 
 /** agent-loft 命令的结果：只显示给发命令的这个页面，不进会话记录 */
 async function showCommandReply(text, reply, info) {

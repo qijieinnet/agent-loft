@@ -101,7 +101,7 @@ export function renderInteraction(item) {
             spec.allowSession
               ? h("button", { class: "btn primary", onclick: () => ixOp(ix.id, "decide", { decision: "allow-session" }) }, "本会话全部允许")
               : null,
-            h("button", { class: `btn${spec.allowSession ? "" : " accent"}`, onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, spec.allowLabel ?? "允许一次"),
+            h("button", { class: `btn${spec.allowSession ? "" : " primary"}`, onclick: () => ixOp(ix.id, "decide", { decision: "allow-once" }) }, spec.allowLabel ?? "允许一次"),
             // 会落盘、对所有人生效的「总是允许」只给管理员
             spec.alwaysLabel && (!spec.alwaysGlobal || isAdmin())
               ? h("button", { class: "btn", onclick: () => ixOp(ix.id, "decide", { decision: "allow-always" }) }, spec.alwaysLabel)
