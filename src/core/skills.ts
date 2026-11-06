@@ -2,7 +2,7 @@
 // skill 是同一种格式，只是由 agent-loft 按人管理：
 //   - 谁都能建（网页上写、上传技能包，或者让 agent 在对话里生成），建的人是作者；
 //   - 作者决定谁看得到：只有自己 / 指定的几个人 / 所有人，看得到的人可在网页「共享技能」中安装；
-//   - 安装的是作者那一份本身，不是副本：作者改了，装了的人下一条消息起就用上新的；
+//   - 安装的是作者那一份本身，不是副本；但作者改了内容（rev 加一），装了的人要确认过新版才会加载；
 //   - 技能可以声明要用的环境变量（API 地址、密钥之类），值由每个用户自己填，只注入到他自己的会话里。
 //
 // 存储（data/skills/）：
@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
+import { getUser } from "./users.js";
 
 export type SkillVisibility = "private" | "users" | "all";
 
@@ -47,6 +48,8 @@ export type Skill = {
   sharedWith: string[];
   vars: SkillVar[];
   source: "manual" | "upload" | "agent";
+  /** 内容版本：SKILL.md、附带文件、变量声明真的变了才加一。装了的人要确认过这一版才会加载 */
+  rev?: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -59,10 +62,18 @@ export type UserSkillPrefs = {
   /** 变量的值：按变量名存，几个技能用同一个变量名（比如 GITHUB_TOKEN）就共用一个值 */
   vars: Record<string, string>;
   /**
-   * 受保护的密钥，用户填值时确认过可以发往哪些地址。作者后来改了 hosts 不会自动放行新地址
-   * （装的是作者那一份本身，改了也跟着变 —— 偏偏这一项不能跟着变），要用户再确认一次。
+   * 受保护的密钥，用户确认过可以发往哪些地址：按「变量名 → 技能 id → 地址」分开记，
+   * 同意 A 技能发往 a.com 不等于同意 B 技能发往 b.com。实际放行时还要和技能现在声明的取交集，
+   * 作者删掉的地址、卸掉的技能自然失效；作者新加的地址要用户再确认一次。
    */
-  approved: Record<string, string[]>;
+  approved: Record<string, Record<string, string[]>>;
+  /**
+   * 按受保护密钥填的值：一旦受保护就一直受保护（声明它受保护的技能停用、卸载、改掉了也一样），
+   * 免得别的技能声明同名的普通变量就能拿到明文。用户重新填值或清掉时才解除。
+   */
+  guarded: string[];
+  /** 装了的技能，用户确认过的内容版本（见 Skill.rev）。作者改了内容，确认前不加载 */
+  accepted: Record<string, number>;
 };
 
 export const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,47}$/;
@@ -129,11 +140,33 @@ export function userPrefs(userId: string): UserSkillPrefs {
   if (raw.vars && typeof raw.vars === "object") {
     for (const [k, v] of Object.entries(raw.vars)) if (VAR_NAME.test(k) && typeof v === "string") vars[k] = v;
   }
-  const approved: Record<string, string[]> = {};
+  const installed = strings(raw.installed);
+  const approved: Record<string, Record<string, string[]>> = {};
+  const guarded = new Set(strings(raw.guarded));
   if (raw.approved && typeof raw.approved === "object") {
-    for (const [k, v] of Object.entries(raw.approved)) if (VAR_NAME.test(k)) approved[k] = strings(v);
+    for (const [k, v] of Object.entries(raw.approved as Record<string, unknown>)) {
+      if (!VAR_NAME.test(k)) continue;
+      const bySkill: Record<string, string[]> = {};
+      if (Array.isArray(v)) {
+        // 旧格式：一个变量一份地址（当时是几个技能声明的合起来）。拆给现在声明了它的每个技能，只留各自声明过的
+        for (const s of load()) {
+          if (s.owner !== userId && !installed.includes(s.id)) continue;
+          const declared = declaredHosts([s], k);
+          const keep = strings(v).filter((h) => declared.includes(h));
+          if (keep.length) bySkill[s.id] = keep;
+        }
+      } else if (v && typeof v === "object") {
+        for (const [id, hosts] of Object.entries(v as Record<string, unknown>)) bySkill[id] = strings(hosts);
+      }
+      approved[k] = bySkill;
+      if (vars[k] !== undefined) guarded.add(k);
+    }
   }
-  return { installed: strings(raw.installed), disabled: strings(raw.disabled), vars, approved };
+  const accepted: Record<string, number> = {};
+  if (raw.accepted && typeof raw.accepted === "object") {
+    for (const [k, v] of Object.entries(raw.accepted)) if (typeof v === "number") accepted[k] = v;
+  }
+  return { installed, disabled: strings(raw.disabled), vars, approved, guarded: [...guarded].filter((k) => vars[k] !== undefined), accepted };
 }
 
 function savePrefs(userId: string, prefs: UserSkillPrefs): void {
@@ -163,18 +196,35 @@ export function canSee(viewer: Pick<Viewer, "id">, skill: Skill): boolean {
   return skill.owner === viewer.id || skill.visibility === "all" || (skill.visibility === "users" && skill.sharedWith.includes(viewer.id));
 }
 
+/**
+ * 能在网页上查看：看得到的，加上管理员看得到所有分享出来的（包括没指名给他的），好审查、下架。
+ * 只是能看能下架，安装、使用还是按 canSee。
+ */
+export function canView(viewer: Viewer, skill: Skill): boolean {
+  return canSee(viewer, skill) || (viewer.role === "admin" && skill.visibility !== "private");
+}
+
 /** 能改、能删：只有作者。管理员能下架（删）别人公开或分享出来的，但不能改内容 */
 export function canDelete(viewer: Viewer, skill: Skill): boolean {
   return skill.owner === viewer.id || (viewer.role === "admin" && skill.visibility !== "private");
 }
 
-/** 这个人此刻能用的技能：自己的和装了的，看得到、没停用。按名字排 */
+export function skillRev(skill: Skill): number {
+  return skill.rev ?? 0;
+}
+
+/** 装了的别人的技能，作者改过内容、这个人还没确认新的这一版 */
+export function updatePending(userId: string, skill: Skill, prefs: UserSkillPrefs = userPrefs(userId)): boolean {
+  return skill.owner !== userId && prefs.installed.includes(skill.id) && (prefs.accepted[skill.id] ?? 0) < skillRev(skill);
+}
+
+/** 这个人此刻能用的技能：自己的和装了的，看得到、没停用、没有待确认的更新。按名字排 */
 export function activeSkills(userId: string): Skill[] {
   const prefs = userPrefs(userId);
   const installed = new Set(prefs.installed);
   const disabled = new Set(prefs.disabled);
   return load()
-    .filter((s) => (s.owner === userId || (installed.has(s.id) && canSee({ id: userId }, s))) && !disabled.has(s.id))
+    .filter((s) => (s.owner === userId || (installed.has(s.id) && canSee({ id: userId }, s) && !updatePending(userId, s, prefs))) && !disabled.has(s.id))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -192,8 +242,10 @@ function installersOf(id: string): string[] {
     .filter((u) => userPrefs(u).installed.includes(id));
 }
 
+/** 装着、而且还看得到的人数（撤回分享后留在设置里的不算） */
 export function installCount(id: string): number {
-  return installersOf(id).length;
+  const skill = getSkill(id);
+  return skill ? installersOf(id).filter((u) => canSee({ id: u }, skill)).length : 0;
 }
 
 function affected(skill: Skill): string[] {
@@ -322,7 +374,8 @@ export function hostAllowed(allowed: string[], url: URL): boolean {
 
 function cleanVisibility(raw: unknown, sharedWith: unknown, owner: string): { visibility: SkillVisibility; sharedWith: string[] } {
   const visibility = (["private", "users", "all"] as const).find((v) => v === raw) ?? "private";
-  const list = Array.isArray(sharedWith) ? [...new Set(sharedWith.filter((u): u is string => typeof u === "string" && u !== owner))] : [];
+  // 只认还在的账号：乱写的 id、删掉的人不留在名单里
+  const list = Array.isArray(sharedWith) ? [...new Set(sharedWith.filter((u): u is string => typeof u === "string" && u !== owner && !!getUser(u)))] : [];
   if (visibility === "users" && list.length === 0) throw new Error("选「指定用户」时至少勾一个人");
   return { visibility, sharedWith: visibility === "users" ? list : [] };
 }
@@ -480,7 +533,7 @@ export function createSkill(
 ): Skill {
   if (load().filter((s) => s.owner === owner).length >= SKILL_LIMITS.perUser) throw new Error(`每人最多建 ${SKILL_LIMITS.perUser} 个技能`);
   const name = cleanName(input.name ?? upload?.md.name);
-  if (findSkillByName(name)) throw new Error(`已经有叫 ${name} 的技能了（可能是别人建的），换个名字`);
+  if (findSkillByName(name)) throw new Error(`技能名 ${name} 已被占用，换个名字`);
   const description = cleanDescription(input.description ?? upload?.md.description);
   const body = String(input.body ?? upload?.md.body ?? "").trim();
   if (!body) throw new Error("技能的正文（告诉 agent 怎么做）不能为空");
@@ -531,6 +584,7 @@ export function updateSkill(
   const vars = input.vars !== undefined ? cleanVars(input.vars) : upload?.vars;
   const visibility = input.visibility !== undefined ? cleanVisibility(input.visibility, input.sharedWith ?? skill.sharedWith, skill.owner) : undefined;
   const contentChanged = input.description !== undefined || input.body !== undefined || !!upload || !!opts.files;
+  let revise = !!vars && JSON.stringify(vars) !== JSON.stringify(skill.vars);
   if (contentChanged) {
     let files = upload ? upload.files : readFiles(id);
     if (opts.files) {
@@ -547,30 +601,53 @@ export function updateSkill(
     }
     const md = composeSkillMd(skill.name, description, body, upload ? upload.md.extra : current.extra);
     checkSizes(md, files);
-    replaceFiles(id, md, files);
+    const old = readFiles(id);
+    const same = md === readSkillMd(id) && old.size === files.size && [...files].every(([p, d]) => old.get(p)?.equals(d));
+    if (!same) {
+      replaceFiles(id, md, files);
+      revise = true;
+    }
   }
   skill.description = description;
   if (vars) skill.vars = vars;
+  // 内容真的变了：装了的人确认新版之前不加载（作者自己不受影响）
+  if (revise) skill.rev = skillRev(skill) + 1;
   if (visibility) Object.assign(skill, visibility);
   skill.updatedAt = Date.now();
   saveIndex();
+  markGuarded(actor, skill);
   // 改之前装着的人也要通知：可能刚被取消了分享
   skillEvents.emit("changed", [...new Set([...before, ...affected(skill)])]);
   return skill;
 }
 
+/** 这个技能声明成受保护、而且用户填了值的变量记成「一直受保护」（技能之后停用、卸掉、改掉也不解除） */
+function markGuarded(userId: string, skill: Skill): void {
+  const prefs = userPrefs(userId);
+  const add = skill.vars.filter((v) => isProtected(v) && prefs.vars[v.name] !== undefined && !prefs.guarded.includes(v.name)).map((v) => v.name);
+  if (add.length) savePrefs(userId, { ...prefs, guarded: [...prefs.guarded, ...add] });
+}
+
+/** 设置里和这个技能有关的都去掉：装没装、停没停用、确认过的版本、确认过的地址 */
+function forgetSkill(prefs: UserSkillPrefs, id: string): UserSkillPrefs {
+  const approved: UserSkillPrefs["approved"] = {};
+  for (const [k, bySkill] of Object.entries(prefs.approved)) {
+    const { [id]: _gone, ...rest } = bySkill;
+    approved[k] = rest;
+  }
+  const { [id]: _a, ...accepted } = prefs.accepted;
+  return { ...prefs, installed: prefs.installed.filter((x) => x !== id), disabled: prefs.disabled.filter((x) => x !== id), approved, accepted };
+}
+
 export function deleteSkill(viewer: Viewer, id: string): void {
   const skill = getSkill(id);
-  if (!skill || !canSee(viewer, skill) || !canDelete(viewer, skill)) throw new Error("这个技能不存在，或者你不能删它");
+  if (!skill || !canView(viewer, skill) || !canDelete(viewer, skill)) throw new Error("这个技能不存在，或者你不能删它");
   const users = affected(skill);
+  for (const u of users) markGuarded(u, skill);
   cache = load().filter((s) => s.id !== id);
   saveIndex();
   fs.rmSync(skillDir(id), { recursive: true, force: true });
-  for (const u of users) {
-    const prefs = userPrefs(u);
-    if (!prefs.installed.includes(id) && !prefs.disabled.includes(id)) continue;
-    savePrefs(u, { ...prefs, installed: prefs.installed.filter((x) => x !== id), disabled: prefs.disabled.filter((x) => x !== id) });
-  }
+  for (const u of users) savePrefs(u, forgetSkill(userPrefs(u), id));
   skillEvents.emit("changed", users);
 }
 
@@ -581,11 +658,26 @@ export function installSkill(userId: string, id: string, on: boolean): void {
   const prefs = userPrefs(userId);
   const has = prefs.installed.includes(id);
   if (has === on) return;
-  savePrefs(userId, {
-    ...prefs,
-    installed: on ? [...prefs.installed, id] : prefs.installed.filter((x) => x !== id),
-    disabled: prefs.disabled.filter((x) => x !== id),
-  });
+  if (on) {
+    // 安装 = 确认了现在这一版
+    savePrefs(userId, { ...prefs, installed: [...prefs.installed, id], disabled: prefs.disabled.filter((x) => x !== id), accepted: { ...prefs.accepted, [id]: skillRev(skill) } });
+    markGuarded(userId, skill);
+  } else {
+    markGuarded(userId, skill);
+    savePrefs(userId, forgetSkill(userPrefs(userId), id));
+  }
+  skillEvents.emit("changed", [userId]);
+}
+
+/** 装了的技能作者改过内容：用户看过之后确认用新的这一版 */
+export function acceptSkillUpdate(userId: string, id: string): void {
+  const skill = getSkill(id);
+  if (!skill || !canSee({ id: userId }, skill)) throw new Error("这个技能不存在");
+  const prefs = userPrefs(userId);
+  if (!prefs.installed.includes(id)) throw new Error("还没安装这个技能");
+  if (!updatePending(userId, skill, prefs)) return;
+  savePrefs(userId, { ...prefs, accepted: { ...prefs.accepted, [id]: skillRev(skill) } });
+  markGuarded(userId, skill);
   skillEvents.emit("changed", [userId]);
 }
 
@@ -597,8 +689,8 @@ export function setSkillEnabled(userId: string, id: string, on: boolean): void {
   skillEvents.emit("changed", [userId]);
 }
 
-/** 这个人自己的和装了的技能（含停用的）：填变量、确认地址都按这些算 */
-function ownedOrInstalled(userId: string): Skill[] {
+/** 这个人自己的和装了的技能（含停用的、待确认更新的）：变量受不受保护、确认地址都按这些算 */
+export function ownedOrInstalled(userId: string): Skill[] {
   const installed = new Set(userPrefs(userId).installed);
   return load().filter((s) => s.owner === userId || (installed.has(s.id) && canSee({ id: userId }, s)));
 }
@@ -610,35 +702,71 @@ export function declaredHosts(skills: Skill[], name: string): string[] {
   return [...out];
 }
 
+/** 实际放行的地址：每个技能用户确认过的，和它现在声明的取交集，再合起来 */
+export function allowedHosts(prefs: UserSkillPrefs, skills: Skill[], name: string): string[] {
+  const out = new Set<string>();
+  for (const s of skills) {
+    const declared = declaredHosts([s], name);
+    for (const h of prefs.approved[name]?.[s.id] ?? []) if (declared.includes(h)) out.add(h);
+  }
+  return [...out];
+}
+
+/** 这个技能对这个变量声明了、用户还没确认的地址（值没填就不算） */
+export function pendingHosts(prefs: UserSkillPrefs, skill: Skill, name: string): string[] {
+  if (prefs.vars[name] === undefined) return [];
+  const ok = prefs.approved[name]?.[skill.id] ?? [];
+  return declaredHosts([skill], name).filter((h) => !ok.includes(h));
+}
+
 /**
- * 改变量的值。null / 空字符串 = 删掉。填了受保护密钥的值，就等于确认了它现在声明的地址；
- * approve 里的变量名：值不变，只把地址确认成现在声明的（作者改过地址之后）。
+ * 改变量的值。null / 空字符串 = 删掉。skillId：在哪个技能的变量页里填的。
+ * 填了受保护密钥的值，就等于同意「这个技能」（和自己建的技能）现在声明的地址，别人技能声明的地址要在
+ * 各自的变量页里另外确认；换了新值，以前对别的技能的同意作废。
+ * approve 里的变量名：值不变，只把这个技能的地址确认成它现在声明的（作者改过地址之后）。
  */
-export function setSkillVars(userId: string, patch: Record<string, unknown>, approve: string[] = []): void {
+export function setSkillVars(userId: string, patch: Record<string, unknown>, approve: string[] = [], skillId?: string): void {
   const prefs = userPrefs(userId);
   const vars = { ...prefs.vars };
   const approved = { ...prefs.approved };
+  const guarded = new Set(prefs.guarded);
   const skills = ownedOrInstalled(userId);
+  const from = skillId ? skills.find((s) => s.id === skillId) : undefined;
+  if (skillId && !from) throw new Error("这个技能不存在，或者你还没装它");
+  const protectors = protectedNames(skills);
+  const grant = (k: string, bySkill: Record<string, string[]>) => {
+    for (const s of skills) {
+      if (s.owner !== userId && s !== from) continue;
+      const hosts = declaredHosts([s], k);
+      if (hosts.length) bySkill[s.id] = hosts;
+    }
+    return bySkill;
+  };
   for (const [k, v] of Object.entries(patch)) {
     if (!VAR_NAME.test(k) || RESERVED_VAR.test(k)) throw new Error(`变量名 ${k} 不合规`);
     if (v === null || v === undefined || v === "") {
       delete vars[k];
       delete approved[k];
+      guarded.delete(k);
       continue;
     }
     const s = String(v);
     if (s.length > SKILL_LIMITS.varValue) throw new Error(`${k} 的值太长（最多 ${SKILL_LIMITS.varValue} 个字符）`);
     vars[k] = s;
-    const hosts = declaredHosts(skills, k);
-    if (hosts.length) approved[k] = hosts;
-    else delete approved[k];
+    if (protectors.has(k)) {
+      guarded.add(k);
+      approved[k] = grant(k, {});
+    } else {
+      // 没有任何技能把它当受保护的密钥：用户这次是按普通变量填的
+      guarded.delete(k);
+      delete approved[k];
+    }
   }
   for (const k of approve) {
     if (vars[k] === undefined) continue;
-    const hosts = declaredHosts(skills, k);
-    if (hosts.length) approved[k] = hosts;
+    approved[k] = grant(k, { ...(approved[k] ?? {}) });
   }
-  savePrefs(userId, { ...prefs, vars, approved });
+  savePrefs(userId, { ...prefs, vars, approved, guarded: [...guarded] });
   skillEvents.emit("changed", [userId]);
 }
 
@@ -647,16 +775,24 @@ export function protectedNames(skills: Skill[]): Set<string> {
   return new Set(skills.flatMap((s) => s.vars.filter(isProtected).map((v) => v.name)));
 }
 
+/**
+ * 这个人不进环境变量的变量名：他自己的和装了的技能（不管启没启用、这次会话挂没挂）里有一个声明成受保护，
+ * 或者当初是按受保护密钥填的值。只看这次会话挂上的技能就会被同名的普通变量钻空子。
+ */
+export function guardedNames(userId: string): Set<string> {
+  return new Set([...protectedNames(ownedOrInstalled(userId)), ...userPrefs(userId).guarded]);
+}
+
 /** 这个人的会话要注入的环境变量：只给他启用着的技能声明过的、他填了值的；受保护的密钥不放 */
 export function skillEnv(userId: string, skills: Skill[] = activeSkills(userId)): Record<string, string> {
   const vars = userPrefs(userId).vars;
-  const guarded = protectedNames(skills);
+  const guarded = guardedNames(userId);
   const out: Record<string, string> = {};
   for (const s of skills) for (const v of s.vars) if (vars[v.name] !== undefined && !guarded.has(v.name)) out[v.name] = vars[v.name]!;
   return out;
 }
 
-/** 删用户：他建的技能（装了的人也就没了）、他的设置一起删 */
+/** 删用户：他建的技能（装了的人也就没了）、他的设置一起删，别人分享名单里的他也去掉 */
 export function purgeUserSkills(userId: string): void {
   for (const s of load().filter((x) => x.owner === userId)) {
     try {
@@ -664,6 +800,17 @@ export function purgeUserSkills(userId: string): void {
     } catch {
       // 已经没了
     }
+  }
+  const touched: string[] = [];
+  for (const s of load()) {
+    if (!s.sharedWith.includes(userId)) continue;
+    s.sharedWith = s.sharedWith.filter((u) => u !== userId);
+    if (s.visibility === "users" && !s.sharedWith.length) s.visibility = "private";
+    touched.push(s.owner);
+  }
+  if (touched.length) {
+    saveIndex();
+    skillEvents.emit("changed", [...new Set(touched)]);
   }
   fs.rmSync(prefsPath(userId), { force: true });
   fs.rmSync(path.join(pluginsRoot, checkId(userId, "用户")), { recursive: true, force: true });

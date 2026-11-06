@@ -522,7 +522,11 @@ export async function mcpTab(panel) {
   await load();
 }
 
+/** 这个账号能不能添加本机进程（stdio）MCP：只有管理员 */
+let canStdio = true;
+
 function renderMcp(box, data, reload) {
+  canStdio = data.stdio !== false;
   fill(
     box,
     h(
@@ -531,7 +535,8 @@ function renderMcp(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "MCP 服务提供查数据、调接口等工具，只供你自己的账号使用。这里加好后，自定义专家在「专家」里勾选；内置的 Claude Code / Codex 在「Agent」各自卡片的「默认加载」中选择。",
+        "MCP 服务提供查数据、调接口等工具。这里加好后，自定义专家在「专家」里勾选；内置的 Claude Code / Codex 在「Agent」各自卡片的「默认加载」中选择。可以把自己的 MCP 共享给所有账号：别人拿到的是地址、命令这些设置，标成密钥的项各自填自己的值，你的密钥不会给出去；别人用共享的 MCP 时，调用工具前都会先询问。" +
+          (canStdio ? "" : "本机进程（stdio）会在服务器上直接执行命令，只有管理员能添加。"),
       ),
       h("div", { class: "skill-head-btns" }, h("button", { class: "btn primary", onclick: () => openMcpEditor(null, reload) }, icon("plus"), "添加")),
     ),
@@ -540,23 +545,30 @@ function renderMcp(box, data, reload) {
           "div",
           { class: "task-list" },
           data.servers.map((s) => {
+            const secrets = [...(s.env ?? []), ...(s.headers ?? [])].filter((p) => p.secret);
+            const open = () => (s.mine ? openMcpEditor(s, reload) : secrets.length ? openMcpValues(s, secrets, reload) : null);
             const more = h("button", { class: "icon-btn", title: "更多" }, icon("more"));
             more.onclick = () =>
-              showMenu(more, [
-                { label: "编辑…", onclick: () => openMcpEditor(s, reload) },
-                "sep",
-                { label: "删除", danger: true, onclick: () => removeMcp(s, reload) },
-              ]);
+              showMenu(
+                more,
+                s.mine
+                  ? [{ label: "编辑…", onclick: () => openMcpEditor(s, reload) }, "sep", { label: "删除", danger: true, onclick: () => removeMcp(s, reload) }]
+                  : [{ label: secrets.length ? "填写我的密钥…" : "不需要填写密钥", onclick: () => secrets.length && openMcpValues(s, secrets, reload) }],
+              );
+            const missing = !s.mine && secrets.some((p) => !p.set);
             return h(
               "div",
               { class: "task-card skill-card" },
-              h("div", { class: "task-top" }, h("button", { class: "task-title skill-name", onclick: () => openMcpEditor(s, reload) }, s.name), more),
+              h("div", { class: "task-top" }, h("button", { class: "task-title skill-name", onclick: open }, s.name), more),
               h(
                 "div",
                 { class: "task-meta" },
+                s.mine ? (s.shared ? h("span", {}, "已共享给所有人") : null) : h("span", {}, `${s.ownerName} 共享`),
                 h("span", {}, s.type === "http" ? "HTTP" : "本机进程"),
                 h("span", { class: "mono" }, s.type === "http" ? s.url : [s.command, ...s.args].join(" ")),
-                s.ask ? h("span", {}, "调用前询问") : null,
+                !s.runnable ? h("span", { class: "skill-warn" }, "已停用：本机进程只有管理员能用，请改用 HTTP 或删除") : null,
+                missing ? h("span", { class: "skill-warn" }, "密钥没填") : null,
+                s.ask || !s.mine ? h("span", {}, "调用前询问") : null,
                 h("span", {}, s.usedBy.length ? `${s.usedBy.join("、")} 在用` : "还没有专家用它"),
               ),
               s.description ? h("div", { class: "task-prompt" }, s.description) : null,
@@ -565,6 +577,40 @@ function renderMcp(box, data, reload) {
         )
       : h("div", { class: "tasks-empty" }, h("div", { class: "t" }, "还没有 MCP"), h("div", { class: "s" }, "点「添加」：本机进程（比如 npx -y some-mcp、python -m server）或者 HTTP 地址。")),
   );
+}
+
+/** 别人共享的 MCP：填自己的密钥（作者的不会给你） */
+function openMcpValues(s, secrets, reload) {
+  const rows = secrets.map((p) => {
+    const input = h("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: p.set ? "已填写（不显示），留空不改" : "填你自己的值" });
+    const clear = p.set ? h("button", { type: "button", class: "btn ghost", onclick: () => ((input.dataset.clear = "1"), (input.value = ""), (clear.hidden = true)) }, "清除") : null;
+    return { p, input, el: h("div", { class: "field" }, h("span", {}, h("code", {}, p.name)), h("div", { class: "skill-var-row" }, input, clear)) };
+  });
+  const save = h("button", { class: "btn primary" }, "保存");
+  const close = modal({
+    title: `${s.name} 的密钥`,
+    body: h("div", { class: "modal-body task-form" }, h("p", { class: "skill-note" }, `${s.ownerName} 共享的 MCP。这些值只给你自己的会话用，作者看不到；不填就不带这一项。`), rows.map((r) => r.el)),
+    foot: h("div", { class: "modal-foot" }, save),
+  });
+  rows[0]?.input.focus();
+  save.onclick = async () => {
+    const values = {};
+    for (const r of rows) {
+      if (r.input.value) values[r.p.name] = r.input.value;
+      else if (r.input.dataset.clear === "1") values[r.p.name] = null;
+    }
+    if (!Object.keys(values).length) return close();
+    save.disabled = true;
+    try {
+      await api(`/api/mcp/${s.id}/values`, { method: "PUT", body: { values } });
+      close();
+      toast("已保存，新消息起生效");
+      void reload();
+    } catch (err) {
+      save.disabled = false;
+      toast(err.message);
+    }
+  };
 }
 
 async function removeMcp(s, reload) {
@@ -611,8 +657,8 @@ function openMcpEditor(s, reload) {
   const type = h(
     "select",
     { disabled: !!s },
-    h("option", { value: "stdio", selected: (s?.type ?? "stdio") === "stdio" }, "本机进程（stdio）"),
-    h("option", { value: "http", selected: s?.type === "http" }, "HTTP 地址"),
+    canStdio || s?.type === "stdio" ? h("option", { value: "stdio", selected: (s?.type ?? (canStdio ? "stdio" : "http")) === "stdio" }, "本机进程（stdio）") : null,
+    h("option", { value: "http", selected: (s?.type ?? (canStdio ? "stdio" : "http")) === "http" }, "HTTP 地址"),
   );
   const command = h("input", { value: s?.command ?? "", placeholder: "比如 npx、python、/usr/local/bin/xxx-mcp", spellcheck: "false" });
   const args = h("textarea", { rows: 3, placeholder: "一行一个参数，比如：\n-y\n@modelcontextprotocol/server-fetch", spellcheck: "false" });
@@ -621,6 +667,7 @@ function openMcpEditor(s, reload) {
   const env = pairsEditor(s?.env, "env");
   const headers = pairsEditor(s?.headers, "header");
   const ask = h("input", { type: "checkbox", checked: !!s?.ask });
+  const shared = h("input", { type: "checkbox", checked: !!s?.shared });
   const stdioPart = h("div", { class: "field-group" }, field("命令", command), field("参数", args), field("环境变量", env.el, "比如 API 密钥。标成密钥的网页上不回显，只交给这个 MCP 进程，agent 看不到"));
   const httpPart = h("div", { class: "field-group" }, field("地址", url), field("请求头", headers.el, "比如 Authorization: Bearer xxx。标成密钥的网页上不回显"));
   const sync = () => {
@@ -638,6 +685,11 @@ function openMcpEditor(s, reload) {
     stdioPart,
     httpPart,
     field("授权", h("label", { class: "check-item" }, ask, h("span", {}, "调用它的工具前先问我（不勾就直接用：这是你自己给专家挂的）"))),
+    field(
+      "共享",
+      h("label", { class: "check-item" }, shared, h("span", {}, "共享给所有账号")),
+      "别人拿到命令、地址和普通的环境变量 / 请求头；标成「密钥」的项各自填自己的值，你填的不会给出去。取消共享后别人填的值一起删掉",
+    ),
   );
   const save = h("button", { class: "btn primary" }, s ? "保存" : "添加");
   const close = modal({ title: s ? `编辑 ${s.name}` : "添加 MCP", wide: true, body, foot: h("div", { class: "modal-foot" }, save) });
@@ -646,6 +698,7 @@ function openMcpEditor(s, reload) {
     const payload = {
       description: desc.value,
       ask: ask.checked,
+      shared: shared.checked,
       ...(type.value === "stdio"
         ? {
             command: command.value,

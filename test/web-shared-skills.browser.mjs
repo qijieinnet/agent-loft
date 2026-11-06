@@ -24,7 +24,7 @@ for (const width of [390, 1280]) {
       const skill = {
         id: "s_ab1234", name: "shared-demo", description: "共享技能说明", ownerName: "发布者", mine,
         visibility: mine ? "private" : "users", sharedWith: [], vars: [{ name: "DEMO_TOKEN", required: true, secret: true }],
-        source: "manual", updatedAt: Date.now(), installed: mine, enabled: true, canDelete: mine,
+        source: "manual", updatedAt: Date.now(), installed: mine, canInstall: !mine, hosts: {}, updatePending: false, enabled: true, canDelete: mine,
         body: "## 操作说明\n\n使用你自己的变量。", files: [{ path: "scripts/demo.sh", size: 9 }],
       };
       const data = { skills: [skill], users: [{ id: "u_reader", name: "家人" }], vars: {} };

@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { resolveWorkspacePath } from "./config.js";
-import { claudeMachineMcp, getMcp, isMachineId, machineName, specOf, type McpSpec } from "./mcp.js";
+import { canUseMcp, claudeMachineMcp, getMcp, isMachineId, machineName, specOf, type McpSpec } from "./mcp.js";
 import { activeSkills, canSee, getSkill } from "./skills.js";
 import { canUseResource, getUser } from "./users.js";
 
@@ -205,11 +205,18 @@ export function canUseExpert(owner: string | undefined, id: string): boolean {
   return e.shared === true && !!creator && !creator.disabled && canUseResource(user, "experts", id);
 }
 
-/** 发布者沿用专家原有的工具选择；其他人未配置时不加载技能和 MCP。 */
+/**
+ * 发布者沿用专家原有的工具选择。其他人自己配过就用自己的；没配过就沿用发布者选的里面他也能用的：
+ * 他自己启用着的技能（装了发布者共享的技能才算），发布者共享出来的 MCP（调用前会问，密钥用他自己的）。
+ * 发布者私有的 MCP、机器上的 MCP 不会带给别人。
+ */
 export function expertTools(owner: string, expert: Expert): ExpertTools {
   if (!canUseExpert(owner, expert.id)) throw new Error("这个专家不存在或已取消共享");
   if (expert.owner === owner) return { skills: expert.skills, mcp: expert.mcp };
-  return readJson<PersonalTools>(toolsPath, {})[owner]?.[expert.id] ?? { skills: [], mcp: [] };
+  const own = readJson<PersonalTools>(toolsPath, {})[owner]?.[expert.id];
+  if (own) return own;
+  const active = new Set(activeSkills(owner).map((s) => s.id));
+  return { skills: expert.skills.filter((id) => active.has(id)), mcp: expert.mcp.filter((id) => !isMachineId(id) && canUseMcp(owner, id)) };
 }
 
 export function setExpertTools(owner: string, id: string, input: unknown): ExpertTools {
@@ -229,7 +236,7 @@ export function setExpertTools(owner: string, id: string, input: unknown): Exper
   for (const id of next.mcp) {
     const server = getMcp(id);
     const name = isMachineId(id) ? machineName(id) : server?.name;
-    if (isMachineId(id) ? !admin || !name || !/^[A-Za-z0-9_-]{1,100}$/.test(name) : !server || server.owner !== owner) throw new Error("只能选择自己的 MCP（机器 MCP 仅管理员可选）");
+    if (isMachineId(id) ? !admin || !name || !/^[A-Za-z0-9_-]{1,100}$/.test(name) : !canUseMcp(owner, server)) throw new Error("只能选择自己的或别人共享的 MCP（机器 MCP 仅管理员可选）");
     if (names.has(name!)) throw new Error(`MCP 服务名重复：${name}`);
     names.add(name!);
   }
@@ -309,8 +316,8 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
     return !!s && canSee({ id: owner }, s);
   });
 
-  // MCP：自己的；机器上的只有管理员能选
-  const mcp = ids(pick("mcp")).filter((id) => (isMachineId(id) ? admin && machineName(id).length > 0 : getMcp(id)?.owner === owner));
+  // MCP：自己的和别人共享的；机器上的只有管理员能选
+  const mcp = ids(pick("mcp")).filter((id) => (isMachineId(id) ? admin && machineName(id).length > 0 : canUseMcp(owner, id)));
 
   // 子智能体：自己的 Claude 专家，权限不能比自己高，不能是自己
   const subRaw = engine === "claude" ? ids(pick("subagents")) : [];
@@ -473,10 +480,12 @@ export function resolveMcp(expert: Pick<Expert, "owner" | "engine" | "mcp">, adm
       else if (claudeMachine[name]) mcp[name] = claudeMachine[name]!;
       continue;
     }
+    // expert.owner 在这里是用这个专家的人（见 expertRuntime）
     const s = getMcp(id);
-    if (!s || s.owner !== expert.owner) continue;
-    mcp[s.name] = specOf(s);
-    if (s.ask) ask.push(s.name);
+    if (!s || !canUseMcp(expert.owner, s)) continue;
+    mcp[s.name] = specOf(s, expert.owner);
+    // 别人共享的：调用前一律先问
+    if (s.ask || s.owner !== expert.owner) ask.push(s.name);
   }
   return { mcp, ask, machine };
 }

@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "./config.js";
-import { activeSkills, parseSkillMd, pluginsRoot, protectedNames, skillDir, skillEnv, userPrefs, type Skill } from "./skills.js";
+import { activeSkills, allowedHosts, guardedNames, parseSkillMd, pluginsRoot, skillDir, skillEnv, userPrefs, type Skill } from "./skills.js";
 import { SKILLS_MCP_NAME } from "./tasks-mcp.js";
 import type { SessionSkills } from "./types.js";
 import { getUser } from "./users.js";
@@ -152,11 +152,12 @@ export function syncPluginDir(userId: string, skills: Skill[], scope?: string): 
 /** 受保护的密钥怎么用：只能经 skill_request 代发。没有就是空 */
 function protectedLines(skills: Skill[], userId: string): string[] {
   const prefs = userPrefs(userId);
-  const names = [...protectedNames(skills)].filter((n) => prefs.vars[n] !== undefined);
+  const declared = new Set(skills.flatMap((s) => s.vars.map((v) => v.name)));
+  const names = [...guardedNames(userId)].filter((n) => declared.has(n) && prefs.vars[n] !== undefined);
   if (!names.length) return [];
   return [
-    `这些密钥受保护，不在环境变量里，你也看不到值：${names.map((n) => `${n}（只能发往 ${(prefs.approved[n] ?? []).join("、") || "用户还没确认的地址"}）`).join("；")}。` +
-      `要调用接口时用 ${SKILLS_MCP_NAME} 的 skill_request 工具，在 url、headers 或 body 里写 {{变量名}}，agent-loft 发请求时才换成真值。技能说明里写的是 curl $变量名 的，换成 skill_request 来发。`,
+    `这些密钥受保护，不在环境变量里，你也看不到值：${names.map((n) => `${n}（只能发往 ${allowedHosts(prefs, skills, n).join("、") || "用户还没确认的地址"}）`).join("；")}。` +
+      `要调用接口时用 ${SKILLS_MCP_NAME} 的 skill_request 工具，在 headers 或 url 的查询参数（? 后面）里写 {{变量名}}，agent-loft 发请求时才换成真值；受保护的密钥不能写进 body 和 url 的主机、路径。技能说明里写的是 curl $变量名 的，换成 skill_request 来发。`,
   ];
 }
 

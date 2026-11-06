@@ -189,7 +189,7 @@ const SKILL_TOOLS = [
     name: "skill_request",
     description:
       "替你发一个 HTTP 请求，url、headers、body 里的 {{变量名}} 由 agent-loft 换成用户在技能里填的值 —— 你看不到密钥本身。" +
-      "技能里的受保护密钥（list_skills 里标了「受保护」的）只能这样用，而且只能发往用户确认过的地址；普通变量也可以这样用。" +
+      "技能里的受保护密钥（list_skills 里标了「受保护」的）只能这样用：只能写在 headers 或 url 的查询参数（? 后面）里，不能写进 body 和 url 的主机、路径；只发往用户确认过的地址，公网地址要用 https。普通变量写在哪都行。" +
       "不跟随跳转；响应里出现的变量值会被抹掉；最多返回 256KB 文本。",
     inputSchema: {
       type: "object",

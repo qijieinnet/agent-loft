@@ -324,3 +324,16 @@ test("停用发布者收回共享使用权，删用户清理本人及所发布�
   tools = JSON.parse(fs.readFileSync(path.join(home, "data", "expert-tools.json"), "utf8"));
   assert.equal(tools[family.id]?.[shared.id], undefined);
 });
+
+test("共享专家：使用者没配过工具时，沿用发布者选的里面他能用的（装了的技能、共享的 MCP）", () => {
+  const neighbor = users.createUser({ name: "neighbor", password: "password-1" });
+  const sk = skills.createSkill(creator.id, { name: "shared-sk", description: "d", body: "b", visibility: "all" }, "manual");
+  const sharedMcp = mcp.createMcp(creator.id, { name: "weather", type: "http", url: "https://w.example/mcp", headers: [{ name: "Authorization", value: "creator-weather", secret: true }], shared: true });
+  const e = experts.createExpert(creator.id, { name: "共享默认", engine: "claude", access: "web", shared: true, skills: [sk.id, personal.id], mcp: [sharedMcp.id, ownMcp.id, "machine:local"] });
+  assert.deepEqual(experts.expertTools(neighbor.id, e), { skills: [], mcp: [sharedMcp.id] }, "私有的 MCP、机器 MCP、没装的技能不带");
+  skills.installSkill(neighbor.id, sk.id, true);
+  assert.deepEqual(experts.expertTools(neighbor.id, e), { skills: [sk.id], mcp: [sharedMcp.id] });
+  const rt = experts.expertRuntime(e, subPrompt, neighbor.id);
+  assert.deepEqual(rt.askMcp, ["weather"], "别人共享的 MCP 调用前要问");
+  assert.deepEqual(rt.mcp.weather, { type: "http", url: "https://w.example/mcp", headers: {} }, "作者的密钥不给别人");
+});

@@ -3,7 +3,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { ENGINES, resolveMcp, type Engine } from "./experts.js";
-import { getMcp, isMachineId, machineName } from "./mcp.js";
+import { canUseMcp, getMcp, isMachineId, machineName } from "./mcp.js";
 import { activeSkills } from "./skills.js";
 import { sessionSkills } from "./skill-runtime.js";
 import { getUser } from "./users.js";
@@ -64,7 +64,7 @@ export function setBuiltinAgentDefaults(owner: string, patch: unknown): Defaults
       for (const id of ids ?? []) {
         const server = getMcp(id);
         const name = isMachineId(id) ? machineName(id) : server?.name;
-        if (isMachineId(id) ? user.role !== "admin" || !name || !/^[A-Za-z0-9_-]{1,100}$/.test(name) : !server || server.owner !== owner) throw new Error("只能选择自己的 MCP（机器 MCP 仅管理员可选）");
+        if (isMachineId(id) ? user.role !== "admin" || !name || !/^[A-Za-z0-9_-]{1,100}$/.test(name) : !canUseMcp(owner, server)) throw new Error("只能选择自己的或别人共享的 MCP（机器 MCP 仅管理员可选）");
         if (names.has(name!)) throw new Error(`MCP 服务名重复：${name}`);
         names.add(name!);
       }

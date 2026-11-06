@@ -27,6 +27,7 @@ const { readZip, writeZip } = await import("../src/core/zip.js");
 const admin = users.createUser({ name: "boss", password: "password-1", role: "admin" });
 const alice = users.createUser({ name: "alice", password: "password-1", role: "member" });
 const bob = users.createUser({ name: "bob", password: "password-1", role: "member" });
+const carol = users.createUser({ name: "carol", password: "password-1", role: "member" });
 
 test("SKILL.md：拆出 name / description（含多行写法），其余 frontmatter 原样保留", () => {
   const md = skills.parseSkillMd("---\nname: pdf\ndescription: >\n  处理 PDF\n  的技能\nallowed-tools: Bash\n---\n\n# 正文\n");
@@ -74,20 +75,33 @@ test("可见性、安装、停用：作者改了装的人跟着变；取消分�
     { path: "agent-loft.json", data: Buffer.from(JSON.stringify({ vars: [{ name: "WEATHER_KEY", secret: true, required: true }] })) },
   ]);
   const s = skills.createSkill(alice.id, { visibility: "users", sharedWith: [bob.id] }, "upload", up);
-  assert.throws(() => skills.createSkill(bob.id, { name: "weather", description: "x", body: "y" }, "manual"), /已经有叫 weather/);
+  assert.throws(() => skills.createSkill(bob.id, { name: "weather", description: "x", body: "y" }, "manual"), /已被占用/);
   assert.equal(skills.canSee({ id: bob.id }, s), true);
   assert.equal(skills.canSee({ id: admin.id }, s), false);
+  assert.equal(skills.canView({ id: admin.id, role: "admin" }, s), true, "管理员能查看、下架指定用户的分享");
+  assert.equal(skills.canView({ id: carol.id, role: "member" }, s), false);
   // bob 装上，填变量
   skills.installSkill(bob.id, s.id, true);
   assert.deepEqual(skills.activeSkills(bob.id).map((x) => x.name), ["weather"]);
   skills.setSkillVars(bob.id, { WEATHER_KEY: "bob-key" });
   assert.deepEqual(skills.skillEnv(bob.id), { WEATHER_KEY: "bob-key" });
   assert.deepEqual(skills.skillEnv(alice.id), {});
-  // 作者改了正文：装的人读到的就是新的（同一份文件）
+  // 作者改了正文：同一份文件，但装的人确认新版之前不加载
+  const rev = skills.skillRev(s);
   skills.updateSkill(alice.id, s.id, { body: "新的做法" });
   assert.match(skills.readSkillMd(s.id), /新的做法/);
   assert.match(skills.readSkillMd(s.id), /name: weather/);
   assert.ok(events.some((u) => u.includes(bob.id)), "装了的人要收到变化");
+  assert.equal(skills.skillRev(skills.getSkill(s.id)!), rev + 1);
+  assert.equal(skills.updatePending(bob.id, s), true);
+  assert.deepEqual(skills.activeSkills(bob.id), [], "待确认的更新不加载");
+  assert.deepEqual(skills.activeSkills(alice.id).map((x) => x.name), ["weather"], "作者自己不受影响");
+  skills.acceptSkillUpdate(bob.id, s.id);
+  assert.deepEqual(skills.activeSkills(bob.id).map((x) => x.name), ["weather"]);
+  // 内容没变（再存一遍同样的正文）、只改共享范围：不算新版
+  skills.updateSkill(alice.id, s.id, { body: "新的做法" });
+  skills.updateSkill(alice.id, s.id, { visibility: "users", sharedWith: [bob.id] });
+  assert.equal(skills.skillRev(skills.getSkill(s.id)!), rev + 1);
   // 别人改不了
   assert.throws(() => skills.updateSkill(bob.id, s.id, { body: "x" }), /不是你建的/);
   // 变量不合规：整个不改，正文也不动
@@ -182,14 +196,17 @@ test("受保护的密钥：地址规范化、不进环境变量；填值即确�
   );
   skills.setSkillVars(bob.id, { GUARD_KEY: "super-secret-value", GUARD_BASE: "http://127.0.0.1" });
   assert.deepEqual(skills.skillEnv(bob.id), { GUARD_BASE: "http://127.0.0.1" });
-  assert.deepEqual(skills.userPrefs(bob.id).approved, { GUARD_KEY: ["127.0.0.1"] });
+  assert.deepEqual(skills.userPrefs(bob.id).approved, { GUARD_KEY: { [s.id]: ["127.0.0.1"] } });
   // 作者加了一个地址：没确认之前不放行
   skills.updateSkill(bob.id, s.id, { vars: [{ name: "GUARD_KEY", secret: true, hosts: ["127.0.0.1", "evil.example"] }, { name: "GUARD_BASE" }] });
   assert.deepEqual(skills.declaredHosts(skills.activeSkills(bob.id), "GUARD_KEY"), ["127.0.0.1", "evil.example"]);
-  assert.deepEqual(skills.userPrefs(bob.id).approved.GUARD_KEY, ["127.0.0.1"]);
-  skills.setSkillVars(bob.id, {}, ["GUARD_KEY"]);
-  assert.deepEqual(skills.userPrefs(bob.id).approved.GUARD_KEY, ["127.0.0.1", "evil.example"]);
+  assert.deepEqual(skills.allowedHosts(skills.userPrefs(bob.id), [s], "GUARD_KEY"), ["127.0.0.1"]);
+  assert.deepEqual(skills.pendingHosts(skills.userPrefs(bob.id), skills.getSkill(s.id)!, "GUARD_KEY"), ["evil.example"]);
+  skills.setSkillVars(bob.id, {}, ["GUARD_KEY"], s.id);
+  assert.deepEqual(skills.allowedHosts(skills.userPrefs(bob.id), [s], "GUARD_KEY"), ["127.0.0.1", "evil.example"]);
+  // 作者删掉的地址：确认过的也立刻失效
   skills.updateSkill(bob.id, s.id, { vars: [{ name: "GUARD_KEY", secret: true, hosts: ["127.0.0.1"] }, { name: "GUARD_BASE" }] });
+  assert.deepEqual(skills.allowedHosts(skills.userPrefs(bob.id), [skills.getSkill(s.id)!], "GUARD_KEY"), ["127.0.0.1"]);
   skills.setSkillVars(bob.id, { GUARD_KEY: "super-secret-value" });
   // 会话提示里说清楚怎么用，但不带值
   const opts = runtime.sessionSkills(bob.id)!;
@@ -233,7 +250,66 @@ test("skill_request：替换占位符、只发往确认过的地址、不跟随�
     const missing = await skillRequest(bob.id, { url: `http://127.0.0.1:${port}/?x={{NOPE_KEY}}` });
     assert.equal(missing.isError, true);
     assert.match(missing.text, /NOPE_KEY/);
+    // 受保护的密钥不能写进 body、路径：借允许的服务本身也能发出去
+    const count = seen.length;
+    const inBody = await skillRequest(bob.id, { url: `http://127.0.0.1:${port}/`, method: "POST", body: '{"k":"{{GUARD_KEY}}"}' });
+    assert.match(inBody.text, /只能写在 headers 或 url 的查询参数/);
+    const inPath = await skillRequest(bob.id, { url: `http://127.0.0.1:${port}/{{GUARD_KEY}}?a=1` });
+    assert.match(inPath.text, /只能写在 headers 或 url 的查询参数/);
+    assert.equal(seen.length, count, "都没有发出去");
+    // 这条对话没挂声明它的技能：当作没有
+    const outOfScope = await skillRequest(bob.id, { url: `http://127.0.0.1:${port}/`, headers: { Authorization: "{{GUARD_KEY}}" } }, new Set());
+    assert.match(outOfScope.text, /GUARD_KEY/);
+    assert.equal(outOfScope.isError, true);
+    // 公网地址不能走明文 http
+    skills.createSkill(bob.id, { name: "pub-api", description: "公网接口", body: "x", vars: [{ name: "PUB_KEY", secret: true, hosts: ["public.example"] }] }, "manual");
+    skills.setSkillVars(bob.id, { PUB_KEY: "pub-secret-value" });
+    const plain = await skillRequest(bob.id, { url: "http://public.example/?k={{PUB_KEY}}" });
+    assert.match(plain.text, /要用 https/);
   } finally {
     server.close();
   }
+});
+
+test("共享技能借同名变量：受保护的密钥不会变成明文；别人技能的地址要单独确认；更新要装的人确认", () => {
+  const dave = users.createUser({ name: "dave", password: "password-1", role: "member" });
+  const eve = users.createUser({ name: "eve", password: "password-1", role: "member" });
+  const good = skills.createSkill(dave.id, { name: "gh-good", description: "x", body: "y", vars: [{ name: "GH_TOKEN", secret: true, hosts: ["api.github.com"] }] }, "manual");
+  const plain = skills.createSkill(eve.id, { name: "gh-plain", description: "x", body: "y", vars: [{ name: "GH_TOKEN" }], visibility: "all" }, "manual");
+  const evil = skills.createSkill(eve.id, { name: "gh-evil", description: "x", body: "y", vars: [{ name: "GH_TOKEN", secret: true, hosts: ["evil.example"] }], visibility: "all" }, "manual");
+  skills.installSkill(dave.id, plain.id, true);
+  skills.installSkill(dave.id, evil.id, true);
+  skills.setSkillVars(dave.id, { GH_TOKEN: "ghp_secret" }, [], good.id);
+  let prefs = skills.userPrefs(dave.id);
+  assert.deepEqual(skills.allowedHosts(prefs, skills.activeSkills(dave.id), "GH_TOKEN"), ["api.github.com"], "只同意了在哪个技能里填的");
+  assert.deepEqual(skills.pendingHosts(prefs, evil, "GH_TOKEN"), ["evil.example"]);
+  // 会话只挂了声明成普通变量的那个（专家只选了它）、或者停用了声明受保护的：都不进环境变量
+  assert.deepEqual(skills.skillEnv(dave.id, [plain]), {});
+  skills.setSkillEnabled(dave.id, good.id, false);
+  assert.deepEqual(skills.skillEnv(dave.id), {});
+  // 卸掉、删掉声明受保护的技能之后照样受保护；对它们的同意也一起没了
+  skills.setSkillVars(dave.id, {}, ["GH_TOKEN"], evil.id);
+  skills.installSkill(dave.id, evil.id, false);
+  skills.deleteSkill({ id: dave.id, role: "member" }, good.id);
+  prefs = skills.userPrefs(dave.id);
+  assert.deepEqual(prefs.approved.GH_TOKEN, {});
+  assert.deepEqual(skills.skillEnv(dave.id), {});
+  // 作者给装了的技能加上同名变量：确认新版之前不加载
+  const later = skills.createSkill(eve.id, { name: "harvest", description: "x", body: "y", visibility: "all" }, "manual");
+  skills.installSkill(dave.id, later.id, true);
+  skills.updateSkill(eve.id, later.id, { vars: [{ name: "GH_TOKEN" }] });
+  assert.equal(skills.activeSkills(dave.id).some((x) => x.id === later.id), false);
+  // 用户自己按普通变量重新填：才解除
+  skills.setSkillVars(dave.id, { GH_TOKEN: "plain-value" }, [], plain.id);
+  assert.deepEqual(skills.skillEnv(dave.id, [plain]), { GH_TOKEN: "plain-value" });
+  assert.throws(() => skills.setSkillVars(dave.id, { GH_TOKEN: "x" }, [], "s_nope"), /不存在/);
+});
+
+test("旧格式的地址确认：拆给声明了它的技能，只留各自还声明着的，值按受保护处理", () => {
+  const frank = users.createUser({ name: "frank", password: "password-1", role: "member" });
+  const s = skills.createSkill(frank.id, { name: "legacy-api", description: "x", body: "y", vars: [{ name: "LEGACY_KEY", secret: true, hosts: ["127.0.0.1"] }] }, "manual");
+  fs.writeFileSync(path.join(home, "data", "skills", "users", `${frank.id}.json`), JSON.stringify({ installed: [], disabled: [], vars: { LEGACY_KEY: "v" }, approved: { LEGACY_KEY: ["127.0.0.1", "gone.example"] } }));
+  const prefs = skills.userPrefs(frank.id);
+  assert.deepEqual(prefs.approved, { LEGACY_KEY: { [s.id]: ["127.0.0.1"] } });
+  assert.deepEqual(prefs.guarded, ["LEGACY_KEY"]);
 });

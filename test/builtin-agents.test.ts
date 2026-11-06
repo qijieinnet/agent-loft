@@ -29,7 +29,7 @@ const a = skills.createSkill(alice.id, { name: "alpha", description: "A", body: 
 const b = skills.createSkill(alice.id, { name: "beta", description: "B", body: "B" }, "manual");
 const foreign = skills.createSkill(bob.id, { name: "foreign", description: "F", body: "F" }, "manual");
 const server = mcp.createMcp(alice.id, { name: "remote", type: "http", url: "https://mcp.example.com", headers: [{ name: "Authorization", value: "secret-value", secret: true }], ask: true });
-const otherServer = mcp.createMcp(bob.id, { name: "other", type: "stdio", command: "other-mcp" });
+const otherServer = mcp.createMcp(bob.id, { name: "other", type: "http", url: "https://other.example/mcp" });
 
 test("内置默认配置按账号、引擎保存，拒绝跨账号、越权和错误输入，失败不保存半份配置", () => {
   assert.deepEqual(defaults.builtinAgentDefaults(admin.id).claude, { skills: null, machineSkills: true, mcp: null });

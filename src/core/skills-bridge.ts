@@ -9,15 +9,19 @@ import { hub } from "./hub.js";
 import { interactions } from "./interactions.js";
 import { config } from "./config.js";
 import { TASK_TOOL_TIMEOUT_SEC } from "./tasks-mcp.js";
+import { builtinAgentDefaults } from "./builtin-agents.js";
+import { expertTools, getExpert, isBuiltin } from "./experts.js";
+import { getConversation } from "./store.js";
 import {
   activeSkills,
+  allowedHosts,
   canSee,
   cleanVars,
   createSkill,
   findSkillByName,
+  guardedNames,
   hostAllowed,
   isProtected,
-  protectedNames,
   listFiles,
   readSkillFile,
   readSkillMd,
@@ -39,33 +43,91 @@ const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 const RESPONSE_MAX = 256 * 1024;
 const PLACEHOLDER = /\{\{\s*([A-Z][A-Z0-9_]{1,63})\s*\}\}/g;
 
-/** 响应里出现了密钥的值（接口回显、报错里带着）：换掉，别让它回到模型手里 */
+/** 响应里出现了密钥的值（接口回显、报错里带着）：原文、URL 编码、base64 的都换掉，别让它回到模型手里 */
 function redact(text: string, secrets: [string, string][]): string {
   let out = text;
-  for (const [name, value] of secrets) if (value.length >= 4) out = out.split(value).join(`[已隐藏 ${name}]`);
+  for (const [name, value] of secrets) {
+    const forms = new Set([value, encodeURIComponent(value), Buffer.from(value, "utf8").toString("base64"), Buffer.from(value, "utf8").toString("base64url")]);
+    for (const f of [...forms].sort((x, y) => y.length - x.length)) if (f.length >= 4) out = out.split(f).join(`[已隐藏 ${name}]`);
+  }
   return out;
 }
 
+/** 局域网、本机的地址：受保护的密钥只有发往这些时才允许走明文 http */
+function isPrivateHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    h === "localhost" ||
+    h === "::1" ||
+    h.endsWith(".local") ||
+    h.endsWith(".lan") ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+    /^169\.254\./.test(h)
+  );
+}
+
 /**
- * 按 agent 给的 url / headers / body 发一个 HTTP 请求，里面的 {{NAME}} 换成用户填的变量值。
- * 受保护的密钥只能发往用户确认过的地址（换完之后的地址：密钥塞进主机名里也逃不掉检查），
+ * 这条对话的会话挂了哪些技能（和 hub 开会话时的算法一样）：自定义专家选中的（连同子智能体的）、
+ * 内置 Agent 默认加载的。undefined = 全部启用着的。
+ */
+export function skillScope(userId: string, convKey: string): Set<string> | undefined {
+  const conv = getConversation(convKey);
+  if (!conv) return new Set();
+  try {
+    if (conv.expert) {
+      const e = getExpert(conv.expert);
+      if (!e) return new Set();
+      const ids = new Set(expertTools(userId, e).skills);
+      for (const subId of e.subagents) {
+        const sub = getExpert(subId);
+        if (!sub || sub.owner !== e.owner) continue;
+        try {
+          for (const id of expertTools(userId, sub).skills) ids.add(id);
+        } catch {
+          // 子智能体取消共享了：它的技能不算
+        }
+      }
+      return ids;
+    }
+    if (isBuiltin(conv.agent)) {
+      const picked = builtinAgentDefaults(userId)[conv.agent].skills;
+      return picked ? new Set(picked) : undefined;
+    }
+  } catch {
+    return new Set();
+  }
+  return undefined;
+}
+
+type Where = "header" | "query" | "url" | "body";
+
+/**
+ * 按 agent 给的 url / headers / body 发一个 HTTP 请求，里面的 {{NAME}} 换成用户填的变量值。只认这条对话
+ * 挂着的技能（scope）声明过的变量。受保护的密钥：
+ *   - 只能发往用户对这些技能确认过、技能现在还声明着的地址（按换完之后的地址查：塞进主机名里也逃不掉）；
+ *   - 只能写在请求头和 url 的查询参数里 —— 写进 body 就能借允许的服务本身发出去（比如建一个公开的 gist）；
+ *   - 只走 https，局域网、本机的地址才允许 http。
  * 不跟随跳转（跳到别处会把带着密钥的请求带过去），响应里出现的变量值一律抹掉。
  */
-export async function skillRequest(userId: string, args: Record<string, unknown>): Promise<Reply> {
+export async function skillRequest(userId: string, args: Record<string, unknown>, scope?: Set<string>): Promise<Reply> {
   const prefs = userPrefs(userId);
-  const skills = activeSkills(userId);
-  const guarded = protectedNames(skills);
+  const skills = activeSkills(userId).filter((sk) => !scope || scope.has(sk.id));
+  const guarded = guardedNames(userId);
   const declared = new Set(skills.flatMap((sk) => sk.vars.map((v) => v.name)));
   const method = String(args.method ?? "GET").toUpperCase();
   if (!METHODS.includes(method)) return fail(`method 只能是 ${METHODS.join("、")}`);
   const rawHeaders = args.headers && typeof args.headers === "object" ? (args.headers as Record<string, unknown>) : {};
   const body = args.body === undefined || args.body === null ? undefined : String(args.body);
 
-  const used = new Set<string>();
+  const used = new Map<string, Set<Where>>();
   const missing = new Set<string>();
-  const fillIn = (text: string, encode: boolean) =>
-    text.replace(PLACEHOLDER, (m, name: string) => {
-      used.add(name);
+  const fillIn = (text: string, where: (offset: number) => Where, encode: boolean) =>
+    text.replace(PLACEHOLDER, (m, name: string, offset: number) => {
+      if (!used.has(name)) used.set(name, new Set());
+      used.get(name)!.add(where(offset));
       const value = declared.has(name) ? prefs.vars[name] : undefined;
       if (value === undefined) {
         missing.add(name);
@@ -73,22 +135,29 @@ export async function skillRequest(userId: string, args: Record<string, unknown>
       }
       return encode ? encodeURIComponent(value) : value;
     });
+  const rawUrl = String(args.url ?? "");
+  const q = rawUrl.indexOf("?");
+  const hash = rawUrl.indexOf("#");
+  const inQuery = (offset: number): Where => (q >= 0 && offset > q && (hash < 0 || offset < hash) ? "query" : "url");
   let url: URL;
   try {
-    url = new URL(fillIn(String(args.url ?? ""), true));
+    url = new URL(fillIn(rawUrl, inQuery, true));
   } catch {
     return fail("url 不是合法的地址。");
   }
   const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(rawHeaders)) headers[k] = fillIn(String(v), false);
-  const filledBody = body === undefined ? undefined : fillIn(body, false);
+  for (const [k, v] of Object.entries(rawHeaders)) headers[k] = fillIn(String(v), () => "header", false);
+  const filledBody = body === undefined ? undefined : fillIn(body, () => "body", false);
   if (missing.size) {
-    return fail(`这些变量用户还没配（或者没有启用着的技能声明过）：${[...missing].join("、")}。请用户去网页侧栏「技能」里填好，下一条消息起可用。`);
+    return fail(`这些变量用户还没配（或者这个会话挂着的技能都没声明过）：${[...missing].join("、")}。请用户去网页侧栏「技能」里填好，下一条消息起可用。`);
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return fail("只支持 http 和 https。");
-  for (const name of used) {
+  for (const [name, where] of used) {
     if (!guarded.has(name)) continue;
-    const allowed = prefs.approved[name] ?? [];
+    if (where.has("body") || where.has("url")) {
+      return fail(`${name} 是受保护的密钥，只能写在 headers 或 url 的查询参数（? 后面）里，不能写进 body 或 url 的主机、路径。没有发出去。`);
+    }
+    const allowed = allowedHosts(prefs, skills, name);
     if (!hostAllowed(allowed, url)) {
       return fail(
         allowed.length
@@ -96,9 +165,10 @@ export async function skillRequest(userId: string, args: Record<string, unknown>
           : `${name} 允许发往的地址用户还没确认（技能作者可能改过），请用户去网页侧栏「技能」里确认一下。`,
       );
     }
+    if (url.protocol === "http:" && !isPrivateHost(url.hostname)) return fail(`${name} 是受保护的密钥，发往公网地址要用 https，没有发出去。`);
   }
 
-  const secrets: [string, string][] = Object.entries(prefs.vars).filter(([k]) => declared.has(k));
+  const secrets: [string, string][] = Object.entries(prefs.vars).filter(([k]) => declared.has(k) || guarded.has(k));
   let res: Response;
   try {
     res = await fetch(url, {
@@ -181,15 +251,16 @@ function cardOf(fields: { name: string; description?: string; body?: string; fil
 function describe(s: Skill, userId: string): string {
   const vars = userPrefs(userId).vars;
   const v = s.vars.length
-    ? ` · 变量 ${s.vars.map((x) => `${x.name}${vars[x.name] !== undefined ? "（已配）" : x.required ? "（未配，必填）" : "（未配）"}${isProtected(x) ? `（受保护，只能用 skill_request 发往 ${x.hosts!.join("、")}）` : ""}`).join("、")}`
+    ? ` · 变量 ${s.vars.map((x) => `${x.name}${vars[x.name] !== undefined ? "（已配）" : x.required ? "（未配，必填）" : "（未配）"}${isProtected(x) ? `（受保护，只能用 skill_request 发往 ${allowedHosts(userPrefs(userId), [s], x.name).join("、") || "用户还没确认的地址"}）` : ""}`).join("、")}`
     : "";
   return `- ${s.name}：${s.description}${s.owner === userId ? "（自己建的）" : `（${getUser(s.owner)?.name ?? "别人"}建的）`}${v}`;
 }
 
 export async function skillToolCall(userId: string, convKey: string, tool: string, args: Record<string, unknown>): Promise<Reply> {
-  if (tool === "skill_request") return skillRequest(userId, args);
+  if (tool === "skill_request") return skillRequest(userId, args, skillScope(userId, convKey));
   if (tool === "list_skills") {
-    const list = activeSkills(userId);
+    const scope = skillScope(userId, convKey);
+    const list = activeSkills(userId).filter((s) => !scope || scope.has(s.id));
     if (!list.length) return { text: "用户在 agent-loft 里还没有启用任何技能。" };
     return { text: `用户启用着的技能（${list.length} 个）：\n${list.map((s) => describe(s, userId)).join("\n")}` };
   }
@@ -230,7 +301,7 @@ export async function skillToolCall(userId: string, convKey: string, tool: strin
     }
     const description = String(args.description ?? "").trim();
     const body = String(args.body ?? "").trim();
-    if (findSkillByName(name)) return fail(`已经有叫 ${name} 的技能了（可能是别人建的），换个名字；要改自己的用 update_skill。`);
+    if (findSkillByName(name)) return fail(`技能名 ${name} 已被占用，换个名字；要改自己的用 update_skill。`);
     const ok = await confirm(convKey, `新建技能「${name}」`, `${cardOf({ name, description, body, files: [...files.keys()], vars })}\n\n建好后只有你自己看得到，可以在网页侧栏「技能」里修改、分享给别人。`);
     if (!ok) return fail("用户没有同意，技能没有建。");
     try {
@@ -269,7 +340,7 @@ export async function skillToolCall(userId: string, convKey: string, tool: strin
         ...(changes.write ? { files: [...changes.write.keys()] } : {}),
         ...(changes.remove ? { removed: changes.remove } : {}),
         ...(vars ? { vars } : {}),
-      })}${s.visibility !== "private" ? "\n\n这个技能分享给了别人，改了之后装了它的人也会用上新的。" : ""}`,
+      })}${s.visibility !== "private" ? "\n\n这个技能分享给了别人：内容有变化时，装了它的人要在网页上确认新版之后才会加载。" : ""}`,
     );
     if (!ok) return fail("用户没有同意，技能没有改。");
     try {

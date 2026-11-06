@@ -364,7 +364,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
         this.dropIfStale(key);
       }
     });
-    mcpEvents.on("changed", (owner) => this.personalChanged(new Set([owner])));
+    mcpEvents.on("changed", (users) => this.personalChanged(new Set(users)));
     builtinAgentEvents.on("changed", (owner) => this.personalChanged(new Set([owner])));
     // workspaceRoot 改了：store 会把没显式 /cd 过的会话目录重置，正在跑的旧目录会话要作废
     onConfigChange((next, prev) => {

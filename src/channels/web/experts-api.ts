@@ -23,9 +23,9 @@ import { builtinAgentDefaults, setBuiltinAgentDefaults } from "../../core/builti
 import { hub } from "../../core/hub.js";
 import { config } from "../../core/config.js";
 import { shellInfo } from "../../core/servers.js";
-import { claudeMachineMcp, createMcp, deleteMcp, getMcp, listMcp, MACHINE_PREFIX, MCP_LIMITS, mcpView, updateMcp, type McpInput } from "../../core/mcp.js";
+import { canUseMcp, claudeMachineMcp, createMcp, deleteMcp, getMcp, listUsableMcp, MACHINE_PREFIX, MCP_LIMITS, mcpView, setMcpUserValues, updateMcp, type McpInput, type McpServer } from "../../core/mcp.js";
 import { activeSkills } from "../../core/skills.js";
-import { isAdmin, type User } from "../../core/users.js";
+import { getUser, isAdmin, type User } from "../../core/users.js";
 import { HttpError, readJsonBody, sendJson } from "./http.js";
 
 const bad = (err: unknown) => (err instanceof HttpError ? err : new HttpError(400, err instanceof Error ? err.message : String(err)));
@@ -91,6 +91,17 @@ async function machineMcp(user: User): Promise<{ claude: string[]; codex: string
   return { claude: enabled.has("claude") ? Object.keys(claudeMachineMcp()) : [], codex };
 }
 
+/** 选工具时列出的 MCP：自己的，加上别人共享的（说明里带上是谁共享的） */
+function mcpChoices(user: User) {
+  return listUsableMcp(user.id).map((s: McpServer) => ({
+    id: s.id,
+    name: s.name,
+    description: s.owner === user.id ? s.description : `${getUser(s.owner)?.name ?? "别人"}共享${s.description ? ` · ${s.description}` : ""}`,
+    type: s.type,
+    ...(s.owner === user.id ? {} : { shared: true }),
+  }));
+}
+
 /** 处理了就返回 true */
 export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse, p: string, user: User): Promise<boolean> {
   const method = req.method ?? "GET";
@@ -99,7 +110,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     sendJson(res, 200, {
       agents: Object.fromEntries(Object.entries(builtinAgentDefaults(user.id)).filter(([id]) => canUseExpert(user.id, id))),
       skills: activeSkills(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
-      mcp: listMcp(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
+      mcp: mcpChoices(user),
       ...(await machineMcp(user).then((m) => m ? { machineMcp: m, machinePrefix: MACHINE_PREFIX } : {})),
     });
     return true;
@@ -124,7 +135,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
       templates: EXPERT_TEMPLATES.map((t) => ({ id: t.id, label: t.label, expert: t.expert })),
       access: ACCESS_LEVELS.map((id) => ({ id, label: ACCESS_LABEL[id] })),
       skills: activeSkills(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
-      mcp: listMcp(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description, type: s.type })),
+      mcp: mcpChoices(user),
       ...(await machineMcp(user).then((m) => (m ? { machineMcp: m, machinePrefix: MACHINE_PREFIX } : {}))),
       limits: EXPERT_LIMITS,
     });
@@ -207,8 +218,10 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   if (p === "/api/mcp" && method === "GET") {
     const experts = availableExperts(user.id);
     sendJson(res, 200, {
-      servers: listMcp(user.id).map((s) => ({ ...mcpView(s), usedBy: experts.filter((e) => expertTools(user.id, e).mcp.includes(s.id)).map((e) => e.name) })),
+      servers: listUsableMcp(user.id).map((s) => ({ ...mcpView(s, user.id), usedBy: experts.filter((e) => expertTools(user.id, e).mcp.includes(s.id)).map((e) => e.name) })),
       limits: MCP_LIMITS,
+      // 成员不能添加 stdio（会在服务器上执行命令）
+      stdio: isAdmin(user),
     });
     return true;
   }
@@ -220,6 +233,20 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     } catch (err) {
       throw bad(err);
     }
+    return true;
+  }
+
+  const mv = /^\/api\/mcp\/(m_[a-f0-9]+)\/values$/.exec(p);
+  if (mv && method === "PUT") {
+    const server = getMcp(mv[1]!);
+    if (!server || server.owner === user.id || !canUseMcp(user.id, server)) throw new HttpError(404, "这个 MCP 不存在");
+    const body = await readJsonBody<{ values?: unknown }>(req);
+    try {
+      setMcpUserValues(user.id, server.id, body.values ?? {});
+    } catch (err) {
+      throw bad(err);
+    }
+    sendJson(res, 200, mcpView(server, user.id));
     return true;
   }
 

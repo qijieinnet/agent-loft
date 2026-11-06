@@ -121,7 +121,7 @@ function renderList() {
   if (K.tab === "shared") {
     const list = shared().filter(matches);
     return [
-      h("p", { class: "skill-note" }, "这里是其他用户共享给你的技能。安装前可点开查看说明和附带文件；安装后跟随作者更新，撤回共享后将无法再用。变量和密钥使用你自己填写的值。"),
+      h("p", { class: "skill-note" }, "这里是其他用户共享给你的技能。安装前可点开查看说明和附带文件；作者改了内容后，要你看过并确认新版才会继续加载，撤回共享后将无法再用。变量和密钥使用你自己填写的值。"),
       list.length ? h("div", { class: "task-list" }, list.map(sharedCard)) : h("div", { class: "skill-empty" }, K.query ? "没有找到" : "还没有别人共享给你的技能"),
     ];
   }
@@ -142,7 +142,7 @@ function renderList() {
 function varsState(s) {
   if (!s.vars.length) return null;
   const missing = s.vars.filter((v) => v.required && !K.data.vars[v.name]?.set);
-  const pending = s.vars.filter((v) => K.data.vars[v.name]?.pending);
+  const pending = s.vars.filter((v) => s.hosts?.[v.name]?.pending?.length);
   if (missing.length) return h("span", { class: "skill-warn" }, `${missing.length} 个变量没填`);
   if (pending.length) return h("span", { class: "skill-warn" }, "密钥的发送地址待确认");
   return h("span", {}, `${s.vars.length} 个变量`);
@@ -150,7 +150,7 @@ function varsState(s) {
 
 /** 要去「填写变量」处理的：必填的没填，或者受保护密钥的地址待确认 */
 function varsNeedAttention(s) {
-  return s.vars.some((v) => (v.required && !K.data.vars[v.name]?.set) || K.data.vars[v.name]?.pending);
+  return s.vars.some((v) => (v.required && !K.data.vars[v.name]?.set) || s.hosts?.[v.name]?.pending?.length);
 }
 
 function mineCard(s) {
@@ -199,26 +199,29 @@ function mineCard(s) {
       s.mine && SHARED[s.visibility] ? h("span", {}, SHARED[s.visibility]) : null,
       s.mine && s.installs ? h("span", {}, `${s.installs} 人安装`) : null,
       s.source === "agent" ? h("span", {}, "agent 生成") : null,
+      s.updatePending ? h("span", { class: "skill-warn" }, "作者已更新，待确认") : null,
       varsState(s),
     ),
     h("div", { class: "task-prompt" }, s.description),
-    varsNeedAttention(s)
+    s.updatePending
+      ? h("button", { class: "task-run", onclick: () => openDetail(s) }, "作者更新了内容，查看并确认后才会继续加载 →")
+      : varsNeedAttention(s)
       ? h("button", { class: "task-run", onclick: () => openVars(s) }, s.vars.some((v) => v.required && !K.data.vars[v.name]?.set) ? "填写变量后才能正常使用 →" : "确认密钥的发送地址 →")
       : null,
   );
 }
 
 function sharedCard(s) {
-  const install = h("button", { class: "btn primary", onclick: () => installShared(s, install) }, "安装");
+  const install = s.canInstall ? h("button", { class: "btn primary", onclick: () => installShared(s, install) }, "安装") : null;
   return h(
     "div",
     { class: "task-card skill-card" },
     h("div", { class: "task-top" },
       h("button", { class: "task-title skill-name", title: "查看", onclick: () => openDetail(s) }, s.name),
-      s.installed ? h("span", { class: "badge" }, s.enabled ? "已安装" : "已安装 · 已停用") : install,
+      s.installed ? h("span", { class: "badge" }, s.updatePending ? "已安装 · 有更新待确认" : s.enabled ? "已安装" : "已安装 · 已停用") : install,
       s.canDelete ? h("button", { class: "btn", onclick: () => removeSkill(s) }, "下架") : null,
     ),
-    h("div", { class: "task-meta" }, h("span", {}, `${s.ownerName} 建的`), h("span", {}, SHARED[s.visibility]), s.vars.length ? h("span", {}, `${s.vars.length} 个变量`) : null),
+    h("div", { class: "task-meta" }, h("span", {}, `${s.ownerName} 建的`), h("span", {}, s.canInstall ? SHARED[s.visibility] : "分享给了别人（管理员可查看、下架）"), s.vars.length ? h("span", {}, `${s.vars.length} 个变量`) : null),
     h("div", { class: "task-prompt" }, s.description),
   );
 }
@@ -298,7 +301,23 @@ async function openDetail(s) {
     return;
   }
   if (d.mine) foot.append(h("button", { class: "btn", onclick: () => (close(), openSharing(d)) }, "共享…"));
-  else if (!d.installed) {
+  else if (d.updatePending) {
+    const accept = h("button", { class: "btn primary" }, "确认使用新版");
+    accept.onclick = async () => {
+      accept.disabled = true;
+      try {
+        const next = await api(`/api/skills/${d.id}/accept`, { method: "POST", body: {} });
+        toast("已确认，新消息起加载新版");
+        close();
+        await reload();
+        if (varsNeedAttention(next)) openVars(next);
+      } catch (err) {
+        accept.disabled = false;
+        toast(err.message);
+      }
+    };
+    foot.append(accept);
+  } else if (!d.installed && d.canInstall) {
     const install = h("button", { class: "btn primary", onclick: async () => { if (await installShared(d, install)) close(); } }, "安装");
     foot.append(install);
   }
@@ -312,6 +331,9 @@ async function openDetail(s) {
       h("span", {}, SHARED[d.visibility]),
       h("span", {}, `更新于 ${new Date(d.updatedAt).toLocaleString()}`),
     ),
+    d.updatePending
+      ? h("p", { class: "skill-pending" }, "作者在你安装之后改过这个技能（说明、附带文件或变量）。下面是现在的内容，看过没问题再点「确认使用新版」；确认之前你的会话不会加载它。")
+      : null,
     h("p", { class: "skill-desc" }, d.description),
     d.vars.length
       ? h(
@@ -400,15 +422,18 @@ function openVars(s) {
     });
     const clear = cur?.set ? h("button", { type: "button", class: "btn ghost", onclick: () => ((input.value = ""), (input.dataset.clear = "1"), (clear.hidden = true)) }, "清除") : null;
     // 受保护的密钥：agent 看不到值，只能经 agent-loft 发往这些地址；作者改了地址要这里再确认
+    const hosts = s.hosts?.[v.name];
     const guard = v.secret && v.hosts?.length
-      ? h("small", { class: "skill-guard" }, `受保护：agent 看不到这个值，只能通过 agent-loft 代发请求，发往 ${(cur?.hosts?.length ? cur.hosts : v.hosts).join("、")}。填写即表示同意发往这些地址。`)
-      : null;
+      ? h("small", { class: "skill-guard" }, `受保护：agent 看不到这个值，只能通过 agent-loft 代发请求。${cur?.set && hosts?.allowed?.length ? `这个技能可以发往 ${hosts.allowed.join("、")}。` : `填写即表示同意这个技能发往 ${v.hosts.join("、")}（别的技能声明的地址要在各自的变量页里另外确认）。`}`)
+      : cur?.guarded
+        ? h("small", { class: "skill-guard" }, "这个值是按受保护的密钥填的，不会作为环境变量交给 agent。要当普通变量用，请在这里重新填写。")
+        : null;
     const r = { v, input, approve: false };
-    const pending = cur?.pending?.length
+    const pending = hosts?.pending?.length
       ? h(
           "div",
           { class: "skill-pending" },
-          `作者新加了发送地址：${cur.pending.join("、")}。确认之前，这个密钥不会发往新地址。`,
+          `这个技能要把 ${v.name} 发往还没确认过的地址：${hosts.pending.join("、")}。确认之前，不会发往这些地址。`,
           h("button", { type: "button", class: "btn small", onclick: (e) => ((r.approve = true), (e.currentTarget.textContent = "保存后生效"), (e.currentTarget.disabled = true)) }, "确认"),
         )
       : null;
@@ -446,7 +471,7 @@ function openVars(s) {
     if (!Object.keys(values).length && !approve.length) return close();
     save.disabled = true;
     try {
-      await api("/api/skills/vars", { method: "PUT", body: { values, approve } });
+      await api("/api/skills/vars", { method: "PUT", body: { values, approve, skill: s.id } });
       close();
       toast("已保存，新消息起生效");
       void reload();

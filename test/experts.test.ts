@@ -133,11 +133,12 @@ test("子智能体：只能是自己的 Claude 专家、权限不超过主专家
   assert.equal(experts.getExpert(main.id)!.rev, 2, "被动改了也加版本号（会话要换新）");
 });
 
-test("MCP：按人管理、密钥不回显、留空沿用；成员选不了机器上的", () => {
-  assert.throws(() => mcp.createMcp(alice.id, { name: "Bad Name", type: "stdio", command: "x" }), /名字/);
-  assert.throws(() => mcp.createMcp(alice.id, { name: "agent_loft_memory", type: "stdio", command: "x" }), /agent-loft 自己用/);
+test("MCP：按人管理、密钥不回显、留空沿用；stdio 只有管理员能建；共享的密钥各填各的；成员选不了机器上的", () => {
+  assert.throws(() => mcp.createMcp(alice.id, { name: "local", type: "stdio", command: "x" }), /只有管理员/);
+  assert.throws(() => mcp.createMcp(admin.id, { name: "Bad Name", type: "stdio", command: "x" }), /名字/);
+  assert.throws(() => mcp.createMcp(admin.id, { name: "agent_loft_memory", type: "stdio", command: "x" }), /agent-loft 自己用/);
   assert.throws(() => mcp.createMcp(alice.id, { name: "h", type: "http", url: "ftp://x" }), /http/);
-  const s = mcp.createMcp(alice.id, {
+  const s = mcp.createMcp(admin.id, {
     name: "akshare",
     type: "stdio",
     command: "python",
@@ -147,24 +148,39 @@ test("MCP：按人管理、密钥不回显、留空沿用；成员选不了机�
       { name: "MODE", value: "prod" },
     ],
   });
-  assert.throws(() => mcp.createMcp(alice.id, { name: "akshare", type: "stdio", command: "y" }), /已经有/);
-  mcp.createMcp(bob.id, { name: "akshare", type: "stdio", command: "y" });
+  assert.throws(() => mcp.createMcp(admin.id, { name: "akshare", type: "stdio", command: "y" }), /已经有/);
+  mcp.createMcp(bob.id, { name: "akshare", type: "http", url: "https://bob.example/mcp" });
   const view = mcp.mcpView(s);
   assert.equal(JSON.stringify(view).includes("sekrit"), false);
   assert.deepEqual((view as { env: unknown[] }).env[0], { name: "TOKEN", secret: true, set: true });
   // 改别的、密钥留空：沿用原值
-  const updated = mcp.updateMcp(alice.id, s.id, { env: [{ name: "TOKEN", value: "", secret: true }, { name: "MODE", value: "dev" }] });
+  const updated = mcp.updateMcp(admin.id, s.id, { env: [{ name: "TOKEN", value: "", secret: true }, { name: "MODE", value: "dev" }] });
   assert.deepEqual(mcp.specOf(updated), { type: "stdio", command: "python", args: ["-m", "server"], env: { TOKEN: "sekrit", MODE: "dev" } });
   const http = mcp.createMcp(alice.id, { name: "remote", type: "http", url: "https://api.example.com/mcp", headers: [{ name: "Authorization", value: "Bearer t", secret: true }], ask: true });
 
+  const before = experts.createExpert(alice.id, { name: "股票0", engine: "claude", access: "web", mcp: [s.id, http.id] });
+  assert.deepEqual(before.mcp, [http.id], "别人没共享的选不了");
+  assert.throws(() => mcp.setMcpUserValues(alice.id, s.id, { TOKEN: "x" }), /不存在/);
+  mcp.updateMcp(admin.id, s.id, { shared: true });
   const e = experts.createExpert(alice.id, { name: "股票", engine: "claude", access: "web", mcp: [s.id, http.id, "machine:nas", "m_nope"] });
-  assert.deepEqual(e.mcp, [s.id, http.id], "成员选不了机器上的；不存在的去掉");
-  const bobE = experts.createExpert(bob.id, { name: "b", engine: "claude", access: "web", mcp: [s.id] });
-  assert.deepEqual(bobE.mcp, [], "选不了别人的");
-  const rt = experts.expertRuntime(e, subPrompt);
+  assert.deepEqual(e.mcp, [s.id, http.id], "共享的能选；成员选不了机器上的；不存在的去掉");
+  const bobE = experts.createExpert(bob.id, { name: "b", engine: "claude", access: "web", mcp: [http.id] });
+  assert.deepEqual(bobE.mcp, [], "选不了别人没共享的");
+  // 共享出去的：作者的密钥不给别人，别人没填就不带；调用前一律先问
+  const sharedView = mcp.mcpView(s, alice.id);
+  assert.equal(JSON.stringify(sharedView).includes("sekrit"), false);
+  assert.deepEqual((sharedView as { env: unknown[] }).env[0], { name: "TOKEN", secret: true, set: false });
+  let rt = experts.expertRuntime(e, subPrompt);
   assert.deepEqual(Object.keys(rt.mcp).sort(), ["akshare", "remote"]);
-  assert.deepEqual(rt.askMcp, ["remote"]);
+  assert.deepEqual(rt.askMcp, ["akshare", "remote"]);
+  assert.deepEqual(rt.mcp.akshare, { type: "stdio", command: "python", args: ["-m", "server"], env: { MODE: "dev" } });
   assert.deepEqual(rt.mcp.remote, { type: "http", url: "https://api.example.com/mcp", headers: { Authorization: "Bearer t" } });
+  assert.throws(() => mcp.setMcpUserValues(alice.id, s.id, { MODE: "x" }), /不是这个 MCP 要填的密钥/);
+  mcp.setMcpUserValues(alice.id, s.id, { TOKEN: "alice-token" });
+  assert.equal((mcp.mcpView(s, alice.id) as { env: { set?: boolean }[] }).env[0]!.set, true);
+  rt = experts.expertRuntime(e, subPrompt);
+  assert.deepEqual(rt.mcp.akshare, { type: "stdio", command: "python", args: ["-m", "server"], env: { TOKEN: "alice-token", MODE: "dev" } });
+  assert.deepEqual(mcp.specOf(mcp.getMcp(s.id)!), { type: "stdio", command: "python", args: ["-m", "server"], env: { TOKEN: "sekrit", MODE: "dev" } }, "作者自己的不受影响");
 
   // 管理员能选机器上的：Claude 读 ~/.claude.json，Codex 只要名字
   const adminClaude = experts.createExpert(admin.id, { name: "a", engine: "claude", access: "web", mcp: ["machine:nas", "machine:gone"] });
@@ -175,11 +191,15 @@ test("MCP：按人管理、密钥不回显、留空沿用；成员选不了机�
 
   // Codex 的 mcp_servers 写法
   assert.deepEqual(codexMcp(rt.mcp), {
-    "mcp_servers.akshare": { command: "python", args: ["-m", "server"], env: { TOKEN: "sekrit", MODE: "dev" }, enabled: true, default_tools_approval_mode: "approve" },
+    "mcp_servers.akshare": { command: "python", args: ["-m", "server"], env: { TOKEN: "alice-token", MODE: "dev" }, enabled: true, default_tools_approval_mode: "approve" },
     "mcp_servers.remote": { url: "https://api.example.com/mcp", http_headers: { Authorization: "Bearer t" }, enabled: true, default_tools_approval_mode: "approve" },
   });
   const asked = codexMcp(rt.mcp, rt.askMcp);
-  assert.equal((asked["mcp_servers.akshare"] as Record<string, unknown>).default_tools_approval_mode, "approve");
+  assert.equal((asked["mcp_servers.akshare"] as Record<string, unknown>).default_tools_approval_mode, "prompt");
+  // 取消共享：别人就用不了了，填的密钥也删掉
+  mcp.updateMcp(admin.id, s.id, { shared: false });
+  assert.deepEqual(Object.keys(experts.expertRuntime(e, subPrompt).mcp), ["remote"]);
+  assert.deepEqual(mcp.mcpUserValues(alice.id, s.id), {});
   assert.equal((asked["mcp_servers.remote"] as Record<string, unknown>).default_tools_approval_mode, "prompt");
 });
 
@@ -282,7 +302,7 @@ test("Codex：按权限打开 shell / apply_patch，背景里写专家", () => {
 test("删用户：专家和 MCP 一起删", () => {
   const carol = users.createUser({ name: "carol", password: "password-1" });
   experts.createExpert(carol.id, { name: "c", engine: "claude", access: "web" });
-  mcp.createMcp(carol.id, { name: "c", type: "stdio", command: "x" });
+  mcp.createMcp(carol.id, { name: "c", type: "http", url: "https://c.example/mcp" });
   purgeUserData(carol.id);
   assert.equal(experts.listExperts(carol.id).length, 0);
   assert.equal(mcp.listMcp(carol.id).length, 0);

@@ -1,27 +1,32 @@
 // 技能页面的接口：/api/skills。看得到的技能（自己的、公开的、指名给自己的）、安装 / 停用、变量、上传。
-// 只有作者能改；管理员能删别人公开或分享出来的（下架），但看不到、删不了别人私有的。
+// 只有作者能改；管理员能查看、下架别人公开或分享出来的（包括没指名给他的），但看不到、删不了别人私有的。
 import fs from "node:fs";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { machineSkills } from "../../core/skill-runtime.js";
 import {
+  acceptSkillUpdate,
+  allowedHosts,
   canDelete,
   canSee,
+  canView,
   createSkill,
-  declaredHosts,
   deleteSkill,
+  guardedNames,
   getSkill,
   installCount,
   installSkill,
   listAllSkills,
   listFiles,
   parseSkillMd,
+  pendingHosts,
   prepareUpload,
   readSkillFile,
   readSkillMd,
   setSkillEnabled,
   setSkillVars,
   SKILL_LIMITS,
+  updatePending,
   updateSkill,
   userPrefs,
   type Skill,
@@ -34,6 +39,15 @@ import { HttpError, readJsonBody, sendJson } from "./http.js";
 function view(s: Skill, user: User) {
   const prefs = userPrefs(user.id);
   const mine = s.owner === user.id;
+  const installed = mine || prefs.installed.includes(s.id);
+  // 受保护的密钥：这个技能能发往哪些地址（用户确认过、技能还声明着的），哪些是作者新加、还没确认的
+  const hosts: Record<string, { allowed: string[]; pending: string[] }> = {};
+  if (installed) {
+    for (const v of s.vars) {
+      if (!v.secret || !v.hosts?.length) continue;
+      hosts[v.name] = { allowed: allowedHosts(prefs, [s], v.name), pending: pendingHosts(prefs, s, v.name) };
+    }
+  }
   return {
     id: s.id,
     name: s.name,
@@ -45,38 +59,30 @@ function view(s: Skill, user: User) {
     // 分享给了谁只有作者看得到
     ...(mine ? { sharedWith: s.sharedWith, installs: installCount(s.id) } : {}),
     vars: s.vars,
+    hosts,
     source: s.source,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
-    installed: mine || prefs.installed.includes(s.id),
+    installed,
+    // 管理员能看到没指名给他的分享（为了审查、下架），但装不了
+    canInstall: !mine && canSee(user, s),
+    // 作者改了内容，确认新版之前不加载
+    updatePending: updatePending(user.id, s, prefs),
     enabled: !prefs.disabled.includes(s.id),
     canDelete: canDelete({ id: user.id, role: user.role }, s),
   };
 }
 
 /**
- * 变量：值按名字存；密钥（任何一个看得到的技能把它标成密钥）不回显，只说填没填。
- * 受保护的密钥再带上确认过的地址（hosts），作者后来加了没确认过的地址就列在 pending 里。
+ * 变量：值按名字存；密钥（任何一个看得到的技能把它标成密钥，或者按受保护密钥填的）不回显，只说填没填。
+ * 受保护的密钥能发往哪些地址按技能分开，在各技能的 hosts 里。
  */
 function varsView(user: User, skills: Skill[]) {
-  const secret = new Set(skills.flatMap((s) => s.vars.filter((v) => v.secret).map((v) => v.name)));
+  const secret = new Set([...skills.flatMap((s) => s.vars.filter((v) => v.secret).map((v) => v.name)), ...guardedNames(user.id)]);
+  const guarded = guardedNames(user.id);
   const prefs = userPrefs(user.id);
-  const mineOrInstalled = skills.filter((s) => s.owner === user.id || prefs.installed.includes(s.id));
   return Object.fromEntries(
-    Object.entries(prefs.vars).map(([k, v]) => {
-      const declared = declaredHosts(mineOrInstalled, k);
-      const approved = prefs.approved[k] ?? [];
-      const pending = declared.filter((h) => !approved.includes(h));
-      return [
-        k,
-        {
-          set: true,
-          ...(secret.has(k) ? {} : { value: v }),
-          ...(declared.length ? { hosts: approved } : {}),
-          ...(pending.length ? { pending } : {}),
-        },
-      ];
-    }),
+    Object.entries(prefs.vars).map(([k, v]) => [k, { set: true, ...(secret.has(k) ? {} : { value: v }), ...(guarded.has(k) ? { guarded: true } : {}) }]),
   );
 }
 
@@ -105,7 +111,7 @@ export async function handleSkillsApi(req: IncomingMessage, res: ServerResponse,
   const viewer = { id: user.id, role: user.role };
 
   if (p === "/api/skills" && method === "GET") {
-    const visible = listAllSkills().filter((s) => canSee(viewer, s));
+    const visible = listAllSkills().filter((s) => canView(viewer, s));
     sendJson(res, 200, {
       skills: visible.map((s) => view(s, user)),
       vars: varsView(user, visible),
@@ -135,13 +141,13 @@ export async function handleSkillsApi(req: IncomingMessage, res: ServerResponse,
   }
 
   if (p === "/api/skills/vars" && method === "PUT") {
-    const body = await readJsonBody<{ values?: Record<string, unknown>; approve?: unknown }>(req);
+    const body = await readJsonBody<{ values?: Record<string, unknown>; approve?: unknown; skill?: unknown }>(req);
     try {
-      setSkillVars(user.id, body.values ?? {}, Array.isArray(body.approve) ? body.approve.map(String) : []);
+      setSkillVars(user.id, body.values ?? {}, Array.isArray(body.approve) ? body.approve.map(String) : [], typeof body.skill === "string" ? body.skill : undefined);
     } catch (err) {
       throw bad(err);
     }
-    sendJson(res, 200, { vars: varsView(user, listAllSkills().filter((s) => canSee(viewer, s))) });
+    sendJson(res, 200, { vars: varsView(user, listAllSkills().filter((s) => canView(viewer, s))) });
     return true;
   }
 
@@ -159,10 +165,10 @@ export async function handleSkillsApi(req: IncomingMessage, res: ServerResponse,
     return true;
   }
 
-  const m = /^\/api\/skills\/(s_[a-f0-9]+)(?:\/(install|enable|file))?$/.exec(p);
+  const m = /^\/api\/skills\/(s_[a-f0-9]+)(?:\/(install|enable|file|accept))?$/.exec(p);
   if (!m) return false;
   const skill = getSkill(m[1]!);
-  if (!skill || !canSee(viewer, skill)) throw new HttpError(404, "这个技能不存在");
+  if (!skill || !canView(viewer, skill)) throw new HttpError(404, "这个技能不存在");
 
   if (!m[2] && method === "GET") {
     const md = parseSkillMd(readSkillMd(skill.id));
@@ -181,6 +187,15 @@ export async function handleSkillsApi(req: IncomingMessage, res: ServerResponse,
     const body = await readJsonBody<{ on?: boolean }>(req);
     try {
       installSkill(user.id, skill.id, body.on !== false);
+    } catch (err) {
+      throw bad(err);
+    }
+    sendJson(res, 200, view(skill, user));
+    return true;
+  }
+  if (m[2] === "accept" && method === "POST") {
+    try {
+      acceptSkillUpdate(user.id, skill.id);
     } catch (err) {
       throw bad(err);
     }

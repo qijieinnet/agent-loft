@@ -6,6 +6,13 @@
 // 环境变量和请求头可以标成密钥：网页上不回显，只说填没填。值只交给 MCP 进程 / 请求头，不进 agent 的提示词。
 // 和技能一样是「信任型」的：能执行命令的专家读得到 data/ 下的文件，包括这里的值。
 //
+// stdio 会在服务器上直接执行命令，不受专家权限（只联网、只读……）的约束，所以只有管理员能添加；
+// 成员以前建的 stdio 不再启动（可以删）。
+//
+// 共享：作者打开 shared，其他账号就能在专家 / 内置 Agent 里选它。共享的是「定义」（命令、地址、
+// 普通的环境变量和请求头），标成密钥的那几项每个人填自己的值（data/mcp-values.json），作者的不会给出去。
+// 用别人共享的 MCP，调用它的工具前一律先弹授权卡。
+//
 // 机器上原有的 MCP（Claude 的 ~/.claude.json、Codex 的 config.toml）只给管理员选，id 写成 machine:<名字>。
 // 内置的 Claude Code / Codex 专家按 builtin-agents.ts 的个人默认选择加载；管理员默认沿用机器配置。
 //
@@ -17,6 +24,7 @@ import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { MEMORY_MCP_NAME } from "./memory-mcp.js";
 import { SKILLS_MCP_NAME, TASKS_MCP_NAME } from "./tasks-mcp.js";
+import { getUser, listUsers } from "./users.js";
 
 export type McpPair = { name: string; value: string; secret: boolean };
 
@@ -34,8 +42,10 @@ export type McpServer = {
   env: McpPair[];
   /** http 的请求头 */
   headers: McpPair[];
-  /** 调用这个服务的工具前先弹授权卡（默认不问：是用户自己给专家挂的） */
+  /** 调用这个服务的工具前先弹授权卡（默认不问：是用户自己给专家挂的）。别人用共享的一律要问 */
   ask: boolean;
+  /** 共享给所有账号：别人能选它，密钥项填自己的值 */
+  shared?: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -53,9 +63,15 @@ export const MACHINE_PREFIX = "machine:";
 export const MCP_LIMITS = { perUser: 50, description: 500, command: 1000, args: 50, arg: 2000, pairs: 30, value: 4000, url: 2000 };
 
 const storePath = path.join(dataDir, "mcp.json");
+/** 别人共享的 MCP，每个人自己填的密钥：用户 id → MCP id → 项名 → 值 */
+const valuesPath = path.join(dataDir, "mcp-values.json");
 
-/** 有变化。owner：谁的；他用着这个服务的会话空闲下来要换上新的 */
-export const mcpEvents = new EventEmitter<{ changed: [owner: string, id: string] }>();
+/** 有变化。users：受影响的人（作者；共享的就是所有人），他们用着的会话空闲下来要换上新的 */
+export const mcpEvents = new EventEmitter<{ changed: [users: string[], id: string] }>();
+
+function touched(s: Pick<McpServer, "owner" | "shared">, wasShared = false): string[] {
+  return s.shared || wasShared ? [...new Set([s.owner, ...listUsers().map((u) => u.id)])] : [s.owner];
+}
 
 let cache: McpServer[] | null = null;
 
@@ -82,6 +98,74 @@ export function getMcp(id: string): McpServer | undefined {
   return load().find((s) => s.id === id);
 }
 
+/** 这个服务能不能启动：stdio 要作者是管理员（成员以前建的不再启动） */
+export function runnable(s: McpServer): boolean {
+  return s.type !== "stdio" || getUser(s.owner)?.role === "admin";
+}
+
+/** 这个人能不能用：自己的，或者别人共享出来的（作者账号还在、没被停用） */
+export function canUseMcp(userId: string, s: McpServer | string | undefined): boolean {
+  const server = typeof s === "string" ? getMcp(s) : s;
+  if (!server || !runnable(server)) return false;
+  if (server.owner === userId) return true;
+  const author = getUser(server.owner);
+  const user = getUser(userId);
+  return server.shared === true && !!author && !author.disabled && !!user && !user.disabled;
+}
+
+/** 这个人能选的：自己的在前，别人共享的在后 */
+export function listUsableMcp(userId: string): McpServer[] {
+  const others = load()
+    .filter((s) => s.owner !== userId && canUseMcp(userId, s))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return [...listMcp(userId), ...others];
+}
+
+function allValues(): Record<string, Record<string, Record<string, string>>> {
+  return readJson<Record<string, Record<string, Record<string, string>>>>(valuesPath, {});
+}
+
+/** 这个人给别人共享的 MCP 填的密钥 */
+export function mcpUserValues(userId: string, id: string): Record<string, string> {
+  return allValues()[userId]?.[id] ?? {};
+}
+
+/** 填自己的密钥：只能填作者标成密钥的项；空字符串 / null = 清掉，没给的项不变 */
+export function setMcpUserValues(userId: string, id: string, raw: unknown): void {
+  const s = getMcp(id);
+  if (!s || s.owner === userId || !canUseMcp(userId, s)) throw new Error("这个 MCP 不存在");
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("格式不对");
+  const secretNames = new Set([...s.env, ...s.headers].filter((p) => p.secret).map((p) => p.name));
+  const all = allValues();
+  const mine = { ...(all[userId]?.[id] ?? {}) };
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!secretNames.has(k)) throw new Error(`「${k}」不是这个 MCP 要填的密钥`);
+    if (v === null || v === undefined || v === "") delete mine[k];
+    else {
+      const value = String(v);
+      if (value.length > MCP_LIMITS.value) throw new Error(`「${k}」的值太长`);
+      mine[k] = value;
+    }
+  }
+  (all[userId] ??= {})[id] = mine;
+  writeJsonAtomic(valuesPath, all);
+  mcpEvents.emit("changed", [userId], id);
+}
+
+function dropValues(pred: (userId: string, id: string) => boolean): void {
+  const all = allValues();
+  let changed = false;
+  for (const [u, byId] of Object.entries(all)) {
+    for (const id of Object.keys(byId)) {
+      if (!pred(u, id)) continue;
+      delete byId[id];
+      changed = true;
+    }
+    if (!Object.keys(byId).length) delete all[u];
+  }
+  if (changed) writeJsonAtomic(valuesPath, all);
+}
+
 export type McpInput = {
   name?: unknown;
   description?: unknown;
@@ -92,6 +176,7 @@ export type McpInput = {
   env?: unknown;
   headers?: unknown;
   ask?: unknown;
+  shared?: unknown;
 };
 
 const str = (v: unknown, max: number, what: string): string => {
@@ -134,7 +219,9 @@ function validate(owner: string, input: McpInput, prev?: McpServer): Omit<McpSer
   if (!type) throw new Error("类型只能是 stdio 或 http");
   const description = input.description === undefined && prev ? prev.description : str(input.description, MCP_LIMITS.description, "说明");
   const ask = input.ask === undefined && prev ? prev.ask : input.ask === true;
+  const shared = input.shared === undefined && prev ? prev.shared === true : input.shared === true;
   if (type === "stdio") {
+    if (getUser(owner)?.role !== "admin") throw new Error("本机进程（stdio）会在服务器上直接执行命令，只有管理员能添加或修改；可以改用 HTTP 地址");
     const command = input.command === undefined && prev?.command ? prev.command : str(input.command, MCP_LIMITS.command, "命令");
     if (!command) throw new Error("stdio 要填启动命令");
     let args = prev?.args ?? [];
@@ -144,7 +231,7 @@ function validate(owner: string, input: McpInput, prev?: McpServer): Omit<McpSer
       args = input.args.map((a) => String(a ?? ""));
       if (args.some((a) => a.length > MCP_LIMITS.arg)) throw new Error("有个参数太长");
     }
-    return { name, description, type, command, args, env: cleanPairs(input.env, prev?.env ?? [], "环境变量"), headers: [], ask };
+    return { name, description, type, command, args, env: cleanPairs(input.env, prev?.env ?? [], "环境变量"), headers: [], ask, shared };
   }
   const url = input.url === undefined && prev?.url ? prev.url : str(input.url, MCP_LIMITS.url, "地址");
   let parsed: URL;
@@ -154,7 +241,7 @@ function validate(owner: string, input: McpInput, prev?: McpServer): Omit<McpSer
     throw new Error("地址不对：要写完整的 http:// 或 https:// 地址");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("地址只能是 http:// 或 https://");
-  return { name, description, type, url, env: [], headers: cleanPairs(input.headers, prev?.headers ?? [], "请求头"), ask };
+  return { name, description, type, url, env: [], headers: cleanPairs(input.headers, prev?.headers ?? [], "请求头"), ask, shared };
 }
 
 export function createMcp(owner: string, input: McpInput): McpServer {
@@ -163,7 +250,7 @@ export function createMcp(owner: string, input: McpInput): McpServer {
   const server: McpServer = { id: `m_${crypto.randomBytes(6).toString("hex")}`, owner, ...validate(owner, input), createdAt: now, updatedAt: now };
   load().push(server);
   save();
-  mcpEvents.emit("changed", owner, server.id);
+  mcpEvents.emit("changed", touched(server), server.id);
   return server;
 }
 
@@ -175,7 +262,9 @@ export function updateMcp(owner: string, id: string, input: McpInput): McpServer
   const next: McpServer = { ...prev, ...validate(owner, input, prev), updatedAt: Date.now() };
   list[idx] = next;
   save();
-  mcpEvents.emit("changed", owner, id);
+  // 取消共享：别人填的密钥也删掉
+  if (prev.shared && !next.shared) dropValues((_u, x) => x === id);
+  mcpEvents.emit("changed", touched(next, prev.shared), id);
   return next;
 }
 
@@ -183,22 +272,29 @@ export function deleteMcp(owner: string, id: string): void {
   const list = load();
   const idx = list.findIndex((s) => s.id === id && s.owner === owner);
   if (idx < 0) throw new Error("这个 MCP 不存在");
-  list.splice(idx, 1);
+  const [gone] = list.splice(idx, 1);
   save();
-  mcpEvents.emit("changed", owner, id);
+  dropValues((_u, x) => x === id);
+  mcpEvents.emit("changed", touched(gone!), id);
 }
 
 export function purgeUserMcp(owner: string): void {
   const list = load();
-  const kept = list.filter((s) => s.owner !== owner);
-  if (kept.length === list.length) return;
-  cache = kept;
+  const mine = list.filter((s) => s.owner === owner);
+  const ids = new Set(mine.map((s) => s.id));
+  dropValues((u, id) => u === owner || ids.has(id));
+  if (!mine.length) return;
+  cache = list.filter((s) => s.owner !== owner);
   save();
+  if (mine.some((s) => s.shared)) mcpEvents.emit("changed", touched({ owner, shared: true }), mine[0]!.id);
 }
 
-/** 网页上看的样子：密钥不回显 */
-export function mcpView(s: McpServer) {
-  const pairs = (list: McpPair[]) => list.map((p) => (p.secret ? { name: p.name, secret: true, set: p.value !== "" } : { name: p.name, value: p.value, secret: false }));
+/** 网页上看的样子：密钥不回显。viewer 不是作者时，密钥项说的是他自己填没填 */
+export function mcpView(s: McpServer, viewer: string = s.owner) {
+  const mine = viewer === s.owner;
+  const own = mine ? {} : mcpUserValues(viewer, s.id);
+  const pairs = (list: McpPair[]) =>
+    list.map((p) => (p.secret ? { name: p.name, secret: true, set: mine ? p.value !== "" : !!own[p.name] } : { name: p.name, value: p.value, secret: false }));
   return {
     id: s.id,
     name: s.name,
@@ -206,15 +302,22 @@ export function mcpView(s: McpServer) {
     type: s.type,
     ...(s.type === "stdio" ? { command: s.command ?? "", args: s.args ?? [], env: pairs(s.env) } : { url: s.url ?? "", headers: pairs(s.headers) }),
     ask: s.ask,
+    shared: s.shared === true,
+    mine,
+    ...(mine ? {} : { ownerName: getUser(s.owner)?.name ?? "（已删除的用户）" }),
+    runnable: runnable(s),
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
   };
 }
 
-export function specOf(s: McpServer): McpSpec {
+/** 交给 agent 的启动参数。user 不是作者（用的是共享的）：密钥项换成他自己填的，没填就不带 */
+export function specOf(s: McpServer, user: string = s.owner): McpSpec {
+  const own = user === s.owner ? undefined : mcpUserValues(user, s.id);
+  const value = (p: McpPair) => (own && p.secret ? (own[p.name] ?? "") : p.value);
   return s.type === "stdio"
-    ? { type: "stdio", command: s.command ?? "", args: s.args ?? [], env: Object.fromEntries(s.env.map((p) => [p.name, p.value])) }
-    : { type: "http", url: s.url ?? "", headers: Object.fromEntries(s.headers.filter((p) => p.value !== "").map((p) => [p.name, p.value])) };
+    ? { type: "stdio", command: s.command ?? "", args: s.args ?? [], env: Object.fromEntries(s.env.filter((p) => !own || !p.secret || value(p) !== "").map((p) => [p.name, value(p)])) }
+    : { type: "http", url: s.url ?? "", headers: Object.fromEntries(s.headers.filter((p) => value(p) !== "").map((p) => [p.name, value(p)])) };
 }
 
 // ---------- 机器上原有的 ----------
