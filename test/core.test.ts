@@ -1040,3 +1040,71 @@ test("hub：排队的消息标出来，轮到了 / 被丢了都告诉页面；�
   assert.equal(hub.isBusy(key), false);
   assert.equal(await hub.jump(key, idOf("C")), "这条消息已经不在排队了。");
 });
+
+test("闲置太久的会话进程被关掉，忙着的不关；之后再发消息重新拉起", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  let created = 0;
+  let disposed = 0;
+  let finish: (() => void) | undefined;
+  hub.registerDriver({
+    id: "claude",
+    label: "Fake",
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (_opts, events) => {
+      created++;
+      return {
+        sessionId: undefined,
+        send: (input) => {
+          if (input.text === "慢") finish = () => events.onResult({ text: "ok", durationMs: 1 });
+          else events.onResult({ text: "ok", durationMs: 1 });
+        },
+        interrupt: async () => {},
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: async () => {
+          disposed++;
+        },
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    catalog: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  const h = hub as unknown as { live: Map<string, { id: number }>; liveUsedAt: Map<number, number>; reapIdle(): void };
+  const key = "web:idle-reap";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude" });
+  const origin = { channel: "web", channelId: "web" };
+  const age = () => h.liveUsedAt.set(h.live.get(key)!.id, Date.now() - 60 * 60 * 1000);
+
+  // 正在回复：再久也不关
+  hub.send(key, { text: "慢", attachments: [] }, origin);
+  await waitUntil(() => finish !== undefined);
+  age();
+  h.reapIdle();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(disposed, 0);
+  assert.ok(h.live.has(key));
+
+  // 回复完了但刚用过：不关
+  finish!();
+  await waitUntil(() => !hub.isBusy(key));
+  h.reapIdle();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(disposed, 0);
+
+  // 闲置超时：关掉进程
+  age();
+  h.reapIdle();
+  await waitUntil(() => disposed === 1 && !h.live.has(key));
+
+  // 再发消息：重新拉起
+  hub.send(key, { text: "又来了", attachments: [] }, origin);
+  await waitUntil(() => created === 2 && !hub.isBusy(key));
+});

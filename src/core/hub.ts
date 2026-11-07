@@ -255,6 +255,15 @@ function withTimeout<T>(p: Promise<T>, what: string, ms = QUERY_TIMEOUT_MS): Pro
 type Live = { id: number; agent: string; cwd: string; session: AgentSession };
 
 /**
+ * 空闲多久就关掉会话进程。每个活着的会话都占着一个 agent 进程（Claude Code 一条对话一个 CLI），
+ * 不回收的话切过的对话越积越多：占内存，而且 Claude Code 的登录凭证刷新时会互相抢
+ * （refresh token 一次性，几个进程同时刷就会把彼此顶掉、要求重新登录）。
+ * 关掉不丢上下文：绑定里的 sessionId 还在，下一条消息会接着原来的会话拉起来。
+ */
+const LIVE_IDLE_MS = 10 * 60 * 1000;
+const LIVE_SWEEP_MS = 60 * 1000;
+
+/**
  * 把旧会话的记录穿插进主线：按第一条有时间的消息找位置，整段插进去。
  * 没有时间的排在最前面；专用对话里旧会话本来就都早于当前会话，结果和直接接在一起一样。
  */
@@ -329,10 +338,13 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
    * 只在内存里，最多留 CONTEXT_MAX 条。
    */
   private contextBySession = new Map<string, ContextUsage>();
+  /** 每个会话进程（Live.id）最后一次被用到的时刻，见 reapIdle() */
+  private liveUsedAt = new Map<number, number>();
 
   constructor() {
     super();
     this.setMaxListeners(100);
+    setInterval(() => this.reapIdle(), LIVE_SWEEP_MS).unref();
     interactions.on("created", (i) => this.emitEvent(i.convKey, { type: "ix", id: i.id }));
     this.on("task", (e) => this.endIsolatedRun(e));
     taskEvents.on("changed", (owner, keys) => {
@@ -611,6 +623,8 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
   }
 
   private setInflight(key: string, n: number): void {
+    const live = this.live.get(key);
+    if (live) this.liveUsedAt.set(live.id, Date.now());
     const before = this.isBusy(key);
     this.inflight.set(key, Math.max(0, n));
     const after = this.isBusy(key);
@@ -745,6 +759,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     if (!canUseExpert(memoryOwnerOf(conv), conv.expert ?? conv.agent)) throw new Error("这条对话用的专家或 Agent 已删除、取消共享或未获授权。新开一个对话，换个专家吧。");
     const existing = this.live.get(key);
     if (existing && existing.agent === conv.agent && existing.cwd === conv.cwd && !opts.resumeId) {
+      this.liveUsedAt.set(existing.id, Date.now());
       return existing.session;
     }
     if (existing) {
@@ -1782,6 +1797,41 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
 
   /** 记忆过期了的会话进程（Live.id）：空闲下来就丢掉，下次说话带着新记忆重新拉起 */
   private staleLive = new Set<number>();
+
+  /** 这条会话有没有正在进行、或排着队要用到进程的事 */
+  private liveInUse(key: string): boolean {
+    return this.isBusy(key)
+      || (this.waitingSends.get(key) ?? 0) > 0
+      || (this.pendingOps.get(key) ?? 0) > 0
+      || this.isolatedRuns.has(key)
+      || this.rewinding.has(key)
+      || interactions.listPending(key).length > 0;
+  }
+
+  /** 关掉空闲太久的会话进程（只关进程，不动绑定），见 LIVE_IDLE_MS */
+  private reapIdle(): void {
+    const now = Date.now();
+    for (const id of this.liveUsedAt.keys()) {
+      if (![...this.live.values()].some((l) => l.id === id)) this.liveUsedAt.delete(id);
+    }
+    for (const [key, live] of this.live) {
+      const usedAt = this.liveUsedAt.get(live.id);
+      if (usedAt === undefined) {
+        this.liveUsedAt.set(live.id, now);
+        continue;
+      }
+      if (now - usedAt < LIVE_IDLE_MS || this.liveInUse(key)) continue;
+      void this.serial(key, async () => {
+        // 排队期间可能已经换了进程、或者又开始用了
+        const current = this.live.get(key);
+        if (current?.id !== live.id || this.liveInUse(key)) return;
+        if (Date.now() - (this.liveUsedAt.get(live.id) ?? 0) < LIVE_IDLE_MS) return;
+        this.liveUsedAt.delete(live.id);
+        console.log(`[会话] ${key} 闲置超过 ${LIVE_IDLE_MS / 60000} 分钟，关闭 ${live.agent} 进程`);
+        await this.drop(key, "会话闲置，已释放进程");
+      }).catch((err) => console.warn("[会话] 释放闲置进程失败:", err instanceof Error ? err.message : err));
+    }
+  }
 
   private dropIfStale(key: string): void {
     const live = this.live.get(key);
