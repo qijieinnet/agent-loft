@@ -79,6 +79,55 @@ async function fixture(t, viewport) {
   return page;
 }
 
+for (const width of [1280, 390]) for (const scheme of ["light", "dark"]) test(`预览布局：图片、Mermaid 和 chart 的悬浮控件不遮挡画面（${width}px ${scheme}）`, async (t) => {
+  const page = await fixture(t, { width, height: 800 });
+  await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+  for (const type of ["image", "mermaid", "chart"]) {
+    await page.evaluate(async ({ type }) => {
+      if (type === "image") {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200"><defs><linearGradient id="s" x2="0" y2="1"><stop stop-color="#647f87"/><stop offset="1" stop-color="#dcd2bd"/></linearGradient></defs><rect width="1800" height="1200" fill="url(#s)"/><circle cx="1280" cy="290" r="100" fill="#f0dfba"/><path d="M0 1000 550 420 1100 1040 1500 550 1800 900V1200H0" fill="#435c56"/><path d="M0 1150 500 850 950 1100 1450 800 1800 1100V1200H0" fill="#293d3b"/></svg>';
+        const button = document.createElement("button");
+        button.id = "visual-open-image";
+        button.textContent = "查看图片";
+        button.onclick = () => window.messages.openLightbox('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), "秋日漫游 · 2025.11.07", "/api/file?path=/tmp/landscape.svg&download=1");
+        window.ui.msgInner.append(button);
+        return;
+      }
+      const { renderMarkdown } = await import("/lib/markdown.js");
+      const source = type === "mermaid" ? 'flowchart TD\n A[需求确认] --> B[方案设计]\n B --> C{设计评审}\n C -->|通过| D[开发实现]\n C -->|调整| B\n D --> E[测试验证]\n E --> F[发布上线]' : JSON.stringify({ type: "line", title: "每月访问趋势", x: ["六月", "七月", "八月", "九月", "十月", "十一月"], series: [{ name: "访问量", data: [120, 190, 165, 260, 280, 360] }, { name: "独立访客", data: [80, 125, 100, 170, 200, 240] }], unit: "次" });
+      const box = renderMarkdown('```' + type + '\n' + source + '\n```');
+      box.id = "visual-" + type;
+      window.ui.msgInner.append(box);
+    }, { type });
+    if (type === "image") await page.locator("#visual-open-image").click();
+    else {
+      const expand = page.locator(`#visual-${type}`).getByRole("button", { name: "放大查看" });
+      await expand.scrollIntoViewIfNeeded();
+      await expand.click();
+    }
+    const viewer = page.getByRole("dialog");
+    await page.waitForFunction(() => document.querySelector(".diagram-stage img")?.style.width);
+    const dialog = await viewer.boundingBox(), stage = await viewer.locator(".diagram-stage").boundingBox();
+    const toolbar = await viewer.getByRole("toolbar", { name: "缩放控制" }).boundingBox();
+    const close = viewer.getByRole("button", { name: /关闭.*预览/ });
+    const closeBox = await close.boundingBox();
+    assert.ok(dialog.x === 0 && dialog.y === 0 && dialog.width === width && dialog.height === 800, "画布铺满窗口");
+    assert.ok(stage.y + stage.height <= toolbar.y, "悬浮工具栏不遮挡适应窗口的画面");
+    assert.ok(toolbar.x >= 8 && toolbar.x + toolbar.width <= width - 8 && toolbar.y + toolbar.height <= 800 - 12, "窄屏控件完整可见");
+    assert.ok(closeBox.x >= 0 && closeBox.x + closeBox.width <= width && closeBox.height >= (width === 390 ? 44 : 36), "关闭按钮始终可见，触屏可点击");
+    assert.equal(await viewer.locator(".diagram-viewer-controls button").count(), 4, "只保留缩小、比例、放大和适应窗口");
+    assert.equal(await viewer.locator(".diagram-viewer-hint").count(), 0, "省去常驻的操作说明条");
+    assert.doesNotMatch(await viewer.textContent(), /\bnull\b/, "没有相册时不显示空占位文字");
+    if (type !== "image") {
+      const image = await viewer.locator("img").boundingBox();
+      assert.ok(Math.abs(image.width - stage.width) < 1 || Math.abs(image.height - stage.height) < 1, "矢量图默认撑满可用画布");
+    }
+    if (process.env.AGENT_LOFT_UI_SCREENSHOTS) await page.screenshot({ path: `/tmp/preview-${type}-${scheme}-${width}.png` });
+    await close.click();
+    await viewer.waitFor({ state: "detached" });
+  }
+});
+
 for (const width of [1280, 390]) test(`普通图片预览：关闭、缩放、拖动、下载和失败提示（${width}px）`, async (t) => {
   const page = await fixture(t, { width, height: 800 });
   await page.route("**/api/file?*", (route) => route.fulfill({
@@ -91,7 +140,7 @@ for (const width of [1280, 390]) test(`普通图片预览：关闭、缩放、�
   const close = viewer.getByRole("button", { name: "关闭图片预览" });
   await page.waitForFunction(() => document.querySelector(".diagram-stage img")?.style.width);
   assert.equal(await close.isVisible(), true);
-  assert.equal(await close.textContent(), "关闭");
+  assert.equal(await close.locator("svg").count(), 1, "关闭使用图标并保留可访问名称");
   assert.equal(await viewer.locator("strong").textContent(), "大图.svg");
   assert.ok(await viewer.evaluate((el) => el.scrollWidth <= el.clientWidth), "窄屏预览不溢出");
   const image = viewer.locator("img"), stage = viewer.locator(".diagram-stage");
@@ -148,9 +197,13 @@ for (const width of [1280, 390]) test(`Mermaid 大图：点击预览、缩放、
   await diagram.locator(".diagram-body").click();
   const viewer = page.getByRole("dialog", { name: "图表预览" });
   const image = viewer.locator("img");
-  await page.waitForFunction(() => document.querySelector(".diagram-stage img")?.style.width);
-  const initial = await image.boundingBox();
   const stage = viewer.locator(".diagram-stage");
+  await page.waitForFunction(() => document.querySelector(".diagram-stage img")?.style.width);
+  await stage.dblclick();
+  assert.equal(await viewer.locator("output").textContent(), "100%", "双击切换原始大小");
+  await stage.dblclick();
+  await viewer.getByRole("button", { name: "适应窗口" }).click();
+  const initial = await image.boundingBox();
   const bounds = await stage.boundingBox();
   assert.ok(initial.width <= bounds.width + 1 && initial.height <= bounds.height + 1);
   assert.ok(await viewer.evaluate((el) => el.scrollWidth <= el.clientWidth), "窄屏工具栏不溢出");

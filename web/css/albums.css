@@ -35,12 +35,6 @@
 .album-empty, .album-pending { padding: 20px; color: var(--fg-soft); font-size: 13px; }
 .album-error { color: var(--danger); font-size: 13px; }
 .album-missing { padding: 20px; color: #b4b4b4; font-size: 12px; }
-.photo-viewer .photo-detail { padding: 8px 16px; color: var(--fg-soft); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
-.photo-viewer .photo-detail:empty { display: none; }
-.photo-count { flex-shrink: 0; color: var(--fg-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
-.photo-navigation { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 6px 12px 0; }
-.photo-navigation .btn { font-size: 12px; }
-.photo-viewer .diagram-viewer-hint { font-size: 11px; }
 @media (max-width: 600px) {
   .album-head { padding: 14px; flex-wrap: wrap; gap: 6px; }
   .album-head strong { font-size: 16px; }

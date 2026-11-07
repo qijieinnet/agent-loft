@@ -1,4 +1,4 @@
-import { h } from "./dom.js";
+import { fill, h, icon } from "./dom.js";
 
 /** 图片与图表共用预览：SVG 保持图片隔离，普通图片沿用同一套缩放与拖动。 */
 export function openImageViewer(owner, src, title, trigger, { kind = "图表", download, gallery, start = 0, onIndexChange } = {}) {
@@ -7,11 +7,11 @@ export function openImageViewer(owner, src, title, trigger, { kind = "图表", d
   const image = h("img", { alt: title, draggable: "false" });
   const status = h("div", { class: "diagram-viewer-status photo-status", role: "status" });
   const stage = h("div", { class: `diagram-stage${gallery ? " photo-stage" : ""}`, "aria-label": "拖动查看，滚轮或双指缩放" }, image, status);
-  const heading = h("strong", { class: "photo-name" }, title);
+  const heading = h("strong", { class: "photo-name", title }, title);
   const detail = h("div", { class: "photo-detail" });
   const count = h("span", { class: "photo-count", "aria-live": "polite" });
-  const previous = h("button", { class: "btn ghost", "aria-label": "上一张照片", onclick: () => show(index - 1) }, "上一张");
-  const next = h("button", { class: "btn ghost", "aria-label": "下一张照片", onclick: () => show(index + 1) }, "下一张");
+  const previous = h("button", { class: "viewer-button viewer-prev", "aria-label": "上一张照片", title: "上一张照片", onclick: () => show(index - 1) }, icon("back"));
+  const next = h("button", { class: "viewer-button viewer-next", "aria-label": "下一张照片", title: "下一张照片", onclick: () => show(index + 1) }, icon("back"));
   let index = start, fallback = "", notice = "", swipe;
   function show(n) {
     n = Math.max(0, Math.min(n, gallery.length - 1));
@@ -20,9 +20,11 @@ export function openImageViewer(owner, src, title, trigger, { kind = "图表", d
     const item = gallery[index];
     width = height = 0;
     image.style.visibility = "hidden";
+    stage.dataset.loading = "true";
     notice = status.textContent = "";
     fallback = item.fallback;
     image.alt = heading.textContent = item.title;
+    heading.title = item.title;
     detail.textContent = item.detail;
     count.textContent = `${index + 1} / ${gallery.length}`;
     previous.disabled = index === 0;
@@ -37,7 +39,8 @@ export function openImageViewer(owner, src, title, trigger, { kind = "图表", d
     image.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
     percent.textContent = `${Math.round(scale * 100)}%`;
   };
-  const fitScale = () => Math.min(1, stage.clientWidth / width, stage.clientHeight / height);
+  // 图表是矢量图，打开时充分利用画布；照片保留原始分辨率上限。
+  const fitScale = () => Math.min(kind === "图表" ? 16 : 1, stage.clientWidth / width, stage.clientHeight / height);
   const center = (s) => {
     if (!width) return;
     scale = s;
@@ -55,7 +58,7 @@ export function openImageViewer(owner, src, title, trigger, { kind = "图表", d
     scale = next;
     paint();
   };
-  const control = (label, text, onclick) => h("button", { class: "btn ghost", "aria-label": label, title: label, onclick }, text);
+  const control = (label, content, onclick, className = "") => h("button", { class: `viewer-button ${className}`, "aria-label": label, title: label, onclick }, content);
   const close = () => {
     if (closed) return;
     closed = true;
@@ -65,18 +68,26 @@ export function openImageViewer(owner, src, title, trigger, { kind = "图表", d
     if (owner._closePreview === close) delete owner._closePreview;
     if (trigger?.isConnected) trigger.focus({ preventScroll: true });
   };
-  dialog.append(
-    h("div", { class: "diagram-viewer-head" }, heading, control(`关闭${kind}预览`, "关闭", close)),
+  fill(dialog,
+    h("div", { class: "diagram-viewer-head" },
+      h("div", { class: "viewer-meta" }, heading, gallery ? detail : null),
+      gallery ? count : null,
+      h("div", { class: "viewer-actions" },
+        download ? h("a", { class: "viewer-button", href: download, download: title, "aria-label": "下载", title: "下载" },
+          h("span", { html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg>' })) : null,
+        control(`关闭${kind}预览`, icon("x"), close, "viewer-close"))),
     stage,
-    gallery ? detail : null,
-    gallery ? h("div", { class: "photo-navigation" }, previous, count, next) : null,
-    h("div", { class: "diagram-viewer-controls" },
-      control(`缩小${kind}`, "−", () => zoom(scale / 1.25)), percent,
-      control(`放大${kind}`, "+", () => zoom(scale * 1.25)),
-      control("适应窗口", "适应窗口", fit), control("原始大小", "原始大小", () => center(1)),
-      download ? h("a", { class: "btn ghost", href: download, download: title }, "下载") : null),
-    h("div", { class: "diagram-viewer-hint" }, gallery ? "左右滑动切换 · 双指 / 滚轮缩放 · 放大后拖动 · Esc 关闭" : "滚轮 / 双指缩放 · 拖动查看 · Esc 关闭"),
+    gallery ? [previous, next] : null,
+    h("div", { class: "diagram-viewer-controls", role: "toolbar", "aria-label": "缩放控制" },
+      control(`缩小${kind}`, icon("minus"), () => zoom(scale / 1.25)),
+      control("原始大小", percent, () => center(1), "viewer-original"),
+      control(`放大${kind}`, icon("plus"), () => zoom(scale * 1.25)),
+      h("span", { class: "viewer-divider", "aria-hidden": "true" }),
+      control("适应窗口", icon("expand"), fit)),
   );
+  stage.addEventListener("dblclick", () => {
+    if (width) Math.abs(scale - fitScale()) < 0.001 ? center(1) : fit();
+  });
   stage.addEventListener("wheel", (e) => {
     e.preventDefault();
     const rect = stage.getBoundingClientRect();
@@ -138,6 +149,7 @@ export function openImageViewer(owner, src, title, trigger, { kind = "图表", d
     else fit();
   });
   image.addEventListener("load", () => {
+    delete stage.dataset.loading;
     status.textContent = notice;
     image.style.visibility = "";
     width = image.naturalWidth;
@@ -147,6 +159,7 @@ export function openImageViewer(owner, src, title, trigger, { kind = "图表", d
     fit();
   });
   image.addEventListener("error", () => {
+    delete stage.dataset.loading;
     if (fallback && image.getAttribute("src") !== fallback) {
       notice = status.textContent = "预览不可用，显示缩略图";
       image.src = fallback;
