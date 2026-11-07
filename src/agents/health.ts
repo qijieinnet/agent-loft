@@ -5,6 +5,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { agentEnvironment } from "../core/agent-env.js";
 import { config } from "../core/config.js";
 import { withProbe } from "./claude/probe.js";
@@ -210,7 +211,8 @@ async function piHealth(): Promise<AgentHealth> {
   }
   let version: string | undefined;
   try {
-    const v = (require(path.join(path.dirname(require.resolve("@earendil-works/pi-coding-agent")), "..", "package.json")) as { version?: string }).version;
+    // SDK 只有 import 导出，require.resolve 解不到，得走 import.meta.resolve
+    const v = (require(path.join(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "..", "package.json")) as { version?: string }).version;
     version = v ? `SDK ${v}` : undefined;
   } catch {
     return {
