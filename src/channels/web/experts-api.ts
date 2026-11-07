@@ -27,6 +27,7 @@ import { shellInfo } from "../../core/servers.js";
 import { canUseMcp, claudeMachineMcp, createMcp, deleteMcp, getMcp, listUsableMcp, MACHINE_PREFIX, MCP_LIMITS, mcpView, setMcpUserValues, updateMcp, type McpInput, type McpServer } from "../../core/mcp.js";
 import { activeSkills } from "../../core/skills.js";
 import { getUser, isAdmin, type User } from "../../core/users.js";
+import { getExpertOrder, setExpertOrder } from "../../core/ui-prefs.js";
 import { HttpError, readJsonBody, sendJson } from "./http.js";
 
 const bad = (err: unknown) => (err instanceof HttpError ? err : new HttpError(400, err instanceof Error ? err.message : String(err)));
@@ -130,6 +131,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   if (p === "/api/experts" && method === "GET") {
     const enabled = hub.enabledAgents().map((d) => d.id);
     sendJson(res, 200, {
+      expertOrder: getExpertOrder(user.id),
       experts: availableExperts(user.id).map((e) => expertView(e, user.id)),
       builtin: enabled.filter((id) => canUseExpert(user.id, id)).map((id) => ({ id, name: hub.label(id), engine: id })),
       // 能建自定义专家的引擎（WorkBuddy、pi 只有内置专家）
@@ -146,11 +148,22 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
 
   if (p === "/api/experts/brief" && method === "GET") {
     sendJson(res, 200, {
+      expertOrder: getExpertOrder(user.id),
       experts: availableExperts(user.id).map(expertBrief),
       builtin: hub.enabledAgents().filter((d) => canUseExpert(user.id, d.id)).map((d) => d.id),
       user: { id: user.id, name: user.name, role: user.role },
       servers: shellInfo(config().servers, user),
     });
+    return true;
+  }
+
+  if (p === "/api/experts/order" && method === "PUT") {
+    const body = await readJsonBody<{ order?: unknown }>(req);
+    try {
+      sendJson(res, 200, { order: setExpertOrder(user.id, body.order) });
+    } catch (err) {
+      throw bad(err);
+    }
     return true;
   }
 

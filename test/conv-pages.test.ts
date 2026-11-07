@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dirsOf, forkTrees, inDir, inRecent, pageOf, parseCursor, searchConvs } from "../src/channels/web/conv-pages.js";
+import { dirsOf, forkTrees, inDir, inRecent, pageOf, parseCursor, recentPageOf, searchConvs } from "../src/channels/web/conv-pages.js";
 import type { ConversationInfo } from "../src/core/hub.js";
 
 const conv = (key: string, activeAt: number, extra: Partial<ConversationInfo> = {}): ConversationInfo =>
@@ -40,6 +40,16 @@ test("按游标翻页：一棵树整棵返回；期间有会话变活跃、被�
   assert.deepEqual(p3.conversations.map((c) => c.key), ["k21", "k22", "k23", "k24"]);
   assert.equal(p3.next, null);
   assert.deepEqual(pageOf(changed, { at: 0, key: "" }, 10), { conversations: [], next: null });
+});
+
+test("最近逐条分页：只含 Web，跨项目和分叉按各自活跃时间排，同时间游标不重不漏", () => {
+  const list = [conv("parent", 1), conv("fork", 10, { forkOf: "parent" }), conv("z", 8, { cwd: "/other" }), conv("y", 8), conv("x", 8), conv("old", 0), conv("im", 100, { channel: "feishu" }), conv("wx", 200, { channel: "weixin" })];
+  const first = recentPageOf(list, null, 3);
+  assert.deepEqual(first.conversations.map((c) => c.key), ["fork", "z", "y"]);
+  assert.deepEqual(first.next, { at: 8, key: "y" });
+  const second = recentPageOf(list, first.next, 3);
+  assert.deepEqual(second.conversations.map((c) => c.key), ["x", "parent", "old"]);
+  assert.equal(second.next, null);
 });
 
 test("最近不含飞书；项目按目录；目录按最近活跃排；游标参数", () => {

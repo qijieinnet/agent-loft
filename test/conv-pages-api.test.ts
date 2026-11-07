@@ -96,4 +96,26 @@ test("飞书侧栏分页：按机器人隔离、分叉跟随主会话及权限",
   assert.deepEqual(await wxPage("", adminCookie), { conversations: [], next: null });
   const wxBootstrap = await (await fetch(`${base}/api/bootstrap`, { headers: { Cookie: memberCookie } })).json() as { conversations: Page["conversations"] };
   assert.equal(wxBootstrap.conversations.filter((c) => c.channel === "weixin").length, 1, "启动只加载最近一条，展开时再分页");
+
+  // 最近只显示有权限的 Web 会话，分叉独立排序和分页。
+  fs.mkdirSync(path.join(home, "project"));
+  for (let i = 0; i < 8; i++) {
+    const key = `web:recent:${i}`;
+    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "claude", owner: member.id });
+    updateConversation(key, { activeAt: 500 - Math.floor(i / 2), cwd: i % 2 ? home : path.join(home, "project"), ...(i === 0 ? { forkOf: "web:recent:7" } : {}) });
+  }
+  const recent = async (query = "", auth = memberCookie): Promise<Page> => {
+    const res = await fetch(`${base}/api/conversations/page?scope=recent${query}`, { headers: { Cookie: auth } });
+    assert.equal(res.status, 200);
+    return await res.json() as Page;
+  };
+  const recentFirst = await recent();
+  assert.deepEqual(recentFirst.conversations.map((c) => c.key), ["web:recent:1", "web:recent:0", "web:recent:3", "web:recent:2", "web:recent:5"]);
+  const recentSecond = await recent(`&at=${recentFirst.next!.at}&key=${encodeURIComponent(recentFirst.next!.key)}`);
+  assert.deepEqual(recentSecond.conversations.map((c) => c.key), ["web:recent:4", "web:recent:7", "web:recent:6"]);
+  assert.equal(recentSecond.next, null);
+  assert.deepEqual(await recent("", cookie(other.id)), { conversations: [], next: null });
+  const recentBootstrap = await (await fetch(`${base}/api/bootstrap?current=web:recent:7`, { headers: { Cookie: memberCookie } })).json() as { conversations: Page["conversations"]; sidebar: { recent: { next: Page["next"] } } };
+  assert.deepEqual(recentBootstrap.sidebar.recent.next, recentFirst.next);
+  assert.ok(recentBootstrap.conversations.some((c) => c.key === "web:recent:7"), "当前旧会话仍单独补齐");
 });

@@ -15,13 +15,19 @@ function usableEngines() {
   return (usable.length ? usable : enabled).map((a) => a.id);
 }
 
-/** 能选的专家：内置的在前，再是自己的和共享的（引擎能用的） */
+/** 按账号设置的混合顺序展示，新出现的专家接在末尾。 */
+export function sortExperts(experts, order = S.expertOrder) {
+  const rank = new Map((order ?? []).map((id, i) => [id, i]));
+  return [...experts].sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
+}
+
+/** 能选的专家：引擎能用且有权限，按「设置 → 专家」中的顺序。 */
 export function expertChoices() {
   const engines = usableEngines();
-  return [
+  return sortExperts([
     ...engines.filter((id) => S.agents.find((a) => a.id === id)?.allowed !== false).map((id) => ({ id, name: agentLabel(id), engine: id, builtin: true })),
     ...S.experts.filter((e) => engines.includes(e.engine)),
-  ];
+  ]);
 }
 
 export function findExpert(id) {
@@ -67,6 +73,7 @@ export async function reloadExperts() {
   try {
     const d = await api("/api/experts/brief");
     S.experts = d.experts ?? [];
+    S.expertOrder = d.expertOrder ?? [];
     if (Array.isArray(d.builtin)) for (const a of S.agents) a.allowed = d.builtin.includes(a.id);
     if (d.user) S.user = d.user;
     if ("servers" in d) applyShellInfo(d.servers);

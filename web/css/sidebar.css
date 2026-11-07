@@ -286,7 +286,16 @@ button.conv-group:hover {
   color: var(--fg);
 }
 
+.recent-row:hover .conv-item.proj {
+  padding-right: 10px;
+}
+
 @media (pointer: coarse) {
+  /* 触屏的新建按钮常驻，首次打开侧栏时也要为它让出状态图标的位置。 */
+  .proj-row[data-dir] .conv-item.proj {
+    padding-right: 36px;
+  }
+
   .proj-new {
     display: grid;
   }

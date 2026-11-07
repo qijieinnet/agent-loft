@@ -18,6 +18,8 @@ export const S = {
   draftExpert: localStorage.getItem("aim.expert") || null,
   /** 自己的专家（bootstrap 里给，设置里改了重新拉） */
   experts: [],
+  /** 内置、自建和共享专家的展示顺序，随账号保存。 */
+  expertOrder: [],
   /** 新对话（还没发消息）选的工作目录，null 表示工作区根目录。顶部新建时继承最近会话的目录 */
   draftCwd: null,
   /** 这个新对话的目录是自己选的：换专家时不再改成专家的默认目录。建好会话后清掉 */

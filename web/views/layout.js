@@ -157,6 +157,7 @@ export async function boot() {
   applyBootstrap(data);
   S.pending = new Map(data.pending.map((i) => [i.id, i]));
   S.experts = data.experts ?? [];
+  S.expertOrder = data.expertOrder ?? [];
   syncDraftExpert();
   renderLayout();
   reportDesktop();

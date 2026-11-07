@@ -32,7 +32,7 @@ import type { AttachmentInfo, SavedAttachment } from "../../core/types.js";
 import { dailyUsage } from "../../core/usage.js";
 import { localUsage } from "../../core/local-usage.js";
 import { builtinAgentDefaults } from "../../core/builtin-agents.js";
-import { appendDirOrder, getDirOrder, getSidebarNav, setDirOrder, setSidebarNav } from "../../core/ui-prefs.js";
+import { appendDirOrder, getDirOrder, getExpertOrder, getSidebarNav, setDirOrder, setSidebarNav } from "../../core/ui-prefs.js";
 import {
   addMemoryItem,
   clearMemory,
@@ -93,7 +93,7 @@ import {
   takeAttempt,
 } from "./auth.js";
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
-import { clampLimit, dirsOf, inDir, inRecent, pageOf, parseCursor, searchConvs } from "./conv-pages.js";
+import { clampLimit, dirsOf, inDir, pageOf, parseCursor, recentPageOf, searchConvs } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson, setServerTiming } from "./http.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleLibraryApi } from "./library-api.js";
@@ -665,12 +665,12 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 总览 -----
   if (p === "/api/bootstrap" && method === "GET") {
-    // 会话只给侧栏第一屏要的（见 conv-pages.ts）：「最近」的前 recent 棵树、展开着的目录各自的前几棵，
+    // 会话只给侧栏第一屏要的（见 conv-pages.ts）：「最近」的前 recent 条、展开着的目录各自的前几棵树，
     // 每个 IM 分组最近的一条（微信另含当前会话），再加上正在跑的、等你处理的。其余展开后分页拉取。
     const startedAt = performance.now();
     const all = hub.list(visible).filter((c) => !c.hidden);
     const pending = interactions.listPending().filter((i) => visible(getConversation(i.convKey)));
-    const recent = pageOf(all.filter(inRecent), null, clampLimit(url.searchParams.get("recent"), 10));
+    const recent = recentPageOf(all, null, clampLimit(url.searchParams.get("recent"), 5));
     let open: [string, number][] = [];
     try {
       const raw: unknown = JSON.parse(url.searchParams.get("open") ?? "[]");
@@ -734,6 +734,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       bots: admin ? config().feishu.bots.map((b) => ({ id: b.id, name: b.name, agents: b.agents, enabled: b.enabled })) : [],
       // 自己的和共享的专家（新对话、定时任务里选）。内置的 Claude Code / Codex 就是上面的 agents
       experts: availableExperts(user.id).map(expertBrief),
+      expertOrder: getExpertOrder(user.id),
       workspaceRoot: config().workspaceRoot,
       quotaRefreshMin: config().web.quotaRefreshMin,
       quotaEnabled: config().web.quotaEnabled,
@@ -900,7 +901,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
 
   // ----- 会话 -----
-  // 侧栏按页拉：recent / dir / bot / weixin 按树分页。
+  // 侧栏按页拉：recent 逐条分页，dir / bot / weixin 按树分页。
   if (p === "/api/conversations/page" && method === "GET") {
     const all = hub.list(visible).filter((c) => !c.hidden);
     const scope = url.searchParams.get("scope");
@@ -921,9 +922,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       return;
     }
     if (scope !== "recent" && scope !== "dir") throw new HttpError(400, "scope 只能是 recent / dir / bot / weixin");
-    const list = scope === "recent" ? all.filter(inRecent) : all.filter(inDir(url.searchParams.get("dir") ?? ""));
+    const list = scope === "recent" ? all : all.filter(inDir(url.searchParams.get("dir") ?? ""));
     const before = parseCursor(url.searchParams.get("at"), url.searchParams.get("key"));
-    sendJson(res, 200, pageOf(list, before, clampLimit(url.searchParams.get("limit"), 10)));
+    const paginate = scope === "recent" ? recentPageOf : pageOf;
+    sendJson(res, 200, paginate(list, before, clampLimit(url.searchParams.get("limit"), scope === "recent" ? 5 : 10)));
     return;
   }
   // 搜索会话（侧栏「搜索」弹窗）：标题、目录名，再搜聊天内容（聊天记录索引，见 chat-history.ts）。

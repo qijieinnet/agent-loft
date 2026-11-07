@@ -18,7 +18,7 @@ const vendor = {
 };
 const defaults = ["search", "tasks", "library", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
 
-async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null, bootstrap = {} } = {}) {
+async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null, recentConvs = null, bootstrap = {} } = {}) {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -73,6 +73,13 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
         ...bootstrap,
       };
       if (url.pathname === "/api/bootstrap") {
+        if (recentConvs) {
+          const list = recentConvs.filter((c) => c.channel === "web" && !c.hidden).sort((a, b) => b.activeAt - a.activeAt || (a.key < b.key ? 1 : -1));
+          const items = list.slice(0, Number(url.searchParams.get("recent") || 5));
+          const last = items.at(-1);
+          data.conversations = [...items, ...recentConvs.filter((c) => c.key === url.searchParams.get("current") || c.busy || c.hidden)];
+          data.sidebar = { recent: { next: last && list.length > items.length ? { at: last.activeAt, key: last.key } : null }, dirs: [...new Set(list.map((c) => c.cwd))].map((dir) => ({ dir, at: list.find((c) => c.cwd === dir).activeAt })) };
+        }
         data.conversations = data.conversations.filter((c) => !deletedProjects.some((dir) => inProject(c.cwd, dir)));
         data.sidebar.dirs = data.sidebar.dirs.filter((d) => !deletedProjects.some((dir) => inProject(d.dir, dir)));
       }
@@ -91,7 +98,7 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
       }
       if (url.pathname.endsWith("/history")) {
         const key = decodeURIComponent(url.pathname.split("/")[3]);
-        data = { info: [...(bootstrap.conversations ?? []), conv, ...projectConvs, ...botConvs].find((c) => c.key === key), allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
+        data = { info: [...(recentConvs ?? []), ...(bootstrap.conversations ?? []), conv, ...projectConvs, ...botConvs].find((c) => c.key === key), allowedAgents: [], messages: [], live: [], pending: [], seq: 0 };
       }
       if (url.pathname.startsWith("/api/agents/")) data = { models: [] };
       if (url.pathname === "/api/conversations/page" && url.searchParams.get("scope") === "bot") {
@@ -110,6 +117,13 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
         const last = items.at(-1);
         data = { conversations: items, next: last && start + items.length < list.length ? { at: last.activeAt, key: last.key } : null };
       }
+      if (url.pathname === "/api/conversations/page" && url.searchParams.get("scope") === "recent") {
+        const list = (recentConvs ?? []).filter((c) => c.channel === "web" && !c.hidden).sort((a, b) => b.activeAt - a.activeAt || (a.key < b.key ? 1 : -1));
+        const remaining = url.searchParams.has("key") ? list.filter((c) => c.activeAt < Number(url.searchParams.get("at")) || (c.activeAt === Number(url.searchParams.get("at")) && c.key < url.searchParams.get("key"))) : list;
+        const items = remaining.slice(0, Number(url.searchParams.get("limit") || 5));
+        const last = items.at(-1);
+        data = { conversations: items, next: last && remaining.length > items.length ? { at: last.activeAt, key: last.key } : null };
+      }
       if (url.pathname === "/api/ui/sidebar-nav") {
         saves++;
         if (failSave) return route.fulfill({ status: 500, json: { error: "测试保存失败" } });
@@ -118,7 +132,8 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
       }
       if (url.pathname === "/api/ui/dir-order") {
         const body = route.request().postDataJSON();
-        dirOrder = body.order ?? [...new Set([...(dirOrder ?? []), ...(body.append ?? [])])];
+        const add = (body.append ?? []).filter((id) => !(dirOrder ?? []).includes(id));
+        dirOrder = body.order ?? [...add.filter((id) => id === "recent"), ...(dirOrder ?? []), ...add.filter((id) => id !== "recent")];
         data = { order: dirOrder };
       }
       return route.fulfill({ json: data });
@@ -140,9 +155,117 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
 
 const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.group));
 
+for (const colorScheme of ["light", "dark"]) {
+  test(`触屏 ${colorScheme}：折叠项目首次显示和重开侧栏时，运行及待处理图标不与新建按钮重叠`, async (t) => {
+    const conv = { key: "web:1", channel: "web", channelId: "web", agent: "claude", title: "当前会话", cwd: "/workspace", activeAt: 1, busy: false };
+    const busy = { ...conv, key: "web:busy", title: "运行中的会话", cwd: "/workspace/很长的项目名称用于验证窄屏下的图标布局", activeAt: 2, busy: true };
+    const { page } = await fixture(t, { mobile: true, colorScheme, bootstrap: { conversations: [conv, busy] } });
+    await page.route("**/api/conversations/page?**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") === "dir" && url.searchParams.get("dir") === busy.cwd) return route.fulfill({ json: { conversations: [busy], next: null } });
+      return route.fallback();
+    });
+    const group = page.locator(`[data-dir="${busy.cwd}"]`);
+    const header = group.locator(".conv-item.proj");
+    const checkLayout = async (selector) => {
+      await group.evaluate(async (el) => { await Promise.all(el.closest(".sidebar").getAnimations().map((a) => a.finished)); });
+      assert.equal(await header.locator(".caret.folded").count(), 1);
+      assert.equal(await header.evaluate((el) => el.matches(":hover")), false, "首次打开不依赖项目的 hover 状态");
+      const { right, left, clickable } = await group.evaluate((el, selector) => {
+        const indicator = el.querySelector(selector).getBoundingClientRect();
+        const button = el.querySelector(".proj-new").getBoundingClientRect();
+        return { right: indicator.right, left: button.left, clickable: !!document.elementFromPoint(button.x + button.width / 2, button.y + button.height / 2)?.closest(".proj-new") };
+      }, selector);
+      assert.ok(right <= left, `状态图标右侧 ${right} 不应进入新建按钮左侧 ${left}`);
+      assert.equal(clickable, true, "新建按钮可以独立点击");
+    };
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 850 });
+      await checkLayout(".conv-spin");
+    }
+    await page.locator(".scrim").tap({ position: { x: 310, y: 200 } });
+    await page.locator(".topbar .menu-btn").tap();
+    await checkLayout(".conv-spin");
+    await header.tap();
+    assert.equal(await header.locator(".conv-spin").count(), 0, "展开后状态回到会话行");
+    await header.tap();
+    await page.locator(".side-top").tap({ position: { x: 1, y: 1 } });
+    await checkLayout(".conv-spin");
+    await page.evaluate(() => {
+      S.pending.set("busy-ask", { id: "busy-ask", convKey: "web:busy", settled: false });
+      window.renderSidebar();
+    });
+    await checkLayout(".dot.ask");
+    await page.screenshot({ path: `/tmp/agent-loft-mobile-project-status-${colorScheme}.png` });
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    await page.locator(".topbar .menu-btn").tap();
+    await checkLayout(".conv-spin");
+  });
+}
+
+for (const mobile of [false, true]) {
+  test(`${mobile ? "触屏" : "桌面"}：最近默认置顶展开五条，跨项目逐条排序、分页、折叠和移动后刷新保留`, async (t) => {
+    const web = Array.from({ length: 18 }, (_, i) => ({ key: `web:${i}`, channel: "web", channelId: "web", agent: "claude", title: `会话 ${i}`, cwd: i % 2 ? "/workspace" : "/workspace/project", activeAt: 100 - Math.floor(i / 2), busy: false, ...(i === 0 ? { forkOf: "web:17" } : {}) }));
+    const all = [...web].reverse().concat([
+      { ...web[0], key: "web:hidden", hidden: true, activeAt: 1000 },
+      { ...web[0], key: "feishu:bot:1", channel: "feishu", activeAt: 2000 },
+      { ...web[0], key: "weixin:u1", channel: "weixin", activeAt: 3000 },
+    ]);
+    const expected = [...web].sort((a, b) => b.activeAt - a.activeAt || (a.key < b.key ? 1 : -1)).map((c) => c.key);
+    const { page, getOrder } = await fixture(t, { mobile, colorScheme: mobile ? "dark" : "light", order: ["/workspace/project", "/workspace"], recentConvs: all });
+    const group = page.locator('[data-group="recent"]');
+    const header = group.locator(".conv-item.proj");
+    const chats = page.locator(".conv-item.recent");
+    const keys = () => chats.evaluateAll((els) => els.map((el) => el.dataset.key));
+    assert.equal((await groupOrder(page))[0], "recent");
+    assert.equal(await header.getAttribute("aria-expanded"), "true");
+    assert.deepEqual(await keys(), expected.slice(0, 5), "分叉独立占一条，飞书、微信、隐藏会话不混入");
+    assert.equal(await group.locator(".proj-new, .bot-new").count(), 0);
+    if (!mobile) await header.hover();
+    assert.equal(await group.locator("button").count(), 1, "悬停也没有新建会话按钮");
+    assert.equal(await header.evaluate((el) => getComputedStyle(el).paddingRight), "10px");
+    await chats.first().click();
+    await page.waitForFunction((key) => S.current === key, expected[0]);
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal(await chats.first().evaluate((el) => el.classList.contains("active")), true);
+    await page.locator(".recent-more .conv-more").click();
+    await page.waitForFunction(() => document.querySelectorAll(".conv-item.recent").length === 15);
+    assert.deepEqual(await keys(), expected.slice(0, 15));
+    await page.locator(".recent-more .conv-more").click();
+    await page.waitForFunction(() => document.querySelectorAll(".conv-item.recent").length === 18);
+    assert.deepEqual(await keys(), expected);
+    await page.locator(".recent-more .conv-more").getByText("收起", { exact: true }).click();
+    assert.equal(await chats.count(), 5);
+    await header.click();
+    assert.equal(await chats.count(), 0);
+    await group.click({ button: "right" });
+    assert.equal(await page.getByText("删除项目…", { exact: true }).count(), 0);
+    const saved = page.waitForResponse((res) => res.url().endsWith("/api/ui/dir-order") && res.request().postDataJSON().order?.[1] === "recent" && res.ok());
+    await page.getByText("下移", { exact: true }).click();
+    await saved;
+    assert.equal(getOrder()[1], "recent");
+    await page.reload();
+    await page.waitForFunction(() => window.booted);
+    if (mobile) await page.locator(".topbar .menu-btn").click();
+    assert.equal((await groupOrder(page))[1], "recent");
+    assert.equal(await header.getAttribute("aria-expanded"), "false");
+    await header.click();
+    assert.deepEqual(await keys(), expected.slice(0, 5));
+    if (!mobile) {
+      const savedDrag = page.waitForResponse((res) => res.url().endsWith("/api/ui/dir-order") && res.request().postDataJSON().order?.[0] === "recent" && res.ok());
+      await group.dragTo(page.locator('[data-dir="/workspace/project"]'), { targetPosition: { x: 20, y: 2 } });
+      await savedDrag;
+      assert.equal((await groupOrder(page))[0], "recent");
+      assert.deepEqual(await keys(), expected.slice(0, 5), "拖动时会话跟随分组");
+    }
+    await page.screenshot({ path: `/tmp/agent-loft-recent-${mobile ? "mobile" : "desktop"}.png` });
+  });
+}
+
 test("侧栏时钟：专用对话和当前聊天关联的定时任务均显示，移除关联后隐藏", async (t) => {
   const { page } = await fixture(t);
-  const mark = page.locator('.conv-item[data-key="web:1"] .task-mark');
+  const mark = page.locator('.conv-item:not(.recent)[data-key="web:1"] .task-mark');
   assert.equal(await mark.count(), 0);
   for (const patch of [{ tasks: [{ id: "t_conv", title: "早报" }] }, { taskId: "t_dedicated" }, {}]) {
     await page.evaluate((patch) => {
@@ -399,11 +522,11 @@ test("飞书与项目混合拖拽：置于项目前和项目之间，整组会�
   const bot = page.locator('[data-bot="bot"]');
   const projectA = page.locator('[data-dir="/workspace/project-a"]');
   const projectB = page.locator('[data-dir="/workspace/project-b"]');
-  assert.deepEqual(await groupOrder(page), [...initial, "feishu:bot", "feishu:empty"], "保留旧的项目顺序");
+  assert.deepEqual(await groupOrder(page), ["recent", ...initial, "feishu:bot", "feishu:empty"], "恢复最近时保留旧的项目顺序");
   await bot.locator(".conv-item.proj").click();
   await page.waitForFunction(() => document.querySelectorAll('.conv-list [data-key^="feishu:bot:"]').length === 5);
   await bot.dragTo(projectB, { targetPosition: { x: 20, y: 2 } });
-  assert.deepEqual(await groupOrder(page), [initial[0], initial[1], "feishu:bot", initial[2], "feishu:empty"]);
+  assert.deepEqual(await groupOrder(page), ["recent", initial[0], initial[1], "feishu:bot", initial[2], "feishu:empty"]);
   const children = await bot.evaluate((row) => {
     const keys = [];
     for (let el = row.nextElementSibling; el && !el.classList.contains("proj-row"); el = el.nextElementSibling) if (el.dataset.key) keys.push(el.dataset.key);
@@ -412,10 +535,10 @@ test("飞书与项目混合拖拽：置于项目前和项目之间，整组会�
   assert.equal(children.length, 5, "展开后的飞书会话与分组一起移动");
   assert.ok(children.every((key) => key.startsWith("feishu:bot:")));
   await bot.dragTo(projectA, { targetPosition: { x: 20, y: 2 } });
-  assert.equal((await groupOrder(page))[0], "feishu:bot");
-  const savedOrder = page.waitForResponse((res) => res.url().endsWith("/api/ui/dir-order") && res.request().postDataJSON().order?.[1] === initial[2] && res.ok());
+  assert.equal((await groupOrder(page))[1], "feishu:bot");
+  const savedOrder = page.waitForResponse((res) => res.url().endsWith("/api/ui/dir-order") && res.request().postDataJSON().order?.[2] === initial[2] && res.ok());
   await projectB.dragTo(projectA, { targetPosition: { x: 20, y: 2 } });
-  const expected = ["feishu:bot", initial[2], initial[0], initial[1], "feishu:empty"];
+  const expected = ["recent", "feishu:bot", initial[2], initial[0], initial[1], "feishu:empty"];
   assert.deepEqual(await groupOrder(page), expected, "项目也能跨过飞书分组调整顺序");
   await savedOrder;
   assert.deepEqual(getOrder(), expected);
@@ -436,7 +559,7 @@ for (const mobile of [false, true]) {
     const { page, getDeletes, failDelete } = await fixture(t, { mobile, projects: true });
     const project = page.locator('[data-dir="/workspace/project-a"]');
     await project.locator(".conv-item.proj").click();
-    await page.locator('[data-key="web:a"]').click();
+    await page.locator('.conv-item:not(.recent)[data-key="web:a"]').click();
     await page.waitForFunction(() => S.current === "web:a");
     if (mobile) await page.locator(".topbar .menu-btn").click();
     const openDelete = async () => {
@@ -519,7 +642,7 @@ for (const mobile of [false, true]) {
     const group = page.locator('[data-group="weixin:weixin:u1"]');
     const header = group.locator(".conv-item.proj");
     const chat = page.locator('[data-key="weixin:u1"]');
-    assert.deepEqual(await groupOrder(page), initial, "沿用微信原来的排序键");
+    assert.deepEqual(await groupOrder(page), ["recent", ...initial], "沿用微信原来的排序键");
     assert.equal(await header.getAttribute("aria-expanded"), "false");
     assert.equal(await chat.count(), 0);
     assert.equal(await header.locator(".conv-spin").count(), 1, "收起时仍显示运行状态");
@@ -565,7 +688,7 @@ for (const mobile of [false, true]) {
     assert.equal(getOrder()[0], "weixin:weixin:u1");
     if (!mobile) {
       await group.dragTo(page.locator('[data-bot="bot"]'), { targetPosition: { x: 20, y: 2 } });
-      assert.deepEqual(await groupOrder(page), initial, "微信可拖到飞书前面");
+      assert.deepEqual(await groupOrder(page), ["recent", ...initial], "微信可拖到飞书前面");
     }
     await page.goto("https://sidebar.example.test/#weixin%3Au1");
     await page.reload();

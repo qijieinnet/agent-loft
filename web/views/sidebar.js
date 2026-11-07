@@ -253,12 +253,15 @@ function orderSidebarGroups(dirs) {
   const rank = new Map(sideState.order.map((d, i) => [d, i]));
   const ranked = dirs.filter((d) => rank.has(d)).sort((a, b) => rank.get(a) - rank.get(b));
   const fresh = dirs.filter((d) => !rank.has(d));
+  // 首次恢复「最近」时放到顶部；之后沿用用户排好的位置。
+  const top = fresh.includes("recent") ? ["recent"] : [];
+  const tail = fresh.filter((d) => d !== "recent");
   if (fresh.length && orderSynced) {
-    sideState.order = [...sideState.order, ...fresh];
+    sideState.order = [...top, ...sideState.order, ...tail];
     saveSideState();
     void putDirOrder({ append: fresh });
   }
-  return [...ranked, ...fresh];
+  return [...top, ...ranked, ...tail];
 }
 
 /** 拿到服务端存的顺序之前不往上写，免得这台设备本地的旧顺序盖掉别处排好的 */
@@ -377,13 +380,13 @@ function toggleSide(list, id) {
 }
 
 let autoOpenedFor = null;
-const RECENT_LIMIT = 10;
+const RECENT_LIMIT = 5;
 const PROJECT_LIMIT = 5;
 /** 「展开显示」一次多显示几条 */
 const MORE_STEP = 10;
 
 // ---------- 分页（服务端见 channels/web/conv-pages.ts） ----------
-// 打开页面只拿「最近」的前 10 条、展开着的目录各自的前 5 条（一条 = 主对话连同它的分叉），
+// 打开页面只拿「最近」的前 5 条会话、展开着的目录各自的前 5 棵分叉树，
 // 正在跑的、等你处理的、每个飞书机器人最近的一条也都在；点「展开显示」多显示 10 条，本地不够再按页拉。
 // 新出现的、变活跃的会话经 WebSocket 的 conv 消息补进 S.convs。
 // next：下一页的游标；null = 没有更多了；undefined = 这个目录还没拉过。
@@ -676,9 +679,28 @@ export function renderSidebar() {
     botRows.push({ id, at: convs[0].activeAt, rows });
   }
 
-  // ---- Web 会话直接按工作目录分组，目录按用户排的顺序（见 orderSidebarGroups） ----
+  // 「最近」逐条按活跃时间排序，分叉也独立占一条；项目中仍按分叉树展示。
+  const webConvs = visible.filter((c) => c.channel === "web").sort((a, b) => b.activeAt - a.activeAt || (a.key < b.key ? 1 : -1));
+  const recentExpanded = !sideState.folded.includes("recent");
+  const recentRows = [h("div", { class: "proj-row recent-row", ...groupDragAttrs("recent") },
+    h("button", {
+      class: "conv-item proj", title: "最近\n拖动可调整顺序，右键更多操作",
+      "aria-expanded": String(recentExpanded), onclick: () => toggleSide("folded", "recent"),
+    }, h("span", { class: "title" }, "最近"), caret(!recentExpanded), recentExpanded ? null : status(webConvs.map((c) => c.key))),
+  )];
+  if (recentExpanded) {
+    const st = pages.recent;
+    const list = st.next ? webConvs.filter((c) => c.activeAt > st.next.at || (c.activeAt === st.next.at && c.key >= st.next.key)) : webConvs;
+    const load = (limit) => fetchPage(st, { scope: "recent", limit: String(limit) });
+    for (const c of list.slice(0, st.show)) recentRows.push(convRow(c, " sub recent", `${agentLabel(c.agent)} · ${c.cwd}`, !!c.forkOf));
+    if (!list.length && !st.loading) recentRows.push(h("div", { class: "conv-empty sub" }, "还没有会话"));
+    const btn = moreButton(st, list.length, RECENT_LIMIT, load);
+    if (btn) recentRows.push(h("div", { class: "sub-more recent-more" }, btn));
+  }
+
+  // ---- Web 会话按工作目录分组，目录按用户排的顺序（见 orderSidebarGroups） ----
   const byDir = new Map();
-  for (const c of visible.filter((c) => c.channel === "web")) {
+  for (const c of webConvs) {
     if (!byDir.has(c.cwd)) byDir.set(c.cwd, []);
     byDir.get(c.cwd).push(c);
   }
@@ -695,9 +717,10 @@ export function renderSidebar() {
   for (const [dir, convs] of byDir) dirAt.set(dir, Math.max(dirAt.get(dir) ?? 0, convs[0].activeAt));
   const dirsByActivity = [...dirAt.keys()].sort((a, b) => dirAt.get(b) - dirAt.get(a));
   const groupRows = new Map(botRows.map((group) => [group.id, group.rows]));
+  groupRows.set("recent", recentRows);
   const groupAt = new Map([...dirAt, ...botRows.map((group) => [group.id, group.at])]);
-  groupsByActivity = [...groupAt.keys()].sort((a, b) => groupAt.get(b) - groupAt.get(a));
-  sidebarGroups = orderSidebarGroups([...dirsByActivity, ...botRows.sort((a, b) => b.at - a.at).map((group) => group.id)]);
+  groupsByActivity = ["recent", ...[...groupAt.keys()].sort((a, b) => groupAt.get(b) - groupAt.get(a))];
+  sidebarGroups = orderSidebarGroups(["recent", ...dirsByActivity, ...botRows.sort((a, b) => b.at - a.at).map((group) => group.id)]);
   if (dirAt.size) {
     for (const dir of dirsByActivity) {
       const convs = byDir.get(dir) ?? [];

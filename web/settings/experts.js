@@ -2,7 +2,7 @@ import { agentIcon, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 import { S } from "../state.js";
-import { expertIcon, reloadExperts } from "../views/experts.js";
+import { expertIcon, reloadExperts, sortExperts } from "../views/experts.js";
 import { agentCatalog, baseName } from "../views/topbar.js";
 import { changeCwd } from "../views/conv-actions.js";
 
@@ -35,6 +35,7 @@ export async function expertsTab(panel) {
       return;
     }
     if (!box.isConnected) return;
+    S.expertOrder = data.expertOrder ?? [];
     render(box, data, load);
   };
   refreshExpertsPage = () => { if (box.isConnected) void load(); };
@@ -43,6 +44,84 @@ export async function expertsTab(panel) {
 
 function render(box, data, reload) {
   const add = h("button", { class: "btn primary", onclick: () => openEditor(data, null, reload) }, icon("plus"), "新建");
+  const choices = sortExperts([...data.builtin.map((b) => ({ ...b, builtin: true })), ...data.experts], data.expertOrder ?? []);
+  const list = h("div", { class: "task-list expert-sort-list", role: "list", "aria-label": "专家顺序" });
+  const rows = new Map();
+  let saving = false;
+  const ids = () => [...list.children].map((el) => el.dataset.expert);
+  const restore = (order) => order.forEach((id) => list.append(rows.get(id)));
+  const save = async (before) => {
+    const order = [...ids(), ...(data.expertOrder ?? []).filter((id) => !rows.has(id))];
+    if (ids().join("\n") === before.join("\n")) return;
+    saving = true;
+    for (const handle of list.querySelectorAll(".expert-sort-grip")) handle.disabled = true;
+    try {
+      const next = await api("/api/experts/order", { method: "PUT", body: { order } });
+      data.expertOrder = next.order;
+      S.expertOrder = next.order;
+    } catch (err) {
+      restore(before);
+      toast(`保存专家顺序失败：${err.message}`);
+    } finally {
+      saving = false;
+      for (const handle of list.querySelectorAll(".expert-sort-grip")) handle.disabled = false;
+    }
+  };
+  const move = (row, to) => {
+    const others = [...list.children].filter((el) => el !== row);
+    list.insertBefore(row, others[Math.max(0, to)] ?? null);
+  };
+  for (const e of choices) {
+    const row = e.builtin ? h("div", { class: "task-card skill-card" },
+      h("div", { class: "task-top" }, h("span", { class: "task-title" }, agentIcon(e.engine, "expert-card-icon"), e.name), h("span", { class: "badge" }, "内置")),
+      h("div", { class: "task-prompt" }, `${e.name} 原装的样子：原装提示词、所有工具；默认技能和 MCP 在「设置 → Agent」里配置。`),
+    ) : expertCard(data, e, reload);
+    row.dataset.expert = e.id;
+    row.setAttribute("role", "listitem");
+    row.classList.add("expert-sort-card");
+    let drag = null;
+    const end = (ev) => {
+      if (!drag) return;
+      const { before, pointer } = drag;
+      drag = null;
+      row.classList.remove("dragging");
+      if (handle.hasPointerCapture(pointer)) handle.releasePointerCapture(pointer);
+      if (ev.type === "pointercancel") restore(before);
+      else void save(before);
+    };
+    const handle = h("button", {
+      class: "expert-sort-grip", type: "button", title: "拖动排序，也可用上下方向键调整",
+      "aria-label": `调整${e.name}顺序`,
+      onpointerdown: (ev) => {
+        if (ev.button !== 0 || saving) return;
+        ev.preventDefault();
+        drag = { before: ids(), y: ev.clientY, pointer: ev.pointerId };
+        handle.setPointerCapture(ev.pointerId);
+      },
+      onpointermove: (ev) => {
+        if (!drag || Math.abs(ev.clientY - drag.y) < 4) return;
+        row.classList.add("dragging");
+        const others = [...list.children].filter((el) => el !== row);
+        const to = others.filter((el) => { const r = el.getBoundingClientRect(); return ev.clientY > r.top + r.height / 2; }).length;
+        move(row, to);
+        handle.setPointerCapture(ev.pointerId);
+      },
+      onpointerup: end, onpointercancel: end,
+      onkeydown: (ev) => {
+        if (saving || !["ArrowUp", "ArrowDown"].includes(ev.key)) return;
+        ev.preventDefault();
+        const before = ids();
+        const to = before.indexOf(e.id) + (ev.key === "ArrowUp" ? -1 : 1);
+        if (to < 0 || to >= before.length) return;
+        move(row, to);
+        handle.focus();
+        void save(before);
+      },
+    }, "⋮⋮");
+    row.prepend(handle);
+    rows.set(e.id, row);
+    list.append(row);
+  }
   fill(
     box,
     h(
@@ -51,23 +130,11 @@ function render(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "专家决定引擎、提示词和能力。共享给所有账号后，设定由创建者维护，每个人的记忆、技能和 MCP 仍各自独立；点「我的工具」选择自己要用的工具。内置的 Claude Code、Codex 在「设置 → Agent」各自卡片的「默认加载」中选择技能和 MCP。",
+        "拖动卡片左侧手柄调整顺序，自动保存并用于选择智能体。专家决定引擎、提示词和能力。共享给所有账号后，设定由创建者维护，每个人的记忆、技能和 MCP 仍各自独立；点「我的工具」选择自己要用的工具。内置的 Claude Code、Codex 在「设置 → Agent」各自卡片的「默认加载」中选择技能和 MCP。",
       ),
       h("div", { class: "skill-head-btns" }, add),
     ),
-    h(
-      "div",
-      { class: "task-list" },
-      data.builtin.map((b) =>
-        h(
-          "div",
-          { class: "task-card skill-card" },
-          h("div", { class: "task-top" }, h("span", { class: "task-title" }, agentIcon(b.engine, "expert-card-icon"), b.name), h("span", { class: "badge" }, "内置")),
-          h("div", { class: "task-prompt" }, `${b.name} 原装的样子：原装提示词、所有工具；默认技能和 MCP 在「设置 → Agent」里配置。`),
-        ),
-      ),
-      data.experts.map((e) => expertCard(data, e, reload)),
-    ),
+    list,
     data.experts.length ? null : h("div", { class: "tasks-empty" }, h("div", { class: "t" }, "还没有自己的专家"), h("div", { class: "s" }, "点「新建」建一个。")),
   );
 }

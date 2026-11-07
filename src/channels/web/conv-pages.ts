@@ -1,16 +1,17 @@
 // 侧栏会话列表分页：打开页面只拿第一页，点「展开显示」再按页拉。
 //
-// 一页按「树」算：主对话连同从它分叉出来的对话算一条（和前端 sidebar.js 的 forkForest 一样），
+// 项目和 IM 一页按「树」算：主对话连同从它分叉出来的对话算一条（和前端 sidebar.js 的 forkForest 一样），
 // 按整棵树里最近的活跃时间从新到旧排。翻页用游标（上一页最后一棵树的活跃时间 + 根的 key），
 // 期间有会话变活跃、被删，也不会漏掉或重复一页的边界。
+// 「最近」逐条按各自的活跃时间分页。
 import type { ConversationInfo } from "../../core/hub.js";
 
 export type Cursor = { at: number; key: string };
 export type Page = { conversations: ConversationInfo[]; next: Cursor | null };
 type Tree = { root: ConversationInfo; convs: ConversationInfo[]; at: number };
 
-/** 最近：飞书、微信以外的会话（IM 渠道在侧栏单独分组） */
-export const inRecent = (c: ConversationInfo): boolean => c.channel !== "feishu" && c.channel !== "weixin";
+/** 最近：所有 Web 会话（IM 渠道在侧栏单独分组） */
+export const inRecent = (c: ConversationInfo): boolean => c.channel === "web";
 /** 项目：Web 会话按工作目录分组 */
 export const inDir = (dir: string) => (c: ConversationInfo): boolean => c.channel === "web" && c.cwd === dir;
 
@@ -48,6 +49,15 @@ export function pageOf(list: ConversationInfo[], before: Cursor | null, limit: n
     conversations: slice.flatMap((t) => t.convs),
     next: last && start + limit < trees.length ? { at: last.at, key: last.root.key } : null,
   };
+}
+
+/** 最近逐条分页，分叉独立按自己的活跃时间排序。 */
+export function recentPageOf(list: ConversationInfo[], before: Cursor | null, limit: number): Page {
+  const sorted = list.filter(inRecent).sort((a, b) => b.activeAt - a.activeAt || (a.key < b.key ? 1 : -1));
+  const remaining = before ? sorted.filter((c) => c.activeAt < before.at || (c.activeAt === before.at && c.key < before.key)) : sorted;
+  const conversations = remaining.slice(0, limit);
+  const last = conversations.at(-1);
+  return { conversations, next: last && remaining.length > conversations.length ? { at: last.activeAt, key: last.key } : null };
 }
 
 /** 项目目录：每个目录最近的活跃时间（目录行本身要全部显示，会话再按需拉） */

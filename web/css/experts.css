@@ -23,6 +23,39 @@
   min-width: 0;
 }
 
+.expert-sort-card {
+  position: relative;
+  padding-left: 44px;
+}
+
+.expert-sort-card.dragging {
+  opacity: 0.55;
+  outline: 1px solid var(--border);
+}
+
+.expert-sort-grip {
+  position: absolute;
+  top: 10px;
+  left: 6px;
+  width: 30px;
+  height: 34px;
+  color: var(--fg-faint);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  border-radius: 6px;
+}
+
+.expert-sort-grip:hover,
+.expert-sort-grip:focus-visible {
+  color: var(--fg);
+  background: var(--bg-hover);
+}
+
+.expert-sort-grip:active {
+  cursor: grabbing;
+}
+
 .tool-check-item > input,
 .perm-list > .check-item > input {
   flex-shrink: 0;

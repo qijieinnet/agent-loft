@@ -5,7 +5,7 @@ import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 
 export type SidebarNavItem = { id: string; visible: boolean };
 const NAV_IDS = ["search", "tasks", "library", "remote", "settings"];
-type Prefs = { dirOrder?: string[]; sidebarNav?: SidebarNavItem[] };
+type Prefs = { dirOrder?: string[]; sidebarNav?: SidebarNavItem[]; expertOrder?: string[] };
 
 const prefsPath = path.join(dataDir, "ui-prefs.json");
 let cache: Record<string, Prefs> | null = null;
@@ -49,7 +49,8 @@ export function appendDirOrder(userId: string, dirs: unknown): string[] {
   const cur = all[userId]?.dirOrder ?? [];
   const add = cleanDirs(dirs).filter((d) => !cur.includes(d));
   if (add.length === 0 && all[userId]?.dirOrder) return cur;
-  const dirOrder = [...cur, ...add].slice(0, MAX_DIRS);
+  // 「最近」首次出现时默认置顶；已有位置时保留用户排序。
+  const dirOrder = [...add.filter((id) => id === "recent"), ...cur, ...add.filter((id) => id !== "recent")].slice(0, MAX_DIRS);
   all[userId] = { ...all[userId], dirOrder };
   save();
   return dirOrder;
@@ -78,6 +79,20 @@ export function setSidebarNav(userId: string, value: unknown): SidebarNavItem[] 
   all[userId] = { ...all[userId], sidebarNav };
   save();
   return sidebarNav;
+}
+
+/** 内置、自建和共享专家的混合顺序，只影响当前账号的展示。 */
+export function getExpertOrder(userId: string): string[] {
+  return load()[userId]?.expertOrder ?? [];
+}
+
+export function setExpertOrder(userId: string, value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 2000 || value.some((id) => typeof id !== "string" || !id || id.length > 100)) throw new Error("专家顺序必须是专家 ID 列表");
+  const expertOrder = [...new Set(value as string[])];
+  const all = load();
+  all[userId] = { ...all[userId], expertOrder };
+  save();
+  return expertOrder;
 }
 
 export function deleteUiPrefs(userId: string): void {
