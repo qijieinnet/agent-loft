@@ -15,6 +15,7 @@ import { linkReplyFiles } from "./file-preview.js";
 import { setTodos } from "./todos.js";
 import { expertIcon, findExpert, setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
+import { openImageViewer } from "../lib/image-viewer.js";
 
 // ---------- 打开会话 ----------
 
@@ -496,31 +497,9 @@ function renderUserFiles(files) {
   );
 }
 
-/** 点缩略图看大图：点任意处或按 Esc 关闭 */
+/** 普通图片预览：显式关闭按钮，支持缩放和拖动，保留下载入口。 */
 export function openLightbox(src, name, download) {
-  const close = () => {
-    overlay.remove();
-    document.removeEventListener("keydown", onKey, true);
-  };
-  const onKey = (e) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-    }
-  };
-  const overlay = h(
-    "div",
-    { class: "lightbox", onclick: close },
-    h("img", { src, alt: name ?? "" }),
-    h(
-      "div",
-      { class: "lightbox-bar", onclick: (e) => e.stopPropagation() },
-      name ? h("span", { class: "lightbox-name" }, name) : null,
-      download ? h("a", { class: "lightbox-dl", href: download, download: name ?? "" }, "下载") : null,
-    ),
-  );
-  document.body.append(overlay);
-  document.addEventListener("keydown", onKey, true);
+  openImageViewer(document.body, src, name || "图片", document.activeElement, { kind: "图片", download });
 }
 
 /** 用户消息超过这个高度（约 10 行）就先收起来，像 ChatGPT；只多出一两行的不收 */

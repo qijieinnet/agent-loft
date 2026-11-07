@@ -881,53 +881,6 @@ a.att-file:hover {
 }
 
 
-.lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: rgba(0, 0, 0, 0.82);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 24px;
-  cursor: zoom-out;
-  animation: fade-in 0.12s ease-out;
-}
-.lightbox img {
-  max-width: 100%;
-  max-height: calc(100% - 32px);
-  object-fit: contain;
-  border-radius: 6px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
-}
-
-.lightbox-bar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  cursor: default;
-}
-
-.lightbox-name {
-  color: rgba(255, 255, 255, 0.75);
-  font-size: 13px;
-}
-
-.lightbox-dl {
-  color: #fff;
-  font-size: 13px;
-  text-decoration: none;
-  padding: 4px 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.lightbox-dl:hover {
-  background: rgba(255, 255, 255, 0.26);
-}
-
 /* ---------- 右边的快速定位：每条用户消息一道横线，鼠标移上去展开成列表 ---------- */
 .msg-nav {
   position: absolute;
@@ -1532,6 +1485,7 @@ a.att-file:hover {
 .diagram.mermaid .diagram-body {
   overflow-x: auto;
   text-align: center;
+  cursor: zoom-in;
 }
 
 .diagram-svg {
@@ -1588,4 +1542,40 @@ a.att-file:hover {
 .md .diagram-btn.on {
   background: var(--bg-hover);
   color: var(--fg);
+}
+
+.md .diagram-btn:disabled { opacity: 0.45; cursor: default; }
+
+.diagram-viewer {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 0;
+  width: calc(100% - 32px);
+  height: calc(100dvh - 32px);
+  max-width: none;
+  max-height: none;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: hidden;
+}
+.diagram-viewer[open] { display: flex; flex-direction: column; }
+.diagram-viewer::backdrop { background: rgb(0 0 0 / 75%); }
+.diagram-viewer-head, .diagram-viewer-controls { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+.diagram-viewer-head { justify-content: space-between; }
+.diagram-viewer-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diagram-viewer-head .btn { flex-shrink: 0; }
+.diagram-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab; user-select: none; }
+.diagram-stage.dragging { cursor: grabbing; }
+.diagram-stage img, .md .diagram-stage img { position: absolute; left: 0; top: 0; display: block; max-width: none; max-height: none; margin: 0; border-radius: 0; transform-origin: 0 0; pointer-events: none; }
+.diagram-viewer-status { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; color: var(--fg-soft); }
+.diagram-viewer-controls { justify-content: center; flex-wrap: wrap; }
+.diagram-viewer-controls .btn { font-size: 13px; }
+.diagram-scale { min-width: 48px; text-align: center; font-size: 13px; font-variant-numeric: tabular-nums; }
+.diagram-viewer-hint { padding: 0 8px 10px; text-align: center; font-size: 12px; color: var(--fg-soft); }
+@media (max-width: 600px) {
+  .diagram-viewer { width: calc(100% - 16px); height: calc(100dvh - 16px); }
+  .diagram-viewer-controls { gap: 4px; padding: 8px; }
 }

@@ -1,4 +1,5 @@
 import { h } from "./dom.js";
+import { openImageViewer } from "./image-viewer.js";
 
 // 回复里的 ```chart（专家用一小段 JSON 描述的曲线图、柱状图、饼图）和 ```mermaid（流程图、时序图…）。
 //
@@ -45,6 +46,22 @@ export function mountDiagram(pre, code, lang, final) {
   box._lang = lang;
   box._source = source;
   box._body = body;
+  const expand = h("button", { class: "diagram-btn", disabled: true, onclick: () => {
+    let src;
+    if (lang === "mermaid") src = body.querySelector("img")?.src;
+    else {
+      // 导出先结束入场动画，再序列化真实 DOM。ECharts 的字符串导出不会转义字体名里的引号。
+      box._chart.getDataURL({ type: "svg" });
+      box._chart.getZr().flush();
+      src = svgImage(new XMLSerializer().serializeToString(body.querySelector("svg"))).src;
+    }
+    if (src) openImageViewer(box, src, box._spec?.title || (lang === "mermaid" ? "Mermaid 图" : "图表"), expand);
+  } }, "放大查看");
+  box._expand = expand;
+  if (lang === "mermaid") {
+    body.title = "点击放大查看";
+    body.addEventListener("click", () => { if (!expand.disabled) expand.click(); });
+  }
   pre.replaceWith(box);
   // 原来的代码块（带复制按钮）留着，点「源码」看
   pre.classList.add("diagram-src");
@@ -67,6 +84,7 @@ export function mountDiagram(pre, code, lang, final) {
     h(
       "div",
       { class: "diagram-actions" },
+      expand,
       views.map(([label, el]) => {
         const btn = h("button", { class: "diagram-btn" }, label);
         btn.onclick = () => {
@@ -102,6 +120,8 @@ export function unmountDiagrams(root) {
   if (root.nodeType !== Node.ELEMENT_NODE) return;
   for (const box of [...(root.matches(".diagram") ? [root] : []), ...root.querySelectorAll(".diagram")]) {
     lazyRender.unobserve(box);
+    box._closePreview?.();
+    box._resize?.disconnect();
     box._chart?.dispose();
   }
 }
@@ -111,7 +131,9 @@ async function draw(box) {
   try {
     if (box._lang === "chart") await drawChart(box);
     else await drawMermaid(box);
+    box._expand.disabled = false;
   } catch (err) {
+    box._expand.disabled = true;
     box._body.replaceChildren(h("div", { class: "diagram-error" }, `画不出来：${err?.message ?? err}`));
     const src = box.querySelector(".diagram-src");
     if (src) src.hidden = false;
