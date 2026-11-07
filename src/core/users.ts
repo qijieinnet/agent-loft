@@ -204,7 +204,7 @@ function cleanPermissions(value: unknown, current: ResourcePermissions = {}): Re
   for (const [kind, ids] of Object.entries(value)) {
     if (!["experts", "agents", "servers"].includes(kind)) throw new Error("未知的使用权限");
     if (ids !== null && (!Array.isArray(ids) || ids.length > 200 || ids.some((id) => typeof id !== "string" || !/^[\w-]{1,100}$/.test(id)))) throw new Error("使用权限必须是 ID 列表或 null");
-    if (kind === "agents" && ids?.some((id: string) => !["claude", "codex", "workbuddy"].includes(id))) throw new Error("未知的内置 Agent");
+    if (kind === "agents" && ids?.some((id: string) => !["claude", "codex", "workbuddy", "pi"].includes(id))) throw new Error("未知的内置 Agent");
     next[kind as ResourceKind] = ids === null ? null : [...new Set(ids as string[])];
   }
   return next;

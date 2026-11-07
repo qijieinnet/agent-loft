@@ -520,6 +520,7 @@ function curateSection(mem, reload) {
         ["claude", "Claude Code"],
         ["codex", "Codex"],
         ["workbuddy", "WorkBuddy"],
+        ["pi", "pi"],
       ],
       (v) => save({ agent: v, model: "" }),
     );
@@ -527,7 +528,7 @@ function curateSection(mem, reload) {
       c.agent === "auto"
         ? null
         : (() => {
-            const sel = h("select", { onchange: (e) => save({ model: e.target.value }) }, h("option", { value: "" }, c.agent === "claude" ? "默认：Haiku（最省）" : c.agent === "workbuddy" ? "默认模型" : "默认模型，思考程度 low（最省）"));
+            const sel = h("select", { onchange: (e) => save({ model: e.target.value }) }, h("option", { value: "" }, c.agent === "claude" ? "默认：Haiku（最省）" : c.agent === "workbuddy" ? "默认模型" : c.agent === "pi" ? "默认模型（思考程度 minimal）" : "默认模型，思考程度 low（最省）"));
             if (c.model) sel.append(h("option", { value: c.model, selected: true }, c.model));
             agentCatalog(c.agent)
               .then((models) => {

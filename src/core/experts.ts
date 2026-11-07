@@ -16,10 +16,10 @@ import { canUseMcp, claudeMachineMcp, getMcp, isMachineId, machineName, specOf, 
 import { activeSkills, canSee, getSkill } from "./skills.js";
 import { canUseResource, getUser } from "./users.js";
 
-export type Engine = "claude" | "codex" | "workbuddy";
-export const ENGINES: readonly Engine[] = ["claude", "codex", "workbuddy"];
+export type Engine = "claude" | "codex" | "workbuddy" | "pi";
+export const ENGINES: readonly Engine[] = ["claude", "codex", "workbuddy", "pi"];
 /** 能建自定义专家的引擎。WorkBuddy 目前只有内置专家（工具名、子智能体还没对齐） */
-export const EXPERT_ENGINES: readonly Engine[] = ["claude", "codex"];
+export const EXPERT_ENGINES: readonly Engine[] = ["claude", "codex", "pi"];
 
 /** 一级包含一级：能跑命令就等于能改任何文件 */
 export type ExpertAccess = "web" | "read" | "edit" | "exec";
@@ -285,7 +285,7 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
   const name = text(pick("name"), EXPERT_LIMITS.name, "名字");
   if (!name) throw new Error("给专家起个名字");
   const engine = pick("engine");
-  if (engine !== "claude" && engine !== "codex") throw new Error(engine === "workbuddy" ? "WorkBuddy 暂不支持自定义专家，用内置的 WorkBuddy 就好" : "引擎只能是 Claude 或 Codex");
+  if (engine !== "claude" && engine !== "codex" && engine !== "pi") throw new Error(engine === "workbuddy" ? "WorkBuddy 暂不支持自定义专家，用内置的 WorkBuddy 就好" : "引擎只能是 Claude、Codex 或 pi");
   if (prev && prev.engine !== engine) throw new Error("建好之后不能换引擎（用这个专家的对话都是这个引擎的会话）");
   const access = pick("access");
   if (!ACCESS_LEVELS.includes(access as ExpertAccess)) throw new Error("权限不对");
@@ -329,7 +329,7 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
     const sub = getExpert(id);
     if (!sub || sub.owner !== owner) continue;
     if (shared && !sub.shared) throw new Error(`共享专家的子智能体「${sub.name}」也需要先共享`);
-    if (sub.engine !== "claude") throw new Error(`「${sub.name}」是 Codex 专家，子智能体只能用 Claude 专家`);
+    if (sub.engine !== "claude") throw new Error(`「${sub.name}」是 ${sub.engine === "pi" ? "pi" : "Codex"} 专家，子智能体只能用 Claude 专家`);
     if (accessRank(sub.access) > accessRank(access as ExpertAccess)) {
       throw new Error(`「${sub.name}」的权限（${ACCESS_LABEL[sub.access]}）比这个专家高，子智能体的权限不能超过主专家`);
     }
@@ -359,11 +359,13 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     prompt: text(pick("prompt"), EXPERT_LIMITS.prompt, "提示词"),
-    basePrompt: pick("basePrompt") === "claude_code" && engine === "claude" ? "claude_code" : "lean",
+    // claude_code = 追加在引擎原装的提示词后面（Claude Code 或 pi 的；Codex 的基础指令换不掉，没这个选项）
+    basePrompt: pick("basePrompt") === "claude_code" && (engine === "claude" || engine === "pi") ? "claude_code" : "lean",
     access: access as ExpertAccess,
     ...(cwd ? { cwd } : {}),
-    webSearch: pick("webSearch") !== false,
-    webFetch: pick("webFetch") !== false,
+    // pi 没有自带的联网工具（要联网就挂搜索 MCP），这两项一律关
+    webSearch: engine !== "pi" && pick("webSearch") !== false,
+    webFetch: engine !== "pi" && pick("webFetch") !== false,
     skills,
     mcp,
     subagents,
@@ -546,7 +548,7 @@ export function expertRuntime(expert: Expert, subPrompt: (sub: Expert, access: E
     rev: expert.rev,
     name: expert.name,
     prompt: expert.prompt,
-    basePrompt: expert.engine === "claude" ? expert.basePrompt : "lean",
+    basePrompt: expert.engine === "claude" || expert.engine === "pi" ? expert.basePrompt : "lean",
     access: expert.access,
     webSearch: expert.webSearch,
     webFetch: expert.webFetch,

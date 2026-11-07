@@ -31,7 +31,7 @@ export function isPermissionLevel(v: unknown): v is PermissionLevel {
   return typeof v === "string" && (PERMISSION_LEVELS as readonly string[]).includes(v);
 }
 
-/** 这个引擎认不认这一级：自动判断只有 Claude 有（WorkBuddy 也按自动改文件算） */
+/** 这个引擎认不认这一级：自动判断只有 Claude 有（WorkBuddy、pi 也按自动改文件算） */
 export function engineSupports(agent: string, level: PermissionLevel): boolean {
   return level !== "auto" || agent === "claude";
 }

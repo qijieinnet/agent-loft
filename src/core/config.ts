@@ -76,6 +76,18 @@ export type AppConfig = {
       defaultEffort: string;
       models: string[];
     };
+    /**
+     * pi（earendil-works/pi）：官方 TypeScript SDK 进程内运行。不是账号制，按模型服务商配 API Key，
+     * 凭据和会话记录都在 data/pi/ 下（见 agents/pi/sdk.ts）
+     */
+    pi: {
+      enabled: boolean;
+      /** 「服务商/模型」，空 = 能用的里面挑一个 */
+      defaultModel: string;
+      /** 思考程度（off / minimal / low / medium / high / xhigh），空 = pi 默认 */
+      defaultEffort: string;
+      models: string[];
+    };
   };
   web: {
     enabled: boolean;
@@ -95,7 +107,7 @@ export type AppConfig = {
     quotaEnabled: boolean;
   };
   /** 输入「/」时命令列表的顺序和隐藏项，按 agent 分开（设置 → 命令） */
-  commands: { claude: CommandPrefs; codex: CommandPrefs; workbuddy: CommandPrefs };
+  commands: { claude: CommandPrefs; codex: CommandPrefs; workbuddy: CommandPrefs; pi: CommandPrefs };
   /** 远程控制：网页终端和远程桌面。管理员能用；成员要在 设置 → 用户 里单独开（users.json 的 remote） */
   remote: {
     terminal: boolean;
@@ -132,7 +144,7 @@ export type AppConfig = {
   };
 };
 
-export const AGENT_IDS = ["claude", "codex", "workbuddy"] as const;
+export const AGENT_IDS = ["claude", "codex", "workbuddy", "pi"] as const;
 
 export function defaultConfig(): AppConfig {
   return {
@@ -154,9 +166,11 @@ export function defaultConfig(): AppConfig {
       },
       // 默认不开：要先在设置里登录
       workbuddy: { enabled: false, environment: "workbuddy", cliPath: "", defaultModel: "", defaultEffort: "", models: [] },
+      // 默认不开：要先填一家服务商的 API Key
+      pi: { enabled: false, defaultModel: "", defaultEffort: "", models: [] },
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10, quotaEnabled: true },
-    commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] }, workbuddy: { order: [], hidden: [], custom: [] } },
+    commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] }, workbuddy: { order: [], hidden: [], custom: [] }, pi: { order: [], hidden: [], custom: [] } },
     remote: {
       terminal: true,
       desktop: true,

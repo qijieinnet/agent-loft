@@ -10,10 +10,10 @@ import { changeCwd } from "../views/conv-actions.js";
 // 专家 = 一份配置：引擎、提示词、权限、技能、MCP、子智能体。新建对话、定时任务时选，对话中途不能换。
 // 内置的 Claude Code / Codex 不在这里改（就是 agent 原装的样子）。
 
-const ENGINE_LABEL = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy" };
+const ENGINE_LABEL = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi" };
 /** 权限的几项勾选。读文件 → 改文件 → 跑命令一级包含一级（跑命令就等于能改任何文件） */
 const PERMS = [
-  { id: "webSearch", label: "联网搜索", hint: "用搜索引擎查资料" },
+  { id: "webSearch", label: "联网搜索", hint: "用搜索引擎查资料", engines: ["claude", "codex"] },
   { id: "webFetch", label: "读网页", hint: "打开网址读内容", claudeOnly: true },
   { id: "read", label: "读文件", hint: "读工作目录里的文件，不能改" },
   { id: "edit", label: "改文件", hint: "读写工作目录里的文件，不能跑命令（Codex 改文件也要跑命令，只能改工作目录里的）" },
@@ -193,6 +193,11 @@ function openEditor(data, e, reload, preset) {
     h("option", { value: "lean", selected: (src.basePrompt ?? "lean") === "lean" }, "只用上面的提示词（省 token，推荐）"),
     h("option", { value: "claude_code", selected: src.basePrompt === "claude_code" }, "追加在 Claude Code 原装提示词后面（写代码、干活更稳，每轮多约 1.6 万 token）"),
   );
+  // 「追加在原装后面」的说法跟着引擎变：pi 的原装提示词很短
+  const BASE_LABEL = {
+    claude: "追加在 Claude Code 原装提示词后面（写代码、干活更稳，每轮多约 1.6 万 token）",
+    pi: "追加在 pi 原装提示词后面（带上 pi 的工具用法和规则，每轮多约 600 token）",
+  };
   const perms = permChecks(src);
   let cwd = src.cwd ?? "";
   const cwdBtn = h("button", { type: "button", class: "btn task-cwd" });
@@ -243,7 +248,8 @@ function openEditor(data, e, reload, preset) {
     );
     fill(subBox, subs.el);
     subField.hidden = eng !== "claude";
-    baseField.hidden = eng !== "claude";
+    baseField.hidden = eng !== "claude" && eng !== "pi";
+    if (BASE_LABEL[eng]) basePrompt.options[1].textContent = BASE_LABEL[eng];
     perms.setEngine(eng);
     void models.load(eng);
   };
@@ -353,7 +359,8 @@ function permChecks(src) {
     checked: (id) => boxes.get(id).checked,
     access: () => [...FILE_LEVELS].reverse().find((id) => boxes.get(id).checked) ?? "web",
     setEngine: (engine) => {
-      for (const x of items) x.el.hidden = !!x.p.claudeOnly && engine !== "claude";
+      // pi 没有自带的联网工具：要联网就给专家挂一个搜索 MCP
+      for (const x of items) x.el.hidden = (!!x.p.claudeOnly && engine !== "claude") || (!!x.p.engines && !x.p.engines.includes(engine));
     },
   });
 }

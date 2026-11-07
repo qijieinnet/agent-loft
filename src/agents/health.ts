@@ -10,6 +10,8 @@ import { config } from "../core/config.js";
 import { withProbe } from "./claude/probe.js";
 import { onLoginDone, readAccount } from "./workbuddy/account.js";
 import { desktopCli, ENVIRONMENT_LABEL, environment } from "./workbuddy/sdk.js";
+import { listProviders, MIN_NODE, nodeOk } from "./pi/sdk.js";
+import { onOAuthDone } from "./pi/oauth.js";
 
 const require = createRequire(import.meta.url);
 
@@ -24,7 +26,7 @@ export type AgentFix = {
 };
 
 export type AgentHealth = {
-  id: "claude" | "codex" | "workbuddy";
+  id: "claude" | "codex" | "workbuddy" | "pi";
   label: string;
   enabled: boolean;
   installed: boolean;
@@ -194,9 +196,59 @@ async function workbuddyHealth(): Promise<AgentHealth> {
   }
 }
 
+/** pi：SDK 跟着 agent-loft 装好；「登录」= 至少一家模型服务商配了凭据 */
+async function piHealth(): Promise<AgentHealth> {
+  const base = { id: "pi" as const, label: "pi", enabled: config().agents.pi.enabled };
+  if (!nodeOk()) {
+    return {
+      ...base,
+      installed: false,
+      loggedIn: null,
+      problem: `pi 需要 Node ${MIN_NODE.join(".")} 以上，现在是 ${process.versions.node}`,
+      fix: { action: "install", title: "升级 Node.js", commands: [], note: `把运行 agent-loft 的 Node 升级到 ${MIN_NODE.join(".")} 以上，再重启服务。` },
+    };
+  }
+  let version: string | undefined;
+  try {
+    const v = (require(path.join(path.dirname(require.resolve("@earendil-works/pi-coding-agent")), "..", "package.json")) as { version?: string }).version;
+    version = v ? `SDK ${v}` : undefined;
+  } catch {
+    return {
+      ...base,
+      installed: false,
+      loggedIn: null,
+      problem: "找不到 @earendil-works/pi-coding-agent",
+      fix: { action: "install", title: "安装 pi SDK", commands: ["npm install"], note: "在 agent-loft 的目录里运行，装好后重启服务。" },
+    };
+  }
+  const keyFix: AgentFix = {
+    action: "login",
+    web: true,
+    title: "填模型服务商的 API Key",
+    commands: [],
+    note: "在下面 pi 卡片的「模型服务商」里选一家（DeepSeek、智谱、Kimi、通义、OpenRouter……）填 API Key，保存后点「重新检查」。也可以给 agent-loft 服务设对应的环境变量（如 DEEPSEEK_API_KEY）。",
+  };
+  try {
+    const providers = await Promise.race([listProviders(), timeout<never>(25_000, "读取 pi 服务商")]);
+    const ready = providers.filter((p) => p.configured);
+    return {
+      ...base,
+      installed: true,
+      ...(version ? { version } : {}),
+      loggedIn: ready.length > 0,
+      ...(ready.length ? { account: ready.map((p) => p.name).join("、") } : { fix: keyFix }),
+    };
+  } catch (err) {
+    return { ...base, installed: true, ...(version ? { version } : {}), loggedIn: null, problem: err instanceof Error ? err.message : String(err), fix: keyFix };
+  }
+}
+
 let cache: { at: number; value: AgentHealth[] } | null = null;
 // 网页上登录完：下次体检别用缓存
 onLoginDone(() => {
+  cache = null;
+});
+onOAuthDone(() => {
   cache = null;
 });
 
@@ -220,7 +272,7 @@ export function invalidateHealth(): void {
 }
 let inflight: Promise<AgentHealth[]> | null = null;
 
-/** 两个 agent 一起查，结果缓存一分钟；refresh 跳过缓存（点了「重新检查」） */
+/** 几个 agent 一起查，结果缓存一分钟；refresh 跳过缓存（点了「重新检查」） */
 export function agentHealth(refresh = false): Promise<AgentHealth[]> {
   if (!refresh && cache && Date.now() - cache.at < 60_000) return Promise.resolve(cache.value);
   // WorkBuddy 没启用就不去起它的 CLI（包很大，拉起要几秒）
@@ -228,7 +280,10 @@ export function agentHealth(refresh = false): Promise<AgentHealth[]> {
     config().agents.workbuddy.enabled
       ? workbuddyHealth()
       : Promise.resolve<AgentHealth>({ id: "workbuddy", label: "WorkBuddy", enabled: false, installed: true, loggedIn: null });
-  inflight ??= Promise.all([claudeHealth(), codexHealth(), workbuddy()])
+  // pi 没启用就不加载它的 SDK
+  const pi = () =>
+    config().agents.pi.enabled ? piHealth() : Promise.resolve<AgentHealth>({ id: "pi", label: "pi", enabled: false, installed: true, loggedIn: null });
+  inflight ??= Promise.all([claudeHealth(), codexHealth(), workbuddy(), pi()])
     .then((value) => {
       cache = { at: Date.now(), value };
       return value;

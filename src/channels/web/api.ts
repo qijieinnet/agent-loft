@@ -66,6 +66,9 @@ import { isPermissionLevel, type PermissionLevel } from "../../core/permission.j
 import { agentAvailability, agentHealth, invalidateHealth } from "../../agents/health.js";
 import { loginState as workbuddyLoginState, logout as workbuddyLogout, startLogin as workbuddyLogin } from "../../agents/workbuddy/account.js";
 import { WORKBUDDY_ENVIRONMENTS } from "../../agents/workbuddy/sdk.js";
+import { listProviders as piProviders, removeCredential as piRemoveCredential, setApiKey as piSetApiKey } from "../../agents/pi/sdk.js";
+import { CUSTOM_APIS as PI_CUSTOM_APIS, deleteCustom as piDeleteCustom, discoverModels as piDiscoverModels, listCustom as piListCustom, saveCustom as piSaveCustom } from "../../agents/pi/custom.js";
+import { answerOAuth as piAnswerOAuth, cancelOAuth as piCancelOAuth, oauthState as piOAuthState, startOAuth as piStartOAuth } from "../../agents/pi/oauth.js";
 import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
 import { weixinStatus } from "../weixin/index.js";
@@ -352,6 +355,10 @@ function applyConfig(input: Partial<AppConfig>, selfOrigin?: string): void {
         if (typeof cli !== "string" || cli.length > 500 || (cli.trim() && !path.isAbsolute(cli.trim()))) throw new HttpError(400, "CLI 路径要写绝对路径，留空自动找");
         (patch as { cliPath: string }).cliPath = cli.trim();
       }
+      if (id === "pi" && "defaultEffort" in patch && !["", "off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String((patch as { defaultEffort?: unknown }).defaultEffort))) {
+        throw new HttpError(400, "pi 的思考程度只能是 off / minimal / low / medium / high / xhigh / max");
+      }
+      if (id === "pi" && "defaultModel" in patch && (typeof patch.defaultModel !== "string" || patch.defaultModel.length > 300)) throw new HttpError(400, "默认模型不对");
       Object.assign(next.agents[id], patch);
     }
   }
@@ -497,6 +504,7 @@ function adminOnly(p: string): boolean {
     p === "/api/server/upgrade" ||
     p === "/api/agents/codex/install" ||
     p.startsWith("/api/agents/workbuddy/") ||
+    p.startsWith("/api/agents/pi/") ||
     p.startsWith("/api/pairing") ||
     p.startsWith("/api/claude/") ||
     p.startsWith("/api/feishu/") ||
@@ -1320,6 +1328,107 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     });
     invalidateHealth();
     sendJson(res, 200, { ok: true });
+    return;
+  }
+  // pi 的模型服务商：列出来、填 / 删 API Key。凭据存在 data/pi/auth.json（0600），不回传给前端
+  if (p === "/api/agents/pi/providers" && method === "GET") {
+    try {
+      sendJson(res, 200, { providers: await piProviders() });
+    } catch (err) {
+      throw new HttpError(500, `读不到 pi 的服务商：${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  const piProvider = /^\/api\/agents\/pi\/providers\/([a-z0-9][a-z0-9._-]{0,63})$/.exec(p);
+  if (piProvider && method === "PUT") {
+    const body = await readJsonBody<{ key?: unknown }>(req);
+    const key = typeof body.key === "string" ? body.key.trim() : "";
+    if (!key || key.length > 4096 || /\s/.test(key)) throw new HttpError(400, "API Key 不能为空，也不能带空格");
+    try {
+      await piSetApiKey(piProvider[1]!, key);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    invalidateHealth();
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (piProvider && method === "DELETE") {
+    try {
+      await piRemoveCredential(piProvider[1]!);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    invalidateHealth();
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  // pi 的自定义服务商（data/pi/models.json）：列、存、删、问服务要模型列表
+  if (p === "/api/agents/pi/custom" && method === "GET") {
+    sendJson(res, 200, { providers: piListCustom(), apis: PI_CUSTOM_APIS });
+    return;
+  }
+  if (p === "/api/agents/pi/custom-discover" && method === "POST") {
+    const body = await readJsonBody<{ baseUrl?: unknown; api?: unknown; apiKey?: unknown; id?: unknown }>(req);
+    try {
+      const models = await piDiscoverModels(String(body.baseUrl ?? ""), String(body.api ?? ""), typeof body.apiKey === "string" ? body.apiKey : undefined, typeof body.id === "string" ? body.id : undefined);
+      sendJson(res, 200, { models });
+    } catch (err) {
+      throw new HttpError(400, `读不到模型列表：${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  const piCustom = /^\/api\/agents\/pi\/custom\/([a-z0-9][a-z0-9-]{0,40})$/.exec(p);
+  if (piCustom && method === "PUT") {
+    const body = await readJsonBody<Record<string, unknown>>(req);
+    try {
+      await piSaveCustom({ ...(body as object), id: piCustom[1]! } as never);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    invalidateHealth();
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (piCustom && method === "DELETE") {
+    try {
+      await piDeleteCustom(piCustom[1]!);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    invalidateHealth();
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  // pi 的订阅账号登录：开始一次、轮询状态、交回答（选登录方式 / 粘贴回调地址）、取消
+  if (p === "/api/agents/pi/oauth" && method === "POST") {
+    const body = await readJsonBody<{ provider?: unknown }>(req);
+    if (typeof body.provider !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(body.provider)) throw new HttpError(400, "服务商不对");
+    try {
+      sendJson(res, 200, { state: await piStartOAuth(body.provider) });
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+    return;
+  }
+  if (p === "/api/agents/pi/oauth" && method === "GET") {
+    sendJson(res, 200, { state: piOAuthState() });
+    return;
+  }
+  if (p === "/api/agents/pi/oauth/answer" && method === "POST") {
+    const body = await readJsonBody<{ id?: unknown; value?: unknown }>(req);
+    if (typeof body.id !== "string" || typeof body.value !== "string" || body.value.length > 8192) throw new HttpError(400, "回答不对");
+    try {
+      piAnswerOAuth(body.id, body.value.trim());
+    } catch (err) {
+      throw new HttpError(409, err instanceof Error ? err.message : String(err));
+    }
+    sendJson(res, 200, { state: piOAuthState() });
+    return;
+  }
+  if (p === "/api/agents/pi/oauth" && method === "DELETE") {
+    piCancelOAuth();
+    sendJson(res, 200, { state: piOAuthState() });
     return;
   }
   if (p === "/api/agents/health" && method === "GET") {

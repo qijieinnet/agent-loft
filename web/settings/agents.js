@@ -8,10 +8,10 @@ import { renderEmpty } from "../views/messages.js";
 import { field, saveButton, saveConfig } from "./common.js";
 import { modelPicker } from "./commands.js";
 
-const ENGINE_LABEL = { claude: "Claude Code", codex: "Codex", workbuddy: "WorkBuddy" };
+const ENGINE_LABEL = { claude: "Claude Code", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi" };
 const ENGINES = Object.keys(ENGINE_LABEL);
 /** 设置里的默认权限「跟随」时实际是什么 */
-const FOLLOW_LABEL = { claude: "跟随 Claude Code（逐次询问）", codex: "跟随沙箱设置", workbuddy: "跟随 WorkBuddy（逐次询问）" };
+const FOLLOW_LABEL = { claude: "跟随 Claude Code（逐次询问）", codex: "跟随沙箱设置", workbuddy: "跟随 WorkBuddy（逐次询问）", pi: "跟随 pi（逐次询问）" };
 const WORKBUDDY_SITES = [
   ["workbuddy", "WorkBuddy（www.workbuddy.cn，用本机的 WorkBuddy 桌面版）"],
   ["internal", "CodeBuddy 国内版（copilot.tencent.com）"],
@@ -305,7 +305,7 @@ export function agentsTab(cfg, page) {
     const settings = a[engine];
     if (!settings) continue;
     const on = h("input", { type: "checkbox", checked: settings.enabled });
-    const pick = modelPicker(engine, settings.defaultModel, settings.defaultEffort, engine === "claude" ? "跟随 Claude Code 默认" : engine === "workbuddy" ? "跟随 WorkBuddy 默认" : "跟随 config.toml");
+    const pick = modelPicker(engine, settings.defaultModel, settings.defaultEffort, engine === "claude" ? "跟随 Claude Code 默认" : engine === "workbuddy" ? "跟随 WorkBuddy 默认" : engine === "pi" ? "pi 自动挑一个能用的" : "跟随 config.toml");
     const models = modelChecklist(engine, settings.models ?? []);
     const config = h("div", { class: "agent-config", "data-form": "" },
       h("h4", {}, label, h("span", { class: "grow" }), h("label", { class: "check" }, on, "启用")));
@@ -338,6 +338,13 @@ export function agentsTab(cfg, page) {
         cliField,
       );
     }
+    if (engine === "pi") {
+      config.append(
+        h("p", { class: "muted" }, "pi（pi.dev）：开源的编程 agent，用官方 SDK 在 agent-loft 进程里运行。不用登录账号，按模型服务商填 API Key（DeepSeek、智谱、Kimi、通义、MiniMax、OpenRouter……），整台服务器共用。凭据和会话记录都存在 agent-loft 的 data/pi/ 下，不读机器上的 ~/.pi。pi 本身没有权限系统，授权卡、计划模式、提问卡是 agent-loft 补上的；跑命令（bash）没有沙箱。暂不支持自定义专家。"),
+        piProvidersSection(),
+        piCustomSection(),
+      );
+    }
     config.append(field("默认模型", pick.modelEl));
     if (engine !== "workbuddy") config.append(field("默认思考程度", pick.effortEl));
     config.append(h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
@@ -358,6 +365,275 @@ export function agentsTab(cfg, page) {
   }
   page.append(quotaSection(cfg));
   builtinDefaultsSections(targets);
+}
+
+/** 常用的排前面：国内能直接用的几家、再是 OpenRouter 和海外几家 */
+const PI_PROVIDER_ORDER = ["deepseek", "zai-coding-cn", "kimi-coding", "moonshotai-cn", "qwen-token-plan-cn", "minimax-cn", "xiaomi-token-plan-cn", "openrouter", "anthropic", "openai", "google"];
+
+/**
+ * pi 的模型服务商：哪些能用了（存了 Key，或服务进程有环境变量），填 / 换 / 删 API Key。
+ * Key 只往服务端写，不回显；存在 data/pi/auth.json（0600）
+ */
+function piProvidersSection() {
+  const box = h("div", { class: "field pi-providers", "data-nodirty": "" }, h("span", {}, "模型服务商"), h("small", {}, "正在读取…"));
+  const load = async () => {
+    let data;
+    try {
+      data = await api("/api/agents/pi/providers");
+    } catch (err) {
+      fill(box, h("span", {}, "模型服务商"), h("div", { class: "error-text" }, err.message), h("button", { class: "btn small", onclick: load }, "重试"));
+      return;
+    }
+    const rank = (p) => {
+      const i = PI_PROVIDER_ORDER.indexOf(p.id);
+      return i < 0 ? PI_PROVIDER_ORDER.length : i;
+    };
+    const providers = [...data.providers].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    const ready = providers.filter((p) => p.configured && !p.custom);
+    const rows = ready.map((p) => {
+      const remove = p.stored
+        ? h("button", {
+            class: "btn small",
+            onclick: async () => {
+              if (!confirm(`删除 ${p.name} 的凭据？用它的模型的对话会用不了。`)) return;
+              remove.disabled = true;
+              try {
+                await api(`/api/agents/pi/providers/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+                toast(`已删除 ${p.name} 的凭据`);
+              } catch (err) {
+                toast(`删除失败：${err.message}`, 5000);
+              }
+              void load();
+            },
+          }, "删除")
+        : null;
+      const where = p.stored === "oauth" ? "已登录（OAuth）" : p.stored ? "API Key 已保存" : "来自服务的环境变量 / 云凭据";
+      return h("div", { class: "health-row" }, h("div", { class: "health-head" }, h("span", { class: "health-dot ok" }), h("b", {}, p.name), h("span", { class: "health-state" }, `${where} · ${p.models} 个模型`), h("span", { class: "grow" }), remove));
+    });
+    const keyable = providers.filter((p) => p.apiKey && !p.custom);
+    const sel = h("select", { "aria-label": "服务商" }, keyable.map((p) => h("option", { value: p.id }, `${p.name}${p.configured ? "（已配置，填了就替换）" : ""}`)));
+    const key = h("input", { type: "password", autocomplete: "off", placeholder: "粘贴 API Key", "aria-label": "API Key" });
+    const save = h("button", {
+      class: "btn small primary",
+      onclick: async () => {
+        const value = key.value.trim();
+        if (!value) {
+          toast("先粘贴 API Key");
+          return;
+        }
+        save.disabled = true;
+        try {
+          await api(`/api/agents/pi/providers/${encodeURIComponent(sel.value)}`, { method: "PUT", body: { key: value } });
+          key.value = "";
+          toast("已保存。模型列表一分钟内刷新，刷新设置页就能在下拉框里选", 5000);
+        } catch (err) {
+          toast(`保存失败：${err.message}`, 6000);
+        }
+        save.disabled = false;
+        void load();
+      },
+    }, "保存 Key");
+    const oauthable = providers.filter((p) => p.oauth);
+    const oauthSel = h("select", { "aria-label": "订阅账号" }, oauthable.map((p) => h("option", { value: p.id }, `${p.oauth}${p.stored === "oauth" ? "（已登录，重新登录）" : ""}`)));
+    const panel = h("div", { class: "pi-oauth" });
+    const loginBtn = h("button", { class: "btn small", onclick: () => piOAuthFlow(panel, oauthSel.value, load) }, "登录");
+    fill(
+      box,
+      h("span", {}, "模型服务商"),
+      rows.length ? rows : h("small", {}, "还没有能用的服务商：在下面选一家、填上 API Key，或者登录订阅账号。"),
+      h("div", { class: "row" }, sel, key, save),
+      oauthable.length ? h("div", { class: "row" }, oauthSel, loginBtn) : null,
+      oauthable.length ? h("small", {}, "订阅账号（Claude Pro/Max、ChatGPT Plus/Pro、GitHub Copilot、Kimi Code……）在你自己的浏览器里登录，整台服务器共用。订阅能不能用在第三方工具里，以各家的条款为准。") : null,
+      panel,
+      h("small", {}, "Key 只存在这台服务器上（data/pi/auth.json），网页上不会再显示。也可以给 agent-loft 服务设环境变量（如 DEEPSEEK_API_KEY），重启后自动识别。"),
+    );
+  };
+  void load();
+  return box;
+}
+
+const PI_API_LABEL = {
+  "openai-completions": "OpenAI 兼容（/chat/completions，Ollama、LM Studio、vLLM、one-api 等）",
+  "openai-responses": "OpenAI Responses（/responses）",
+  "anthropic-messages": "Anthropic 兼容（/messages）",
+  "google-generative-ai": "Google Gemini 兼容",
+};
+
+/**
+ * 自定义服务商：写 data/pi/models.json。本地模型、OpenAI 兼容网关都在这里加。
+ * 模型的能力（思考、图片、上下文）按整个服务商统一设，够用；要细调可以直接改文件。
+ */
+function piCustomSection() {
+  const box = h("div", { class: "field pi-custom", "data-nodirty": "" }, h("span", {}, "自定义服务商"), h("small", {}, "正在读取…"));
+  const load = async () => {
+    let data;
+    try {
+      data = await api("/api/agents/pi/custom");
+    } catch (err) {
+      fill(box, h("span", {}, "自定义服务商"), h("div", { class: "error-text" }, err.message), h("button", { class: "btn small", onclick: load }, "重试"));
+      return;
+    }
+    const formSlot = h("div");
+    const rows = data.providers.map((p) => {
+      const del = h("button", { class: "btn small", onclick: async () => {
+        if (!confirm(`删除自定义服务商 ${p.name}？用它的模型的对话会用不了。`)) return;
+        try {
+          await api(`/api/agents/pi/custom/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+          toast(`已删除 ${p.name}`);
+        } catch (err) {
+          toast(`删除失败：${err.message}`, 5000);
+        }
+        void load();
+      } }, "删除");
+      const edit = h("button", { class: "btn small", onclick: () => fill(formSlot, customForm(data.apis, p, () => { formSlot.replaceChildren(); void load(); })) }, "编辑");
+      return h("div", { class: "health-row" },
+        h("div", { class: "health-head" }, h("b", {}, p.name), h("span", { class: "health-state" }, `${p.models.length} 个模型${p.hasKey ? " · 有 Key" : ""}`), h("span", { class: "grow" }), edit, del),
+        h("div", { class: "health-meta" }, `${p.id} · ${p.baseUrl}`));
+    });
+    const add = h("button", { class: "btn small", onclick: () => fill(formSlot, customForm(data.apis, null, () => { formSlot.replaceChildren(); void load(); })) }, "添加自定义服务商");
+    fill(box, h("span", {}, "自定义服务商"), rows, h("div", { class: "row" }, add), formSlot,
+      h("small", {}, "本地的 Ollama（http://localhost:11434/v1）、LM Studio、vLLM、llama.cpp，或 one-api 之类的 OpenAI 兼容网关。存在 data/pi/models.json。"));
+  };
+  void load();
+  return box;
+}
+
+function customForm(apis, src, done) {
+  const first = src?.models?.[0] ?? {};
+  const id = h("input", { value: src?.id ?? "", placeholder: "如 ollama、my-gateway", disabled: !!src });
+  const name = h("input", { value: src?.name ?? "", placeholder: "显示名称，留空用 id" });
+  const baseUrl = h("input", { value: src?.baseUrl ?? "", placeholder: "如 http://localhost:11434/v1" });
+  const apiSel = h("select", {}, apis.map((a) => h("option", { value: a, selected: a === (src?.api || "openai-completions") }, PI_API_LABEL[a] ?? a)));
+  const key = h("input", { type: "password", autocomplete: "off", placeholder: src?.hasKey ? "留空沿用已保存的" : "本地服务不用填" });
+  const clearKey = h("input", { type: "checkbox" });
+  const models = h("textarea", { rows: 4, placeholder: "一行一个模型 id，如 qwen2.5-coder:7b" }, (src?.models ?? []).map((m) => m.id).join("\n"));
+  const reasoning = h("input", { type: "checkbox", checked: !!first.reasoning });
+  const image = h("input", { type: "checkbox", checked: (first.input ?? []).includes("image") });
+  const ctx = h("input", { type: "number", min: 1024, step: 1024, value: first.contextWindow ?? "", placeholder: "128000" });
+  const discover = h("button", { class: "btn small", onclick: async () => {
+    discover.disabled = true;
+    try {
+      const r = await api("/api/agents/pi/custom-discover", { method: "POST", body: { baseUrl: baseUrl.value, api: apiSel.value, apiKey: key.value, ...(src ? { id: src.id } : {}) } });
+      if (!r.models.length) toast("服务没有返回模型");
+      else {
+        models.value = r.models.join("\n");
+        toast(`读到 ${r.models.length} 个模型，删掉不要的再保存`);
+      }
+    } catch (err) {
+      toast(err.message, 6000);
+    }
+    discover.disabled = false;
+  } }, "从服务读取模型列表");
+  const save = h("button", { class: "btn small primary", onclick: async () => {
+    const ids = models.value.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+    const contextWindow = Number(ctx.value) || undefined;
+    const body = {
+      name: name.value.trim(),
+      baseUrl: baseUrl.value.trim(),
+      api: apiSel.value,
+      models: ids.map((m) => ({ id: m, reasoning: reasoning.checked, image: image.checked, ...(contextWindow ? { contextWindow } : {}) })),
+      ...(key.value.trim() ? { apiKey: key.value.trim() } : clearKey.checked || !src ? { apiKey: "" } : {}),
+    };
+    save.disabled = true;
+    try {
+      await api(`/api/agents/pi/custom/${encodeURIComponent(src?.id ?? id.value.trim())}`, { method: "PUT", body });
+      toast("已保存。刷新设置页后可以在默认模型里选");
+      done();
+    } catch (err) {
+      toast(`保存失败：${err.message}`, 6000);
+      save.disabled = false;
+    }
+  } }, "保存");
+  return h("div", { class: "health-fix" },
+    h("div", { class: "row-fields" }, field("id", id, src ? "建好后不能改" : "小写字母、数字和 -"), field("名称", name)),
+    field("地址（baseUrl）", baseUrl),
+    field("接口类型", apiSel),
+    field("API Key", key, "只存在服务器上，不会再显示"),
+    src?.hasKey ? h("label", { class: "check-item" }, clearKey, "清除已保存的 Key") : null,
+    field("模型", models),
+    h("div", { class: "row" }, discover),
+    h("div", { class: "row" }, h("label", { class: "check" }, reasoning, "支持思考"), h("label", { class: "check" }, image, "支持图片"), field("上下文长度（token）", ctx)),
+    h("div", { class: "row" }, save, h("button", { class: "btn small", onclick: done }, "取消")));
+}
+
+/**
+ * 订阅账号登录：服务端在后台跑 pi 的登录流程，这里每 1.5 秒拉一次状态，
+ * 把登录链接、设备码显示出来，pi 要问的（登录方式、企业域名、回调地址）就地作答。
+ */
+async function piOAuthFlow(panel, provider, after) {
+  let timer = null;
+  let shownPrompt = null;
+  const stop = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  const cancel = h("button", { class: "btn small", onclick: async () => {
+    stop();
+    await api("/api/agents/pi/oauth", { method: "DELETE" }).catch(() => {});
+    panel.replaceChildren();
+  } }, "取消");
+  const answer = async (id, value) => {
+    try {
+      render((await api("/api/agents/pi/oauth/answer", { method: "POST", body: { id, value } })).state);
+    } catch (err) {
+      toast(err.message, 5000);
+    }
+  };
+  const promptEl = (pr) => {
+    if (pr.type === "select") {
+      return h("div", { class: "field" }, h("span", {}, pr.message), h("div", { class: "row" }, pr.options.map((o) => h("button", { class: "btn small", title: o.description ?? "", onclick: () => answer(pr.id, o.id) }, o.label))));
+    }
+    const input = h("input", { type: pr.type === "secret" ? "password" : "text", autocomplete: "off", placeholder: pr.placeholder ?? (pr.type === "manual_code" ? "粘贴浏览器最后跳到的地址，或者授权码" : "") });
+    const submit = h("button", { class: "btn small primary", onclick: () => answer(pr.id, input.value) }, "提交");
+    input.addEventListener("keydown", (e) => e.key === "Enter" && submit.click());
+    return h("div", { class: "field" }, h("span", {}, pr.message), h("div", { class: "row" }, input, submit),
+      pr.type === "manual_code" ? h("small", {}, "浏览器在别的机器上时，登录完会跳到一个打不开的 127.0.0.1 / localhost 地址：把地址栏里的整个地址复制过来就行。") : null);
+  };
+  const noticeEl = (n) => {
+    if (n.type === "auth_url") return h("div", {}, h("a", { href: n.url, target: "_blank", rel: "noopener noreferrer", class: "btn small primary" }, "打开登录页"), n.instructions ? h("small", {}, ` ${n.instructions}`) : null);
+    if (n.type === "device_code") {
+      const copy = h("button", { class: "btn small", onclick: () => copyText(n.userCode, copy) }, "复制");
+      return h("div", {}, h("div", { class: "health-cmd" }, h("code", {}, n.userCode), copy), h("small", {}, "到 ", h("a", { href: n.verificationUri, target: "_blank", rel: "noopener noreferrer" }, n.verificationUri), " 输入上面的代码"));
+    }
+    return h("small", { class: "muted" }, n.message, ...(n.links ?? []).map((l) => [" ", h("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.label ?? l.url)]));
+  };
+  const render = (st) => {
+    if (!st) {
+      stop();
+      panel.replaceChildren();
+      return;
+    }
+    if (st.status === "done") {
+      stop();
+      panel.replaceChildren();
+      toast("订阅账号已登录。模型列表一分钟内刷新", 5000);
+      after();
+      return;
+    }
+    if (st.status !== "running") {
+      stop();
+      fill(panel, h("div", { class: "error-text" }, st.status === "cancelled" ? "登录已取消" : `登录失败：${st.error ?? "未知原因"}`));
+      return;
+    }
+    // 输入框里正在打字：问题没变就别重画
+    if (st.prompt && shownPrompt === st.prompt.id && panel.contains(document.activeElement)) return;
+    shownPrompt = st.prompt?.id ?? null;
+    fill(panel, h("div", { class: "health-fix" }, st.notices.map(noticeEl), st.prompt ? promptEl(st.prompt) : h("small", {}, "等你在浏览器里完成登录…"), h("div", { class: "row" }, cancel)));
+  };
+  const poll = async () => {
+    try {
+      render((await api("/api/agents/pi/oauth")).state);
+    } catch {
+      // 网络抖一下，下次再拉
+    }
+    if (timer !== null) timer = setTimeout(poll, 1500);
+  };
+  try {
+    render((await api("/api/agents/pi/oauth", { method: "POST", body: { provider } })).state);
+    timer = setTimeout(poll, 1500);
+  } catch (err) {
+    toast(`登录失败：${err.message}`, 6000);
+  }
 }
 
 /** 账号额度：侧栏底部、/status、桌面端显示的 Claude / Codex 订阅额度，查不查、多久查一次 */

@@ -48,7 +48,7 @@ export function renderTopbar() {
 // ---------- 顶栏的专家头像和信息卡 ----------
 
 const ACCESS_LABEL = { web: "只能联网", read: "能读文件", edit: "能改文件", exec: "能跑命令" };
-const ENGINE_LABEL = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy" };
+const ENGINE_LABEL = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi" };
 /** 鼠标停多久才弹、离开多久才收（从头像挪到卡片上的那一下不能收） */
 const HOVER_OPEN_MS = 250;
 const HOVER_CLOSE_MS = 200;
