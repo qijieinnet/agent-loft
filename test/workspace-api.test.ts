@@ -152,6 +152,36 @@ test("工作区面板接口", { timeout: 60000 }, async (t) => {
     assert.deepEqual(await tree("web:admin", "inside-link"), ["a.ts"]);
   });
 
+  await t.test("文件树：Git 忽略规则、嵌套规则、已跟踪文件和规则刷新", async () => {
+    const repo = path.join(root, "ignored-project");
+    fs.mkdirSync(path.join(repo, "build"), { recursive: true });
+    fs.mkdirSync(path.join(repo, "src"));
+    git(repo, "init");
+    fs.writeFileSync(path.join(repo, ".gitignore"), "build/\n*.log\n!keep.log\n");
+    fs.writeFileSync(path.join(repo, "src/.gitignore"), "!nested.log\n");
+    const ignoredNames = ["debug.log", "中文 空格.log", "换\n行.log", "-option.log", ".hidden.log"];
+    for (const name of [...ignoredNames, "keep.log", "tracked.log", ".hidden", "build/result.txt", "src/debug.log", "src/nested.log"]) {
+      fs.writeFileSync(path.join(repo, name), "content\n");
+    }
+    git(repo, "add", "-f", "tracked.log");
+    conv("web:ignored", repo);
+    conv("web:ignored-sub", path.join(repo, "src"));
+    const listing = async (key = "web:ignored", p = "") => (await json(await get(key, "workspace-tree", { path: p }))).entries as { name: string; ignored?: boolean }[];
+    const entries = await listing();
+    for (const name of ["build", ...ignoredNames]) assert.equal(entries.find((e) => e.name === name)?.ignored, true, name);
+    for (const name of ["src", "keep.log", "tracked.log", ".hidden", ".gitignore"]) {
+      assert.equal(entries.find((e) => e.name === name)?.ignored, undefined, name);
+    }
+    assert.equal((await listing("web:ignored", "build"))[0]?.ignored, true, "忽略目录的子文件也标记");
+    for (const nested of [await listing("web:ignored", "src"), await listing("web:ignored-sub")]) {
+      assert.equal(nested.find((e) => e.name === "debug.log")?.ignored, true, "继承父目录规则");
+      assert.equal(nested.find((e) => e.name === "nested.log")?.ignored, undefined, "嵌套例外规则");
+    }
+    fs.writeFileSync(path.join(repo, ".gitignore"), "build/\n");
+    assert.equal((await listing()).find((e) => e.name === "debug.log")?.ignored, undefined, "刷新后使用最新规则");
+    assert.ok((await listing("web:plain")).every((e) => !e.ignored), "普通目录仍能浏览");
+  });
+
   await t.test("路径：跳不出工作目录", async () => {
     for (const p of ["..", "../plain", "../sibling.txt", path.join(outside, "secret.txt"), ".git", ".git/config", "escape-dir", "escape-dir/secret.txt", "a\0b"]) {
       assert.equal((await get("web:admin", "workspace-tree", { path: p })).status, 404, `tree ${p}`);

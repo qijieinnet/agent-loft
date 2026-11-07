@@ -28,6 +28,8 @@ export type WorkspaceEntry = {
   mtime: number;
   /** 符号链接：显示时标一下，指向的类型算在 type 里 */
   link?: boolean;
+  /** 被 Git 忽略，文件树中淡化显示 */
+  ignored?: boolean;
 };
 
 export type WorkspaceListing = {

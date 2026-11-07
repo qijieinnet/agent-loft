@@ -454,9 +454,9 @@ function treeRows(rel, depth) {
         h(
           "button",
           {
-            class: `ws-row${entry.name.startsWith(".") ? " faint" : ""}`,
+            class: `ws-row${entry.name.startsWith(".") ? " faint" : ""}${entry.ignored ? " ignored" : ""}`,
             style: { paddingLeft: `${12 + depth * 16}px` },
-            title: entry.path,
+            title: entry.ignored ? `${entry.path}（Git 已忽略）` : entry.path,
             ...(dir ? { "aria-expanded": open ? "true" : "false" } : {}),
             onclick: () => (dir ? toggleDir(entry.path) : openDetail({ kind: "file", path: entry.path, from: null })),
           },

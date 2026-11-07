@@ -15,6 +15,7 @@ import {
   gitDiff,
   gitDiscard,
   gitFetch,
+  gitIgnoredPaths,
   gitPull,
   gitPush,
   GitError,
@@ -179,6 +180,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
   if (sub === "workspace-tree") {
     const listing = listWorkspaceEntries(cwd, requested);
     if (!listing) throw new HttpError(404, "目录不存在，或者不能查看");
+    const ignored = await gitIgnoredPaths(path.resolve(cwd, listing.path), listing.entries.map((entry) => entry.name));
+    for (const entry of listing.entries) if (ignored.has(entry.name)) entry.ignored = true;
     sendJson(res, 200, listing);
     return true;
   }

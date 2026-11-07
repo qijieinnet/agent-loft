@@ -182,6 +182,10 @@ button.ws-row:hover {
   color: var(--fg-soft);
 }
 
+.ws-row.ignored .ws-name {
+  color: var(--fg-faint);
+}
+
 .ws-row-note {
   color: var(--fg-faint);
   font-size: 12px;

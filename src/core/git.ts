@@ -183,6 +183,22 @@ export async function findRepo(cwd: string): Promise<GitRepo> {
   return { repo: true, root };
 }
 
+/** 批量检查目录中的路径；非仓库、Git 不可用时不影响文件树。跟踪中的文件不会标成忽略。 */
+export async function gitIgnoredPaths(cwd: string, paths: string[]): Promise<Set<string>> {
+  if (!paths.length) return new Set();
+  try {
+    if (!(await findRepo(cwd)).repo) return new Set();
+    // check-ignore 不运行 filter，直接复用安全配置即可。NUL 分隔兼容空格、换行和以 - 开头的文件名。
+    const out = await run(cwd, [...SAFE_CONFIG.flatMap((c) => ["-c", c]), "check-ignore", "-z", "--stdin"], STATUS_MAX_BYTES, {
+      input: `${paths.join("\0")}\0`,
+    });
+    if (out.code === 0 && !out.truncated) return new Set(out.stdout.split("\0").filter(Boolean));
+  } catch {
+    // 忽略标记只是辅助显示，失败仍然让用户正常浏览文件。
+  }
+  return new Set();
+}
+
 // ---------- status ----------
 
 export type GitFileState = "modified" | "added" | "deleted" | "renamed" | "copied" | "typechange" | "untracked" | "conflicted";

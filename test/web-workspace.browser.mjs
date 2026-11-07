@@ -228,6 +228,43 @@ test("工作区面板", { timeout: 120000 }, async (t) => {
     await page.context().close();
   });
 
+  await t.test("Git 忽略项淡化，仍可展开和预览，刷新后更新标记", async () => {
+    const added = [".gitignore", ".hidden", ".hidden.log", "debug.log", "keep.log", "build"];
+    let page;
+    try {
+      fs.writeFileSync(path.join(project, ".gitignore"), "build/\n*.log\n!keep.log\n");
+      for (const name of [".hidden", ".hidden.log", "debug.log", "keep.log"]) fs.writeFileSync(path.join(project, name), "ignored preview\n");
+      fs.mkdirSync(path.join(project, "build"));
+      fs.writeFileSync(path.join(project, "build/result.txt"), "build result\n");
+      page = await open("admin", "web:repo");
+      await toggleWorkspace(page);
+      const panel = page.locator(".ws-panel");
+      const row = (name) => panel.locator(`.ws-row[title="${name}"]`);
+      const ignoredRow = (name) => panel.locator(`.ws-row[title="${name}（Git 已忽略）"]`);
+      await ignoredRow("debug.log").waitFor();
+      assert.equal(await ignoredRow(".hidden.log").count(), 1, "隐藏文件也能标为忽略");
+      assert.equal(await row("keep.log").count(), 1, "例外文件保留正常颜色");
+      for (const theme of ["light", "dark"]) {
+        await page.emulateMedia({ colorScheme: theme });
+        const color = (locator) => locator.locator(".ws-name").evaluate((node) => getComputedStyle(node).color);
+        assert.notEqual(await color(ignoredRow("debug.log")), await color(row("keep.log")), `${theme} 下与普通文件颜色不同`);
+        assert.notEqual(await color(ignoredRow("debug.log")), await color(row(".hidden")), `${theme} 下与隐藏文件颜色不同`);
+      }
+      await ignoredRow("build").click();
+      await ignoredRow("build/result.txt").click();
+      await panel.locator(".fv-code").waitFor();
+      assert.match(await panel.locator(".fv-code").textContent(), /build result/);
+      await panel.getByRole("button", { name: "返回" }).click();
+      fs.writeFileSync(path.join(project, ".gitignore"), "build/\n");
+      await panel.getByRole("button", { name: "刷新", exact: true }).click();
+      await row("debug.log").waitFor();
+      assert.equal(await ignoredRow("debug.log").count(), 0, "修改忽略规则后刷新恢复正常显示");
+    } finally {
+      if (page) await page.context().close();
+      for (const name of added) fs.rmSync(path.join(project, name), { recursive: true, force: true });
+    }
+  });
+
   await t.test("改动列表、diff 和分支", async () => {
     const page = await open("admin", "web:repo");
     await page.locator(".top-git").waitFor();
