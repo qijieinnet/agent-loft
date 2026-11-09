@@ -172,6 +172,13 @@ export async function runSmoke({ openPopover }) {
       3000,
     );
 
+    // 苹果日历 / 提醒事项 / 备忘录（只有 macOS）：默认没连接，「连接」按钮和签名方式画得出来
+    if (isMac) {
+      await until(() => js(`document.getElementById("panel").innerText.includes("苹果日历 / 提醒事项 / 备忘录")`), "苹果日历设置区块");
+      if (!(await js(`window.loft.state().then((s) => s.apple && s.apple.installed === false)`))) return fail("苹果日历默认应该是没连接");
+      if (!(await js(`[...document.querySelectorAll("#panel .pick button")].some((b) => b.textContent.includes("本机证书"))`))) return fail("苹果日历区块没有签名方式选项");
+    }
+
     const pop = openPopover();
     await until(() => pop.executeJavaScript(`document.body.innerText.includes("冒烟测试")`), "菜单栏面板里的服务器");
     junk = junkIn(await pop.executeJavaScript("document.body.innerText"));

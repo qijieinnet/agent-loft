@@ -160,6 +160,7 @@ function buildManage() {
   manage.quota = h("div", { class: "card" });
   manage.sleep = h("div", { class: "card" });
   manage.local = h("div", { class: "card" });
+  manage.apple = h("div", { class: "card" });
   manage.update = h("div", { class: "card", id: "update-card" });
   manage.intro = h("div");
 
@@ -176,6 +177,7 @@ function buildManage() {
       manage.quota,
       h("h2", {}, "休眠"),
       manage.sleep,
+      state.apple ? [h("h2", {}, "苹果日历 / 提醒事项 / 备忘录"), manage.apple] : null,
       h("h2", {}, "更新"),
       manage.update,
       h("p", { class: "hint", style: { marginTop: "12px" } }, `Agent Loft 桌面端 ${state.version}`),
@@ -243,6 +245,7 @@ function renderManage() {
   );
   renderPrefs();
   renderLocalCard(manage.local);
+  renderAppleCard(manage.apple);
   renderUpdateCard(manage.update);
 }
 

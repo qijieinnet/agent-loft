@@ -5,9 +5,10 @@
 // preload 转给这里，弹系统通知（桌面端收不到 Web Push）。菜单栏（Windows / Linux 是托盘）另有图标，
 // 鼠标移上去 / 点一下弹出各服务器的额度和待处理（见 tray.js）。
 // Windows / Linux 用系统自己的标题栏，菜单栏默认收起（按 Alt 出来）。
-import { app, BaseWindow, dialog, ipcMain, Menu, nativeTheme, Notification, WebContentsView } from "electron";
+import { app, BaseWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createApple } from "./apple.js";
 import { createAwake } from "./awake.js";
 import { openedAtLogin, setOpenAtLogin, syncOpenAtLogin } from "./autostart.js";
 import { localPort, localUrl, readSetupToken } from "./local-server.js";
@@ -90,6 +91,7 @@ function snapshot() {
     localId: localServerId(),
     system: systemState(),
     awake: awake?.state() ?? null,
+    apple: apple?.state() ?? null,
     // 全屏时没有红绿灯，顶栏左边不用让位
     fullscreen: !!win && !win.isDestroyed() && win.isFullScreen(),
   };
@@ -149,6 +151,8 @@ function localSessionActive() {
 
 /** @type {ReturnType<typeof createAwake> | null} 在 app ready 之后才建（要用 powerMonitor） */
 let awake = null;
+/** @type {ReturnType<typeof createApple> | null} 连接苹果日历 / 提醒事项 / 备忘录（见 apple.js），只有 macOS */
+let apple = null;
 
 function broadcast() {
   awake?.evaluate();
@@ -238,6 +242,8 @@ function createWindow() {
   for (const ev of ["enter-full-screen", "leave-full-screen"]) win.on(ev, broadcast);
   for (const ev of ["resized", "moved"]) win.on(ev, saveBounds);
   win.on("focus", () => {
+    // 用户可能刚在系统设置里改了日历 / 提醒事项 / 备忘录的授权
+    if (managing && panel === "manage") void apple?.refresh();
     if (activeId && !managing) {
       clearUnread(activeId);
       viewFor(activeId).webContents.focus();
@@ -690,6 +696,74 @@ const calls = {
   authorizeLid: () => awake?.setLidGuard(true, { force: true }),
   refreshLidGuard: () => awake?.refreshLid(),
 
+  // ---- 苹果日历 / 提醒事项 / 备忘录（见 apple.js） ----
+  appleEnable: (signing) => apple?.enable(signing),
+  appleDisable: async () => {
+    const { response } = await dialog.showMessageBox(win, {
+      type: "warning",
+      message: "断开苹果日历 / 提醒事项 / 备忘录？",
+      detail: "会撤销系统给 Agent Loft Bridge 的授权，删掉 Bridge 和本机签名证书。智能体之后就读写不了这些数据了，日历、提醒事项、备忘录本身的内容不受影响。",
+      buttons: ["断开", "取消"],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (response !== 0) return false;
+    await apple?.disable();
+    return true;
+  },
+  appleResign: async (signing) => {
+    const { response } = await dialog.showMessageBox(win, {
+      type: "warning",
+      message: signing === "adhoc" ? "改成不用证书签名？" : "改成用本机证书签名？",
+      detail: `换签名方式后系统会把 Bridge 当成新程序，日历、提醒事项、备忘录都要重新授权一次。${signing === "adhoc" ? "本机签名证书会删掉。" : ""}`,
+      buttons: ["更换", "取消"],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (response !== 0) return false;
+    await apple?.resign(signing);
+    return true;
+  },
+  appleRequest: (kind) => apple?.request(String(kind)),
+  appleOpenPrivacy: (kind) => apple?.openPrivacy(String(kind)),
+  appleConfirmWrites: (on) => apple?.setConfirmWrites(!!on),
+  appleRefresh: () => apple?.refresh(),
+  appleMcpScope: (scope) => apple?.mcp.setScope(scope === "lan" ? "lan" : "local"),
+  appleMcpPort: (port) => apple?.mcp.setPort(port),
+  appleMcpRegenerate: async () => {
+    const { response } = await dialog.showMessageBox(win, {
+      type: "warning",
+      message: "重新生成 MCP token？",
+      detail: "旧的 token 马上失效，已经配好的智能体（agent-loft 的 MCP 设置、Claude Code 等）都要换成新的才能继续用。",
+      buttons: ["重新生成", "取消"],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (response !== 0) return false;
+    apple?.mcp.regenerate();
+    return true;
+  },
+  /**
+   * 复制接入信息到剪贴板。token 只在主进程里，不经过界面。
+   * what：token 只要 token；header 请求头那一行；claude 一条 claude mcp add 命令；json 通用的 mcpServers 配置
+   */
+  appleMcpCopy: (what, url) => {
+    const m = apple?.mcp.state();
+    const token = apple?.mcp.token();
+    if (!m || !token) throw new Error("MCP 服务还没准备好");
+    // 只能是我们自己给出的地址之一
+    const target = [m.localUrl, ...m.lanUrls].includes(url) ? url : m.localUrl;
+    const text = {
+      token,
+      header: `Bearer ${token}`,
+      claude: `claude mcp add --transport http apple ${target} --header "Authorization: Bearer ${token}"`,
+      json: JSON.stringify({ mcpServers: { apple: { type: "http", url: target, headers: { Authorization: `Bearer ${token}` } } } }, null, 2),
+    }[what];
+    if (!text) throw new Error("不支持的格式");
+    clipboard.writeText(text);
+    return true;
+  },
+
   // ---- 首次启动向导、本机服务端 ----
   finishOnboarding: (selectId) => {
     store.setOnboarded();
@@ -796,6 +870,7 @@ app.whenReady().then(() => {
     setLidLifted: (on) => store.setLidLifted(on),
     onChange: () => broadcast(),
   });
+  apple = isMac ? createApple({ onChange: () => broadcast() }) : null;
 
   createTray({
     showMain,

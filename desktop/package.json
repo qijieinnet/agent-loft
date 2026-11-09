@@ -14,8 +14,9 @@
     "start": "electron .",
     "smoke": "AGENT_LOFT_DESKTOP_SMOKE=1 electron .",
     "icons": "electron scripts/icons.js",
-    "dist": "electron-builder --mac --arm64 --x64 --publish never",
-    "dist:mac": "electron-builder --mac --arm64 --x64 --publish never",
+    "bridge": "zsh bridge/build.sh",
+    "dist": "npm run bridge && electron-builder --mac --arm64 --x64 --publish never",
+    "dist:mac": "npm run bridge && electron-builder --mac --arm64 --x64 --publish never",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:linux": "electron-builder --linux --x64 --arm64 --publish never"
   },
@@ -46,7 +47,13 @@
       "identity": "-",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "12.0",
+      "extraResources": [
+        {
+          "from": "bridge/build/Agent Loft Bridge.app",
+          "to": "Agent Loft Bridge.app"
+        }
+      ]
     },
     "dmg": {
       "title": "Agent Loft ${version}"

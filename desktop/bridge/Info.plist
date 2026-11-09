@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.qijieinnet.agentloft.bridge</string>
+	<key>CFBundleName</key>
+	<string>Agent Loft Bridge</string>
+	<key>CFBundleDisplayName</key>
+	<string>Agent Loft Bridge</string>
+	<key>CFBundleExecutable</key>
+	<string>agent-loft-apple</string>
+	<key>CFBundleIconFile</key>
+	<string>icon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>让智能体查看和管理你的日历事件。删除、修改前会先在这台 Mac 上请你确认。</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>让智能体查看和管理你的日历事件。删除、修改前会先在这台 Mac 上请你确认。</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>让智能体查看和管理你的提醒事项。删除、修改前会先在这台 Mac 上请你确认。</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>让智能体查看和管理你的提醒事项。删除、修改前会先在这台 Mac 上请你确认。</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>让智能体查看和整理你的备忘录。删除、改写前会先在这台 Mac 上请你确认。</string>
+</dict>
+</plist>
