@@ -1,17 +1,14 @@
 import { fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { copyText } from "../lib/markdown.js";
-import { desktopQuota, isAdmin, S } from "../state.js";
-import { defaultEntryName, renderContext, usableAgents } from "../views/topbar.js";
-import { DEFAULT_LEVELS, engineSupports, PERMISSIONS } from "../lib/permission.js";
+import { desktopQuota, S } from "../state.js";
+import { defaultEntryName, usableAgents } from "../views/topbar.js";
 import { renderEmpty } from "../views/messages.js";
 import { field, saveButton, saveConfig } from "./common.js";
 import { modelPicker } from "./commands.js";
 
 const ENGINE_LABEL = { claude: "Claude Code", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi" };
 const ENGINES = Object.keys(ENGINE_LABEL);
-/** 设置里的默认权限「跟随」时实际是什么 */
-const FOLLOW_LABEL = { claude: "跟随 Claude Code（逐次询问）", codex: "跟随沙箱设置", workbuddy: "跟随 WorkBuddy（逐次询问）", pi: "跟随 pi（逐次询问）" };
 const WORKBUDDY_SITES = [
   ["workbuddy", "WorkBuddy（www.workbuddy.cn，用本机的 WorkBuddy 桌面版）"],
   ["internal", "CodeBuddy 国内版（copilot.tencent.com）"],
@@ -222,82 +219,8 @@ function workbuddyLoginButton(after) {
   return h("div", {}, btn, status);
 }
 
-/** 个人默认工具单独保存，避免改服务器配置时覆盖尚未保存的个人选择。 */
-function builtinDefaultsSections(targets) {
-  const load = async () => {
-    let data;
-    try {
-      data = await api("/api/agents/defaults");
-    } catch (err) {
-      for (const section of Object.values(targets)) fill(section, h("div", { class: "error-text" }, err.message), h("button", { class: "btn small", onclick: load }, "重试"));
-      return;
-    }
-    const picker = (label, items, selected, inheritLabel) => {
-      const mode = h("select", { "aria-label": label },
-        ...(inheritLabel ? [h("option", { value: "inherit", selected: selected === null }, inheritLabel)] : []),
-        h("option", { value: "pick", selected: selected !== null }, "指定加载（可全部取消）"));
-      const known = new Set(items.map((item) => item.id));
-      const missing = (selected ?? []).filter((id) => !known.has(id)).map((id) => ({ id, name: `${id}（暂不可用，可取消）` }));
-      const inputs = [...items, ...missing].map((item) => ({ id: item.id, input: h("input", { type: "checkbox", checked: (selected ?? []).includes(item.id) }), item }));
-      const list = h("div", { class: "check-list" }, inputs.length
-        ? inputs.map(({ input, item }) => h("label", { class: "check-item tool-check-item", title: item.description ?? item.name }, input, h("span", {}, item.name)))
-        : h("small", {}, "暂无可选项，请先在设置中添加"));
-      const sync = () => { list.hidden = mode.value !== "pick"; };
-      mode.addEventListener("change", sync);
-      sync();
-      return { el: h("div", { class: "field" }, h("span", {}, label), mode, list), value: () => mode.value === "inherit" ? null : inputs.filter((x) => x.input.checked).map((x) => x.id) };
-    };
-    for (const [engine, section] of Object.entries(targets)) {
-      const prefs = data.agents[engine];
-      if (!prefs) {
-        section.hidden = true;
-        if (section.parentElement?.dataset.personal) section.parentElement.hidden = true;
-        continue;
-      }
-      const label = ENGINE_LABEL[engine] ?? engine;
-      const skills = picker(`${label} 技能`, data.skills, prefs.skills, "全部已启用的个人技能（含以后新增）");
-      const machine = (data.machineMcp?.[engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, name: `${name}（本机）` }));
-      const mcp = picker(`${label} MCP`, [...data.mcp, ...machine], prefs.mcp, data.machineMcp ? "沿用机器上的 MCP 配置" : null);
-      const machineSkills = h("input", { type: "checkbox", checked: prefs.machineSkills });
-      // 成员最高到自动改文件；自动判断只有 Claude 有
-      const levels = DEFAULT_LEVELS.filter((l) => engineSupports(engine, l) && (l !== "auto" || isAdmin()));
-      const permission = h("select", { "aria-label": `${label} 默认权限` },
-        h("option", { value: "", selected: !prefs.permission }, FOLLOW_LABEL[engine] ?? "跟随默认"),
-        levels.map((l) => h("option", { value: l, selected: l === prefs.permission }, `${PERMISSIONS[l].label}：${PERMISSIONS[l].desc}`)));
-      fill(section, h("h4", {}, "默认权限"),
-        field("新对话的权限", permission, "没单独选过权限的对话都按这一级（输入框里的盾牌按钮可以随时改）。自定义专家也按它，但不会超过专家自己的权限；定时任务按任务里选的。「完全允许」不能设成默认。"),
-        h("h4", {}, "默认加载"),
-        h("p", { class: "skill-note" }, "仅影响你当前账号使用的这个内置 Agent，自定义专家使用各自的配置。保存后，下次发消息生效。"),
-        skills.el,
-        data.machineMcp ? h("label", { class: "check-item" }, machineSkills, "同时加载机器上的技能") : null,
-        mcp.el,
-        h("small", {}, "技能和 MCP 可分别全部取消。记忆、定时任务、技能管理等系统工具仍按功能设置提供。"),
-        h("div", { class: "row" }, saveButton(async () => {
-          const res = await api("/api/agents/defaults", { method: "PUT", body: { agents: { [engine]: { permission: permission.value || null, skills: skills.value(), machineSkills: machineSkills.checked, mcp: mcp.value() } } } });
-          S.defaultPermission = { ...S.defaultPermission, [engine]: res.agents?.[engine]?.permission ?? null };
-          renderContext();
-          toast("已保存，下次发消息生效");
-        }, `保存 ${label} 默认设置`)));
-    }
-    if (!Object.keys(data.agents).length) {
-      const section = Object.values(targets)[0];
-      section.hidden = false;
-      section.parentElement.hidden = false;
-      const message = h("p", { class: "muted" }, "没有获授权的内置 Agent，请联系管理员配置使用权限。");
-      if (section.parentElement.dataset.personal) fill(section.parentElement, h("h4", {}, "内置 Agent"), message);
-      else fill(section, message);
-    }
-  };
-  void load();
-}
-
+/** 设置 → Agent（管理员）：运行环境、启用、引擎自己的配置、输入框可选模型。默认模型 / 权限 / 加载在「专家」里各内置 Agent 的「设置」 */
 export function agentsTab(cfg, page) {
-  const targets = Object.fromEntries(ENGINES.map((engine) => [engine, h("div", { class: "builtin-agent-defaults", "data-form": "" }, h("span", { class: "spinner" }))]));
-  if (!cfg) {
-    for (const [engine, target] of Object.entries(targets)) page.append(h("div", { class: "section", "data-personal": "true", "data-agent": engine }, h("h4", {}, ENGINE_LABEL[engine]), target));
-    builtinDefaultsSections(targets);
-    return;
-  }
   page.append(agentHealthSection());
   const a = structuredClone(cfg.agents);
   for (const engine of ENGINES) {
@@ -305,7 +228,6 @@ export function agentsTab(cfg, page) {
     const settings = a[engine];
     if (!settings) continue;
     const on = h("input", { type: "checkbox", checked: settings.enabled });
-    const pick = modelPicker(engine, settings.defaultModel, settings.defaultEffort, engine === "claude" ? "跟随 Claude Code 默认" : engine === "workbuddy" ? "跟随 WorkBuddy 默认" : engine === "pi" ? "pi 自动挑一个能用的" : "跟随 config.toml");
     const models = modelChecklist(engine, settings.models ?? []);
     const config = h("div", { class: "agent-config", "data-form": "" },
       h("h4", {}, label, h("span", { class: "grow" }), h("label", { class: "check" }, on, "启用")));
@@ -345,8 +267,7 @@ export function agentsTab(cfg, page) {
         piCustomSection(),
       );
     }
-    config.append(field("默认模型", pick.modelEl));
-    if (engine !== "workbuddy") config.append(field("默认思考程度", pick.effortEl));
+    config.append(h("small", { class: "muted" }, "默认模型、思考程度、权限和默认加载的技能 / MCP，在「设置 → 专家」里这个 Agent 的「设置」中修改。"));
     config.append(h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
     if (codex) config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, codex.titleOn, "自动生成会话名称"), codex.titleModel));
     config.append(h("div", { class: "row" }, saveButton(() => {
@@ -356,15 +277,14 @@ export function agentsTab(cfg, page) {
         return false;
       }
       return saveConfig(cfg, { agents: { [engine]: {
-        enabled: on.checked, defaultModel: pick.model(), defaultEffort: pick.effort(), models: selected,
+        enabled: on.checked, models: selected,
         ...(site ? { environment: site.value, cliPath: cliPath.value.trim() } : {}),
         ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value, autoTitle: codex.titleOn.checked, titleModel: codex.titlePick.model() } : {}),
       } } });
     }, `保存 ${label} 设置`)));
-    page.append(h("div", { class: "section", "data-agent": engine }, config, targets[engine]));
+    page.append(h("div", { class: "section", "data-agent": engine }, config));
   }
   page.append(quotaSection(cfg));
-  builtinDefaultsSections(targets);
 }
 
 /** 常用的排前面：国内能直接用的几家、再是 OpenRouter 和海外几家 */

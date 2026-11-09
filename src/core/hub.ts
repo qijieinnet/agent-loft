@@ -117,7 +117,16 @@ export type ConvEvent =
  * fresh：这一轮不带之前的上下文，发出去之前先换新会话（专用对话，换了就不回头）。
  * isolated：同样不带上下文，但这条对话还有人在聊：借一个临时会话跑，跑完换回聊天的会话。
  */
-export type TaskTurn = { taskId: string; runId: string; title: string; smart: boolean; fresh?: boolean; isolated?: boolean };
+export type TaskTurn = {
+  taskId: string;
+  runId: string;
+  title: string;
+  smart: boolean;
+  fresh?: boolean;
+  isolated?: boolean;
+  /** 专用对话：模型 / 思考程度以任务为准（空 = 默认），每次运行前对齐一遍 */
+  runtime?: { model?: string; effort?: string };
+};
 
 /** 每条对话最多接着显示这么多条旧会话：每次打开对话都要全读一遍，不能无限长 */
 const PAST_SESSIONS_KEPT = 50;
@@ -1261,6 +1270,10 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
           if (waiting.cancelled) return;
           if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
         }
+        if (task?.runtime && !this.isBusy(key) && (await this.applyTaskRuntime(key, task.runtime))) {
+          if (waiting.cancelled) return;
+          if (cancelled()) return gone("没有发出（停止了或者会话被切换了）");
+        }
         if (task?.isolated) {
           if (this.isBusy(key)) return gone("对话正在回复，这次没有运行");
           await this.drop(key, "定时任务开始独立运行");
@@ -1705,6 +1718,21 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
    * 定时任务的专用对话：级别以任务为准（到点时、改了任务、任务不再用这条对话时调）。
    * 返回封顶后实际生效的级别。
    */
+  /**
+   * 专用对话的模型 / 思考程度对齐到任务的设置（编辑任务时改了，下次运行生效）。
+   * 变了的话关掉活着的进程，下一轮按新设置接着原会话拉起。返回有没有改
+   */
+  private async applyTaskRuntime(key: string, rt: { model?: string; effort?: string }): Promise<boolean> {
+    const conv = getConversation(key);
+    if (!conv) return false;
+    const binding = agentBinding(conv);
+    if ((binding.model || undefined) === rt.model && (binding.effort || undefined) === rt.effort) return false;
+    updateAgentBinding(key, conv.agent, { model: rt.model, effort: rt.effort });
+    if (this.live.has(key)) await this.drop(key, "定时任务换了模型");
+    this.emitEvent(key, { type: "meta" });
+    return true;
+  }
+
   applyTaskPermission(key: string, level: PermissionLevel | undefined): PermissionLevel | undefined {
     const conv = getConversation(key);
     if (!conv) return undefined;
@@ -1721,7 +1749,7 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
       "- `/permission edit`：自动改文件",
       ...(engineSupports(conv.agent, "auto") ? ["- `/permission auto`：自动判断（Claude 逐个判断安不安全，拿不准再问你）"] : []),
       "- `/permission full`：完全允许",
-      "- `/permission default`：恢复默认（设置 → Agent 里定的默认权限）",
+      "- `/permission default`：恢复默认（设置 → 专家 → 内置 Agent 的「设置」里定的默认权限）",
       "- `/planmode on` / `/planmode off`：开关计划模式（先出方案，你批准了再动手）",
       "",
       `这条对话最高能到「${PERMISSION_LABEL[this.permissionMax(conv)]}」。`,

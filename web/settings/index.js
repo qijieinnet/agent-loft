@@ -17,12 +17,14 @@ import { hasDirty, markDirty } from "./common.js";
 
 // ---------- 设置 ----------
 // 按「谁的、管什么」分组：我的（每个人自己的）、Agent、连接（飞书、远程控制）、管理。
-// 普通成员可管理自己的资料和内置 Agent 默认项；管理员另有运行环境和服务器设置。
+// 普通成员可管理自己的资料和内置 Agent 默认项（在「专家」里）；管理员另有运行环境和服务器设置。
 
 const LAST_TAB = "aim.settingsTab";
 
 /** 以前的标签名：外面（地址、别处的按钮）传进来的旧名字照样能打开对应的页 */
 const RENAMED = { 通用: "对话", 授权: "对话", 飞书机器人: "飞书", 我的账号: "账号", 通知: "系统" };
+/** 成员没有 Agent 页了：以前记住的 / 外面传进来的「Agent」打开专家页 */
+const MEMBER_RENAMED = { Agent: "专家" };
 
 function groupsFor(cfg) {
   const mine = {
@@ -36,7 +38,8 @@ function groupsFor(cfg) {
       ["用量", (p) => usageTab(p)],
     ],
   };
-  if (!cfg) return [mine, { name: "Agent", tabs: [["Agent", (p) => agentsTab(null, p)]] }, { name: "系统", tabs: [["系统", (p) => systemTab(null, p)]] }];
+  // 成员的内置 Agent 默认设置在「专家」里（内置卡片上的「设置」），这里没有 Agent 页
+  if (!cfg) return [mine, { name: "系统", tabs: [["系统", (p) => systemTab(null, p)]] }];
   return [
     mine,
     {
@@ -128,6 +131,6 @@ export async function openSettings(tab) {
     }
   }
   const requested = tab || localStorage.getItem(LAST_TAB);
-  const want = RENAMED[requested] ?? requested;
+  const want = (cfg ? undefined : MEMBER_RENAMED[requested]) ?? RENAMED[requested] ?? requested;
   void select(Math.max(0, tabs.findIndex(([name]) => name === want)));
 }

@@ -1,9 +1,11 @@
 import { agentIcon, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
-import { S } from "../state.js";
+import { isAdmin, S } from "../state.js";
+import { openAgentDefaults } from "./agent-defaults.js";
 import { expertIcon, reloadExperts, sortExperts } from "../views/experts.js";
-import { agentCatalog, baseName } from "../views/topbar.js";
+import { baseName } from "../views/topbar.js";
+import { modelPicker } from "../views/model-picker.js";
 import { changeCwd } from "../views/conv-actions.js";
 
 // ---------- 专家（设置里的一页） ----------
@@ -73,8 +75,14 @@ function render(box, data, reload) {
   };
   for (const e of choices) {
     const row = e.builtin ? h("div", { class: "task-card skill-card" },
-      h("div", { class: "task-top" }, h("span", { class: "task-title" }, agentIcon(e.engine, "expert-card-icon"), e.name), h("span", { class: "badge" }, "内置")),
-      h("div", { class: "task-prompt" }, `${e.name} 原装的样子：原装提示词、所有工具；默认技能和 MCP 在「设置 → Agent」里配置。`),
+      h(
+        "div",
+        { class: "task-top" },
+        h("span", { class: "task-title" }, agentIcon(e.engine, "expert-card-icon"), e.name),
+        h("span", { class: "badge" }, "内置"),
+        h("button", { class: "btn", "aria-label": `${e.name} 默认设置`, onclick: () => openAgentDefaults(e.engine, e.name) }, "设置"),
+      ),
+      h("div", { class: "task-prompt" }, `${e.name} 原装的样子：原装提示词、所有工具。默认${isAdmin() ? "模型、" : ""}权限和加载的技能、MCP 在「设置」里配置。`),
     ) : expertCard(data, e, reload);
     row.dataset.expert = e.id;
     row.setAttribute("role", "listitem");
@@ -507,74 +515,6 @@ async function squareImage(f, size) {
   } finally {
     URL.revokeObjectURL(url);
   }
-}
-
-/**
- * 模型、思考程度：下拉选，选项是引擎的模型列表（和输入框里选模型的一样）。
- * 第一项「默认」= 不指定；已经存的值不在列表里（模型下线、手写的）也留着一项，不会被悄悄改掉
- */
-function modelPicker(src) {
-  const model = h("select", {});
-  const effort = h("select", {});
-  let modelVal = src.model ?? "";
-  let effortVal = src.effort ?? "";
-  let list = [];
-  let engineLoaded = null;
-  const opt = (value, label, selected) => h("option", { value, selected }, label);
-  const renderEffort = () => {
-    const picked = list.find((m) => m.id === modelVal) ?? list.find((m) => m.isDefault) ?? list.find((m) => m.efforts?.length);
-    const efforts = picked?.efforts ?? [];
-    const extra = effortVal && !efforts.includes(effortVal) ? effortVal : null;
-    fill(
-      effort,
-      opt("", "默认", !effortVal),
-      efforts.map((x) => opt(x, x, x === effortVal)),
-      extra ? opt(extra, list.length ? `${extra}（不在列表里）` : extra, true) : null,
-    );
-    effort.disabled = !efforts.length && !extra;
-  };
-  const render = () => {
-    const shown = list.filter((m) => m.id !== "default");
-    const def = list.find((m) => m.isDefault) ?? list.find((m) => m.id === "default");
-    const known = !modelVal || shown.some((m) => m.id === modelVal);
-    fill(
-      model,
-      opt("", def ? `默认（${def.label || def.id}）` : "默认", !modelVal),
-      shown.map((m) => opt(m.id, m.label && m.label !== m.id ? `${m.label}（${m.id}）` : m.id, m.id === modelVal)),
-      known ? null : opt(modelVal, `${modelVal}（不在列表里）`, true),
-    );
-    renderEffort();
-  };
-  model.onchange = () => {
-    modelVal = model.value;
-    // 换了模型：原来的思考程度这个模型不支持就回到默认
-    const picked = list.find((m) => m.id === modelVal) ?? list.find((m) => m.isDefault);
-    if (effortVal && !(picked?.efforts ?? []).includes(effortVal)) effortVal = "";
-    renderEffort();
-  };
-  effort.onchange = () => (effortVal = effort.value);
-  return {
-    model,
-    effort,
-    async load(engine) {
-      if (engine === engineLoaded) return;
-      // 换了引擎（只有新建时能换）：原来选的对不上了
-      if (engineLoaded) modelVal = effortVal = "";
-      engineLoaded = engine;
-      list = [];
-      fill(model, opt(modelVal, "加载中…", true));
-      model.disabled = true;
-      renderEffort();
-      try {
-        list = await agentCatalog(engine);
-      } catch {
-        // 拿不到列表：只能选默认（已经存的值也留着）
-      }
-      if (engineLoaded !== engine) return;
-      model.disabled = false;
-      render();
-    },
-  };
 }
 
 // ---------- MCP（设置里的一页） ----------

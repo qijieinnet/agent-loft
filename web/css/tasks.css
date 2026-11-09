@@ -351,6 +351,17 @@ button.task-run:hover {
   gap: 12px;
 }
 
+/* 模型 + 思考程度放一行 */
+.task-form .row-fields {
+  display: flex;
+  gap: 12px;
+}
+
+.task-form .row-fields > .field {
+  flex: 1;
+  min-width: 0;
+}
+
 /* 执行时间：选择星期和当天的时间 */
 .task-freq {
   display: flex;

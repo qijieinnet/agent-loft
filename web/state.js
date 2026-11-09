@@ -7,7 +7,7 @@ export const S = {
   pending: new Map(),
   /** 侧栏菜单的显示和顺序，随账号保存；null 使用默认配置。 */
   sidebarNav: null,
-  /** 设置 → Agent 里定的默认权限，按引擎：{ claude: "edit", codex: null } */
+  /** 设置 → 专家 → 内置 Agent「设置」里定的默认权限，按引擎：{ claude: "edit", codex: null } */
   defaultPermission: null,
   /** 新对话里打开的计划模式（和 draftPermission 一样，建好对话后带过去） */
   draftPlan: false,

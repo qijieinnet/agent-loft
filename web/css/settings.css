@@ -692,9 +692,19 @@ body:has(.settings) > :is(.overlay, .menu) {
   min-width: 0;
 }
 
-.agent-config + .builtin-agent-defaults {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+/* 内置 Agent 默认设置弹窗：模型 + 思考程度一行 */
+.builtin-agent-defaults .row-fields {
+  display: flex;
+  gap: 12px;
+}
+
+.builtin-agent-defaults .row-fields > .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.builtin-agent-defaults h4 {
+  margin: 4px 0 0;
 }
 
 /* 记忆页：点开才读的区块（归档、回收站、改动记录、摘要） */

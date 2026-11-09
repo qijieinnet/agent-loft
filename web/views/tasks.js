@@ -9,6 +9,7 @@ import { baseName, renderTopbar } from "./topbar.js";
 import { openConversation } from "./messages.js";
 import { changeCwd } from "./conv-actions.js";
 import { convExpert, expertChoices, findExpert } from "./experts.js";
+import { modelPicker } from "./model-picker.js";
 import { capOfAccess, FULL_WARNING, minPermission, PERMISSIONS, permissionsUpTo } from "../lib/permission.js";
 
 // ---------- 定时任务页 ----------
@@ -449,6 +450,13 @@ export function openTaskForm(task, preset) {
       },
     });
   const cwdField = field("工作目录", cwdBtn, "专家在这个目录里干活。没选就用专家默认的目录。");
+  // ---- 模型、思考程度（专用对话的在任务上，每次运行前对齐；发到已有对话的跟着那条对话）----
+  const models = modelPicker(src);
+  const modelRow = h("div", { class: "row-fields" }, field("模型", models.model), field("思考程度", models.effort));
+  const loadModels = () => {
+    const e = findExpert(expert.value);
+    if (e) void models.load(e.engine, e.model || "");
+  };
   // ---- 权限（专用对话的在任务上；发到已有对话的就是那条对话的，见下面的 convBox）----
   const permission = h("select", {});
   const permissionHint = h("small", {});
@@ -477,7 +485,7 @@ export function openTaskForm(task, preset) {
   const context = h("select", { class: "task-context" }, keepOption, h("option", { value: "fresh", selected: !!src.freshContext }, "不携带（每次都从头开始）"));
   const contextHint = h("small", {});
   const contextField = h("div", { class: "field" }, h("span", {}, "上下文"), context, contextHint);
-  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), cwdField, permissionField);
+  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 专家）。"), modelRow, cwdField, permissionField);
   // 发到已有对话：专家、目录属于对话，中途换不了，只显示；权限可以改，改的是对话自己的
   const convBox = h("div", { class: "task-dedicated task-conv" });
   let convPermission = null;
@@ -515,6 +523,7 @@ export function openTaskForm(task, preset) {
     cwdField.hidden = access === "web";
     syncPermission();
     permissionField.hidden = capOfAccess(access) === "ask";
+    if (dedicated) loadModels();
   };
   expert.onchange = syncVisibility;
   target.onchange = syncVisibility;
@@ -587,7 +596,7 @@ export function openTaskForm(task, preset) {
       notify: notify.value,
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: target.value },
       freshContext: fresh,
-      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level } : {}),
+      ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level, model: models.model.value, effort: models.effort.value } : {}),
       ...(convLevelChanged ? { convPermission: convLevel } : {}),
     };
     save.disabled = true;
