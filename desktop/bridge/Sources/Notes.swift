@@ -1,16 +1,17 @@
-// 备忘录：Bridge 把包里的 notes.js 交给 osascript 跑（JXA）。osascript 是 Bridge 的子进程，
-// 给「备忘录」发 Apple 事件的权限（自动化）记在 Agent Loft Bridge 名下。
+// 备忘录、邮件：Bridge 把包里的 notes.js / mail.js 交给 osascript 跑（JXA）。osascript 是 Bridge 的子进程，
+// 给「备忘录」「邮件」发 Apple 事件的权限（自动化）记在 Agent Loft Bridge 名下。
 import CoreServices
 import Foundation
 
 let notesBundleID = "com.apple.Notes"
+let mailBundleID = "com.apple.mail"
 
-/// 跑 notes.js；capture 为 false 时输出直接给调用方，返回退出码
+/// 跑包里的一个 JXA 脚本；capture 为 false 时输出直接给调用方，返回退出码
 @discardableResult
-func runNotes(_ args: [String], capture: Bool = false) -> (Int32, Data) {
+func runScript(_ name: String, _ args: [String], capture: Bool = false) -> (Int32, Data) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    p.arguments = ["-l", "JavaScript", resourcesURL.appendingPathComponent("notes.js").path] + args
+    p.arguments = ["-l", "JavaScript", resourcesURL.appendingPathComponent(name).path] + args
     let pipe = Pipe()
     if capture { p.standardOutput = pipe }
     do { try p.run() } catch { fail("cannot run osascript: \(error.localizedDescription)") }
@@ -21,7 +22,7 @@ func runNotes(_ args: [String], capture: Bool = false) -> (Int32, Data) {
 
 /// 确认框里怎么称呼这条备忘录（拿不到就只写 id）
 func noteLabel(_ id: String) -> String {
-    let (code, data) = runNotes(["read", "--id", id, "--format", "none"], capture: true)
+    let (code, data) = runScript("notes.js", ["read", "--id=\(id)", "--format=none"], capture: true)
     guard code == 0, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         exit(code == 0 ? 1 : code)  // notes.js 已经把错误写到 stderr 了
     }
@@ -39,13 +40,17 @@ func cmdNotes(_ args: [String]) -> Never {
         default: break
         }
     }
-    exit(runNotes(args).0)
+    exit(runScript("notes.js", args).0)
 }
 
-/// 自动化权限：granted / denied / notDetermined；备忘录没在运行时查不了，是 unknown
-func notesPermission(ask: Bool) -> String {
+func cmdMail(_ args: [String]) -> Never {
+    exit(runScript("mail.js", args).0)
+}
+
+/// 自动化权限：granted / denied / notDetermined；目标 App 没在运行时查不了，是 unknown
+func automationPermission(_ bundleID: String, ask: Bool) -> String {
     var addr = AEAddressDesc()
-    let id = Array(notesBundleID.utf8)
+    let id = Array(bundleID.utf8)
     guard AECreateDesc(DescType(typeApplicationBundleID), id, id.count, &addr) == noErr else { return "unknown" }
     defer { AEDisposeDesc(&addr) }
     let st = AEDeterminePermissionToAutomateTarget(&addr, AEEventClass(typeWildCard), AEEventID(typeWildCard), ask)
@@ -57,19 +62,19 @@ func notesPermission(ask: Bool) -> String {
     }
 }
 
-/// 申请自动化权限要备忘录在运行：没开就在后台悄悄打开它（不抢焦点）
-func requestNotesPermission() -> String {
-    let now = notesPermission(ask: false)
+/// 申请自动化权限要目标 App 在运行：没开就在后台悄悄打开它（不抢焦点）
+func requestAutomation(_ bundleID: String) -> String {
+    let now = automationPermission(bundleID, ask: false)
     if now == "granted" || now == "denied" { return now }
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    open.arguments = ["-g", "-j", "-b", notesBundleID]
+    open.arguments = ["-g", "-j", "-b", bundleID]
     try? open.run()
     open.waitUntilExit()
     for _ in 0..<40 {
-        let s = notesPermission(ask: false)
+        let s = automationPermission(bundleID, ask: false)
         if s != "unknown" { break }
         Thread.sleep(forTimeInterval: 0.25)
     }
-    return notesPermission(ask: true)
+    return automationPermission(bundleID, ask: true)
 }

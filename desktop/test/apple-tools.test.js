@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TOOLS, toolArgs, toolList } from "../src/apple-tools.js";
+import { serviceOf, TOOLS, toolArgs, toolList } from "../src/apple-tools.js";
 
 test("工具列表：名字唯一，必填参数都在 properties 里", () => {
   const list = toolList();
@@ -37,9 +37,30 @@ test("参数不对时报错", () => {
 });
 
 test("删改类工具标成 destructive，并给足等确认的时间", () => {
-  for (const name of ["calendar_update_event", "calendar_delete_event", "reminders_update", "reminders_delete", "notes_update", "notes_delete"]) {
+  for (const name of ["calendar_update_event", "calendar_delete_event", "reminders_update", "reminders_delete", "notes_update", "notes_delete", "contacts_update", "contacts_delete"]) {
     const t = TOOLS.find((x) => x.name === name);
     assert.equal(t.annotations.destructiveHint, true, name);
     assert.ok(t.timeout >= 150_000, name);
   }
+});
+
+test("数组参数转成 JSON 交给 Bridge", () => {
+  const { args } = toolArgs("contacts_add", { given_name: "小明", phones: [{ label: "mobile", value: "138 0000 0000" }, { value: "021-1234" }] });
+  assert.deepEqual(args, ["contacts", "add", "--given-name=小明", '--phones=[{"label":"mobile","value":"138 0000 0000"},{"label":"","value":"021-1234"}]']);
+  assert.deepEqual(toolArgs("photos_get_thumbnails", { ids: ["A/L0/001", "B/L0/001"] }).args, ["photos", "thumbnails", '--ids=["A/L0/001","B/L0/001"]']);
+  assert.equal(toolArgs("photos_get_thumbnails", { ids: ["x"] }).images, true);
+  assert.throws(() => toolArgs("contacts_add", { phones: [{ label: "x" }] }), /格式不对/);
+  assert.throws(() => toolArgs("photos_search", { offset: -1 }), /非负整数/);
+  assert.deepEqual(toolArgs("photos_search", { offset: 0 }).args, ["photos", "search", "--offset=0"]);
+});
+
+test("按应用开关过滤工具：关掉的应用不列，apple_status 一直在", () => {
+  const names = toolList({ calendars: true, reminders: false, notes: false, contacts: false, photos: true, mail: false }).map((t) => t.name);
+  assert.ok(names.includes("apple_status"));
+  assert.ok(names.includes("calendar_list_events") && names.includes("photos_search"));
+  assert.ok(!names.some((n) => n.startsWith("reminders_") || n.startsWith("notes_") || n.startsWith("contacts_") || n.startsWith("mail_")));
+  assert.equal(serviceOf("calendar_add_event"), "calendars");
+  assert.equal(serviceOf("apple_status"), null);
+  // 照片、邮件没有删改工具
+  assert.ok(!TOOLS.some((t) => /^(photos|mail)_/.test(t.name) && t.annotations.destructiveHint));
 });

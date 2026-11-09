@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>LSUIElement</key>
@@ -31,6 +31,10 @@
 	<key>NSRemindersUsageDescription</key>
 	<string>让智能体查看和管理你的提醒事项。删除、修改前会先在这台 Mac 上请你确认。</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>让智能体查看和整理你的备忘录。删除、改写前会先在这台 Mac 上请你确认。</string>
+	<string>让智能体查看和整理你的备忘录、查看邮件和起草邮件（只存草稿，不会替你发送）。删除、改写前会先在这台 Mac 上请你确认。</string>
+	<key>NSContactsUsageDescription</key>
+	<string>让智能体查找和管理你的联系人。删除、修改前会先在这台 Mac 上请你确认。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>让智能体按时间、相册、地点查找你的照片，查看缩略图或导出原图。只读，不会删除或修改照片。</string>
 </dict>
 </plist>

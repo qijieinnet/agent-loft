@@ -151,7 +151,7 @@ function localSessionActive() {
 
 /** @type {ReturnType<typeof createAwake> | null} 在 app ready 之后才建（要用 powerMonitor） */
 let awake = null;
-/** @type {ReturnType<typeof createApple> | null} 连接苹果日历 / 提醒事项 / 备忘录（见 apple.js），只有 macOS */
+/** @type {ReturnType<typeof createApple> | null} 连接苹果应用（见 apple.js），只有 macOS */
 let apple = null;
 
 function broadcast() {
@@ -696,12 +696,12 @@ const calls = {
   authorizeLid: () => awake?.setLidGuard(true, { force: true }),
   refreshLidGuard: () => awake?.refreshLid(),
 
-  // ---- 苹果日历 / 提醒事项 / 备忘录（见 apple.js） ----
+  // ---- 苹果应用（见 apple.js） ----
   appleEnable: (signing) => apple?.enable(signing),
   appleDisable: async () => {
     const { response } = await dialog.showMessageBox(win, {
       type: "warning",
-      message: "断开苹果日历 / 提醒事项 / 备忘录？",
+      message: "断开苹果应用？",
       detail: "会撤销系统给 Agent Loft Bridge 的授权，删掉 Bridge 和本机签名证书。智能体之后就读写不了这些数据了，日历、提醒事项、备忘录本身的内容不受影响。",
       buttons: ["断开", "取消"],
       defaultId: 1,
@@ -727,6 +727,7 @@ const calls = {
   appleRequest: (kind) => apple?.request(String(kind)),
   appleOpenPrivacy: (kind) => apple?.openPrivacy(String(kind)),
   appleConfirmWrites: (on) => apple?.setConfirmWrites(!!on),
+  appleService: (name, on) => apple?.setService(String(name), !!on),
   appleRefresh: () => apple?.refresh(),
   appleMcpScope: (scope) => apple?.mcp.setScope(scope === "lan" ? "lan" : "local"),
   appleMcpPort: (port) => apple?.mcp.setPort(port),

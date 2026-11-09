@@ -1,24 +1,32 @@
-// 设置页：连接苹果日历 / 提醒事项 / 备忘录（只有 macOS，见主进程 apple.js）。
+// 设置页：连接苹果应用（只有 macOS，见主进程 apple.js）。
 
 /** 打开前选的签名方式：local 建本机证书（推荐），adhoc 不用证书 */
 let appleSigning = "local";
 
+/** [权限名, 显示名, 一句话说明能做什么] */
 const APPLE_KINDS = [
-  ["calendars", "日历"],
-  ["reminders", "提醒事项"],
-  ["notes", "备忘录"],
+  ["calendars", "日历", "查、建、改、删日程"],
+  ["reminders", "提醒事项", "查、建、改、勾完成、删提醒"],
+  ["notes", "备忘录", "查、读、建、追加、改写、移动、删备忘录"],
+  ["contacts", "通讯录", "查联系人，新建、修改、删除联系人"],
+  ["photos", "照片", "只读：按时间、相册、地点找照片，看缩略图，导出原图"],
+  ["mail", "邮件", "只读：搜、读邮件；能起草（存进草稿箱），不会发送"],
 ];
+/** 系统设置里的隐私页名字 */
+const APPLE_PANES = { calendars: "日历", reminders: "提醒事项", contacts: "通讯录", photos: "照片" };
 
 /** 一项权限现在怎么样、该给什么按钮 */
 function applePermText(kind, v) {
-  if (kind === "notes") {
+  if (kind === "notes" || kind === "mail") {
+    const app = kind === "notes" ? "备忘录" : "邮件";
     if (v === "granted") return { text: "已授权", ok: true };
-    if (v === "denied") return { text: "已拒绝：到系统设置 → 隐私与安全性 → 自动化里，打开 Agent Loft Bridge 下的「备忘录」", fix: "settings" };
+    if (v === "denied") return { text: `已拒绝：到系统设置 → 隐私与安全性 → 自动化里，打开 Agent Loft Bridge 下的「${app}」`, fix: "settings" };
     if (v === "notDetermined") return { text: "还没授权", fix: "request" };
-    return { text: "不确定（备忘录没在运行）。点「授权」会在后台打开备忘录再检查", fix: "request" };
+    return { text: `不确定（${app}没在运行）。点「授权」会在后台打开${app}再检查`, fix: "request" };
   }
-  const pane = kind === "calendars" ? "日历" : "提醒事项";
-  if (v === "fullAccess") return { text: "完全访问", ok: true };
+  const pane = APPLE_PANES[kind];
+  if (v === "fullAccess") return { text: kind === "photos" ? "可以读取照片图库" : "完全访问", ok: true };
+  if (v === "limited") return { text: `只给了部分${pane}：到系统设置 → 隐私与安全性 → ${pane}里可以改成全部`, ok: true, fix: "settings" };
   if (v === "writeOnly") return { text: `只能添加、读不了：到系统设置 → 隐私与安全性 → ${pane}里，把 Agent Loft Bridge 改成「完全访问」`, fix: "settings" };
   if (v === "denied") return { text: `已拒绝：到系统设置 → 隐私与安全性 → ${pane}里打开 Agent Loft Bridge`, fix: "settings" };
   if (v === "restricted") return { text: "被系统限制（家长控制或描述文件），这台 Mac 上改不了" };
@@ -217,7 +225,8 @@ function renderAppleCard(el) {
   }
 
   const p = a.perms ?? {};
-  const allOk = APPLE_KINDS.every(([k]) => applePermText(k, p[k]).ok);
+  const enabled = a.services ?? {};
+  const allOk = APPLE_KINDS.every(([k]) => !enabled[k] || applePermText(k, p[k]).ok);
   const signingText = a.signing === "adhoc" ? "未用证书签名，更新后要重新授权" : "本机证书签名";
   const busyText = { upgrade: "正在更新 Bridge…", resign: "正在重新签名…", disable: "正在断开…" }[a.busy];
   fill(
@@ -229,19 +238,33 @@ function renderAppleCard(el) {
       h("div", { class: "grow" }, h("div", { class: "name" }, busyText ?? (allOk ? "已连接" : "已连接 · 还有权限没给")), h("div", { class: "sub wrap" }, `${signingText}。${intro}`)),
       h("div", { class: "actions" }, h("button", { class: "btn", disabled: busy, onclick: (e) => appleAction(e, "appleDisable") }, "断开")),
     ),
-    APPLE_KINDS.map(([kind, name]) => {
+    APPLE_KINDS.map(([kind, name, what]) => {
+      const on = !!enabled[kind];
       const s = applePermText(kind, p[kind]);
       const requesting = a.busy === `request:${kind}`;
+      const sub = !on ? `${what}。关着：智能体看不到这些工具` : requesting ? "等你在系统弹窗里点「允许」…" : `${what}。${s.text}`;
       return h(
         "div",
-        { class: "row" },
-        h("span", { class: `dot ${s.ok ? "online" : s.fix === "settings" ? "offline" : "unknown"}` }),
-        h("div", { class: "grow" }, name, h("div", { class: "sub wrap" }, requesting ? "等你在系统弹窗里点「允许」…" : s.text)),
-        s.fix === "request"
-          ? h("button", { class: "btn primary", disabled: busy, onclick: (e) => appleAction(e, "appleRequest", kind) }, requesting ? "等待中…" : "授权")
-          : s.fix === "settings"
-            ? h("button", { class: "btn", onclick: () => call("appleOpenPrivacy", kind) }, "打开系统设置")
-            : null,
+        { class: `row ${on ? "" : "off"}` },
+        h("span", { class: `dot ${!on ? "unknown" : s.ok ? "online" : s.fix === "settings" ? "offline" : "unknown"}` }),
+        h("div", { class: "grow" }, name, h("div", { class: "sub wrap" }, sub)),
+        h(
+          "div",
+          { class: "actions" },
+          on && s.fix === "request"
+            ? h("button", { class: "btn primary", disabled: busy, onclick: (e) => appleAction(e, "appleRequest", kind) }, requesting ? "等待中…" : "授权")
+            : on && s.fix === "settings"
+              ? h("button", { class: "btn", onclick: () => call("appleOpenPrivacy", kind) }, "打开系统设置")
+              : null,
+          h("input", {
+            type: "checkbox",
+            class: "switch",
+            title: on ? `不让智能体用${name}` : `让智能体用${name}`,
+            checked: on,
+            disabled: busy,
+            onchange: (e) => call("appleService", kind, e.target.checked),
+          }),
+        ),
       );
     }),
     h(

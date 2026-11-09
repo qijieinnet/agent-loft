@@ -1040,3 +1040,8 @@ details.advanced .field input {
 .us-cost {
   color: var(--fg-2);
 }
+
+/* 设置 → 苹果应用：关掉的应用灰一点 */
+.row.off > .grow {
+  opacity: 0.55;
+}

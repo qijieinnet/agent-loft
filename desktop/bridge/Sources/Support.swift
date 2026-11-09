@@ -105,6 +105,12 @@ struct BridgeConfig {
     var confirmWrites = true
     /// 调用密钥的 SHA-256（十六进制）。没有就谁都调用不了
     var keyHash: String? = nil
+    /// 哪些应用开着（桌面端设置里的开关）。没写的按默认：日历、提醒事项、备忘录开，通讯录、照片、邮件关
+    var services: [String: Bool] = [:]
+
+    func enabled(_ service: String) -> Bool {
+        services[service] ?? ["calendars", "reminders", "notes"].contains(service)
+    }
 }
 
 let bridgeConfig: BridgeConfig = {
@@ -114,6 +120,7 @@ let bridgeConfig: BridgeConfig = {
        let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
         if let v = obj["confirmWrites"] as? Bool { c.confirmWrites = v }
         if let v = obj["keyHash"] as? String { c.keyHash = v.lowercased() }
+        if let v = obj["services"] as? [String: Bool] { c.services = v }
     }
     return c
 }()
@@ -123,7 +130,7 @@ let bridgeConfig: BridgeConfig = {
 /// 智能体要通过桌面端的 MCP 服务（带 token）来用，不能直接运行 Bridge。桌面端调用时把密钥写进 stdin 第一行
 /// （不放命令行参数、环境变量，别的进程看不到），这里和 config.json 里的哈希比对。
 func requireCallerKey() {
-    let reject = "Agent Loft Bridge only accepts calls from the Agent Loft desktop app. Use its MCP server (Agent Loft → 设置 → 苹果日历 / 提醒事项 / 备忘录)."
+    let reject = "Agent Loft Bridge only accepts calls from the Agent Loft desktop app. Use its MCP server (Agent Loft → 设置 → 苹果应用)."
     guard let want = bridgeConfig.keyHash, !want.isEmpty else { fail(reject) }
     // 终端里直接敲的：没有密钥，别傻等输入
     if isatty(STDIN_FILENO) != 0 { fail(reject) }

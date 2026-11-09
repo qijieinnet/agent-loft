@@ -15,7 +15,7 @@ func confirmWrite(_ action: String, _ detail: String) {
     let alert = NSAlert()
     alert.alertStyle = .warning
     alert.messageText = "智能体请求\(action)"
-    alert.informativeText = detail + "\n\n\(Int(confirmTimeout / 60)) 分钟内不处理会自动拒绝。可以在 Agent Loft 设置 → 苹果日历 / 提醒事项 / 备忘录 里关掉这个确认。"
+    alert.informativeText = detail + "\n\n\(Int(confirmTimeout / 60)) 分钟内不处理会自动拒绝。可以在 Agent Loft 设置 → 苹果应用 里关掉这个确认。"
     alert.addButton(withTitle: "拒绝")
     alert.addButton(withTitle: "允许")
     alert.window.level = .floating

@@ -1,4 +1,4 @@
-// 连接苹果日历 / 提醒事项 / 备忘录（只有 macOS，默认关）。
+// 连接苹果应用（只有 macOS，默认关）。
 //
 // 真正读写数据的是 Agent Loft Bridge（bridge/ 里的 Swift 小程序）。它一启动就用 disclaim 方式重新拉起自己，
 // macOS 把隐私权限记在 Bridge 名下，不会记到启动它的程序头上（不然本机所有 node 程序都跟着拿到权限）。
@@ -47,9 +47,14 @@ const PRIVACY_PANES = {
   calendars: "Privacy_Calendars",
   reminders: "Privacy_Reminders",
   notes: "Privacy_Automation",
+  contacts: "Privacy_Contacts",
+  photos: "Privacy_Photos",
+  mail: "Privacy_Automation",
 };
-/** tccutil 的服务名 */
-const TCC_SERVICES = ["Calendar", "Reminders", "AppleEvents"];
+/** 每个应用的开关默认值：老三样开着，通讯录、照片、邮件要用户自己打开（和 Bridge 里的默认一致） */
+export const DEFAULT_SERVICES = { calendars: true, reminders: true, notes: true, contacts: false, photos: false, mail: false };
+/** tccutil 的服务名（AppleEvents 管备忘录和邮件） */
+const TCC_SERVICES = ["Calendar", "Reminders", "AppleEvents", "AddressBook", "Photos"];
 
 function run(file, args, { timeout = 60_000, input } = {}) {
   return new Promise((resolve, reject) => {
@@ -116,7 +121,7 @@ const writeJson = (file, obj) => {
 /** Bridge 的内容指纹：可执行文件 + notes.js。变了就说明桌面端带了新版 Bridge */
 function fingerprint(appPath) {
   const hash = crypto.createHash("sha256");
-  for (const rel of ["Contents/MacOS/agent-loft-apple", "Contents/Resources/notes.js", "Contents/Info.plist"]) {
+  for (const rel of ["Contents/MacOS/agent-loft-apple", "Contents/Resources/notes.js", "Contents/Resources/mail.js", "Contents/Info.plist"]) {
     hash.update(fs.readFileSync(path.join(appPath, rel)));
   }
   return hash.digest("hex");
@@ -247,7 +252,7 @@ async function install(signing) {
   }
   // 每次装都换一把调用密钥；确认开关沿用原来的
   const config = readJson(configFile()) ?? {};
-  writeJson(configFile(), { confirmWrites: config.confirmWrites !== false, keyHash: newCallerKey() });
+  writeJson(configFile(), { confirmWrites: config.confirmWrites !== false, services: { ...DEFAULT_SERVICES, ...config.services }, keyHash: newCallerKey() });
   writeJson(installFile(), { signing, fingerprint: fingerprint(src), installedAt: new Date().toISOString() });
 }
 
@@ -273,9 +278,11 @@ export function createApple(deps) {
 
   const installed = () => isMac && fs.existsSync(exeOf(installedApp()));
   const info = () => readJson(installFile());
+  const services = () => ({ ...DEFAULT_SERVICES, ...readJson(configFile())?.services });
   const mcp = createAppleMcp({
     file: () => path.join(dir(), "mcp.json"),
     installed,
+    services,
     bridge,
     version: app.getVersion(),
     onChange: () => deps.onChange(),
@@ -336,6 +343,7 @@ export function createApple(deps) {
         signing: i?.signing ?? null,
         perms,
         confirmWrites: readJson(configFile())?.confirmWrites !== false,
+        services: services(),
         mcp: mcp.state(),
         busy,
         error,
@@ -366,6 +374,13 @@ export function createApple(deps) {
     openPrivacy: (kind) => {
       const pane = PRIVACY_PANES[kind];
       if (pane) void shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+    },
+    /** 打开 / 关掉某个应用：关掉后智能体看不到它的工具，Bridge 也不碰它（系统授权不撤） */
+    setService: (name, on) => {
+      if (!installed() || !(name in DEFAULT_SERVICES)) return;
+      const cfg = readJson(configFile()) ?? {};
+      writeJson(configFile(), { ...cfg, services: { ...DEFAULT_SERVICES, ...cfg.services, [name]: !!on } });
+      void refresh();
     },
     setConfirmWrites: (on) => {
       if (!installed()) return;

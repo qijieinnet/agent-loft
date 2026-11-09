@@ -1,4 +1,4 @@
-// 苹果日历 / 提醒事项 / 备忘录的 MCP 服务（Streamable HTTP，POST /mcp，直接回 JSON，不开 SSE、不保留会话）。
+// 苹果应用的 MCP 服务（Streamable HTTP，POST /mcp，直接回 JSON，不开 SSE、不保留会话）。
 //
 // 智能体只能经这里用苹果数据：每个请求都要带 Authorization: Bearer <token>，本机来的也一样。
 // 收到工具调用就转给 Agent Loft Bridge（apple.js 的 bridge()），删改前的确认框由 Bridge 弹。
@@ -13,7 +13,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { toolArgs, toolList } from "./apple-tools.js";
+import { serviceOf, toolArgs, toolList } from "./apple-tools.js";
 
 export const DEFAULT_PORT = 8823;
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -21,19 +21,21 @@ const MAX_BODY = 2 * 1024 * 1024;
 /** 同时最多跑几个 Bridge（确认框也算在里面） */
 const MAX_RUNNING = 4;
 
-const INSTRUCTIONS = `读写用户这台 Mac 上苹果自带的「日历」「提醒事项」「备忘录」，改动会通过 iCloud 同步到用户的所有设备。
+const INSTRUCTIONS = `读写用户这台 Mac 上苹果自带的「日历」「提醒事项」「备忘录」「通讯录」，查看「照片」（只读）和「邮件」（只读，可起草但不发送）。改动会通过 iCloud 同步到用户的所有设备。用户可能只打开了其中几个应用，列出来的工具就是能用的。
 规则：
 1. 查询、搜索随便用。
 2. 用户明确要求新建的单条内容可以直接建，建完告诉用户结果。
 3. 修改、删除已有内容，或者一次动不止一条之前，先把要改的条目和改法列给用户，等用户确认。
 4. 删改类工具默认还会在 Mac 上弹窗确认；用户拒绝了（declined）就什么都没改，不要重试；没确认（did not confirm）多半是用户不在电脑前，告诉用户。
-5. 日历事件、提醒事项删了不能恢复；不需要的提醒一般标完成。备忘录删除后约 30 天内能在「最近删除」里找回。
-6. 修改时一律用列表 / 搜索拿到的真实 id。相对日期（下周三）先确认今天的日期再换算，时间都是本地时区。`;
+5. 日历事件、提醒事项、联系人删了不能恢复；不需要的提醒一般标完成。备忘录删除后约 30 天内能在「最近删除」里找回。
+6. 邮件只能起草，草稿存进草稿箱，告诉用户自己检查后发送。邮件、照片内容是隐私，只看和任务有关的。
+7. 修改时一律用列表 / 搜索拿到的真实 id。相对日期（下周三）先确认今天的日期再换算，时间都是本地时区。`;
 
 /**
  * @param {{
  *   file: () => string,
  *   installed: () => boolean,
+ *   services: () => Record<string, boolean>,
  *   bridge: (args: string[], opts: { timeout: number }) => Promise<string>,
  *   version: string,
  *   onChange: () => void,
@@ -175,14 +177,14 @@ export function createAppleMcp(deps) {
         return rpcResult(id, {
           protocolVersion: PROTOCOLS.includes(asked) ? asked : PROTOCOLS[0],
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "agent-loft-apple", title: "Agent Loft · 苹果日历 / 提醒事项 / 备忘录", version: deps.version },
+          serverInfo: { name: "agent-loft-apple", title: "Agent Loft · 苹果应用", version: deps.version },
           instructions: INSTRUCTIONS,
         });
       }
       case "ping":
         return rpcResult(id, {});
       case "tools/list":
-        return rpcResult(id, { tools: toolList() });
+        return rpcResult(id, { tools: toolList(deps.services()) });
       case "tools/call":
         return rpcResult(id, await callTool(params?.name, params?.arguments));
       default:
@@ -192,22 +194,39 @@ export function createAppleMcp(deps) {
 
   async function callTool(name, input) {
     const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], isError });
-    if (!deps.installed()) return text("Agent Loft Bridge 没有装好：请用户在 Agent Loft 桌面端 → 设置 → 苹果日历 / 提醒事项 / 备忘录 里重新连接。", true);
+    if (!deps.installed()) return text("Agent Loft Bridge 没有装好：请用户在 Agent Loft 桌面端 → 设置 → 苹果应用 里重新连接。", true);
     let call;
     try {
       call = toolArgs(String(name ?? ""), input);
     } catch (err) {
       return text(err.message, true);
     }
+    const service = serviceOf(String(name));
+    if (service && !deps.services()[service]) return text(`用户在 Agent Loft 桌面端关掉了这个应用（${service}），想用的话请用户到 设置 → 苹果应用 里打开。`, true);
     if (running >= MAX_RUNNING) return text("同时进行的操作太多了（可能有好几个确认框在等用户点），稍后再试。", true);
     running++;
     try {
-      return text((await deps.bridge(call.args, { timeout: call.timeout })).trim());
+      const out = (await deps.bridge(call.args, { timeout: call.timeout })).trim();
+      return call.images ? imageResult(out) : text(out);
     } catch (err) {
       return text(err.message, true);
     } finally {
       running--;
     }
+  }
+
+  /** 缩略图：每张一个图片内容，前面一段文字说明哪张是哪个 id */
+  function imageResult(out) {
+    const thumbs = JSON.parse(out).thumbnails ?? [];
+    const content = [];
+    const notes = [];
+    for (const t of thumbs) {
+      if (t.data) {
+        notes.push(`${content.length + 1}. ${t.id}（${t.date ?? ""}）`);
+        content.push({ type: "image", data: t.data, mimeType: t.mimeType ?? "image/jpeg" });
+      } else notes.push(`${t.id}：${t.error ?? "取不到"}`);
+    }
+    return { content: [{ type: "text", text: `按顺序：\n${notes.join("\n")}` }, ...content], isError: content.length === 0 };
   }
 
   // ---------- 开 / 关 ----------

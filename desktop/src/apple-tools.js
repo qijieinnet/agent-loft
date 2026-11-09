@@ -3,6 +3,13 @@
 
 const str = (description, extra = {}) => ({ type: "string", description, ...extra });
 const bool = (description) => ({ type: "boolean", description });
+const strList = (description) => ({ type: "array", items: { type: "string" }, maxItems: 200, description });
+const labeled = (description) => ({
+  type: "array",
+  maxItems: 50,
+  items: { type: "object", properties: { label: { type: "string", description: "mobile / home / work / other / iphone / main，或自定义" }, value: { type: "string" } }, required: ["value"], additionalProperties: false },
+  description: `${description}。修改时传的列表会整个替换原来的`,
+});
 const int = (description) => ({ type: "integer", minimum: 1, maximum: 1000, description });
 
 const DATE = "本地时间：YYYY-MM-DD、'YYYY-MM-DD HH:mm'、ISO8601，或 today / tomorrow / yesterday / now";
@@ -40,7 +47,8 @@ const reminderFields = {
 /**
  * @typedef {{ type: string, description?: string, flag?: string, enum?: string[] }} Prop
  * @typedef {{ name: string, title: string, description: string, cmd: string[] | ((a: any) => string[]),
- *   props?: Record<string, Prop>, required?: string[], annotations: object, timeout?: number }} Tool
+ *   props?: Record<string, Prop>, required?: string[], annotations: object, timeout?: number, images?: boolean }} Tool
+ *   images：Bridge 返回 { thumbnails: [{ id, mimeType, data }] }，转成 MCP 的图片内容
  */
 
 /** @type {Tool[]} */
@@ -48,7 +56,7 @@ export const TOOLS = [
   {
     name: "apple_status",
     title: "权限状态",
-    description: "查看 Agent Loft Bridge 对日历、提醒事项、备忘录的授权情况，以及删改前是否要在 Mac 上确认。calendars / reminders 应该是 fullAccess，notes 应该是 granted（备忘录没运行时是 unknown，不代表有问题）。不对的话请用户打开 Agent Loft 桌面端 → 设置 → 苹果日历 / 提醒事项 / 备忘录 处理。",
+    description: "查看 Agent Loft Bridge 对日历、提醒事项、备忘录、通讯录、照片、邮件的授权情况，哪些应用开着（enabled），以及删改前是否要在 Mac 上确认。calendars / reminders / contacts / photos 应该是 fullAccess（limited 是只给了一部分），notes / mail 应该是 granted（App 没运行时是 unknown，不代表有问题）。不对的话请用户打开 Agent Loft 桌面端 → 设置 → 苹果应用 处理。",
     cmd: ["status"],
     annotations: READ,
   },
@@ -251,13 +259,195 @@ export const TOOLS = [
     required: ["name"],
     annotations: WRITE,
   },
+
+  // ---------- 通讯录 ----------
+  {
+    name: "contacts_search",
+    title: "搜索联系人",
+    description: "按姓名、公司、邮箱或电话号码片段（至少 3 位数字）搜索联系人；不给 query 列出全部。返回姓名、电话、邮箱，详情用 contacts_get。",
+    cmd: ["contacts", "search"],
+    props: { query: str("关键词"), limit: int("最多返回几条，默认 50") },
+    annotations: READ,
+  },
+  {
+    name: "contacts_get",
+    title: "联系人详情",
+    description: "读一个联系人的全部信息：电话、邮箱、地址、生日、公司、职位、网址。",
+    cmd: ["contacts", "get"],
+    props: { id: ID("联系人") },
+    required: ["id"],
+    annotations: READ,
+  },
+  {
+    name: "contacts_list_groups",
+    title: "列出联系人分组",
+    description: "列出通讯录里的分组。",
+    cmd: ["contacts", "groups"],
+    annotations: READ,
+  },
+  {
+    name: "contacts_add",
+    title: "新建联系人",
+    description: "新建联系人，given_name、family_name、organization 至少给一个。",
+    cmd: ["contacts", "add"],
+    props: {
+      given_name: str("名"),
+      family_name: str("姓"),
+      nickname: str("昵称"),
+      organization: str("公司"),
+      job_title: str("职位"),
+      birthday: str("生日：YYYY-MM-DD，不知道年份写 MM-DD"),
+      phones: labeled("电话"),
+      emails: labeled("邮箱"),
+      urls: labeled("网址"),
+    },
+    annotations: WRITE,
+  },
+  {
+    name: "contacts_update",
+    title: "修改联系人",
+    description: `修改联系人，只改传了的字段。phones / emails / urls 传了就整个替换，要保留原来的先用 contacts_get 读出来再合并；birthday 传 none 清除。${CONFIRM}`,
+    cmd: ["contacts", "update"],
+    props: {
+      id: ID("联系人"),
+      given_name: str("名"),
+      family_name: str("姓"),
+      nickname: str("昵称"),
+      organization: str("公司"),
+      job_title: str("职位"),
+      birthday: str("生日：YYYY-MM-DD 或 MM-DD，none 清除"),
+      phones: labeled("电话"),
+      emails: labeled("邮箱"),
+      urls: labeled("网址"),
+    },
+    required: ["id"],
+    annotations: DESTRUCTIVE,
+    timeout: 180_000,
+  },
+  {
+    name: "contacts_delete",
+    title: "删除联系人",
+    description: `删除联系人，删了不能恢复，iCloud 上也一起删。${CONFIRM}`,
+    cmd: ["contacts", "delete"],
+    props: { id: ID("联系人") },
+    required: ["id"],
+    annotations: DESTRUCTIVE,
+    timeout: 180_000,
+  },
+
+  // ---------- 照片（只读） ----------
+  {
+    name: "photos_list_albums",
+    title: "列出相册",
+    description: "列出相簿和有内容的智能相册（个人收藏、视频、截屏……）及张数。",
+    cmd: ["photos", "albums"],
+    annotations: READ,
+  },
+  {
+    name: "photos_search",
+    title: "找照片",
+    description: "按时间、相册、类型、收藏、地点找照片和视频，默认从新到旧 50 张（最多 200），用 offset 翻页。只返回信息（时间、尺寸、地点坐标、文件名），要看内容用 photos_get_thumbnails。没法按人物或画面内容搜。",
+    cmd: ["photos", "search"],
+    props: {
+      from: str(`拍摄时间不早于，${DATE}`),
+      to: str("拍摄时间不晚于（只写日期时包含当天）"),
+      album: str("相册名称或 id"),
+      type: str("类型", { enum: ["image", "video", "all"] }),
+      favorite: bool("只要收藏的"),
+      near: str("在这个坐标附近：'纬度,经度'，例如 '31.2304,121.4737'"),
+      radius: str("配合 near：半径（公里），默认 1"),
+      order: str("排序", { enum: ["newest", "oldest"] }),
+      offset: { type: "integer", minimum: 0, description: "跳过前几张（翻页）" },
+      limit: int("最多返回几张，默认 50，最多 200"),
+    },
+    annotations: READ,
+  },
+  {
+    name: "photos_get_thumbnails",
+    title: "看照片",
+    description: "取照片的缩略图（JPEG），直接作为图片返回，一次最多 10 张。原图在 iCloud 上时会先下载，可能要等一会儿。",
+    cmd: ["photos", "thumbnails"],
+    props: { ids: strList("照片 id（photos_search 结果里的），最多 10 个"), size: { type: "integer", minimum: 64, maximum: 1024, description: "最长边像素，默认 512" } },
+    required: ["ids"],
+    annotations: READ,
+    images: true,
+    timeout: 180_000,
+  },
+  {
+    name: "photos_export",
+    title: "导出原图",
+    description: "把原图 / 原视频导出到这台 Mac 上的一个目录（不存在会新建，同名文件不覆盖，自动加编号），一次最多 200 个。iCloud 上的会先下载。",
+    cmd: ["photos", "export"],
+    props: { ids: strList("照片 id"), out: str("导出到哪个目录，例如 ~/Desktop/导出的照片") },
+    required: ["ids", "out"],
+    annotations: { ...WRITE, idempotentHint: false },
+    timeout: 10 * 60_000,
+  },
+
+  // ---------- 邮件（只读 + 起草） ----------
+  {
+    name: "mail_list_accounts",
+    title: "列出邮件账户",
+    description: "列出「邮件」App 里的账户、各邮箱（文件夹）路径和未读数。",
+    cmd: ["mail", "accounts"],
+    annotations: READ,
+    timeout: 120_000,
+  },
+  {
+    name: "mail_search",
+    title: "搜邮件",
+    description: "搜邮件，从新到旧，默认 20 封。不给 mailbox 就搜所有账户的收件箱。query 匹配主题，from 匹配发件人。大邮箱会慢一些。",
+    cmd: ["mail", "search"],
+    props: {
+      query: str("主题里包含"),
+      from: str("发件人里包含（名字或地址）"),
+      mailbox: str("邮箱路径，例如 INBOX、已发送、归档/2026（见 mail_list_accounts）"),
+      account: str("账户名"),
+      since: str("收到时间不早于：YYYY-MM-DD / today / yesterday"),
+      unread: bool("只要未读的"),
+      limit: int("最多返回几封，默认 20，最多 100"),
+    },
+    annotations: READ,
+    timeout: 180_000,
+  },
+  {
+    name: "mail_read",
+    title: "读邮件",
+    description: "读一封邮件的纯文本正文、收件人、附件名。不会把邮件标成已读以外的状态。",
+    cmd: ["mail", "read"],
+    props: { id: ID("邮件"), max_chars: int("正文最多返回多少字，默认 20000") },
+    required: ["id"],
+    annotations: READ,
+    timeout: 120_000,
+  },
+  {
+    name: "mail_create_draft",
+    title: "起草邮件",
+    description: "起草一封邮件，存进草稿箱，**不会发送**：告诉用户去「邮件」App 的草稿箱里检查后自己发。",
+    cmd: ["mail", "draft"],
+    props: {
+      to: str("收件人，多个用逗号分隔"),
+      cc: str("抄送，多个用逗号分隔"),
+      bcc: str("密送，多个用逗号分隔"),
+      subject: str("主题"),
+      body: str("正文（纯文本）"),
+      account: str("用哪个账户发（账户名）"),
+    },
+    required: ["to", "subject"],
+    annotations: WRITE,
+    timeout: 120_000,
+  },
 ];
+
+/** 工具属于哪个应用（apple_status 不属于任何一个，一直在） */
+const SERVICE_PREFIX = { calendar: "calendars", reminders: "reminders", notes: "notes", contacts: "contacts", photos: "photos", mail: "mail" };
+export const serviceOf = (name) => SERVICE_PREFIX[name.split("_")[0]] ?? null;
 
 const byName = new Map(TOOLS.map((t) => [t.name, t]));
 
-/** tools/list 里的样子 */
-export function toolList() {
-  return TOOLS.map((t) => ({
+/** tools/list 里的样子；enabled 是各应用开没开，关掉的不列 */
+export function toolList(enabled = null) {
+  return TOOLS.filter((t) => !enabled || !serviceOf(t.name) || enabled[serviceOf(t.name)]).map((t) => ({
     name: t.name,
     title: t.title,
     description: t.description,
@@ -273,7 +463,7 @@ export function toolList() {
 
 /**
  * 工具调用 → Bridge 的参数。参数不对时抛错（错误信息给智能体看）。
- * @returns {{ args: string[], timeout: number }}
+ * @returns {{ args: string[], timeout: number, images: boolean }}
  */
 export function toolArgs(name, input) {
   const tool = byName.get(name);
@@ -294,8 +484,19 @@ export function toolArgs(name, input) {
       if (typeof v !== "boolean") throw new Error(`参数 ${k} 要是 true 或 false`);
       text = String(v);
     } else if (prop.type === "integer") {
-      if (!Number.isInteger(v) || v < 1) throw new Error(`参数 ${k} 要是正整数`);
+      const min = prop.minimum ?? 1;
+      if (!Number.isInteger(v) || v < min || (prop.maximum !== undefined && v > prop.maximum)) throw new Error(`参数 ${k} 要是${min === 0 ? "非负" : "正"}整数${prop.maximum !== undefined ? `，最大 ${prop.maximum}` : ""}`);
       text = String(v);
+    } else if (prop.type === "array") {
+      if (!Array.isArray(v) || v.length > (prop.maxItems ?? 200)) throw new Error(`参数 ${k} 要是数组，最多 ${prop.maxItems ?? 200} 项`);
+      const item = prop.items;
+      for (const x of v) {
+        if (item.type === "string" ? typeof x !== "string" : !x || typeof x !== "object" || typeof x.value !== "string" || (x.label !== undefined && typeof x.label !== "string")) {
+          throw new Error(`参数 ${k} 的每一项格式不对`);
+        }
+      }
+      // Bridge 那边按 JSON 数组解析
+      text = JSON.stringify(item.type === "string" ? v : v.map((x) => ({ label: x.label ?? "", value: x.value })));
     } else {
       if (typeof v !== "string") throw new Error(`参数 ${k} 要是字符串`);
       if (prop.enum && !prop.enum.includes(v)) throw new Error(`参数 ${k} 只能是 ${prop.enum.join(" / ")}`);
@@ -304,5 +505,5 @@ export function toolArgs(name, input) {
     }
     args.push(`${flag}=${text}`);
   }
-  return { args, timeout: tool.timeout ?? 60_000 };
+  return { args, timeout: tool.timeout ?? 60_000, images: !!tool.images };
 }

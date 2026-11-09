@@ -15,7 +15,7 @@ lipo -create build/obj/agent-loft-apple-x86_64 build/obj/agent-loft-apple-arm64 
 rm -rf build/obj
 
 cp Info.plist "$APP/Contents/Info.plist"
-cp Resources/notes.js "$APP/Contents/Resources/notes.js"
+cp Resources/notes.js Resources/mail.js "$APP/Contents/Resources/"
 
 # 图标：用桌面端的图标，系统设置的隐私列表里显示
 ICONSET=$(mktemp -d)/icon.iconset

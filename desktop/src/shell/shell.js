@@ -177,7 +177,7 @@ function buildManage() {
       manage.quota,
       h("h2", {}, "休眠"),
       manage.sleep,
-      state.apple ? [h("h2", {}, "苹果日历 / 提醒事项 / 备忘录"), manage.apple] : null,
+      state.apple ? [h("h2", {}, "苹果应用"), manage.apple] : null,
       h("h2", {}, "更新"),
       manage.update,
       h("p", { class: "hint", style: { marginTop: "12px" } }, `Agent Loft 桌面端 ${state.version}`),

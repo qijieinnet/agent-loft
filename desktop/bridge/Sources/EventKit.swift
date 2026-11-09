@@ -38,7 +38,7 @@ func requireAccess(_ type: EKEntityType) {
     let pane = type == .event ? "日历" : "提醒事项"
     let status = requestAccess(type)
     if status == "fullAccess" { return }
-    fail("\(what) access is \(status). Ask the user to open Agent Loft → 设置 → 苹果日历 / 提醒事项 / 备忘录, or enable \"Agent Loft Bridge\" with full access in System Settings → Privacy & Security → \(pane).")
+    fail("\(what) access is \(status). Ask the user to open Agent Loft → 设置 → 苹果应用, or enable \"Agent Loft Bridge\" with full access in System Settings → Privacy & Security → \(pane).")
 }
 
 // MARK: - 日历

@@ -7,8 +7,9 @@
 .album-hero { position: relative; background: #121315; }
 .album-track { display: flex; width: 100%; overflow-x: auto; scrollbar-width: none; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
 .album-track::-webkit-scrollbar, .album-filmstrip::-webkit-scrollbar { display: none; }
-.album-slide { position: relative; display: grid; place-items: center; flex: 0 0 100%; min-width: 0; height: clamp(260px, 52vw, 480px); padding: 0; border: 0; border-radius: 0; background: radial-gradient(ellipse at 50% 40%, #292b30, #121315 85%); scroll-snap-align: start; cursor: zoom-in; }
-.md .album-slide img { display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; border-radius: 0; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+.album-slide { position: relative; display: grid; place-items: center; flex: 0 0 100%; min-width: 0; overflow: hidden; height: clamp(260px, 52vw, 480px); padding: 0; border: 0; border-radius: 0; background: radial-gradient(ellipse at 50% 40%, #292b30, #121315 85%); scroll-snap-align: start; cursor: zoom-in; }
+/* 绝对定位铺满整格再 contain：放在 grid 里用 height: 100% 时，行高跟着图片原始尺寸走，大照片会撑出去、被裁成「放大」的样子 */
+.md .album-slide img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border-radius: 0; object-fit: contain; user-select: none; -webkit-user-drag: none; }
 .album-slide-hint { position: absolute; right: 14px; top: 14px; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; color: #fff; background: rgb(0 0 0 / 38%); font-size: 11px; opacity: 0; transition: opacity 0.15s; }
 .album-slide:hover .album-slide-hint, .album-slide:focus-visible .album-slide-hint { opacity: 1; }
 .album-slide-hint svg, .album-open svg { width: 14px; height: 14px; }

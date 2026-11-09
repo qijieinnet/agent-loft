@@ -78,16 +78,38 @@ Agent Loft Bridge \(bridgeVersion) — Apple Calendar, Reminders & Notes (JSON o
 
   notes help                               Apple Notes commands (folders, list, search, read, create,
                                            append, update, move, delete, create-folder, export)
+  mail help                                Apple Mail: accounts, search, read, draft (never sends)
+
+  contacts search [--query TEXT] [--limit N]      name / organization / email / phone fragment
+  contacts get --id ID        contacts groups
+  contacts add    [--given-name ..] [--family-name ..] [--nickname ..] [--organization ..] [--job-title ..]
+                  [--birthday YYYY-MM-DD|MM-DD] [--phones JSON] [--emails JSON] [--urls JSON]
+                  (JSON: [{"label":"mobile","value":"..."}] or ["..."])
+  contacts update --id ID [same fields; a list replaces the whole list; --birthday none clears]
+  contacts delete --id ID
+
+  photos albums
+  photos search  [--from D] [--to D] [--album NAME|ID] [--type image|video|all] [--favorite]
+                 [--near LAT,LON] [--radius KM] [--order newest|oldest] [--offset N] [--limit N]
+  photos thumbnails --ids ID[,ID] [--size PX]     JPEG, base64 (max 10)
+  photos export     --ids ID[,ID] --out DIR       originals (downloads from iCloud if needed)
 
 Dates: YYYY-MM-DD, 'YYYY-MM-DD HH:mm', ISO8601, today, tomorrow, yesterday, now (local time).
 Recurring events: target one occurrence with --occurrence <its start>; --span future without
 --occurrence targets the whole series.
-Deleting or rewriting (events update/delete, reminders update/delete, notes update/delete) may pop up
+Deleting or rewriting (events / reminders / contacts update & delete, notes update & delete) may pop up
 a confirmation on the Mac; if the user declines, the command fails and nothing changes.
 """
 
 let cmd = positional.first ?? "help"
 let sub = positional.count > 1 ? positional[1] : ""
+
+// 用户在桌面端关掉的应用一律不碰（MCP 那边也不会列出它的工具，这里再兜一道）
+let serviceOf = ["calendars": "calendars", "events": "calendars", "reminders": "reminders", "notes": "notes",
+                 "contacts": "contacts", "photos": "photos", "mail": "mail"]
+if let service = serviceOf[cmd], !bridgeConfig.enabled(service) {
+    fail("\(service) is turned off in Agent Loft → 设置 → 苹果应用. Ask the user to turn it on if they want this.")
+}
 
 switch (cmd, sub) {
 case ("help", _), ("-h", _), ("--help", _):
@@ -99,17 +121,27 @@ case ("status", _):
         "version": bridgeVersion,
         "calendars": statusName(EKEventStore.authorizationStatus(for: .event)),
         "reminders": statusName(EKEventStore.authorizationStatus(for: .reminder)),
-        "notes": notesPermission(ask: false),
+        "notes": automationPermission(notesBundleID, ask: false),
+        "contacts": contactsStatusName(),
+        "photos": photosStatusName(),
+        "mail": automationPermission(mailBundleID, ask: false),
         "confirmWrites": bridgeConfig.confirmWrites,
+        "enabled": Dictionary(uniqueKeysWithValues: ["calendars", "reminders", "notes", "contacts", "photos", "mail"].map { ($0, bridgeConfig.enabled($0)) }),
     ])
 case ("request", "calendars"):
     output(["calendars": requestAccess(.event)])
 case ("request", "reminders"):
     output(["reminders": requestAccess(.reminder)])
 case ("request", "notes"):
-    output(["notes": requestNotesPermission()])
+    output(["notes": requestAutomation(notesBundleID)])
+case ("request", "contacts"):
+    output(["contacts": requestContacts()])
+case ("request", "photos"):
+    output(["photos": requestPhotos()])
+case ("request", "mail"):
+    output(["mail": requestAutomation(mailBundleID)])
 case ("request", _):
-    fail("usage: request calendars|reminders|notes")
+    fail("usage: request calendars|reminders|notes|contacts|photos|mail")
 case ("calendars", _):
     requireAccess(.event)
     output(store.calendars(for: .event).map { calDict($0, .event) })
@@ -137,6 +169,28 @@ case ("reminders", let s):
 case ("notes", _):
     // 原样把 notes 后面的参数交给 notes.js
     cmdNotes(Array(CommandLine.arguments.dropFirst(2)))
+case ("mail", _):
+    cmdMail(Array(CommandLine.arguments.dropFirst(2)))
+case ("contacts", let s):
+    requireContacts()
+    switch s {
+    case "search": cmdContactsSearch()
+    case "get": cmdContactsGet()
+    case "groups": cmdContactsGroups()
+    case "add": cmdContactsAdd()
+    case "update": cmdContactsUpdate()
+    case "delete": cmdContactsDelete()
+    default: fail("unknown: contacts \(s). Try: search, get, groups, add, update, delete")
+    }
+case ("photos", let s):
+    requirePhotos()
+    switch s {
+    case "albums": cmdPhotosAlbums()
+    case "search": cmdPhotosSearch()
+    case "thumbnails": cmdPhotosThumbnails()
+    case "export": cmdPhotosExport()
+    default: fail("unknown: photos \(s). Try: albums, search, thumbnails, export")
+    }
 default:
     fail("unknown command '\(cmd)'. Run with 'help'.")
 }
