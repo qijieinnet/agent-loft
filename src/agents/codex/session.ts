@@ -867,6 +867,10 @@ export class CodexSession implements AgentSession {
     }
   }
 
+  inRealtime(): boolean {
+    return !!this.rt;
+  }
+
   async stopRealtime(): Promise<void> {
     if (!this.rt) return;
     this.rt.fail?.(new Error("已挂断"));

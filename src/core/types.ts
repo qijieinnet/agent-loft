@@ -321,6 +321,8 @@ export interface AgentSession {
   startRealtime?(offer: string, opts?: RealtimeOptions): Promise<string>;
   /** 挂断实时语音对话；没在通话就什么都不做 */
   stopRealtime?(): Promise<void>;
+  /** 正在实时语音通话（含建连中）：这期间进程不能当闲置回收 */
+  inRealtime?(): boolean;
 }
 
 export type Diagnosis = {

@@ -15,6 +15,11 @@ const FRAME_BYTES = FRAME * 2;
 const RTP_STEP = 960;
 /** 浏览器发过来的还没凑够一帧的、积压的上限（约 1 秒），再多说明来不及发，丢掉旧的 */
 const MAX_PENDING = RELAY_RATE * 2;
+/**
+ * 收的方向丢了几个包以内用 Opus 的丢包补偿填上（解码空包 = PLC，一次给 120ms，按丢的帧数截）。
+ * 服务器到 OpenAI 这段常过代理，实测丢 2~3%：不填的话浏览器那头的缓冲每丢一包就少 20ms，过一阵就放空、一卡一卡
+ */
+const MAX_CONCEAL = 6;
 
 export class RealtimeRelay {
   /** 收到 OpenAI 的声音（解码后的 PCM），交给浏览器 */
@@ -30,6 +35,8 @@ export class RealtimeRelay {
   private seq = Math.floor(Math.random() * 0xffff);
   private ts = Math.floor(Math.random() * 0xffffffff);
   private closed = false;
+  /** 收到的上一个 RTP 包的序号 */
+  private lastSeq: number | undefined;
   private dropTimer: NodeJS.Timeout | undefined;
 
   private constructor() {
@@ -40,6 +47,14 @@ export class RealtimeRelay {
     transceiver.onTrack.subscribe((remote) => {
       remote.onReceiveRtp.subscribe((rtp) => {
         if (this.closed || !rtp.payload.length) return;
+        const seq = rtp.header.sequenceNumber;
+        if (this.lastSeq !== undefined) {
+          const gap = (seq - this.lastSeq) & 0xffff;
+          // 重复的、迟到的（已经补过或跳过了）：丢掉，别打乱顺序
+          if (gap === 0 || gap > 0x8000) return;
+          if (gap > 1 && gap - 1 <= MAX_CONCEAL) this.conceal(gap - 1);
+        }
+        this.lastSeq = seq;
         try {
           this.onAudio(Buffer.from(this.decoder.decode(rtp.payload)));
         } catch {
@@ -118,6 +133,16 @@ export class RealtimeRelay {
       this.track.writeRtp(new RtpPacket(header, Buffer.from(payload)));
     } catch {
       // 还没连上 / 已经关了
+    }
+  }
+
+  /** 丢了 frames 个 20ms 的包：用解码器的丢包补偿顶上同样长的声音 */
+  private conceal(frames: number): void {
+    try {
+      const pcm = this.decoder.decode(Buffer.alloc(0));
+      this.onAudio(Buffer.from(pcm.subarray(0, Math.min(pcm.length, frames * FRAME_BYTES))));
+    } catch {
+      // 补不了就算了
     }
   }
 

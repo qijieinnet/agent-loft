@@ -846,7 +846,10 @@ class Hub extends EventEmitter<{
           this.externalTurn(key, text, anchor);
         },
         // 不看 alive：会话被换下去时发的「通话结束」也要让页面知道
-        onRealtime: (ev) => this.emit("realtime", { key, ev }),
+        onRealtime: (ev) => {
+          this.emit("realtime", { key, ev });
+          if (ev.type === "closed") this.realtimeEnded(key);
+        },
         onStep: (kind, text) => alive() && this.emitEvent(key, { type: "step", kind, text }),
         onTodos: (todos) => alive() && this.emitEvent(key, { type: "todos", todos }),
         onTextDelta: (text) => alive() && this.emitEvent(key, { type: "delta", text }),
@@ -1847,7 +1850,21 @@ class Hub extends EventEmitter<{
       || (this.pendingOps.get(key) ?? 0) > 0
       || this.isolatedRuns.has(key)
       || this.rewinding.has(key)
-      || interactions.listPending(key).length > 0;
+      || interactions.listPending(key).length > 0
+      || this.inCall(key);
+  }
+
+  /** 正在实时语音通话：通话本身不走轮次，不算进 isBusy，但进程不能闲置回收、也不能因为记忆更新被换掉 */
+  private inCall(key: string): boolean {
+    return this.live.get(key)?.session.inRealtime?.() === true;
+  }
+
+  /** 通话结束：从这时起重新算闲置；通话期间攒下的「记忆已更新」这时再换进程 */
+  private realtimeEnded(key: string): void {
+    const live = this.live.get(key);
+    if (!live) return;
+    this.liveUsedAt.set(live.id, Date.now());
+    this.dropIfStale(key);
   }
 
   /** 关掉空闲太久的会话进程（只关进程，不动绑定），见 LIVE_IDLE_MS */
@@ -1877,13 +1894,13 @@ class Hub extends EventEmitter<{
 
   private dropIfStale(key: string): void {
     const live = this.live.get(key);
-    if (!live || !this.staleLive.has(live.id) || this.isBusy(key)) return;
+    if (!live || !this.staleLive.has(live.id) || this.isBusy(key) || this.inCall(key)) return;
     this.staleLive.delete(live.id);
     void this.serial(key, async () => {
       // 排队期间可能已经换了进程、或者又开始说话了：那就留到下一轮结束
       const now = this.live.get(key);
       if (now?.id !== live.id) return;
-      if (this.isBusy(key)) {
+      if (this.isBusy(key) || this.inCall(key)) {
         this.staleLive.add(live.id);
         return;
       }
@@ -2071,6 +2088,7 @@ class Hub extends EventEmitter<{
 
   async realtimeStop(key: string): Promise<void> {
     await this.live.get(key)?.session.stopRealtime?.();
+    this.realtimeEnded(key);
   }
 
   /**

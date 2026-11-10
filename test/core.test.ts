@@ -1046,6 +1046,7 @@ test("闲置太久的会话进程被关掉，忙着的不关；之后再发消�
   let created = 0;
   let disposed = 0;
   let finish: (() => void) | undefined;
+  let calling = false;
   hub.registerDriver({
     id: "claude",
     label: "Fake",
@@ -1066,6 +1067,7 @@ test("闲置太久的会话进程被关掉，忙着的不关；之后再发消�
         dispose: async () => {
           disposed++;
         },
+        inRealtime: () => calling,
       };
     },
     listSessions: async () => [],
@@ -1098,6 +1100,14 @@ test("闲置太久的会话进程被关掉，忙着的不关；之后再发消�
   h.reapIdle();
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(disposed, 0);
+
+  // 在语音通话：通话不走轮次，但再久也不关
+  calling = true;
+  age();
+  h.reapIdle();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(disposed, 0);
+  calling = false;
 
   // 闲置超时：关掉进程
   age();

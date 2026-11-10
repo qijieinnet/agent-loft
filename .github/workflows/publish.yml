@@ -59,7 +59,12 @@ jobs:
         run: npm run typecheck
 
       - name: 测试
-        run: npm test
+        run: |
+          if git log -1 --format=%B | grep -Fq '[skip tests]'; then
+            echo '提交标记 [skip tests]，跳过测试'
+          else
+            npm test
+          fi
 
       # tag 和 package.json 对不上就早点炸，别发出一个版本号错的包
       - name: 校验 tag 与 package.json 版本一致
