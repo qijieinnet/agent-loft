@@ -8,7 +8,7 @@ import { addItem, openConversation, openLightbox, renderEmpty, scrollToBottom } 
 import { renderScheduled } from "./schedule.js";
 import { renderTodos } from "./todos.js";
 import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
-import { callButton } from "./voice-call.js";
+import { callButton, canCall } from "./voice-call.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
 import { doAction, openModelPicker, openSessions } from "./conv-actions.js";
 
@@ -155,7 +155,13 @@ function hasDraft() {
 
 export function updateSendBtn() {
   if (!ui.sendBtn) return;
-  if (S.editingMessage === S.current && S.current) {
+  // 最右侧共用一个位置：空闲且没有草稿时通话，有文字/附件时发送；回复中仍保留停止。
+  const draft = hasDraft();
+  const editing = S.editingMessage === S.current && !!S.current;
+  const showCall = canCall() && !draft && !S.busy && !S.sending && !editing;
+  if (ui.callBtn) ui.callBtn.hidden = !showCall;
+  ui.sendBtn.hidden = showCall;
+  if (editing) {
     ui.sendBtn.disabled = true;
     ui.sendBtn.title = "正在恢复消息…";
     return;
@@ -167,10 +173,10 @@ export function updateSendBtn() {
     ui.sendBtn.disabled = true;
     return;
   }
-  const stop = S.busy && !hasDraft();
+  const stop = S.busy && !draft;
   ui.sendBtn.innerHTML = stop ? ICON.stop : ICON.send;
   ui.sendBtn.title = stop ? "停止" : "发送";
-  ui.sendBtn.disabled = !stop && !hasDraft();
+  ui.sendBtn.disabled = !stop && !draft;
 }
 
 export function setBusy(busy) {

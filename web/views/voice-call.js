@@ -1,7 +1,7 @@
 import { h, icon, toast } from "../lib/dom.js";
 import { desktop, S, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
-import { ensureConversation } from "./composer.js";
+import { ensureConversation, updateSendBtn } from "./composer.js";
 import { currentAgentId } from "./slash.js";
 import { cancelVoice } from "./voice.js";
 
@@ -10,7 +10,7 @@ import { cancelVoice } from "./voice.js";
 // 两头都是 24kHz、16 位、单声道的 PCM（二进制帧）。采集、播放在 AudioWorklet 里做（lib/rt-worklet.js）。
 // 这样能打开网页的地方就能语音（反向代理、Cloudflare Tunnel 都能过），浏览器不直连 OpenAI。
 // 语音模型把要干的活转交给这条对话里的 Codex：那一轮像打字发的消息一样出现在对话里（用户消息前面带 🎙️）。
-// 通话时输入框换成通话条：音量动画、状态、字幕、静音、挂断（和 Codex 桌面端的语音模式一样）。
+// 通话默认打开沉浸式光球界面，也可以收起成输入框位置的通话条。
 
 /** 桌面端（Electron）没申请麦克风权限：macOS 上直接用会被系统拦掉，先不放 */
 const supported = !desktop && !!window.AudioWorkletNode && !!navigator.mediaDevices?.getUserMedia;
@@ -42,6 +42,9 @@ const call = {
   /** 字幕：谁在说、说了什么（一句说完 done 之后，下一句同一个人开口就换新的） */
   caption: { role: null, text: "", done: false },
   panel: null,
+  dialog: null,
+  compact: false,
+  session: 0,
   els: null,
 };
 
@@ -95,8 +98,12 @@ const ICON_MIC_OFF =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.9-.6"/><path d="M5 10a7 7 0 0 0 11.7 5.2M19 10a7 7 0 0 1-.6 2.8M12 17v5"/></svg>';
 
 /** 输入框里的「语音对话」按钮 */
+export function canCall() {
+  return supported && currentAgentId() === "codex";
+}
+
 export function callButton() {
-  ui.callBtn = h("button", { class: "icon-btn call-btn", title: "语音对话", "aria-label": "语音对话", html: ICON_WAVE, onclick: () => void startCall() });
+  ui.callBtn = h("button", { class: "send-btn call-btn", title: "语音对话", "aria-label": "语音对话", html: ICON_WAVE, onclick: () => void startCall() });
   syncCall();
   return ui.callBtn;
 }
@@ -110,11 +117,14 @@ export function syncCall() {
   if (call.state !== "idle") {
     if (call.key && S.current !== call.key) {
       endCall("切换了对话，语音对话已结束");
-    } else if (call.panel && !call.panel.isConnected) {
-      mountPanel();
+    } else if (call.panel) {
+      ui.composer?.classList.add("in-call");
+      if (!call.panel.isConnected || (call.compact && call.panel.previousElementSibling !== ui.composer)) {
+        mountPanel();
+      }
     }
   }
-  if (ui.callBtn) ui.callBtn.hidden = !supported || currentAgentId() !== "codex";
+  updateSendBtn();
 }
 
 async function startCall() {
@@ -124,7 +134,9 @@ async function startCall() {
     return;
   }
   cancelVoice();
+  const session = ++call.session;
   call.state = "connecting";
+  call.compact = false;
   call.muted = false;
   call.caption = { role: null, text: "", done: false };
   // 在点击里建好、先 play 一次：iOS 上不是用户手势里起的播放会被拦
@@ -135,18 +147,24 @@ async function startCall() {
   mountPanel();
   try {
     const key = await ensureConversation();
-    if (call.state === "idle") return;
+    if (session !== call.session) return;
     call.key = key;
-    call.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-    if (call.state === "idle") return stopTracks();
+    const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (session !== call.session) {
+      for (const track of mic.getTracks()) track.stop();
+      return;
+    }
+    call.mic = mic;
     // iOS 上偶尔拿到的是已经结束 / 被静音的轨道（音频会话被别的占着）：别假装在听
     const track = call.mic.getAudioTracks()[0];
     if (!track || track.readyState !== "live") throw new Error("麦克风没能打开，请关掉其他在用麦克风的页面或应用后重试");
+    track.enabled = !call.muted;
     if (track.muted) await waitUnmute(track, 1500);
+    if (session !== call.session) return;
     const ctx = audioCtx();
     if (!ctx) throw new Error("浏览器不支持音频处理");
     await loadWorklet(ctx);
-    if (call.state === "idle") return stopTracks();
+    if (session !== call.session) return;
     // 麦克风 → 采集（重采样到 24kHz，20ms 一块）→ WebSocket
     const src = ctx.createMediaStreamSource(call.mic);
     const capture = new AudioWorkletNode(ctx, "rt-capture", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
@@ -174,22 +192,26 @@ async function startCall() {
       play.connect(dest);
       call.nodes.push(dest);
       try {
-        call.loop = await loopback(dest.stream);
+        const loop = await loopback(dest.stream);
+        if (session !== call.session) return loop.close();
+        call.loop = loop;
         call.audio.srcObject = call.loop.stream;
         call.audio.play().catch(() => {});
       } catch {
         // 环回建不起来：直接放（可能有回声）
+        if (session !== call.session) return;
         play.connect(ctx.destination);
       }
     }
-    if (call.state === "idle") return;
+    if (session !== call.session) return;
     const prefs = loadPrefs();
     await WS.request({ t: "rt", op: "start", key, voice: prefs.voice, language: prefs.language }, 40_000);
-    if (call.state === "idle") return;
+    if (session !== call.session) return;
     call.state = "live";
     call.startedAt = Date.now();
     render();
   } catch (err) {
+    if (session !== call.session) return;
     const message = err?.name === "NotAllowedError" ? "没有麦克风权限，请在浏览器里允许使用麦克风" : err?.name === "NotFoundError" ? "没找到可用的麦克风" : err?.message ?? String(err);
     endCall(`语音对话没能开始：${message}`);
   }
@@ -199,6 +221,7 @@ async function startCall() {
 export function endCall(reason, fromServer = false) {
   if (call.state === "idle") return;
   const key = call.key;
+  ++call.session;
   call.state = "idle";
   if (key && !fromServer) WS.raw({ t: "rt", op: "stop", key });
   cancelAnimationFrame(call.raf);
@@ -224,9 +247,13 @@ export function endCall(reason, fromServer = false) {
   call.micLevel = call.outLevel = null;
   call.key = null;
   call.panel?.remove();
+  call.dialog?.close();
+  call.dialog?.remove();
+  call.dialog = null;
   call.panel = call.els = null;
   ui.composer?.classList.remove("in-call");
   syncCall();
+  (ui.callBtn && !ui.callBtn.hidden ? ui.callBtn : ui.sendBtn)?.focus({ preventScroll: true });
   if (reason) toast(reason);
 }
 
@@ -261,39 +288,69 @@ export function onRealtimeEvent(msg) {
   renderCaption();
 }
 
-// ---------- 通话条 ----------
+// ---------- 通话界面 ----------
 
 function mountPanel() {
   if (!ui.composer) return;
   if (!call.panel) {
-    const bars = [0, 1, 2, 3, 4].map(() => h("span", { class: "call-bar" }));
+    const orb = h("div", { class: "call-orb", "aria-hidden": "true" },
+      h("div", { class: "call-orb-surface" }, h("span", { class: "call-orb-cloud cloud-a" }), h("span", { class: "call-orb-cloud cloud-b" }), h("span", { class: "call-orb-cloud cloud-c" })),
+    );
     const mute = h("button", { class: "call-ctl", title: "静音", "aria-label": "静音", onclick: toggleMute }, icon("mic"));
     const gear = h("button", { class: "call-ctl", title: "音色和语言", "aria-label": "音色和语言", "aria-expanded": "false", onclick: toggleOpts }, icon("gear"));
-    const end = h("button", { class: "call-ctl call-end", title: "结束语音对话", "aria-label": "结束语音对话", onclick: () => endCall() }, "结束");
-    const status = h("span", { class: "call-status" });
+    const end = h("button", { class: "call-ctl call-end", title: "结束语音对话", "aria-label": "结束语音对话", onclick: () => endCall() }, icon("x"));
+    const minimize = h("button", { class: "call-minimize icon-btn", title: "收起通话", "aria-label": "收起通话", onclick: () => setCompact(true) }, icon("down"));
+    const expand = h("button", { class: "call-expand call-ctl", title: "展开通话", "aria-label": "展开通话", onclick: () => setCompact(false) }, icon("expand"));
+    const status = h("span", { class: "call-status", role: "status" });
     const time = h("span", { class: "call-time" });
     const who = h("span", { class: "call-who" });
     const text = h("span", { class: "call-text" });
     const opts = optsRow();
-    call.els = { bars, mute, gear, opts, status, time, who, text };
+    const hint = h("p", { class: "call-hint" }, "直接开口，随时打断");
+    call.els = { orb, mute, gear, opts, status, time, who, text, hint, expand, minimize };
     call.panel = h(
       "div",
       { class: "call-panel", role: "region", "aria-label": "语音对话" },
+      h("header", { class: "call-header" },
+        h("div", { class: "call-brand" }, h("span", { class: "call-brand-icon", html: ICON_WAVE }), h("span", {}, "Codex", h("small", {}, "语音对话"))),
+        h("div", { class: "call-session" }, h("span", { class: "call-live-dot" }), time), minimize,
+      ),
       h(
         "div",
         { class: "call-main" },
-        h("div", { class: "call-wave", "aria-hidden": "true" }, bars),
-        h("div", { class: "call-info" }, h("div", { class: "call-line" }, status, time), h("div", { class: "call-caption", "aria-live": "polite" }, who, text)),
-        h("div", { class: "call-ctls" }, mute, gear, end),
+        h("div", { class: "call-stage" }, orb),
+        h("div", { class: "call-info" }, status, hint),
       ),
+      h("div", { class: "call-caption", "aria-live": "polite", "aria-atomic": "true" }, who, text),
       opts,
+      h("footer", { class: "call-footer" }, h("div", { class: "call-ctls" }, expand,
+        h("div", { class: "call-control" }, mute, h("span", {}, "麦克风")),
+        h("div", { class: "call-control" }, gear, h("span", {}, "音色与语言")),
+        h("div", { class: "call-control" }, end, h("span", {}, "结束")),
+      ), h("span", { class: "call-footer-note" }, "可以收起通话，查看聊天")),
     );
+    call.dialog = h("dialog", { class: "call-dialog", "aria-label": "Codex 语音对话", oncancel: (e) => { e.preventDefault(); setCompact(true); } });
   }
   ui.composer.classList.add("in-call");
-  ui.composer.after(call.panel);
+  if (call.compact) ui.composer.after(call.panel);
+  else {
+    if (!call.dialog.isConnected) document.body.append(call.dialog);
+    call.dialog.append(call.panel);
+    if (!call.dialog.open) call.dialog.showModal();
+  }
   render();
   cancelAnimationFrame(call.raf);
   call.raf = requestAnimationFrame(tick);
+}
+
+/** 收起只切换视图，麦克风和播放保持连接。Esc 也收起，避免误挂断。 */
+function setCompact(compact) {
+  if (!call.panel || call.compact === compact) return;
+  call.compact = compact;
+  call.panel.classList.toggle("compact", compact);
+  if (compact) call.dialog.close();
+  mountPanel();
+  (compact ? call.els.expand : call.els.minimize).focus({ preventScroll: true });
 }
 
 /** 通话条下面展开的一行：音色、语言。通话中改了就用新设置重新连一次（Codex 那边对话上下文还在） */
@@ -327,8 +384,11 @@ function toggleOpts() {
 /** 用新的音色 / 语言重连：挂掉当前这通，马上再开（在选择框的操作里，iOS 也允许播放） */
 function restartCall() {
   if (call.state === "idle") return;
+  const { compact, muted } = call;
   endCall("");
   void startCall();
+  if (muted) toggleMute();
+  if (compact) setCompact(true);
   // startCall 同步就把新的通话条挂上了：设置行保持展开，方便接着试别的音色
   if (call.els) toggleOpts();
 }
@@ -345,8 +405,10 @@ function render() {
   mute.innerHTML = call.muted ? ICON_MIC_OFF : icon("mic").innerHTML;
   mute.title = call.muted ? "取消静音" : "静音";
   mute.setAttribute("aria-label", mute.title);
+  mute.setAttribute("aria-pressed", String(call.muted));
   mute.classList.toggle("on", call.muted);
   call.panel.classList.toggle("connecting", call.state === "connecting");
+  call.panel.classList.toggle("muted", call.muted);
   renderCaption();
 }
 
@@ -354,28 +416,34 @@ function renderCaption() {
   if (!call.els) return;
   const { who, text } = call.els;
   const c = call.caption;
+  const caption = text.parentElement;
+  const follow = caption.scrollHeight - caption.scrollTop - caption.clientHeight < 32;
   who.textContent = c.text ? (c.role === "user" ? "你" : "Codex") : "";
-  text.textContent = c.text || (call.state === "connecting" ? "" : "说点什么吧，可以随时打断它");
+  if (text.textContent !== c.text) {
+    text.textContent = c.text || "";
+    if (follow) requestAnimationFrame(() => { if (caption.isConnected) caption.scrollTop = caption.scrollHeight; });
+  }
   call.panel.classList.toggle("has-caption", !!c.text);
 }
 
-/** 每帧：音量条、状态、时长 */
+/** 每帧读取实际音量；光球平滑响应声音，状态和时长仅在变化时写入 DOM。 */
 function tick() {
   if (!call.els) return;
   const mic = call.muted ? 0 : (call.micLevel?.() ?? 0);
   const out = call.outLevel?.() ?? 0;
   const speaking = out > 0.02;
   const level = Math.min(1, (speaking ? out : mic) * 6);
-  call.els.bars.forEach((bar, i) => {
-    const shape = [0.45, 0.75, 1, 0.75, 0.45][i];
-    const wobble = call.state === "live" ? 0.15 + 0.85 * level * shape * (0.8 + 0.2 * Math.sin(Date.now() / 120 + i)) : 0.2;
-    bar.style.transform = `scaleY(${Math.max(0.15, wobble).toFixed(3)})`;
-  });
+  call.els.orb.style.setProperty("--voice-scale", (1 + level * 0.14).toFixed(3));
   call.panel.classList.toggle("speaking", speaking);
   const busy = S.busy && S.current === call.key;
-  call.els.status.textContent =
+  call.panel.classList.toggle("processing", !!busy && !speaking);
+  const status =
     call.state === "connecting" ? "正在连接…" : speaking ? "Codex 正在说" : busy ? "Codex 正在处理…" : call.muted ? "已静音" : "正在听";
-  call.els.time.textContent = call.state === "live" ? clock(Date.now() - call.startedAt) : "";
+  const hint = call.state === "connecting" ? "正在为你接通 Codex" : call.muted ? "麦克风已关闭，仍可听到回复" : busy && !speaking ? "完成后会接着告诉你" : "直接开口，随时打断";
+  const time = call.state === "live" ? clock(Date.now() - call.startedAt) : "连接中";
+  for (const [el, value] of [[call.els.status, status], [call.els.time, time], [call.els.hint, hint]]) {
+    if (el.textContent !== value) el.textContent = value;
+  }
   call.raf = requestAnimationFrame(tick);
 }
 

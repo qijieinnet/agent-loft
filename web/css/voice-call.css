@@ -1,0 +1,196 @@
+/* 语音对话：沉浸式光球与收起后的通话条。音频逻辑共用 views/voice-call.js。 */
+.call-btn[hidden] { display: none; }
+
+.call-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.call-dialog::backdrop { background: var(--bg); }
+
+.call-panel {
+  --call-blue: #2686ec;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: max(24px, env(safe-area-inset-top)) 40px max(28px, env(safe-area-inset-bottom));
+  background: radial-gradient(ellipse at 50% 40%, color-mix(in srgb, #8bc8ff 7%, transparent), transparent 60%), var(--bg);
+}
+
+.call-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.call-brand { display: flex; align-items: center; gap: 12px; font-size: 17px; font-weight: 600; line-height: 1.3; }
+.call-brand small { display: block; margin-top: 4px; font-size: 11px; font-weight: 400; color: var(--fg-faint); letter-spacing: 0.12em; }
+.call-brand-icon { display: grid; place-items: center; width: 40px; height: 40px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 14px; }
+.call-brand-icon svg { width: 22px; height: 22px; }
+.call-session { display: flex; align-items: center; gap: 7px; margin-left: auto; color: var(--fg-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+.call-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--call-blue); }
+.connecting .call-live-dot { animation: call-dot 1.4s ease-in-out infinite; }
+.call-minimize { border: 1px solid var(--border); border-radius: 50%; width: 40px; height: 40px; }
+
+.call-main { flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; min-height: 310px; padding: 24px 0; }
+.call-stage { display: grid; place-items: center; width: 100%; padding: 30px 0 42px; }
+
+/* 叠加的云层在球面内流动，用 transform 合成动画，实际音量控制整个球的缩放。 */
+.call-orb {
+  --voice-scale: 1;
+  position: relative;
+  width: clamp(170px, 28vh, 280px);
+  aspect-ratio: 1;
+  flex-shrink: 0;
+  transform: scale(var(--voice-scale));
+  transition: transform 160ms ease-out, opacity 0.5s, filter 0.5s;
+}
+
+.call-orb::before {
+  content: "";
+  position: absolute;
+  inset: -12%;
+  border-radius: 50%;
+  background: radial-gradient(circle, #56b7ff33, #80c8ff0d 60%, transparent 72%);
+  filter: blur(12px);
+}
+
+.call-orb-surface {
+  position: absolute;
+  inset: 0;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 20%, #f7fcff 5%, #dbf4ff 22%, #79c9ff 52%, #2588ed 78%, #1b68c5 100%);
+  box-shadow: inset 0 0 28px #ffffff80, inset -10px -16px 30px #276bd833, 0 10px 60px #3697ef1c;
+  animation: call-float 7s ease-in-out infinite;
+}
+
+.call-orb-surface::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(ellipse at 32% 12%, #fff9, transparent 55%); box-shadow: inset 0 0 3px #fff8; }
+.call-orb-cloud { position: absolute; inset: -35%; border-radius: 44% 56% 62% 38%; filter: blur(16px); will-change: transform; }
+.cloud-a { background: conic-gradient(from 40deg, transparent 8%, #f8fdff 28%, #dbf5ffb3 38%, transparent 55%, #1976e8cc 76%, transparent); animation: call-flow 14s linear infinite; }
+.cloud-b { inset: -25%; background: conic-gradient(from 160deg, #fff0 10%, #e4faffcc 22%, #fff0 40%, #2787e9b3 60%, #fff0 82%); animation: call-flow 19s linear infinite reverse; }
+.cloud-c { inset: 14% -35% -40%; background: radial-gradient(ellipse, #006ce7b3 10%, #3da7ff80 35%, transparent 64%); animation: call-drift 8s ease-in-out infinite alternate; }
+.speaking .cloud-a { animation-duration: 5s; }
+.speaking .cloud-b { animation-duration: 7s; }
+.connecting .call-orb { opacity: 0.55; }
+.muted .call-orb { filter: saturate(0.3); }
+.processing .call-orb-surface { animation-duration: 3s; }
+
+.call-info { text-align: center; }
+.call-status { display: block; font-size: 23px; font-weight: 500; letter-spacing: -0.02em; }
+.call-hint { margin: 8px 0 0; color: var(--fg-faint); font-size: 13px; }
+.call-caption { width: min(620px, 100%); min-height: 88px; max-height: min(22vh, 180px); overflow-y: auto; text-align: center; padding: 8px 12px 20px; scrollbar-width: thin; flex-shrink: 0; }
+.call-who { display: block; color: var(--fg-faint); font-size: 12px; margin-bottom: 8px; }
+.call-text { font-size: clamp(17px, 2.3vw, 22px); line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.call-footer { display: flex; flex-direction: column; align-items: center; gap: 22px; padding-top: 22px; flex-shrink: 0; }
+.call-ctls { display: flex; align-items: flex-start; justify-content: center; gap: 24px; }
+.call-control { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.call-control > span { font-size: 11px; color: var(--fg-faint); }
+.call-ctl { display: inline-grid; place-items: center; width: 56px; height: 56px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-soft); color: var(--fg); transition: background 0.18s, transform 0.18s; }
+.call-ctl:hover { background: var(--bg-hover); transform: translateY(-2px); }
+.call-ctl svg { width: 22px; height: 22px; }
+.call-ctl.on { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 20%, var(--border)); }
+.call-ctl.active { color: var(--call-blue); border-color: var(--call-blue); }
+.call-end { background: color-mix(in srgb, var(--danger) 10%, var(--bg)); color: var(--danger); border-color: transparent; }
+.call-end:hover { background: color-mix(in srgb, var(--danger) 18%, var(--bg)); }
+.call-panel :is(button, select):focus-visible { outline: 2px solid var(--call-blue); outline-offset: 4px; }
+.call-footer-note { color: var(--fg-faint); font-size: 11px; }
+.call-expand { display: none; }
+
+.call-opts { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 20px; width: min(620px, 100%); padding: 16px; flex-shrink: 0; border: 1px solid var(--border); background: var(--bg-soft); border-radius: 18px; }
+.call-opts[hidden] { display: none; }
+.call-opt { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 13px; color: var(--fg-soft); }
+.call-opt > span { flex-shrink: 0; }
+.call-opt select { max-width: 205px; min-width: 0; border: 1px solid var(--border); border-radius: 9px; padding: 7px; background: var(--bg-input); font-size: 13px; }
+.call-opts-hint { width: 100%; text-align: center; font-size: 11px; color: var(--fg-faint); }
+
+/* 展开设置时给字幕和操作留出空间，小屏上挂断按钮始终留在视口内。 */
+.call-panel:not(.compact):has(.call-opts:not([hidden])) .call-main { min-height: 210px; padding: 12px 0; }
+.call-panel:not(.compact):has(.call-opts:not([hidden])) .call-stage { padding: 8px 0 20px; }
+.call-panel:not(.compact):has(.call-opts:not([hidden])) .call-orb { width: clamp(100px, 16vh, 160px); }
+.call-panel:not(.compact):has(.call-opts:not([hidden])) .call-caption { min-height: 48px; max-height: 100px; }
+
+/* 收起时继续通话，保留光球、状态、字幕和全部操作。 */
+.call-panel.compact { display: grid; grid-template-columns: minmax(0, 1fr) auto; height: auto; overflow: visible; padding: 14px 16px; border: 1px solid var(--border); border-radius: 24px; background: var(--bg-input); box-shadow: var(--shadow); }
+.compact .call-header, .compact .call-hint, .compact .call-footer-note, .compact .call-control > span { display: none; }
+.compact .call-main { grid-column: 1; grid-row: 1; min-height: 0; padding: 0; flex-direction: row; justify-content: flex-start; gap: 14px; }
+.compact .call-stage { width: auto; padding: 0; }
+.compact .call-orb { width: 42px; }
+.compact .call-orb-cloud { filter: blur(4px); }
+.compact .call-info { min-width: 0; text-align: left; }
+.compact .call-status { font-size: 13px; }
+.compact .call-footer { grid-column: 2; grid-row: 1; padding: 0; }
+.compact .call-ctls { gap: 6px; align-items: center; }
+.compact .call-ctl { width: 36px; height: 36px; }
+.compact .call-ctl svg { width: 17px; height: 17px; }
+.compact .call-expand { display: inline-grid; }
+.compact .call-caption { display: none; grid-column: 1 / -1; padding: 12px 0 0; margin-top: 12px; min-height: 0; max-height: 100px; border-top: 1px solid var(--border); text-align: left; }
+.compact.has-caption .call-caption { display: block; }
+.compact .call-who { display: inline; margin-right: 8px; }
+.compact .call-text { font-size: 13px; }
+.compact .call-opts { grid-column: 1 / -1; grid-row: 3; width: 100%; margin-top: 12px; }
+
+@keyframes call-flow { to { transform: rotate(360deg); } }
+@keyframes call-float { 0%, 100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-8px) rotate(4deg); } }
+@keyframes call-drift { from { transform: translate(-10%, 6%) rotate(-20deg); } to { transform: translate(16%, -15%) rotate(30deg); } }
+@keyframes call-dot { 50% { opacity: 0.3; } }
+
+@media (prefers-color-scheme: dark) {
+  .call-panel { background: radial-gradient(ellipse at 50% 40%, #123e6526, transparent 60%), var(--bg); }
+  .call-orb-surface { box-shadow: inset 0 0 28px #ffffff70, inset -10px -16px 30px #276bd855, 0 0 80px #3697ef26; }
+  .call-panel.compact { background: var(--bg-input); }
+}
+
+@media (max-width: 640px) {
+  .call-panel { padding: max(18px, env(safe-area-inset-top)) 20px max(22px, env(safe-area-inset-bottom)); }
+  .call-main { min-height: 270px; }
+  .call-stage { padding: 20px 0 36px; }
+  .call-status { font-size: 21px; }
+  .call-caption { min-height: 90px; }
+  .call-ctls { gap: 22px; }
+  .call-opts { gap: 12px; }
+  .call-opt { width: 100%; justify-content: space-between; }
+  .call-opt select { flex: 1; max-width: 240px; }
+  .call-panel.compact { padding: 12px; }
+  .compact .call-main { gap: 10px; }
+  .compact .call-status { font-size: 12px; }
+  .compact .call-orb { width: 30px; }
+  .compact .call-ctls { gap: 4px; }
+  .compact .call-ctl { width: 36px; height: 36px; }
+}
+
+@media (max-height: 600px) {
+  .call-panel:not(.compact) { padding-top: 12px; padding-bottom: 12px; }
+  .call-main { min-height: 170px; padding: 8px 0; }
+  .call-orb { width: 110px; }
+  .call-stage { padding: 12px 0 16px; }
+  .call-caption { min-height: 40px; max-height: 80px; padding-bottom: 8px; }
+  .call-footer { padding-top: 8px; gap: 8px; }
+  .call-ctl { width: 44px; height: 44px; }
+  .call-panel:not(.compact):has(.call-opts:not([hidden])) .call-main { display: none; }
+  .call-panel:not(.compact):has(.call-opts:not([hidden])) .call-caption { min-height: 0; max-height: 50px; padding: 4px; }
+  .call-panel:not(.compact):has(.call-opts:not([hidden])) .call-opts { margin-top: auto; padding: 10px; gap: 8px 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .call-panel *, .call-panel *::before, .call-panel *::after { animation: none !important; transition: none !important; }
+  .call-orb { transform: none; }
+}
