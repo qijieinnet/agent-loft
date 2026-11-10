@@ -275,6 +275,28 @@ test("Claude：只有子智能体选技能时也加载插件，主专家的技�
   assert.equal(without.plugins, undefined, "停用后不再挂子智能体的技能插件");
 });
 
+test("Codex 扩展能力：勾了才开；本机能力只有管理员能勾，共享给别人用时也不开", () => {
+  const all = ["image_generation", "multi_agent", "browser", "computer_use", "apps", "nope"];
+  const mine = experts.createExpert(alice.id, { name: "画图", engine: "codex", access: "web", codexTools: all });
+  assert.deepEqual(mine.codexTools, ["image_generation", "multi_agent"], "成员勾不了本机能力，不认识的丢掉");
+  assert.deepEqual(experts.createExpert(alice.id, { name: "cl", engine: "claude", access: "web", codexTools: all }).codexTools, [], "只有 Codex 专家有");
+
+  const boss = experts.createExpert(admin.id, { name: "全开", engine: "codex", access: "web", shared: true, codexTools: all });
+  assert.deepEqual(boss.codexTools, ["image_generation", "multi_agent", "browser", "computer_use", "apps"]);
+  const cfg = expertConfig(experts.expertRuntime(boss, subPrompt));
+  for (const f of ["image_generation", "multi_agent", "browser_use", "in_app_browser", "computer_use", "plugins", "apps"]) assert.equal(cfg[`features.${f}`], true, f);
+  assert.equal(cfg.include_apps_instructions, true);
+  assert.equal(cfg["features.shell_tool"], false, "扩展能力不改文件权限");
+
+  const asAlice = expertConfig(experts.expertRuntime(boss, subPrompt, alice.id));
+  assert.equal(asAlice["features.image_generation"], true);
+  for (const f of ["browser_use", "in_app_browser", "computer_use", "plugins", "apps"]) assert.equal(asAlice[`features.${f}`], false, `别人用时不开 ${f}`);
+
+  const plain = expertConfig(experts.expertRuntime(experts.createExpert(alice.id, { name: "老专家", engine: "codex", access: "web" }), subPrompt));
+  assert.equal(plain["features.image_generation"], false, "没勾就和以前一样关着");
+  assert.equal(plain["features.realtime_conversation"], undefined, "Codex 专家都能语音对话（不关这个 feature）");
+});
+
 test("Codex：按权限打开 shell / apply_patch，背景里写专家", () => {
   const e = experts.expertRuntime(experts.createExpert(alice.id, { name: "cx", engine: "codex", access: "web", webSearch: false, prompt: "简短回答" }), subPrompt);
   const web = expertConfig(e);

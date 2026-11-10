@@ -249,6 +249,16 @@ export type ThreadItem =
       status: "inProgress" | "completed" | "failed";
     }
   | { type: "webSearch"; id: string; query?: string }
+  | {
+      type: "imageGeneration";
+      id: string;
+      status: string;
+      revisedPrompt: string | null;
+      failure: { type: string } | null;
+      /** Codex 存下来的图片（默认在 CODEX_HOME/generated_images 下） */
+      savedPath?: string;
+    }
+  | { type: "collabAgentToolCall"; id: string; tool: string; status: string; prompt: string | null }
   | { type: "error"; id: string; message: string }
   | { type: string; id: string };
 

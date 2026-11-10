@@ -140,7 +140,22 @@ export function wrapContext(lines: string[]): string {
 }
 
 /** 剥掉 contextBlock（读历史、列会话标题时用）。一条消息里可能有好几段（定时任务的说明 + Codex 的专家说明） */
+/** 语音对话转交给 Codex 的那一轮，用户消息长这样：<realtime_delegation><input>说的话</input>…</realtime_delegation> */
+const REALTIME_RE = /^\s*<realtime_delegation>[\s\S]*?<input>([\s\S]*?)<\/input>[\s\S]*<\/realtime_delegation>\s*$/;
+const XML_ENTITIES: Record<string, string> = { "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'", "&amp;": "&" };
+
+/** 语音转交的那一轮用户说了什么；不是语音转交的返回 undefined */
+export function realtimeInput(text: string): string | undefined {
+  const m = REALTIME_RE.exec(text);
+  return m ? m[1]!.replace(/&(lt|gt|quot|apos|amp);/g, (e) => XML_ENTITIES[e] ?? e).trim() : undefined;
+}
+
+/** 显示时语音说的话前面加个麦克风，和打字发的区分开 */
+export const VOICE_MARK = "🎙️ ";
+
 export function stripContext(text: string): string {
+  const voice = realtimeInput(text);
+  if (voice !== undefined) return `${VOICE_MARK}${voice}`;
   let out = text;
   for (let start = out.indexOf(OPEN); start >= 0; start = out.indexOf(OPEN)) {
     const end = out.indexOf(CLOSE, start);

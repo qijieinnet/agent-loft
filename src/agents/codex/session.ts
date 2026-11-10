@@ -5,8 +5,8 @@
 import { appServer } from "./app-server.js";
 import { refusalFor, UnsupportedRequest } from "./refusals.js";
 import { config } from "../../core/config.js";
-import { contextBlock } from "../../core/expert-prompt.js";
-import { ACCESS_LEVELS, type ExpertAccess, type ExpertRuntime } from "../../core/experts.js";
+import { contextBlock, stripContext, VOICE_MARK } from "../../core/expert-prompt.js";
+import { ACCESS_LEVELS, type CodexTool, type ExpertAccess, type ExpertRuntime } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import { SKILLS_MCP_NAME, skillsMcpSpawn, TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import type { PermissionLevel } from "../../core/permission.js";
@@ -123,9 +123,17 @@ export const CHAT_CONFIG: Record<string, unknown> = {
       "workspace_dependencies",
       "in_app_browser",
       "in_app_local_automation",
-      "realtime_conversation",
     ].map((f) => [`features.${f}`, false]),
   ),
+};
+
+/** 专家勾了的 Codex 自带能力在 CHAT_CONFIG 上打开哪些（core/experts.ts 的 CODEX_TOOLS） */
+const CODEX_TOOL_CONFIG: Record<CodexTool, Record<string, unknown>> = {
+  image_generation: { "features.image_generation": true },
+  multi_agent: { "features.multi_agent": true },
+  browser: { "features.browser_use": true, "features.in_app_browser": true },
+  computer_use: { "features.computer_use": true },
+  apps: { "features.plugins": true, "features.apps": true, include_apps_instructions: true },
 };
 
 /**
@@ -141,6 +149,7 @@ export function expertConfig(e: ExpertRuntime): Record<string, unknown> {
       ? { include_permissions_instructions: true, "features.shell_tool": true, "features.unified_exec": true, "features.view_image": true }
       : {}),
     ...(rank >= 2 ? { include_apply_patch_tool: true } : {}),
+    ...Object.assign({}, ...(e.codexTools ?? []).map((t) => CODEX_TOOL_CONFIG[t] ?? {})),
   };
 }
 
@@ -340,6 +349,10 @@ export class CodexSession implements AgentSession {
   private disposed = false;
   /** 轮次还在 starting 时点了停止：拿到轮次 id 立刻中断 */
   private stopRequested = false;
+  /** 实时语音对话：在通话中；answer / fail 是 start 还在等对端 SDP */
+  private rt: { answer?: (sdp: string) => void; fail?: (err: Error) => void } | undefined;
+  /** 这一轮不是这边开的（语音对话转交给 Codex 的）：还没把用户说的话报上去 */
+  private externalPending = false;
 
   constructor(
     private readonly opts: SessionOptions,
@@ -780,6 +793,10 @@ export class CodexSession implements AgentSession {
   }
 
   async dispose(): Promise<void> {
+    if (this.rt) {
+      await this.stopRealtime();
+      this.events.onRealtime?.({ type: "closed", reason: "会话已切换" });
+    }
     this.disposed = true;
     this.queue = [];
     await this.interrupt();
@@ -794,6 +811,128 @@ export class CodexSession implements AgentSession {
     }
     this.threadId = undefined;
     this.endTurn();
+  }
+
+  // ---------- 实时语音对话（thread/realtime/*，实验接口） ----------
+
+  /**
+   * 浏览器建好 RTCPeerConnection（麦克风 + oai-events 数据通道）把 offer 给过来，app-server 去 OpenAI 建通话，
+   * 对端 answer 从 thread/realtime/sdp 通知回来。声音在浏览器和 OpenAI 之间直连，不经过这里。
+   * 实测：ChatGPT 账号登录只能走 WebRTC（WebSocket 要 API key），协议版本要 v3。
+   * 语音模型把要干的活转交给这条 thread，app-server 自己开一轮（见 turn/started 里的 externalPending）。
+   */
+  async startRealtime(offer: string): Promise<string> {
+    if (this.disposed) throw new Error("会话已关闭");
+    if (this.rt) await this.stopRealtime();
+    const threadId = await this.open();
+    // 转交出来的轮次不经过 turn/start：先把这条对话现在的工作目录、沙箱、模型写到 thread 上，权限才对得上
+    await appServer.call("thread/settings/update", {
+      threadId,
+      cwd: this.opts.cwd,
+      approvalPolicy: "on-request",
+      sandboxPolicy: sandboxPolicyFor(this.sandboxMode, this.opts.cwd),
+      ...(this.opts.model ? { model: this.opts.model } : {}),
+      ...(this.opts.effort ? { effort: this.opts.effort } : {}),
+    });
+    if (this.disposed) throw new DisposedError();
+    // 专家、记忆、技能清单：打字的第一轮会附在消息后面；语音先开口的话，在这里交给背后的 Codex
+    const expert = this.opts.expert;
+    const context = this.contextPending
+      ? contextBlock(expert ? { prompt: expert, cwd: this.opts.cwd } : undefined, this.opts.memory?.prompt, codexSkillLines(this.opts.skills))
+      : "";
+    const answer = new Promise<string>((resolve, reject) => {
+      this.rt = { answer: resolve, fail: reject };
+    });
+    const timer = setTimeout(() => this.rt?.fail?.(new Error("连接语音服务超时")), 20_000);
+    try {
+      await appServer.call("thread/realtime/start", {
+        threadId,
+        outputModality: "audio",
+        version: "v3",
+        transport: { type: "webrtc", sdp: offer },
+        // 启动背景里有这台机器上最近的会话和目录结构：只给内置专家的管理员
+        includeStartupContext: !expert && this.opts.skills?.admin === true,
+        ...(context ? { realtimeStartInstructions: context } : {}),
+      });
+      return await answer;
+    } catch (err) {
+      this.rt = undefined;
+      void appServer.call("thread/realtime/stop", { threadId }).catch(() => {});
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (this.rt) this.rt = {};
+    }
+  }
+
+  async stopRealtime(): Promise<void> {
+    if (!this.rt) return;
+    this.rt.fail?.(new Error("已挂断"));
+    this.rt = undefined;
+    if (!this.threadId) return;
+    try {
+      await appServer.call("thread/realtime/stop", { threadId: this.threadId });
+    } catch (err) {
+      console.warn("[codex] 挂断语音对话失败:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  /** 实时语音的通知：字幕、建连、结束。返回 false = 不是这类通知 */
+  private onRealtime(method: string, params: unknown): boolean {
+    if (!method.startsWith("thread/realtime/")) return false;
+    const p = params as { sdp?: string; role?: string; delta?: string; text?: string; message?: string; reason?: string | null };
+    const role = p.role === "user" ? "user" : "assistant";
+    switch (method) {
+      case "thread/realtime/sdp":
+        if (p.sdp) this.rt?.answer?.(p.sdp);
+        return true;
+      case "thread/realtime/started":
+        this.events.onRealtime?.({ type: "started" });
+        return true;
+      case "thread/realtime/transcript/delta":
+        if (p.delta) this.events.onRealtime?.({ type: "transcript", role, delta: p.delta });
+        return true;
+      case "thread/realtime/transcript/done":
+        if (p.text) this.events.onRealtime?.({ type: "transcript_done", role, text: p.text });
+        return true;
+      case "thread/realtime/error": {
+        const message = realtimeError(p.message);
+        if (this.rt?.fail) this.rt.fail(new Error(message));
+        else this.events.onRealtime?.({ type: "error", message });
+        return true;
+      }
+      case "thread/realtime/closed":
+        if (this.rt) {
+          this.rt = undefined;
+          this.events.onRealtime?.({ type: "closed", ...(p.reason ? { reason: p.reason } : {}) });
+        }
+        return true;
+      default:
+        return true;
+    }
+  }
+
+  /** 语音转交出来的一轮开始了：当成这边的一轮接住（回复、审批、用量照常），用户说的话等 userMessage 到了再报 */
+  private adoptExternalTurn(id: string): void {
+    this.currentInput = undefined;
+    this.replyText = "";
+    this.planText = "";
+    this.turnPlan = false;
+    this.turnTokens = undefined;
+    this.turnSeq += 1;
+    this.phase = "running";
+    this.turnId = id;
+    this.stopRequested = false;
+    this.commentaryItems.clear();
+    this.turnSeen = true;
+    this.externalPending = true;
+  }
+
+  private announceExternal(text: string): void {
+    if (!this.externalPending) return;
+    this.externalPending = false;
+    this.events.onExternalTurn?.(text, this.turnId);
+    this.events.onTurnStart?.();
   }
 
   // ---------- 反向请求：审批与提问 ----------
@@ -934,13 +1073,19 @@ export class CodexSession implements AgentSession {
   // ---------- 通知 ----------
 
   handleNotification(method: string, params: unknown): void {
+    if (this.onRealtime(method, params)) return;
 
     switch (method) {
       case "turn/started": {
         // 轮次 id 在 params.turn.id，不在顶层
         const id = (params as { turn?: { id?: string } }).turn?.id;
-        // 只认「正在等它开始」的那一轮；收过尾的旧轮次晚到的通知忽略
-        if (this.phase === "idle" || (id && this.endedTurns.has(id))) return;
+        if (id && this.endedTurns.has(id)) return;
+        // 空闲时冒出来的一轮不是这边开的：语音对话把事情转交给了 Codex（这个 app-server 里只有这边订阅着这条 thread）
+        if (this.phase === "idle") {
+          if (id && !this.disposed) this.adoptExternalTurn(id);
+          return;
+        }
+        // 只认「正在等它开始」的那一轮
         if (id) this.onTurnId(id);
         this.commentaryItems.clear();
         this.turnSeen = true;
@@ -1011,6 +1156,7 @@ export class CodexSession implements AgentSession {
         // 已经收过尾的、或者不是当前这一轮的，不处理
         if (this.phase === "idle" || (turn.id && this.endedTurns.has(turn.id))) return;
         if (this.turnId && turn.id && turn.id !== this.turnId) return;
+        this.announceExternal(VOICE_FALLBACK);
         const text = this.replyText;
         this.replyText = "";
         this.endTurn();
@@ -1043,6 +1189,7 @@ export class CodexSession implements AgentSession {
           return;
         }
         if (this.phase === "idle") return;
+        this.announceExternal(VOICE_FALLBACK);
         this.endTurn();
         this.events.onError(new Error(error?.message ?? "未知错误"));
         this.drainQueue();
@@ -1066,7 +1213,15 @@ export class CodexSession implements AgentSession {
   }
 
   private onItem(item: ThreadItem, phase: "started" | "completed"): void {
+    if (this.externalPending && item.type !== "userMessage") this.announceExternal(VOICE_FALLBACK);
     switch (item.type) {
+      case "userMessage": {
+        if (!this.externalPending || phase !== "completed") return;
+        const content = (item as { content?: { type?: string; text?: string }[] }).content ?? [];
+        const raw = content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
+        this.announceExternal(stripContext(raw).trim() || VOICE_FALLBACK);
+        return;
+      }
       case "agentMessage": {
         const message = item as Extract<ThreadItem, { type: "agentMessage" }>;
         if (message.phase === "commentary") this.commentaryItems.add(message.id);
@@ -1138,6 +1293,32 @@ export class CodexSession implements AgentSession {
         this.events.onStep("note", `📋 ${summarize(plan.text, 90)}`);
         return;
       }
+      case "imageGeneration": {
+        if (phase === "started") {
+          this.events.onStep("tool", "🎨 生成图片");
+          return;
+        }
+        const image = item as Extract<ThreadItem, { type: "imageGeneration" }>;
+        if (image.failure?.type === "usageLimitExceeded") {
+          this.events.onStep("warning", "⚠️ 生图额度用完了");
+          return;
+        }
+        // 图片 Codex 自己存好了（savedPath），写进回复里网页才显示得出来（只认回复里写过的路径）
+        if (!image.savedPath) return;
+        const alt = summarize(image.revisedPrompt ?? "", 40).replace(/[[\]\n]/g, " ").trim() || "生成的图片";
+        // 尖括号包住：路径里有空格也能认；回复原文里是原样的路径，服务端按它放行
+        const md = `![${alt}](<${image.savedPath}>)`;
+        this.replyText += (this.replyText ? "\n\n" : "") + md;
+        this.events.onText(md);
+        return;
+      }
+      case "collabAgentToolCall": {
+        if (phase !== "started") return;
+        const call = item as Extract<ThreadItem, { type: "collabAgentToolCall" }>;
+        const what = call.tool === "spawnAgent" ? `派出子智能体${call.prompt ? `：${summarize(call.prompt, 60)}` : ""}` : `子智能体 ${call.tool}`;
+        this.events.onStep("tool", `🤝 ${what}`);
+        return;
+      }
       case "error": {
         if (phase !== "completed") return;
         const err = item as Extract<ThreadItem, { type: "error" }>;
@@ -1153,6 +1334,21 @@ export class CodexSession implements AgentSession {
 function kindMark(kind: unknown): string {
   const k = typeof kind === "string" ? kind : (kind as { type?: string } | null)?.type;
   return k === "add" ? "+" : k === "delete" ? "-" : "~";
+}
+
+/** 语音转交的一轮没拿到用户说的话时显示的占位 */
+const VOICE_FALLBACK = `${VOICE_MARK}（语音）`;
+
+/** OpenAI 的报错常常是一整段 JSON：取里面的 message */
+function realtimeError(raw: string | undefined): string {
+  if (!raw) return "语音对话出错了";
+  try {
+    const msg = (JSON.parse(raw) as { error?: { message?: unknown } }).error?.message;
+    if (typeof msg === "string" && msg) return msg;
+  } catch {
+    // 不是 JSON，原样给
+  }
+  return raw;
 }
 
 export function summarize(text: string, max = 80): string {

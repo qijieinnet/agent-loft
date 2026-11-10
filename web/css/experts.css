@@ -156,6 +156,72 @@
   }
 }
 
+/* ---- 专家编辑框：按用途分组 ---- */
+
+.expert-form {
+  gap: 18px;
+}
+
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.form-section + .form-section {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.form-section-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-faint);
+}
+
+/* 两列的勾选：说明另起一行，不截断（权限、Codex 扩展能力） */
+.check-list.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  max-height: none;
+}
+
+.check-list.grid > .check-item {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.check-list.grid > .check-item > small {
+  flex: 1 0 100%;
+  padding-left: 24px;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.check-item.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.check-tag {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--fg-faint);
+  background: var(--bg-soft);
+}
+
+@media (max-width: 640px) {
+  .check-list.grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* 按类型切换的一组字段：和别的字段一样排（间距由 .task-form 给） */
 .field-group {
   display: contents;

@@ -47,7 +47,7 @@ function makeSession(opts: Partial<SessionOptions> = {}, host = async (_spec: In
 }
 
 function expert(): ExpertRuntime {
-  return { id: "e_test", rev: 1, name: "测试专家", prompt: "", basePrompt: "lean", access: "web", webSearch: false, webFetch: false, skills: [], mcp: { remote: { type: "http", url: "https://mcp.example.com", headers: {} } }, askMcp: ["remote"], machineMcp: [], subagents: [], memory: false };
+  return { id: "e_test", rev: 1, name: "测试专家", prompt: "", basePrompt: "lean", access: "web", webSearch: false, webFetch: false, skills: [], mcp: { remote: { type: "http", url: "https://mcp.example.com", headers: {} } }, askMcp: ["remote"], machineMcp: [], subagents: [], codexTools: [], memory: false };
 }
 
 test("自定义专家：MCP 配置读取失败时不启动 thread，下一条消息可以重试", async () => {
@@ -704,4 +704,79 @@ test("计划模式：这一轮带 collaborationMode=plan，方案当回复；问
   notify("turn/completed", { threadId: "th-plan", turn: { id: "tu-3", status: "completed" } });
   await tick();
   void session.dispose();
+});
+
+test("生图：存下来的图片写进回复里（网页只显示回复里写过的路径），额度用完给个提示", async () => {
+  calls.length = 0;
+  const { session, log } = makeSession();
+  session.send({ text: "画只猫", attachments: [] });
+  const t = await startTurn();
+  notify("item/started", { threadId: t.threadId, item: { type: "imageGeneration", id: "g1", status: "in_progress", revisedPrompt: null, failure: null, result: "" } });
+  notify("item/completed", { threadId: t.threadId, item: { type: "imageGeneration", id: "g1", status: "completed", revisedPrompt: "一只 [橘] 猫", failure: null, result: "", savedPath: "/home/u/.codex/generated_images/t 1/ig_1.png" } });
+  notify("item/completed", { threadId: t.threadId, item: { type: "imageGeneration", id: "g2", status: "failed", revisedPrompt: null, failure: { type: "usageLimitExceeded", limitId: "x", resetsAt: null }, result: "" } });
+  notify("turn/completed", { threadId: t.threadId, turn: { id: t.turnId, status: "completed" } });
+  await tick();
+  const md = "![一只  橘  猫](</home/u/.codex/generated_images/t 1/ig_1.png>)";
+  assert.ok(log.includes(`text:${md}`), log.join("\n"));
+  assert.ok(log.includes(`result:${md}`));
+});
+
+test("语音对话：先同步权限再用 v3 + WebRTC 开通话，answer 从通知回来；转交出来的一轮当成一条消息接住", async () => {
+  calls.length = 0;
+  const { session, log, events } = makeSession({ permission: "ask", memory: { userId: "u1", prompt: "记得用户叫小明" } });
+  const realtime: string[] = [];
+  const external: string[] = [];
+  events.onRealtime = (ev) => realtime.push(ev.type === "transcript" ? `${ev.role}:${ev.delta}` : ev.type);
+  events.onExternalTurn = (text, anchor) => external.push(`${text}@${anchor}`);
+  events.onTurnStart = () => log.push("turn_start");
+  const answer = session.startRealtime("OFFER");
+  await tick();
+  take("thread/start").resolve({ thread: { id: "rt1" } });
+  await tick();
+  const settings = take("thread/settings/update");
+  assert.equal(settings.params.sandboxPolicy.type, "readOnly", "按对话现在的权限给沙箱");
+  assert.equal(settings.params.approvalPolicy, "on-request");
+  settings.resolve({});
+  await tick();
+  const start = take("thread/realtime/start");
+  assert.deepEqual([start.params.version, start.params.outputModality, start.params.transport], ["v3", "audio", { type: "webrtc", sdp: "OFFER" }]);
+  assert.equal(start.params.includeStartupContext, false, "没有管理员身份不给机器上的启动背景");
+  assert.match(start.params.realtimeStartInstructions, /小明/, "语音先开口也带上记忆");
+  start.resolve({});
+  notify("thread/realtime/sdp", { threadId: "rt1", sdp: "ANSWER" });
+  assert.equal(await answer, "ANSWER");
+  notify("thread/realtime/transcript/delta", { threadId: "rt1", role: "user", delta: "列一下" });
+
+  // 空闲时冒出来的一轮：语音模型转交的
+  notify("turn/started", { threadId: "rt1", turn: { id: "vt1" } });
+  notify("item/completed", { threadId: "rt1", turnId: "vt1", item: { type: "userMessage", id: "u", content: [{ type: "text", text: "<realtime_delegation>\n  <input>列一下 &lt;文件&gt;</input>\n  <transcript_delta>user: 列一下</transcript_delta>\n</realtime_delegation>" }] } });
+  assert.deepEqual(external, ["🎙️ 列一下 <文件>@vt1"]);
+  // 语音那一轮还在跑：打字发的排队
+  session.send({ text: "打字的", attachments: [] });
+  await tick();
+  assert.equal(calls.filter((c) => c.method === "turn/start").length, 0);
+  notify("item/completed", { threadId: "rt1", turnId: "vt1", item: { type: "agentMessage", id: "m", text: "有 a.txt", phase: "final_answer" } });
+  notify("turn/completed", { threadId: "rt1", turn: { id: "vt1", status: "completed" } });
+  await tick();
+  assert.deepEqual(log.slice(0, 3), ["turn_start", "text:有 a.txt", "result:有 a.txt"]);
+  assert.equal(take("turn/start").params.input[0].text.startsWith("打字的"), true, "语音那一轮结束后接着发排队的");
+
+  notify("thread/realtime/error", { threadId: "rt1", message: '{"error":{"message":"坏了"}}' });
+  notify("thread/realtime/closed", { threadId: "rt1", reason: "requested" });
+  assert.deepEqual(realtime, ["user:列一下", "error", "closed"]);
+});
+
+test("语音对话：开通话时出错（对端报错）就失败，并让 app-server 收掉", async () => {
+  calls.length = 0;
+  const { session } = makeSession();
+  const answer = session.startRealtime("OFFER");
+  await tick();
+  take("thread/start").resolve({ thread: { id: "rt2" } });
+  await tick();
+  take("thread/settings/update").resolve({});
+  await tick();
+  take("thread/realtime/start").resolve({});
+  notify("thread/realtime/error", { threadId: "rt2", message: '{"error":{"message":"Offer did not have an audio media section."}}' });
+  await assert.rejects(answer, /audio media section/);
+  take("thread/realtime/stop").resolve({});
 });

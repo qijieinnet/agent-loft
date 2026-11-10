@@ -8,6 +8,7 @@ import { addItem, openConversation, openLightbox, renderEmpty, scrollToBottom } 
 import { renderScheduled } from "./schedule.js";
 import { renderTodos } from "./todos.js";
 import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
+import { callButton } from "./voice-call.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
 import { doAction, openModelPicker, openSessions } from "./conv-actions.js";
 
@@ -103,6 +104,7 @@ export function renderComposer() {
       ui.ctxRing,
       ui.modelSlot,
       ui.micBtn,
+      callButton(),
       ui.sendBtn,
     ),
   );

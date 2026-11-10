@@ -1108,3 +1108,69 @@ test("闲置太久的会话进程被关掉，忙着的不关；之后再发消�
   hub.send(key, { text: "又来了", attachments: [] }, origin);
   await waitUntil(() => created === 2 && !hub.isBusy(key));
 });
+
+test("语音对话：只有 Codex 对话能开；转交出来的一轮在对话里显示成用户消息，进忙碌、结果后收尾", async () => {
+  const { hub } = await import("../src/core/hub.js");
+  let ev: any;
+  const offers: string[] = [];
+  const fake = (id: string) => ({
+    id,
+    label: id,
+    capabilities: { effort: false, fork: false, cost: false, streaming: false },
+    start: async () => {},
+    stop: async () => {},
+    createSession: (_opts: unknown, events: unknown) => {
+      ev = events;
+      return {
+        sessionId: undefined,
+        send: () => {},
+        interrupt: async () => {},
+        setModel: async () => {},
+        describeRuntime: async () => ({}),
+        dispose: async () => {},
+        startRealtime: async (offer: string) => (offers.push(offer), "ANSWER"),
+        stopRealtime: async () => {},
+      };
+    },
+    listSessions: async () => [],
+    sessionExists: async () => true,
+    readHistory: async () => [],
+    listModels: async () => [],
+    catalog: async () => [],
+    defaults: async () => ({}),
+    statusLines: async () => [],
+    diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
+  });
+  hub.registerDriver(fake("claude") as never);
+  hub.registerDriver(fake("codex") as never);
+  hub.ensure({ key: "web:rt-claude", channel: "web", channelId: "web", defaultAgent: "claude" });
+  await assert.rejects(hub.realtimeStart("web:rt-claude", "OFFER"), /只有 Codex/);
+
+  const key = "web:rt-codex";
+  hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: "codex" });
+  const seen: any[] = [];
+  const onEvent = (env: any) => env.key === key && seen.push(env.ev);
+  const rt: any[] = [];
+  const onRt = (x: any) => x.key === key && rt.push(x.ev);
+  hub.on("event", onEvent);
+  hub.on("realtime", onRt);
+  try {
+    assert.equal(await hub.realtimeStart(key, "OFFER"), "ANSWER");
+    assert.deepEqual(offers, ["OFFER"]);
+    ev.onRealtime({ type: "transcript", role: "user", delta: "你好" });
+    assert.deepEqual(rt, [{ type: "transcript", role: "user", delta: "你好" }]);
+
+    ev.onExternalTurn("🎙️ 列一下文件", "vt1");
+    const user = seen.find((e) => e.type === "user");
+    assert.equal(user.text, "🎙️ 列一下文件");
+    assert.equal(user.origin.channel, "voice");
+    assert.ok(seen.some((e) => e.type === "user_anchor" && e.anchor === "vt1"));
+    assert.equal(hub.isBusy(key), true);
+    ev.onResult({ text: "有 a.txt", durationMs: 10 });
+    assert.equal(hub.isBusy(key), false);
+    assert.ok(seen.some((e) => e.type === "result" && e.text === "有 a.txt"));
+  } finally {
+    hub.off("event", onEvent);
+    hub.off("realtime", onRt);
+  }
+});

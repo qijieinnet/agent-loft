@@ -10,6 +10,7 @@ import { openSchedule } from "./schedule.js";
 import { changeCwd, deleteConv, doAction, forkConversation, handoffConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
 import { capOfAccess, defaultPermissionFor, minPermission, permissionsUpTo, PERMISSIONS } from "../lib/permission.js";
 import { canSeeChanges, syncWorkspace, toggleWorkspace, workspaceButtons, workspaceStats } from "./workspace-entry.js";
+import { syncCall } from "./voice-call.js";
 
 // ---------- 顶栏 ----------
 
@@ -398,6 +399,7 @@ export function renderContext() {
     agentEl,
   );
   updateCtxVisibility();
+  syncCall();
 
   // 直接显示实际的模型名和思考程度（和选择列表里一样的写法），不显示「默认模型」
   let model;

@@ -11,6 +11,7 @@ import { setBusy } from "../views/composer.js";
 import { SH, shownHere } from "./shell.js";
 import { currentPushSub } from "./push.js";
 import { renderScheduled } from "../views/schedule.js";
+import { onRealtimeEvent } from "../views/voice-call.js";
 import { reloadExperts } from "../views/experts.js";
 
 // ---------- WebSocket ----------
@@ -244,6 +245,9 @@ function onWsMessage(msg) {
     }
     case "ev":
       applyEvent(msg);
+      return;
+    case "rt":
+      onRealtimeEvent(msg);
       return;
     case "replay":
       if (msg.key !== S.current) return;

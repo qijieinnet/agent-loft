@@ -64,6 +64,8 @@ export type Expert = {
   mcp: string[];
   /** 子智能体：别的专家的 id。只有 Claude 支持 */
   subagents: string[];
+  /** Codex 自带、专家默认关掉的能力，勾了才开（只有 Codex 专家）。老数据没有这一项 = 都不开 */
+  codexTools?: CodexTool[];
   /** 带不带主人的个人记忆 */
   memory: boolean;
   /** 每存一次加一 */
@@ -73,6 +75,19 @@ export type Expert = {
 };
 
 export const BUILTIN_IDS: readonly Engine[] = ENGINES;
+
+/**
+ * Codex 专家可以单独打开的自带能力（agents/codex/session.ts 的 expertConfig 按它开 feature）。
+ * browser = browser_use + in_app_browser；apps = plugins + apps + 应用说明提示词。
+ */
+export const CODEX_TOOLS = ["image_generation", "multi_agent", "browser", "computer_use", "apps"] as const;
+export type CodexTool = (typeof CODEX_TOOLS)[number];
+/**
+ * 用的是这台机器上的东西：浏览器的登录状态、桌面、Codex 登录账号连的应用（邮箱、网盘……）。
+ * 和机器上的 MCP 一样只给管理员：只有管理员能勾，共享出去后别人用时也不开。
+ */
+export const CODEX_ADMIN_TOOLS: readonly CodexTool[] = ["browser", "computer_use", "apps"];
+const isCodexTool = (t: string): t is CodexTool => (CODEX_TOOLS as readonly string[]).includes(t);
 
 export function isBuiltin(id: string): id is Engine {
   return (BUILTIN_IDS as readonly string[]).includes(id);
@@ -369,6 +384,7 @@ function validate(owner: string, input: ExpertInput, prev?: Expert, selfId?: str
     skills,
     mcp,
     subagents,
+    codexTools: engine === "codex" ? ids(pick("codexTools")).filter(isCodexTool).filter((t) => admin || !CODEX_ADMIN_TOOLS.includes(t)) : [],
     memory: pick("memory") !== false,
   };
 }
@@ -467,6 +483,8 @@ export type ExpertRuntime = {
   /** 选中的机器上的 MCP 名字（Codex：除了这些，机器上的都关掉） */
   machineMcp: string[];
   subagents: SubagentRuntime[];
+  /** 要打开的 Codex 自带能力（只有 Codex 专家；本机能力只在用的人是管理员时给） */
+  codexTools: CodexTool[];
   memory: boolean;
 };
 
@@ -557,6 +575,7 @@ export function expertRuntime(expert: Expert, subPrompt: (sub: Expert, access: E
     askMcp: ask,
     machineMcp: machine,
     subagents,
+    codexTools: expert.engine === "codex" ? (expert.codexTools ?? []).filter((t) => isCodexTool(t) && (admin || !CODEX_ADMIN_TOOLS.includes(t))) : [],
     memory: expert.memory,
   };
 }

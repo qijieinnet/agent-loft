@@ -19,7 +19,7 @@ import { skillEvents } from "../../core/skills.js";
 import { expertEvents } from "../../core/experts.js";
 import { enforceTerminalAccess, killAllTerminals, terminalEvents, watchTerminalAccess } from "../../core/terminals.js";
 import { RUNNING_VERSION } from "../../core/upgrade.js";
-import type { Settlement } from "../../core/types.js";
+import type { RealtimeEvent, Settlement } from "../../core/types.js";
 import { getUser, isAdmin, legacyOwnerId, userEvents, type User } from "../../core/users.js";
 import { currentUser, handleApi, takeUploads } from "./api.js";
 import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
@@ -303,6 +303,11 @@ function broadcastEvent(env: EventEnvelope): void {
   }
 }
 
+/** 语音对话的字幕和状态：只推给订阅了这条对话的页面（不进缓冲区，刷新后不重放） */
+function broadcastRealtime({ key, ev }: { key: string; ev: RealtimeEvent }): void {
+  for (const client of clients) if (client.subs.has(key) && canSeeKey(client.user, key)) send(client, { t: "rt", key, ev });
+}
+
 function broadcastInteraction(i: Interaction): void {
   for (const client of clients) if (canSeeKey(client.user, i.convKey)) send(client, { t: "ix", interaction: i });
 }
@@ -527,6 +532,26 @@ function handleClientMessage(client: Client, raw: string): void {
         return ack(true);
       }
 
+      case "rt": {
+        // 实时语音对话：start 带浏览器的 SDP offer，ack 回对端 answer；stop 挂断
+        if (!getConversation(key) || !canSeeKey(user, key)) return ack(false, { error: "会话不存在" });
+        if (msg.op === "start") {
+          const sdp = typeof msg.sdp === "string" ? msg.sdp : "";
+          if (!sdp || sdp.length > 50_000) return ack(false, { error: "SDP 不对" });
+          client.subs.add(key);
+          void hub
+            .realtimeStart(key, sdp)
+            .then((answer) => ack(true, { sdp: answer }))
+            .catch((err) => ack(false, { error: err instanceof Error ? err.message : String(err) }));
+          return;
+        }
+        if (msg.op === "stop") {
+          void hub.realtimeStop(key).then(() => ack(true), (err) => ack(false, { error: err instanceof Error ? err.message : String(err) }));
+          return;
+        }
+        return ack(false, { error: "未知操作" });
+      }
+
       case "ix": {
         const id = String(msg.id ?? "");
         const target = interactions.get(id);
@@ -665,6 +690,7 @@ export async function startWeb(): Promise<void> {
   heartbeat.unref();
 
   hub.on("event", broadcastEvent);
+  hub.on("realtime", broadcastRealtime);
   hub.on("project-deleted", broadcastProjectDeleted);
   hub.on("event", pushEvent);
   interactions.on("created", broadcastInteraction);
@@ -717,6 +743,7 @@ function onRevoked(): void {
 export async function stopWeb(): Promise<void> {
   authEvents.off("revoked", onRevoked);
   hub.off("event", broadcastEvent);
+  hub.off("realtime", broadcastRealtime);
   hub.off("project-deleted", broadcastProjectDeleted);
   hub.off("event", pushEvent);
   interactions.off("created", broadcastInteraction);

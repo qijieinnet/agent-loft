@@ -135,7 +135,22 @@ export type AgentEvents = {
    * 否则是新增的量（Codex，每次模型请求报一次），由核心累加
    */
   onUsage?: (usage: TokenUsage, cumulative?: boolean) => void;
+  /**
+   * 不是从这边发起的一轮开始了（Codex 语音对话把事情转交给它）：text 是用户说的话，anchor 是轮次 id。
+   * 核心据此像收到一条用户消息那样记账（显示、忙碌、排队、改动快照），之后照常有 onResult / onError
+   */
+  onExternalTurn?: (text: string, anchor?: string) => void;
+  /** 实时语音对话的动静（只有 Codex）：字幕、开始、结束、出错 */
+  onRealtime?: (ev: RealtimeEvent) => void;
 };
+
+/** 实时语音对话的事件（Codex 的 thread/realtime/*） */
+export type RealtimeEvent =
+  | { type: "started" }
+  | { type: "transcript"; role: "user" | "assistant"; delta: string }
+  | { type: "transcript_done"; role: "user" | "assistant"; text: string }
+  | { type: "error"; message: string }
+  | { type: "closed"; reason?: string };
 
 /** 上下文窗口占用：used / window 都是 token 数，percent 是 0-100（可能略超 100） */
 export type ContextUsage = { used: number; window: number; percent: number };
@@ -299,6 +314,10 @@ export interface AgentSession {
   setPermission?(level: PermissionLevel | undefined): Promise<void>;
   /** 开关计划模式。Claude 立即生效，Codex 下一轮生效 */
   setPlan?(on: boolean): Promise<void>;
+  /** 开始实时语音对话（只有 Codex）：offer 是浏览器的 WebRTC SDP，返回对端的 answer */
+  startRealtime?(offer: string): Promise<string>;
+  /** 挂断实时语音对话；没在通话就什么都不做 */
+  stopRealtime?(): Promise<void>;
 }
 
 export type Diagnosis = {

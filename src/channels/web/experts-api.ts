@@ -57,6 +57,7 @@ function expertView(e: Expert, viewer: string) {
     skills: tools.skills,
     mcp: tools.mcp,
     subagents: e.subagents.filter((id) => canUseExpert(viewer, id)),
+    codexTools: e.codexTools ?? [],
     memory: e.memory,
     updatedAt: e.updatedAt,
   };

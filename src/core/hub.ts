@@ -49,6 +49,7 @@ import type {
   HistoryMessage,
   InteractionSpec,
   ModelInfo,
+  RealtimeEvent,
   RuntimeInfo,
   SessionSummary,
   StepKind,
@@ -59,7 +60,7 @@ import type {
 import { buildCatalog, expandCustomCommand, type AgentCommand, type CommandEntry, type CommandPrefs } from "./command-catalog.js";
 import { helpText, type ParsedCommand } from "./commands.js";
 import { listScheduled } from "./scheduled.js";
-import { expertSystemPrompt, searchLabel, stripContext, wrapContext } from "./expert-prompt.js";
+import { expertSystemPrompt, searchLabel, stripContext, VOICE_MARK, wrapContext } from "./expert-prompt.js";
 import { availableExperts, avatarUrl, canUseExpert, expertEvents, expertToolEvents, expertRuntime, getExpert, isBuiltin, type ExpertRuntime } from "./experts.js";
 import { builtinAgentDefaults, builtinAgentEvents, builtinAgentSession, defaultPermissionOf } from "./builtin-agents.js";
 import { mcpEvents } from "./mcp.js";
@@ -289,7 +290,13 @@ function mergeSessionHistory(blocks: HistoryMessage[][], main: HistoryMessage[])
   return out;
 }
 
-class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "project-deleted": [{ owner: string; path: string; keys: string[] }] }> {
+class Hub extends EventEmitter<{
+  event: [EventEnvelope];
+  task: [TaskTurnEnd];
+  "project-deleted": [{ owner: string; path: string; keys: string[] }];
+  /** 实时语音对话的动静：只推给正看着这条对话的页面，不进会话记录 */
+  realtime: [{ key: string; ev: RealtimeEvent }];
+}> {
   private drivers = new Map<string, AgentDriver>();
   private live = new Map<string, Live>();
   /**
@@ -833,6 +840,12 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
           if (!alive()) return;
           this.emitEvent(key, { type: "turn_start" });
         },
+        onExternalTurn: (text, anchor) => {
+          if (!alive()) return;
+          this.externalTurn(key, text, anchor);
+        },
+        // 不看 alive：会话被换下去时发的「通话结束」也要让页面知道
+        onRealtime: (ev) => this.emit("realtime", { key, ev }),
         onStep: (kind, text) => alive() && this.emitEvent(key, { type: "step", kind, text }),
         onTodos: (todos) => alive() && this.emitEvent(key, { type: "todos", todos }),
         onTextDelta: (text) => alive() && this.emitEvent(key, { type: "delta", text }),
@@ -2039,6 +2052,50 @@ class Hub extends EventEmitter<{ event: [EventEnvelope]; task: [TaskTurnEnd]; "p
     } finally {
       this.rewinding.delete(key);
     }
+  }
+
+  // ---------- 实时语音对话（只有 Codex） ----------
+
+  /** 开始通话：offer 是浏览器的 WebRTC SDP，返回对端 answer。会话没拉起来就按绑定拉起 */
+  async realtimeStart(key: string, offer: string): Promise<string> {
+    const conv = getConversation(key);
+    if (!conv) throw new Error("会话不存在");
+    if (conv.agent !== "codex") throw new Error("只有 Codex 的对话能语音对话");
+    if (this.rewinding.has(key)) throw new Error("会话正在回退，请稍后再试");
+    const session = this.session(key);
+    if (!session.startRealtime) throw new Error("这个 agent 不支持语音对话");
+    touchConversation(key);
+    return session.startRealtime(offer);
+  }
+
+  async realtimeStop(key: string): Promise<void> {
+    await this.live.get(key)?.session.stopRealtime?.();
+  }
+
+  /**
+   * 语音对话转交给 Codex 的一轮：像收到一条用户消息那样记账 —— 显示说的话、进忙碌、排进轮次队列、拍改动快照。
+   * 之后的 onResult / onError 照常收尾。
+   */
+  private externalTurn(key: string, text: string, anchor?: string): void {
+    const conv = getConversation(key);
+    if (!conv) return;
+    const id = crypto.randomUUID();
+    touchConversation(key);
+    const shown = stripContext(text);
+    if (!conv.title && conv.titleAuto !== false && shown.trim()) {
+      updateConversation(key, { title: shown.replace(VOICE_MARK, "").trim().replace(/\s+/g, " ").slice(0, 40), titleAuto: true });
+      this.emitEvent(key, { type: "meta" });
+    }
+    this.emitEvent(key, { type: "user", text: shown, attachments: [], files: [], origin: { channel: "voice", channelId: "voice", name: "语音" }, id, queued: false });
+    if (anchor) this.emitEvent(key, { type: "user_anchor", id, anchor });
+    if (!this.isBusy(key)) void this.snapshotBeforeTurn(key).catch(() => {});
+    this.setInflight(key, (this.inflight.get(key) ?? 0) + 1);
+    const tags = this.turnTags.get(key) ?? [];
+    tags.push(null);
+    this.turnTags.set(key, tags);
+    const fifo = this.turnFifo.get(key) ?? [];
+    fifo.push({ id, input: { text: shown, attachments: [], id }, queued: false });
+    this.turnFifo.set(key, fifo);
   }
 
   async stop(key: string): Promise<string> {

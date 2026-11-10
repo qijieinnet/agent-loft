@@ -593,6 +593,7 @@ test("Claude 的系统提示一律不固定（snapshot: false），改专家、�
     askMcp: [],
     machineMcp: [],
     subagents: [],
+    codexTools: [],
     memory: true,
   };
   const lean = expertOptions({ ...base, expert, memory: { userId: alice.id, prompt: "记忆内容" } });

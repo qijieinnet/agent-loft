@@ -612,7 +612,7 @@ function setQueueState(item, state) {
 function renderItem(item) {
   switch (item.type) {
     case "user": {
-      const origin = item.origin && item.origin.channel !== "web" ? `来自${item.origin.name ?? item.origin.channel}` : "";
+      const origin = item.origin && item.origin.channel !== "web" && item.origin.channel !== "voice" ? `来自${item.origin.name ?? item.origin.channel}` : "";
       return h(
         "div",
         { class: "msg-user-group" },

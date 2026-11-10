@@ -22,6 +22,15 @@ const PERMS = [
   { id: "exec", label: "跑命令", hint: "执行命令，等于能改任何文件；需要授权时会弹卡" },
 ];
 const FILE_LEVELS = ["read", "edit", "exec"];
+/** Codex 自带、专家默认关掉的能力（core/experts.ts 的 CODEX_TOOLS）。admin：用这台机器上的东西，只有管理员能开 */
+const CODEX_TOOLS = [
+  { id: "image_generation", label: "生图", hint: "Codex 自带的生图工具，图片显示在回复里，占 ChatGPT 订阅额度" },
+  { id: "multi_agent", label: "子智能体", hint: "把子任务派给 Codex 子智能体并行做，更费额度" },
+  { id: "browser", label: "操作浏览器", hint: "打开网页、点击、填表，用这台机器上 Codex 的浏览器和登录状态", admin: true },
+  { id: "computer_use", label: "操作桌面", hint: "截屏、点鼠标、敲键盘，控制这台机器的桌面（要有图形桌面）", admin: true },
+  { id: "apps", label: "插件和应用", hint: "Codex 插件，和 Codex 登录的 ChatGPT 账号连接的应用（邮箱、网盘……）", admin: true },
+];
+const CODEX_TOOL_LABEL = Object.fromEntries(CODEX_TOOLS.map((t) => [t.id, t.label]));
 let refreshExpertsPage = () => {};
 document.addEventListener("aim:experts", () => refreshExpertsPage());
 
@@ -162,6 +171,7 @@ function expertCard(data, e, reload) {
     e.skills.length ? `${e.skills.length} 个技能` : null,
     e.mcp.length ? `${e.mcp.length} 个 MCP` : null,
     e.subagents.length ? `${e.subagents.length} 个子智能体` : null,
+    ...(e.engine === "codex" ? (e.codexTools ?? []).map((t) => CODEX_TOOL_LABEL[t]).filter(Boolean) : []),
     e.memory ? null : "不带记忆",
   ].filter(Boolean);
   return h(
@@ -187,6 +197,9 @@ function viewSharedExpert(e) {
     h("p", { class: "muted" }, "这是共享专家，设定由创建者维护。你的记忆和工具独立，工具可在「我的工具」里配置。"),
     field("说明", h("p", {}, e.description || "暂无说明")),
     field("引擎", h("p", {}, ENGINE_LABEL[e.engine])),
+    e.engine === "codex" && e.codexTools?.length
+      ? field("Codex 扩展能力", h("p", {}, e.codexTools.map((t) => CODEX_TOOL_LABEL[t] ?? t).join("、")), CODEX_TOOLS.some((t) => t.admin && e.codexTools.includes(t.id)) ? "操作浏览器、操作桌面、插件和应用只在管理员使用时打开" : null)
+      : null,
     field("提示词", prompt),
   ) });
 }
@@ -236,6 +249,38 @@ function field(label, input, hint) {
   return h("div", { class: "field" }, h("span", {}, label), input, hint ? h("small", {}, hint) : null);
 }
 
+/** 编辑框里的一组字段，带个小标题。所有字段都藏起来时整组跟着藏（见 syncSections） */
+function section(title, ...fields) {
+  return h("section", { class: "form-section" }, h("h3", { class: "form-section-title" }, title), ...fields);
+}
+
+function syncSections(body) {
+  for (const sec of body.querySelectorAll(".form-section")) {
+    sec.hidden = [...sec.children].filter((c) => !c.classList.contains("form-section-title")).every((c) => c.hidden);
+  }
+}
+
+/** Codex 扩展能力的勾选：本机能力只有管理员能勾，成员看得到但勾不了 */
+function codexToolChecks(picked) {
+  const admin = isAdmin();
+  const boxes = CODEX_TOOLS.map((t) => {
+    const locked = !!t.admin && !admin;
+    const box = h("input", { type: "checkbox", checked: picked.includes(t.id) && !locked, disabled: locked });
+    const el = h(
+      "label",
+      { class: `check-item${locked ? " disabled" : ""}`, title: locked ? "只有管理员能开" : t.hint },
+      box,
+      h("span", {}, t.label, t.admin ? h("em", { class: "check-tag" }, "管理员") : null),
+      h("small", {}, t.hint),
+    );
+    return { id: t.id, box, el };
+  });
+  return {
+    el: h("div", { class: "check-list grid perm-list" }, boxes.map((b) => b.el)),
+    value: () => boxes.filter((b) => b.box.checked).map((b) => b.id),
+  };
+}
+
 /** 一组勾选框：items [{ id, label, hint }]，返回 { el, value() } */
 function checkList(items, picked, empty) {
   const boxes = items.map((it) => {
@@ -274,6 +319,7 @@ function openEditor(data, e, reload, preset) {
     pi: "追加在 pi 原装提示词后面（带上 pi 的工具用法和规则，每轮多约 600 token）",
   };
   const perms = permChecks(src);
+  const codexTools = codexToolChecks(src.codexTools ?? []);
   let cwd = src.cwd ?? "";
   const cwdBtn = h("button", { type: "button", class: "btn task-cwd" });
   const showCwd = () => {
@@ -323,35 +369,57 @@ function openEditor(data, e, reload, preset) {
     );
     fill(subBox, subs.el);
     subField.hidden = eng !== "claude";
+    codexField.hidden = eng !== "codex";
     baseField.hidden = eng !== "claude" && eng !== "pi";
     if (BASE_LABEL[eng]) basePrompt.options[1].textContent = BASE_LABEL[eng];
     perms.setEngine(eng);
+    syncSections(body);
     void models.load(eng);
   };
-  const sync = () => (cwdField.hidden = perms.access() === "web");
+  const sync = () => {
+    cwdField.hidden = perms.access() === "web";
+    syncSections(body);
+  };
   const cwdField = field("默认工作目录", cwdBtn, "新建对话、定时任务时默认在这个目录里（可以再改）。点击选择目录，默认使用工作区根目录");
   const baseField = field("基础提示词", basePrompt);
   const subField = field("子智能体", subBox, "主专家可以把子任务派给它们（Agent 工具）。子智能体的权限不能超过主专家，只支持 Claude 专家");
+  const codexField = field(
+    "Codex 扩展能力",
+    codexTools.el,
+    "Codex 自带、专家默认关掉的能力（关着省 token）。标「管理员」的用的是这台机器上的浏览器、桌面和账号，只有管理员能开；共享给别人后，别人用时也不开",
+  );
   engine.onchange = renderEngineParts;
   perms.onchange = sync;
 
   const body = h(
     "div",
     { class: "modal-body task-form expert-form" },
-    h("div", { class: "row-fields avatar-row" }, field("头像", avatar.el), field("名字", name)),
-    field("说明", desc),
-    field("共享", h("label", { class: "check-item" }, shared, h("span", {}, "共享给所有账号")), "其他账号可在网页、飞书私聊和定时任务中使用；只有你能修改设定。取消共享后，其他人的旧对话保留但不能继续调用。子智能体也需要先共享。"),
-    h("div", { class: "row-fields" }, field("引擎", engine, e ? "建好后不能换" : null), field("模型", models.model), field("思考程度", models.effort)),
-    field("提示词", prompt, "agent-loft 会在后面自动补上：这个专家能做什么、不能做什么，今天的日期，记忆"),
-    baseField,
-    field("权限", perms.el, "改文件包含读文件，跑命令包含改文件。什么都不勾就是只能聊天"),
-    cwdField,
-    field("我的技能", skills.el, "只影响你的工具选择；共享后其他账号单独选择自己的技能"),
-    field("我的 MCP", mcpBox, "只使用你的 MCP；共享后不会把你的 MCP 或凭据交给其他账号"),
-    subField,
-    field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "使用聊天者自己的个人记忆（需在设置 → 记忆开启）"))),
-    field("欢迎语", welcome),
-    field("快捷提问", quick),
+    section(
+      "基本信息",
+      h("div", { class: "row-fields avatar-row" }, field("头像", avatar.el), field("名字", name)),
+      field("说明", desc),
+      field("共享", h("label", { class: "check-item" }, shared, h("span", {}, "共享给所有账号")), "其他账号可在网页、飞书私聊和定时任务中使用；只有你能修改设定。取消共享后，其他人的旧对话保留但不能继续调用。子智能体也需要先共享。"),
+    ),
+    section(
+      "模型和提示词",
+      h("div", { class: "row-fields" }, field("引擎", engine, e ? "建好后不能换" : null), field("模型", models.model), field("思考程度", models.effort)),
+      field("提示词", prompt, "agent-loft 会在后面自动补上：这个专家能做什么、不能做什么，今天的日期，记忆"),
+      baseField,
+    ),
+    section(
+      "权限和能力",
+      field("权限", perms.el, "改文件包含读文件，跑命令包含改文件。什么都不勾就是只能聊天"),
+      cwdField,
+      codexField,
+    ),
+    section(
+      "工具",
+      field("我的技能", skills.el, "只影响你的工具选择；共享后其他账号单独选择自己的技能"),
+      field("我的 MCP", mcpBox, "只使用你的 MCP；共享后不会把你的 MCP 或凭据交给其他账号"),
+      subField,
+      field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "使用聊天者自己的个人记忆（需在设置 → 记忆开启）"))),
+    ),
+    section("新对话页", field("欢迎语", welcome), field("快捷提问", quick)),
   );
   renderEngineParts();
   sync();
@@ -384,6 +452,7 @@ function openEditor(data, e, reload, preset) {
       skills: skills.value(),
       mcp: mcp.value(),
       subagents: engine.value === "claude" ? subs.value() : [],
+      codexTools: engine.value === "codex" ? codexTools.value() : [],
       memory: memory.checked,
       welcome: welcome.value,
       quickPrompts,
@@ -429,7 +498,7 @@ function permChecks(src) {
     return { p, el };
   });
   return Object.assign(api, {
-    el: h("div", { class: "check-list perm-list" }, items.map((x) => x.el)),
+    el: h("div", { class: "check-list grid perm-list" }, items.map((x) => x.el)),
     // 藏起来的（Codex 的读网页）照旧按勾选状态存，和以前一样
     checked: (id) => boxes.get(id).checked,
     access: () => [...FILE_LEVELS].reverse().find((id) => boxes.get(id).checked) ?? "web",
