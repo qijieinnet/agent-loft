@@ -646,3 +646,29 @@ test("agent 的工具：经 MCP 子进程转给主进程，建任务要用户点
     stopTasksBridge();
   }
 });
+
+test("推送渠道：默认只推 Web，可多选、可全不选；没绑定的渠道不能选", async () => {
+  const owner = ownerA!;
+  const base = { prompt: "检查一下", schedule: { kind: "daily", time: "09:00" } };
+  const t = tasks.createTask(owner, base, "user");
+  assert.equal(t.push, undefined);
+  assert.deepEqual(tasks.taskPush(t), ["web"]);
+  // 没绑定：飞书、微信都不收，指定的机器人也不收
+  assert.throws(() => tasks.createTask(owner, { ...base, push: ["feishu"] }, "user"), /还没有绑定飞书/);
+  assert.throws(() => tasks.createTask(owner, { ...base, push: ["weixin"] }, "user"), /还没有绑定微信/);
+  assert.throws(() => tasks.updateTask(owner, t.id, { push: ["web"], feishuBot: "nope" }), /没有绑定/);
+  assert.deepEqual(tasks.pushOptions(owner), { feishu: [], weixin: false });
+  const { bindWeixinAccount, removeWeixinAccount } = await import("../src/core/weixin-accounts.js");
+  bindWeixinAccount({ userId: owner, botId: "b", botToken: "tok", baseUrl: "https://example.invalid", ilinkUserId: "u" });
+  const t2 = tasks.createTask(owner, { ...base, push: ["weixin", "bogus", "web", "weixin"] }, "user");
+  assert.deepEqual(t2.push, ["web", "weixin"]);
+  assert.deepEqual(tasks.updateTask(owner, t2.id, { push: [] }).push, []);
+  // 改回和默认一样：不再存这个字段
+  assert.equal("push" in tasks.updateTask(owner, t2.id, { push: ["web"] }), false);
+  // 没给就不动
+  tasks.updateTask(owner, t2.id, { push: ["weixin"] });
+  assert.deepEqual(tasks.updateTask(owner, t2.id, { title: "新名字" }).push, ["weixin"]);
+  removeWeixinAccount(owner);
+  tasks.deleteTask(owner, t.id);
+  tasks.deleteTask(owner, t2.id);
+});

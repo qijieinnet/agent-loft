@@ -1,7 +1,12 @@
 // 飞书渠道：按配置拉起 / 停掉机器人。Web 上改了机器人配置，这里就地对账，不用重启进程。
 import { config, onConfigChange, type FeishuBotConfig } from "../../core/config.js";
+import { listLinks } from "../../core/feishu-links.js";
+import { hub, type TaskTurnEnd } from "../../core/hub.js";
 import { watchPairing } from "../../core/pairing.js";
+import { getConversation } from "../../core/store.js";
+import { findTask, taskPush } from "../../core/tasks.js";
 import { FeishuBot } from "./bot.js";
+import { replyCard } from "./cards.js";
 
 const bots = new Map<string, FeishuBot>();
 
@@ -35,7 +40,27 @@ function reconcile(list: FeishuBotConfig[]): void {
   }
 }
 
+/**
+ * 定时任务选了推送到飞书：把结果发到主人绑定的飞书私聊。
+ * 任务本来就发在飞书对话里的不用再发（那边已经显示了）。绑了多个机器人的，用任务指定的那个，没指定发第一个在线的。
+ */
+function onTaskResult(e: TaskTurnEnd): void {
+  if (e.status !== "notified") return;
+  const task = findTask(e.taskId);
+  if (!task || !taskPush(task).includes("feishu")) return;
+  if (getConversation(e.key)?.channel === "feishu") return;
+  // 指定了机器人就只用它（它不在线就不发，不悄悄换成别的机器人）；没指定用第一个在线的
+  const link = listLinks(task.owner).find((l) => bots.has(l.botId) && (!task.feishuBot || l.botId === task.feishuBot));
+  if (!link) {
+    console.warn(`[飞书] 定时任务「${task.title}」要推送到飞书，但${task.feishuBot ? "指定的机器人不在线或已解绑" : "主人没有绑定在线的飞书机器人"}`);
+    return;
+  }
+  void bots.get(link.botId)!.client.sendCard(link.openId, replyCard(`⏰ **${e.title}**\n\n${e.text}`), "open_id");
+}
+
 export function startFeishu(): void {
+  hub.off("task", onTaskResult);
+  hub.on("task", onTaskResult);
   reconcile(config().feishu.bots);
   onConfigChange((next, prev) => {
     reconcile(next.feishu.bots);
@@ -55,6 +80,7 @@ export function startFeishu(): void {
 }
 
 export function stopFeishu(): void {
+  hub.off("task", onTaskResult);
   for (const bot of bots.values()) bot.stop();
   bots.clear();
 }

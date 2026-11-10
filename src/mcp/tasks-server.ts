@@ -61,6 +61,7 @@ const TOOLS = [
         prompt: { type: "string", description: "到点时发给 agent 的完整指令" },
         schedule: SCHEDULE,
         notify: { type: "string", enum: ["smart", "always"], description: "smart：有需要才提醒（默认）；always：每次都提醒" },
+        push: { type: "array", items: { type: "string", enum: ["web", "feishu", "weixin"] }, description: "要提醒时推送到哪些渠道：web（网页 / 桌面端系统通知，默认）、feishu（用户绑定的飞书私聊）、weixin（用户绑定的微信）。可多选；空数组表示只留在对话里不推送" },
         reply_to: {
           type: "string",
           enum: ["this_conversation", "dedicated"],
@@ -87,6 +88,7 @@ const TOOLS = [
         prompt: { type: "string" },
         schedule: SCHEDULE,
         notify: { type: "string", enum: ["smart", "always"] },
+        push: { type: "array", items: { type: "string", enum: ["web", "feishu", "weixin"] }, description: "要提醒时推送到哪些渠道：web（网页 / 桌面端系统通知，默认）、feishu（用户绑定的飞书私聊）、weixin（用户绑定的微信）。可多选；空数组表示只留在对话里不推送" },
         enabled: { type: "boolean", description: "false 暂停，true 恢复" },
         fresh_context: { type: "boolean", description: "true：每次运行不带之前的上下文；false：改回携带（之前不携带时运行的内容不会恢复）" },
       },

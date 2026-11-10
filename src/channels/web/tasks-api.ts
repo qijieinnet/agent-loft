@@ -8,7 +8,7 @@ import { memoryOwnerOf } from "../../core/personal.js";
 import { expertIdOf, getConversation } from "../../core/store.js";
 import { forgetTask, isTaskRunning, releaseTaskConv, runTaskNow } from "../../core/task-runner.js";
 import { serverTimeZone } from "../../core/task-schedule.js";
-import { createTask, deleteTask, getTask, listTasks, updateTask, viewOf, type Task, type TaskInput } from "../../core/tasks.js";
+import { createTask, deleteTask, getTask, listTasks, pushOptions, updateTask, viewOf, type Task, type TaskInput } from "../../core/tasks.js";
 import type { User } from "../../core/users.js";
 import { HttpError, readJsonBody, sendJson } from "./http.js";
 
@@ -91,7 +91,9 @@ const bad = (err: unknown) => (err instanceof HttpError ? err : new HttpError(40
 export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, p: string, user: User): Promise<boolean> {
   const method = req.method ?? "GET";
   if (p === "/api/tasks" && method === "GET") {
-    sendJson(res, 200, { tasks: listTasks(user.id).map(view), tz: serverTimeZone(), now: Date.now() });
+    // 能推送到哪些渠道：飞书 / 微信要先绑定（设置里）
+    const channels = pushOptions(user.id);
+    sendJson(res, 200, { tasks: listTasks(user.id).map(view), tz: serverTimeZone(), now: Date.now(), channels });
     return true;
   }
   if (p === "/api/tasks" && method === "POST") {

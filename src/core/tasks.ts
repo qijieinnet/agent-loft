@@ -10,7 +10,10 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { describeSchedule, nextRun, normalizeSchedule, type TaskSchedule } from "./task-schedule.js";
+import { config } from "./config.js";
 import { canUseExpert, getExpert, isBuiltin } from "./experts.js";
+import { listLinks } from "./feishu-links.js";
+import { getWeixinAccount } from "./weixin-accounts.js";
 import { isPermissionLevel, type PermissionLevel } from "./permission.js";
 
 /**
@@ -19,6 +22,11 @@ import { isPermissionLevel, type PermissionLevel } from "./permission.js";
  *   dedicated：任务自己的对话，第一次运行时新建（key 记下来，之后续用），专家等按任务里的设置。
  */
 export type TaskTarget = { kind: "conv"; key: string } | { kind: "dedicated"; key?: string };
+
+/** 结果推送到哪些渠道：web 是网页 / 桌面端的系统通知（Web Push），feishu / weixin 是发到主人绑定的飞书私聊 / 微信 */
+export const PUSH_CHANNELS = ["web", "feishu", "weixin"] as const;
+export type PushChannel = (typeof PUSH_CHANNELS)[number];
+export const DEFAULT_PUSH: PushChannel[] = ["web"];
 
 export type TaskRunStatus = "running" | "notified" | "silent" | "error" | "skipped" | "interrupted";
 
@@ -42,6 +50,10 @@ export type Task = {
   schedule: TaskSchedule;
   /** smart：只在需要时提醒（agent 判断）；always：每次都提醒 */
   notify: "smart" | "always";
+  /** 要提醒时推到哪些渠道。没有就是只推 Web（DEFAULT_PUSH）；空数组表示哪都不推，只留在对话里 */
+  push?: PushChannel[];
+  /** 推送到飞书时用哪个机器人（主人绑定的那几个之一）。没有就用第一个在线的 */
+  feishuBot?: string;
   target: TaskTarget;
   /** 专用对话的设置（target 是 conv 时不用，以那条对话为准）。agent 是引擎；expert 是自定义专家的 id，没有就是内置专家 agent */
   agent: string;
@@ -138,6 +150,8 @@ export type TaskInput = {
   prompt?: unknown;
   schedule?: unknown;
   notify?: unknown;
+  push?: unknown;
+  feishuBot?: unknown;
   target?: unknown;
   /** 专家 id（内置的 claude / codex，或者自定义专家）。agent 是以前的叫法，照样认 */
   expert?: unknown;
@@ -173,6 +187,38 @@ function cleanExpert(owner: string, v: unknown): { agent: string; expert?: strin
   return { agent: getExpert(id)!.engine, expert: id };
 }
 
+/** 推送渠道：认识的留下、去重；不是数组就当没给 */
+function cleanPush(v: unknown): PushChannel[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return PUSH_CHANNELS.filter((c) => v.includes(c));
+}
+
+/** 这个任务的结果推到哪些渠道 */
+export function taskPush(t: Pick<Task, "push">): PushChannel[] {
+  return t.push ?? DEFAULT_PUSH;
+}
+
+/** 这个人能推送到哪：飞书要在启用着的机器人上绑定过，微信要扫码绑定过 */
+export type PushOptions = { feishu: { id: string; name: string }[]; weixin: boolean };
+
+export function pushOptions(owner: string): PushOptions {
+  const bots = config().feishu.bots.filter((b) => b.enabled);
+  const linked = new Set(listLinks(owner).map((l) => l.botId));
+  return { feishu: bots.filter((b) => linked.has(b.id)).map((b) => ({ id: b.id, name: b.name })), weixin: !!getWeixinAccount(owner) };
+}
+
+/** 推送渠道和飞书机器人一起核：没绑定的渠道、不是自己绑的机器人都不收 */
+function cleanPushFields(owner: string, pushIn: unknown, botIn: unknown, prev?: Pick<Task, "push" | "feishuBot">): { push?: PushChannel[]; feishuBot?: string } {
+  const push = (pushIn === undefined ? prev?.push : cleanPush(pushIn) ?? DEFAULT_PUSH) ?? DEFAULT_PUSH;
+  const opts = pushOptions(owner);
+  if (pushIn !== undefined && push.includes("feishu") && opts.feishu.length === 0) throw new Error("还没有绑定飞书，不能推送到飞书");
+  if (pushIn !== undefined && push.includes("weixin") && !opts.weixin) throw new Error("还没有绑定微信，不能推送到微信");
+  let bot = botIn === undefined ? prev?.feishuBot : str(botIn) || undefined;
+  if (bot && botIn !== undefined && !opts.feishu.some((b) => b.id === bot)) throw new Error("这个飞书机器人没有绑定你的飞书账号");
+  if (!push.includes("feishu")) bot = undefined;
+  return { ...(push.join() !== DEFAULT_PUSH.join() ? { push } : {}), ...(bot ? { feishuBot: bot } : {}) };
+}
+
 function cleanPermission(v: unknown): PermissionLevel | undefined {
   const s = str(v);
   if (!s) return undefined;
@@ -201,6 +247,7 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
     prompt,
     schedule,
     notify: input.notify === "always" ? "always" : "smart",
+    ...cleanPushFields(owner, input.push, input.feishuBot),
     target: cleanTarget(input.target),
     ...picked,
     ...(str(input.cwd) ? { cwd: str(input.cwd) } : {}),
@@ -230,6 +277,12 @@ export function updateTask(owner: string, id: string, patch: TaskInput, now = Da
   if (patch.title !== undefined) next.title = cleanTitle(patch.title, next.prompt);
   if (patch.schedule !== undefined) next.schedule = normalizeSchedule(patch.schedule, now);
   if (patch.notify !== undefined) next.notify = patch.notify === "always" ? "always" : "smart";
+  if (patch.push !== undefined || patch.feishuBot !== undefined) {
+    const fields = cleanPushFields(owner, patch.push, patch.feishuBot, task);
+    delete next.push;
+    delete next.feishuBot;
+    Object.assign(next, fields);
+  }
   if (patch.target !== undefined) next.target = cleanTarget(patch.target, task.target);
   const pick = patch.expert ?? patch.agent;
   if (pick !== undefined && str(pick)) {

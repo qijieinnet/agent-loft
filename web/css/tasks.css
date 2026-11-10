@@ -404,6 +404,11 @@ button.task-run:hover {
 }
 
 .task-weekly-heading,
+/* 推送渠道：和星期同款的按钮，列数按显示几个渠道在 JS 里设 */
+.task-push {
+  margin-top: 0;
+}
+
 .task-clock-row {
   display: flex;
   align-items: center;

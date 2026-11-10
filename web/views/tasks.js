@@ -16,7 +16,16 @@ import { capOfAccess, FULL_WARNING, minPermission, PERMISSIONS, permissionsUpTo 
 // 到点让 agent 按提示词干活，结果回到一条对话里；「有需要才提醒」时由 agent 判断这次要不要打扰你。
 // 列表只有自己的任务（服务端按人过滤）。任务有变化时服务端推 { t: "tasks" }，这里重新拉一遍。
 
-const T = { list: [], tz: "", token: 0, reloadTimer: 0 };
+const T = { list: [], tz: "", token: 0, reloadTimer: 0, channels: null };
+
+/** 结果推送的渠道。飞书 / 微信要先在设置里绑定 */
+const PUSH = [
+  ["web", "Web"],
+  ["feishu", "飞书"],
+  ["weixin", "微信"],
+];
+const pushOf = (t) => t.push ?? ["web"];
+const pushLabel = (push) => (push.length ? `推送到${push.map((c) => PUSH.find(([v]) => v === c)?.[1] ?? c).join("、")}` : "不推送");
 
 const STATUS = {
   running: { text: "运行中", cls: "run" },
@@ -111,6 +120,7 @@ async function reload() {
     if (my !== T.token || S.view !== "tasks") return;
     T.list = data.tasks;
     T.tz = data.tz;
+    T.channels = data.channels ?? null;
     render();
   } catch (err) {
     if (my === T.token && S.view === "tasks") fill(ui.msgInner, h("div", { class: "empty" }, err.message));
@@ -238,6 +248,7 @@ function taskCard(t) {
       h("span", {}, t.summary),
       h("span", {}, state),
       h("span", {}, t.notify === "smart" ? "有需要才提醒" : "每次都提醒"),
+      h("span", {}, pushLabel(pushOf(t))),
       h("span", {}, where),
       t.freshContext ? h("span", {}, "不带上下文") : null,
       t.target.kind === "dedicated" && t.permission ? h("span", { class: t.permission === "full" ? "task-perm-full" : "" }, PERMISSIONS[t.permission].label) : null,
@@ -416,6 +427,42 @@ export function openTaskForm(task, preset) {
     h("option", { value: "always", selected: src.notify === "always" }, "每次都提醒"),
   );
 
+  // ---- 推送渠道（可多选，默认 Web）。飞书 / 微信没绑定就不列出来 ----
+  let push = [...pushOf(src)];
+  let feishuBot = src.feishuBot ?? "";
+  const pushBox = h("div", { class: "task-weekdays task-push", role: "group", "aria-label": "推送渠道（可多选）" });
+  const botSelect = h("select", { class: "task-feishu-bot", "aria-label": "推送用的飞书机器人" });
+  botSelect.onchange = () => (feishuBot = botSelect.value);
+  const botField = field("飞书机器人", botSelect, "你绑定了多个飞书机器人，选一个来推送。选定的机器人不在线时不会改用别的。");
+  const pushHint = h("small", {});
+  const bound = (c) => c === "web" || (c === "feishu" ? !!T.channels?.feishu?.length : !!T.channels?.weixin);
+  const renderPush = () => {
+    const shown = PUSH.filter(([c]) => bound(c));
+    pushBox.style.gridTemplateColumns = `repeat(${shown.length}, minmax(0, 1fr))`;
+    fill(
+      pushBox,
+      shown.map(([c, label]) => {
+        const b = h("button", { type: "button", class: "task-weekday", "aria-pressed": String(push.includes(c)) }, label);
+        b.onclick = () => {
+          push = push.includes(c) ? push.filter((x) => x !== c) : [...push, c];
+          b.setAttribute("aria-pressed", String(push.includes(c)));
+          syncBot();
+        };
+        return b;
+      }),
+    );
+    const missing = PUSH.filter(([c]) => !bound(c)).map(([, label]) => label);
+    pushHint.textContent = `要提醒时推到哪里，都不选就只留在对话里。${missing.length ? `${missing.join("、")}要先在设置里绑定才能选。` : "飞书、微信发到你绑定的私聊。"}`;
+    const bots = T.channels?.feishu ?? [];
+    if (feishuBot && !bots.some((b) => b.id === feishuBot)) feishuBot = "";
+    fill(botSelect, h("option", { value: "", selected: !feishuBot }, "自动（第一个在线的）"), bots.map((b) => h("option", { value: b.id, selected: b.id === feishuBot }, b.name)));
+    syncBot();
+  };
+  const syncBot = () => (botField.hidden = !(push.includes("feishu") && (T.channels?.feishu?.length ?? 0) > 1));
+  renderPush();
+  // 不是从定时任务页打开的：还不知道绑定了什么，拉一下
+  if (!T.channels) void api("/api/tasks").then((d) => ((T.channels = d.channels ?? null), renderPush()), () => {});
+
   // ---- 结果发到哪 ----
   const currentTarget = task?.target?.kind === "conv" ? task.target.key : "dedicated";
   const target = h(
@@ -537,6 +584,8 @@ export function openTaskForm(task, preset) {
     field("频率", freq),
     field("执行时间", freqBox, freqHint),
     field("提醒", notify),
+    h("div", { class: "field" }, h("span", {}, "推送渠道"), pushBox, pushHint),
+    botField,
     field("结果发到", target),
     convBox,
     dedicatedBox,
@@ -594,6 +643,9 @@ export function openTaskForm(task, preset) {
       prompt: prompt.value,
       schedule,
       notify: notify.value,
+      // 之前勾过、后来解绑了的渠道不再提交（还没拿到绑定情况时原样提交，由服务端核）
+      push: PUSH.map(([c]) => c).filter((c) => push.includes(c) && (bound(c) || !T.channels)),
+      feishuBot: push.includes("feishu") ? feishuBot : "",
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: target.value },
       freshContext: fresh,
       ...(dedicated ? { expert: expert.value, cwd: findExpert(expert.value)?.access === "web" ? "" : cwd, permission: level, model: models.model.value, effort: models.effort.value } : {}),

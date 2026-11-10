@@ -409,6 +409,12 @@ export class WeixinBot {
 
   // ---------- 发消息 ----------
 
+  /** 别的对话里的定时任务选了推送到微信：把结果发过来 */
+  pushTaskResult(title: string, text: string): void {
+    const body = `⏰ ${title}\n\n${text}`;
+    if (text.trim()) this.reply(body);
+  }
+
   private remaining(): number {
     return SEND_LIMIT - this.account.sentSinceInbound;
   }

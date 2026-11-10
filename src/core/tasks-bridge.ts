@@ -18,7 +18,7 @@ import { expertIdOf, getConversation } from "./store.js";
 import { forgetTask } from "./task-runner.js";
 import { describeSchedule, formatDateTime, nextRun, normalizeSchedule, parseLocalDateTime, serverTimeZone, type TaskSchedule } from "./task-schedule.js";
 import { TASK_TOOL_TIMEOUT_SEC, tasksSocketPath, verifyTaskCaller } from "./tasks-mcp.js";
-import { createTask, deleteTask, getTask, listTasks, TASKS_PER_USER, updateTask, type Task, type TaskInput } from "./tasks.js";
+import { createTask, DEFAULT_PUSH, deleteTask, getTask, listTasks, PUSH_CHANNELS, taskPush, TASKS_PER_USER, updateTask, type PushChannel, type Task, type TaskInput } from "./tasks.js";
 import { getUser } from "./users.js";
 import { SKILL_TOOL_NAMES, skillToolCall } from "./skills-bridge.js";
 
@@ -49,12 +49,24 @@ function whereText(task: Task, convKey: string): string {
   return `对话「${getConversation(task.target.key)?.title ?? "未命名"}」`;
 }
 
+const PUSH_NAME: Record<PushChannel, string> = { web: "Web", feishu: "飞书", weixin: "微信" };
+
+function pushText(push: PushChannel[]): string {
+  return push.length ? push.map((c) => PUSH_NAME[c]).join("、") : "（不推送，只留在对话里）";
+}
+
+/** agent 给的推送渠道：认识的留下 */
+function pushArg(v: unknown): PushChannel[] | undefined {
+  return Array.isArray(v) ? PUSH_CHANNELS.filter((c) => v.includes(c)) : undefined;
+}
+
 function describeTask(task: Task, convKey: string): string {
   const last = task.runs[0];
   return [
     `- [${task.id}]「${task.title}」${describeSchedule(task.schedule)}`,
     task.enabled && task.nextRunAt ? `下次 ${formatDateTime(task.nextRunAt)}` : "已暂停",
     task.notify === "smart" ? "有需要才提醒" : "每次都提醒",
+    `推送到${pushText(taskPush(task))}`,
     `结果发到${whereText(task, convKey)}`,
     ...(task.freshContext ? ["每次运行不带之前的上下文"] : []),
     ...(last ? [`最近一次 ${formatDateTime(last.at)} ${STATUS[last.status] ?? last.status}${last.preview ? `：${last.preview}` : last.note ? `（${last.note}）` : ""}`] : []),
@@ -88,7 +100,7 @@ function contextLine(task: { fresh: boolean; dedicated: boolean }): string {
   return task.dedicated ? "不携带（每次都从头开始）" : "不携带（每次在独立的会话里运行，看不到聊天内容，结果仍显示在这条对话）";
 }
 
-function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string; expert?: string; permission?: string; context?: string; prompt?: string; enabled?: boolean }, now: number): string {
+function card(fields: { schedule?: TaskSchedule; notify?: string; push?: PushChannel[]; where?: string; expert?: string; permission?: string; context?: string; prompt?: string; enabled?: boolean }, now: number): string {
   const lines: string[] = [];
   if (fields.schedule) {
     const next = nextRun(fields.schedule, now);
@@ -96,6 +108,7 @@ function card(fields: { schedule?: TaskSchedule; notify?: string; where?: string
     if (next) lines.push(`**下次运行**：${formatDateTime(next)}`);
   }
   if (fields.notify) lines.push(`**提醒**：${fields.notify === "always" ? "每次都提醒" : "有需要才提醒（由 agent 判断）"}`);
+  if (fields.push) lines.push(`**推送到**：${pushText(fields.push)}`);
   if (fields.where) lines.push(`**结果发到**：${fields.where}`);
   if (fields.expert) lines.push(`**专家**：${fields.expert}`);
   if (fields.permission) lines.push(`**权限**：${fields.permission}`);
@@ -142,6 +155,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
       prompt,
       schedule,
       notify: args.notify === "always" ? "always" : "smart",
+      ...(pushArg(args.push) ? { push: pushArg(args.push) } : {}),
       target: dedicated ? { kind: "dedicated" } : { kind: "conv", key: convKey },
       expert: expertIdOf(conv),
       cwd: conv.cwd,
@@ -155,6 +169,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
         {
           schedule,
           notify: String(input.notify),
+          push: (input.push as PushChannel[] | undefined) ?? DEFAULT_PUSH,
           where: dedicated ? "单独开一条对话" : "这条对话",
           ...(dedicated ? { expert: expertName } : {}),
           // agent 建的专用对话任务一律从默认开始，要放宽只能用户到页面上改
@@ -204,6 +219,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
     if (args.title !== undefined) patch.title = args.title;
     if (args.prompt !== undefined) patch.prompt = args.prompt;
     if (args.notify !== undefined) patch.notify = args.notify;
+    if (pushArg(args.push)) patch.push = pushArg(args.push);
     if (args.enabled !== undefined) patch.enabled = args.enabled === true;
     if (args.fresh_context !== undefined) patch.freshContext = args.fresh_context === true;
     if (Object.keys(patch).length === 0) return fail("没有要改的字段。");
@@ -218,6 +234,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
           {
             ...(patch.schedule ? { schedule: patch.schedule as TaskSchedule } : {}),
             ...(patch.notify !== undefined ? { notify: String(patch.notify) } : {}),
+            ...(patch.push !== undefined ? { push: patch.push as PushChannel[] } : {}),
             permission: taskPermissionLine(task),
             ...(patch.freshContext !== undefined ? { context: contextLine({ fresh: patch.freshContext === true, dedicated: task.target.kind === "dedicated" }) } : {}),
             ...(patch.enabled !== undefined ? { enabled: patch.enabled === true } : {}),

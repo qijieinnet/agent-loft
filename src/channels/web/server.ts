@@ -14,7 +14,7 @@ import { GLOBAL_ALWAYS_DENIED, hub, type EventEnvelope } from "../../core/hub.js
 import { interactions, type Interaction } from "../../core/interactions.js";
 import { weixinEvents } from "../weixin/events.js";
 import { getConversation } from "../../core/store.js";
-import { taskEvents } from "../../core/tasks.js";
+import { findTask, taskEvents, taskPush } from "../../core/tasks.js";
 import { skillEvents } from "../../core/skills.js";
 import { expertEvents } from "../../core/experts.js";
 import { enforceTerminalAccess, killAllTerminals, terminalEvents, watchTerminalAccess } from "../../core/terminals.js";
@@ -414,9 +414,11 @@ function onWeixinUndelivered({ key, body }: { key: string; body: string }): void
 function pushEvent(env: EventEnvelope): void {
   const ev = env.ev;
   if (ev.type !== "result" && ev.type !== "error") return;
-  if (!isWebConv(env.key)) return;
   // 定时任务这次判断不用提醒
   if (ev.type === "result" && ev.silent) return;
+  // 定时任务的结果按任务选的推送渠道：没选 Web 就不推；选了的话发到飞书 / 微信对话里的也推
+  const task = ev.type === "result" && ev.task ? findTask(ev.task.id) : undefined;
+  if (task ? !taskPush(task).includes("web") : !isWebConv(env.key)) return;
   const name = convName(env.key);
   const payload =
     ev.type === "result"
@@ -424,7 +426,7 @@ function pushEvent(env: EventEnvelope): void {
         ? { title: `⏰ ${ev.task.title}`, body: plainPreview(ev.text) || "（没有文字回复）" }
         : { title: `${name} · 回复完成`, body: plainPreview(ev.text) || "（没有文字回复）" }
       : { title: `${name} · 出错了`, body: plainPreview(ev.message) };
-  notify(env.key, { ...payload, tag: `reply:${env.key}` });
+  deliverNotice(env.key, { ...payload, tag: `reply:${env.key}` });
 }
 
 function pushInteraction(i: Interaction): void {

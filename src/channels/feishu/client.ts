@@ -47,10 +47,11 @@ export class FeishuClient {
     }
   }
 
-  async sendCard(chatId: string, card: unknown): Promise<string | undefined> {
+  /** idType 是 open_id 时 chatId 填用户的 open_id：直接发到和这个人的私聊 */
+  async sendCard(chatId: string, card: unknown, idType: "chat_id" | "open_id" = "chat_id"): Promise<string | undefined> {
     try {
       const res = await this.lark.im.v1.message.create({
-        params: { receive_id_type: "chat_id" },
+        params: { receive_id_type: idType },
         data: { receive_id: chatId, msg_type: "interactive", content: JSON.stringify(card) },
       });
       const messageId = res.data?.message_id;
