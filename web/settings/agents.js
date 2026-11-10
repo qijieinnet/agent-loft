@@ -7,7 +7,7 @@ import { renderEmpty } from "../views/messages.js";
 import { field, saveButton, saveConfig } from "./common.js";
 import { modelPicker } from "./commands.js";
 
-const ENGINE_LABEL = { claude: "Claude Code", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi" };
+const ENGINE_LABEL = { claude: "Claude Code", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi", dsh: "dsh（DeepSeek）" };
 const ENGINES = Object.keys(ENGINE_LABEL);
 const WORKBUDDY_SITES = [
   ["workbuddy", "WorkBuddy（www.workbuddy.cn，用本机的 WorkBuddy 桌面版）"],
@@ -267,6 +267,19 @@ export function agentsTab(cfg, page) {
         piCustomSection(),
       );
     }
+    let dsh = null;
+    if (engine === "dsh") {
+      const path = h("input", { value: settings.path ?? "dsh", placeholder: "dsh" });
+      const home = h("input", { value: settings.home ?? "", placeholder: "留空用 ~/.dsh" });
+      const patch = h("input", { value: settings.patch ?? "", placeholder: "留空不加（绝对路径，如 /home/me/.dsh/loft.patch.yml）" });
+      dsh = { path, home, patch };
+      config.append(
+        h("p", { class: "muted" }, "dsh（DeepSeek Harness）：DeepSeek 官方的编程 agent，通过标准 ACP 协议接入，每个会话一个 dsh 进程（第一条消息要等 4~5 秒拉起）。用 dsh 自己的凭据（~/.dsh/.credentials.yaml 里的 DeepSeek API Key）和会话记录，dsh 网页里建的会话这里也能接着聊。权限用 dsh 的沙箱：逐次询问 = 只读、自动改文件 = 工作区可写、完全允许 = 不设沙箱；越界时弹授权卡。不支持自定义专家、分叉 / 回退、提问卡和图片直传（附件给路径）；设成「调用前询问」的 MCP 不会挂上。"),
+        field("dsh 可执行文件", path, "npm install -g @deepseek-ai/dsh 装的；以系统服务运行时 PATH 很短，建议写绝对路径"),
+        field("DSH_HOME", home),
+        field("额外的 patch 文件", patch, "每个 dsh 进程都加 --patch 这个文件。dsh 的 ACP 模式默认只有官方 DeepSeek 模型，要接别家模型（llm-pi-ai）就写在这里"),
+      );
+    }
     config.append(h("small", { class: "muted" }, "默认模型、思考程度、权限和默认加载的技能 / MCP，在「设置 → 专家」里这个 Agent 的「设置」中修改。"));
     config.append(h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
     if (codex) config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, codex.titleOn, "自动生成会话名称"), codex.titleModel));
@@ -279,6 +292,7 @@ export function agentsTab(cfg, page) {
       return saveConfig(cfg, { agents: { [engine]: {
         enabled: on.checked, models: selected,
         ...(site ? { environment: site.value, cliPath: cliPath.value.trim() } : {}),
+        ...(dsh ? { path: dsh.path.value.trim() || "dsh", home: dsh.home.value.trim(), patch: dsh.patch.value.trim() } : {}),
         ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value, autoTitle: codex.titleOn.checked, titleModel: codex.titlePick.model() } : {}),
       } } });
     }, `保存 ${label} 设置`)));

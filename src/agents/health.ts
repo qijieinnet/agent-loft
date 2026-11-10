@@ -13,6 +13,8 @@ import { onLoginDone, readAccount } from "./workbuddy/account.js";
 import { desktopCli, ENVIRONMENT_LABEL, environment } from "./workbuddy/sdk.js";
 import { listProviders, MIN_NODE, nodeOk } from "./pi/sdk.js";
 import { onOAuthDone } from "./pi/oauth.js";
+import { dshHome } from "./dsh/sdk.js";
+import fs from "node:fs";
 
 const require = createRequire(import.meta.url);
 
@@ -27,7 +29,7 @@ export type AgentFix = {
 };
 
 export type AgentHealth = {
-  id: "claude" | "codex" | "workbuddy" | "pi";
+  id: "claude" | "codex" | "workbuddy" | "pi" | "dsh";
   label: string;
   enabled: boolean;
   installed: boolean;
@@ -250,6 +252,51 @@ let cache: { at: number; value: AgentHealth[] } | null = null;
 onLoginDone(() => {
   cache = null;
 });
+/** dsh：全局装的 npm 命令；「登录」= DSH_HOME 的凭据里有 DeepSeek API Key，或服务进程有 DEEPSEEK_API_KEY */
+async function dshHealth(): Promise<AgentHealth> {
+  const cfg = config().agents.dsh;
+  const base = { id: "dsh" as const, label: "dsh", enabled: cfg.enabled };
+  const ver = await run(cfg.path || "dsh", ["--version"], 15_000);
+  if (ver.code !== 0) {
+    return {
+      ...base,
+      installed: false,
+      loggedIn: null,
+      problem: `找不到 ${cfg.path || "dsh"}`,
+      fix: {
+        action: "install",
+        title: "安装 dsh",
+        commands: ["npm install -g @deepseek-ai/dsh"],
+        note: "需要 Node.js 22 以上。agent-loft 以系统服务运行时 PATH 很短，装好后在下面把「dsh 可执行文件」填成绝对路径（终端里 command -v dsh 可以查到）。升级也是这条命令。",
+      },
+    };
+  }
+  const version = ver.out.trim().split("\n").pop()?.trim();
+  let stored = false;
+  try {
+    stored = /^\s+DEEPSEEK_API_KEY:/m.test(fs.readFileSync(path.join(dshHome(), ".credentials.yaml"), "utf8"));
+  } catch {
+    // 还没有凭据文件
+  }
+  const loggedIn = stored || !!process.env.DEEPSEEK_API_KEY;
+  return {
+    ...base,
+    installed: true,
+    ...(version ? { version } : {}),
+    loggedIn,
+    ...(loggedIn
+      ? { account: stored ? "DeepSeek API Key（dsh 凭据）" : "DeepSeek API Key（环境变量）" }
+      : {
+          fix: {
+            action: "login" as const,
+            title: "配 DeepSeek API Key",
+            commands: [`${quote(cfg.path || "dsh")} web`],
+            note: "在服务器上运行这条命令，打开它给出的网页，在设置里填 DeepSeek API Key（存进 ~/.dsh/.credentials.yaml）；也可以给 agent-loft 服务设 DEEPSEEK_API_KEY 环境变量。填好后点「重新检查」。",
+          },
+        }),
+  };
+}
+
 onOAuthDone(() => {
   cache = null;
 });
@@ -285,7 +332,9 @@ export function agentHealth(refresh = false): Promise<AgentHealth[]> {
   // pi 没启用就不加载它的 SDK
   const pi = () =>
     config().agents.pi.enabled ? piHealth() : Promise.resolve<AgentHealth>({ id: "pi", label: "pi", enabled: false, installed: true, loggedIn: null });
-  inflight ??= Promise.all([claudeHealth(), codexHealth(), workbuddy(), pi()])
+  const dsh = () =>
+    config().agents.dsh.enabled ? dshHealth() : Promise.resolve<AgentHealth>({ id: "dsh", label: "dsh", enabled: false, installed: true, loggedIn: null });
+  inflight ??= Promise.all([claudeHealth(), codexHealth(), workbuddy(), pi(), dsh()])
     .then((value) => {
       cache = { at: Date.now(), value };
       return value;

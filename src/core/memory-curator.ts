@@ -480,7 +480,7 @@ export function describeResult(r: CurateResult): string | undefined {
 
 /** 按用户的设置挑 agent。指定的那个用不了就是 undefined（不悄悄换成另一个，免得用到他没想用的额度） */
 export function pickDriver(settings: Pick<CurateSettings, "agent">): AgentDriver | undefined {
-  const usable = hub.enabledAgents().filter((d) => d.complete && agentAvailability(d.id as "claude" | "codex" | "workbuddy" | "pi")?.available !== false);
+  const usable = hub.enabledAgents().filter((d) => d.complete && agentAvailability(d.id as "claude" | "codex" | "workbuddy" | "pi" | "dsh")?.available !== false);
   if (settings.agent !== "auto") return usable.find((d) => d.id === settings.agent);
   return usable.find((d) => d.id === "claude") ?? usable[0];
 }
@@ -525,7 +525,7 @@ export async function curateBatch(
   const driver = opts.driver ?? pickDriver(memory.curate);
   if (!driver) {
     // 没有能用的 agent：留着，等它能用了再整理
-    log.error = memory.curate.agent === "auto" ? "没有能用的 agent" : `${({ claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi" } as Record<string, string>)[memory.curate.agent] ?? memory.curate.agent} 现在用不了（没启用、没装或没登录）`;
+    log.error = memory.curate.agent === "auto" ? "没有能用的 agent" : `${({ claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", pi: "pi", dsh: "dsh" } as Record<string, string>)[memory.curate.agent] ?? memory.curate.agent} 现在用不了（没启用、没装或没登录）`;
     patchMeta(userId, { lastCuration: log });
     return log;
   }

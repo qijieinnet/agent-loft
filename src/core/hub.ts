@@ -2421,7 +2421,7 @@ class Hub extends EventEmitter<{
           ...(channel ? { channel } : {}),
           ...(owner && getUser(owner)?.role !== "admin" ? { member: true } : {}),
         });
-        return { type: "commands", agent: conv.agent, commands: all.filter((c) => !c.hidden && (!["claude", "codex", "workbuddy", "pi"].includes(c.name) || ctx.allowedExperts === undefined || ctx.allowedExperts.includes(c.name))) };
+        return { type: "commands", agent: conv.agent, commands: all.filter((c) => !c.hidden && (!["claude", "codex", "workbuddy", "pi", "dsh"].includes(c.name) || ctx.allowedExperts === undefined || ctx.allowedExperts.includes(c.name))) };
       }
       case "pwd":
         return text(getConversation(key)!.cwd);

@@ -102,7 +102,7 @@ export class FeishuBot {
     const out: CommandEntry[] = [];
     for (const agent of agents) {
       if (!hub.driver(agent)) continue;
-      out.push(...(await hub.commandCatalog(agent, { allowedAgents: allowed, channel: "feishu" })).filter((c) => !["claude", "codex", "workbuddy", "pi"].includes(c.name) || this.cfg.experts === undefined || this.cfg.experts.includes(c.name)));
+      out.push(...(await hub.commandCatalog(agent, { allowedAgents: allowed, channel: "feishu" })).filter((c) => !["claude", "codex", "workbuddy", "pi", "dsh"].includes(c.name) || this.cfg.experts === undefined || this.cfg.experts.includes(c.name)));
     }
     return out;
   }

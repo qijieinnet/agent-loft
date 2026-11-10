@@ -12,8 +12,8 @@ import { modelPicker } from "./commands.js";
 // 默认权限、默认加载的技能和 MCP：每个人自己的（/api/agents/defaults），单独保存，互不覆盖。
 
 /** 设置里的默认权限「跟随」时实际是什么 */
-const FOLLOW_LABEL = { claude: "跟随 Claude Code（逐次询问）", codex: "跟随沙箱设置", workbuddy: "跟随 WorkBuddy（逐次询问）", pi: "跟随 pi（逐次询问）" };
-const DEFAULT_MODEL_LABEL = { claude: "跟随 Claude Code 默认", codex: "跟随 config.toml", workbuddy: "跟随 WorkBuddy 默认", pi: "pi 自动挑一个能用的" };
+const FOLLOW_LABEL = { claude: "跟随 Claude Code（逐次询问）", codex: "跟随沙箱设置", workbuddy: "跟随 WorkBuddy（逐次询问）", dsh: "跟随 dsh（工作区可写，越界才问）", pi: "跟随 pi（逐次询问）" };
+const DEFAULT_MODEL_LABEL = { claude: "跟随 Claude Code 默认", codex: "跟随 config.toml", workbuddy: "跟随 WorkBuddy 默认", dsh: "跟随 dsh 默认", pi: "pi 自动挑一个能用的" };
 
 /** 技能 / MCP：「跟随」或者「指定加载」+ 勾选 */
 function loadPicker(label, items, selected, inheritLabel) {

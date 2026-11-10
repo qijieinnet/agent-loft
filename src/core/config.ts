@@ -88,6 +88,24 @@ export type AppConfig = {
       defaultEffort: string;
       models: string[];
     };
+    /**
+     * dsh（DeepSeek Harness，npm i -g @deepseek-ai/dsh）：每个会话一个 `dsh --profile acp` 进程。
+     * 凭据、会话记录都在 dsh 自己的 DSH_HOME（默认 ~/.dsh）里，见 agents/dsh/sdk.ts
+     */
+    dsh: {
+      enabled: boolean;
+      /** dsh 可执行文件，以系统服务运行时 PATH 很短，建议写绝对路径 */
+      path: string;
+      /** DSH_HOME，空 = ~/.dsh */
+      home: string;
+      /** 每个进程都加上的 --patch 文件（比如接别家模型的 llm-pi-ai 配置），空 = 不加 */
+      patch: string;
+      /** 「服务商/模型」，如 deepseek-official/deepseek-v4-pro；空 = dsh 默认 */
+      defaultModel: string;
+      /** 思考程度（off / low / high / max），空 = dsh 默认 */
+      defaultEffort: string;
+      models: string[];
+    };
   };
   web: {
     enabled: boolean;
@@ -107,7 +125,7 @@ export type AppConfig = {
     quotaEnabled: boolean;
   };
   /** 输入「/」时命令列表的顺序和隐藏项，按 agent 分开（设置 → 命令） */
-  commands: { claude: CommandPrefs; codex: CommandPrefs; workbuddy: CommandPrefs; pi: CommandPrefs };
+  commands: { claude: CommandPrefs; codex: CommandPrefs; workbuddy: CommandPrefs; pi: CommandPrefs; dsh: CommandPrefs };
   /** 远程控制：网页终端和远程桌面。管理员能用；成员要在 设置 → 用户 里单独开（users.json 的 remote） */
   remote: {
     terminal: boolean;
@@ -144,7 +162,7 @@ export type AppConfig = {
   };
 };
 
-export const AGENT_IDS = ["claude", "codex", "workbuddy", "pi"] as const;
+export const AGENT_IDS = ["claude", "codex", "workbuddy", "pi", "dsh"] as const;
 
 export function defaultConfig(): AppConfig {
   return {
@@ -168,9 +186,11 @@ export function defaultConfig(): AppConfig {
       workbuddy: { enabled: false, environment: "workbuddy", cliPath: "", defaultModel: "", defaultEffort: "", models: [] },
       // 默认不开：要先填一家服务商的 API Key
       pi: { enabled: false, defaultModel: "", defaultEffort: "", models: [] },
+      // 默认不开：要先装 dsh、配 DeepSeek API Key
+      dsh: { enabled: false, path: "dsh", home: "", patch: "", defaultModel: "", defaultEffort: "", models: [] },
     },
     web: { enabled: true, host: "0.0.0.0", port: 8800, passwordHash: "", trustedProxies: ["127.0.0.1", "::1"], quotaRefreshMin: 10, quotaEnabled: true },
-    commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] }, workbuddy: { order: [], hidden: [], custom: [] }, pi: { order: [], hidden: [], custom: [] } },
+    commands: { claude: { order: [], hidden: [], custom: [] }, codex: { order: [], hidden: [], custom: [] }, workbuddy: { order: [], hidden: [], custom: [] }, pi: { order: [], hidden: [], custom: [] }, dsh: { order: [], hidden: [], custom: [] } },
     remote: {
       terminal: true,
       desktop: true,

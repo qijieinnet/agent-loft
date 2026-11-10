@@ -359,6 +359,20 @@ function applyConfig(input: Partial<AppConfig>, selfOrigin?: string): void {
         throw new HttpError(400, "pi 的思考程度只能是 off / minimal / low / medium / high / xhigh / max");
       }
       if (id === "pi" && "defaultModel" in patch && (typeof patch.defaultModel !== "string" || patch.defaultModel.length > 300)) throw new HttpError(400, "默认模型不对");
+      if (id === "dsh") {
+        const p = patch as Record<string, unknown>;
+        for (const key of ["path", "home", "patch"] as const) {
+          if (!(key in p)) continue;
+          const v = p[key];
+          if (typeof v !== "string" || v.length > 500) throw new HttpError(400, "路径不对");
+          const t = v.trim();
+          // dsh 可执行文件可以只写命令名（按 PATH 找），另外两个要么留空、要么绝对路径
+          if (t && key !== "path" && !path.isAbsolute(t)) throw new HttpError(400, key === "home" ? "DSH_HOME 要写绝对路径，留空用 ~/.dsh" : "patch 文件要写绝对路径，留空不加");
+          p[key] = key === "path" ? t || "dsh" : t;
+        }
+        if ("defaultEffort" in p && !["", "off", "low", "high", "max"].includes(String(p.defaultEffort))) throw new HttpError(400, "dsh 的思考程度只能是 off / low / high / max");
+        if ("defaultModel" in p && (typeof p.defaultModel !== "string" || p.defaultModel.length > 300)) throw new HttpError(400, "默认模型不对");
+      }
       Object.assign(next.agents[id], patch);
     }
   }

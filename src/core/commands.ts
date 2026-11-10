@@ -70,6 +70,7 @@ export function parseCommand(raw: string): ParsedCommand {
     case "codex":
     case "workbuddy":
     case "pi":
+    case "dsh":
       return arg ? { kind: "chat", text } : { kind: "agent", agent: head.toLowerCase() };
     case "stop":
       return { kind: "stop" };
@@ -128,7 +129,7 @@ export function helpText(agents: string[], channel?: string): string {
     ...BUILTIN_COMMANDS.filter((c) => !c.multiAgentOnly || multi)
       .filter((c) => !c.feishuOnly || channel === "feishu")
       .filter((c) => !c.chatOnly || channel === "feishu" || channel === "weixin")
-      .filter((c) => !["claude", "codex", "workbuddy", "pi"].includes(c.name))
+      .filter((c) => !["claude", "codex", "workbuddy", "pi", "dsh"].includes(c.name))
       .map((c) =>
         c.name === "expert"
           ? `\`${usageOf(c)}\` ${c.description}${multi ? `，也可以直接发 ${agents.map((a) => `\`/${a}\``).join(" ")}` : ""}`

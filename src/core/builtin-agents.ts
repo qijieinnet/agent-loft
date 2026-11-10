@@ -53,7 +53,7 @@ export function builtinAgentDefaults(owner: string): Defaults {
     mcp: stored?.[engine]?.mcp ?? (admin ? null : []),
     permission: storedPermission(stored?.[engine]?.permission, engine, admin),
   });
-  return { claude: defaults("claude"), codex: defaults("codex"), workbuddy: defaults("workbuddy"), pi: defaults("pi") };
+  return { claude: defaults("claude"), codex: defaults("codex"), workbuddy: defaults("workbuddy"), pi: defaults("pi"), dsh: defaults("dsh") };
 }
 
 function selection(value: unknown, what: string): string[] | null {
