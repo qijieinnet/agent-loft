@@ -729,7 +729,7 @@ test("语音对话：先同步权限再用 v3 + WebRTC 开通话，answer 从通
   events.onRealtime = (ev) => realtime.push(ev.type === "transcript" ? `${ev.role}:${ev.delta}` : ev.type);
   events.onExternalTurn = (text, anchor) => external.push(`${text}@${anchor}`);
   events.onTurnStart = () => log.push("turn_start");
-  const answer = session.startRealtime("OFFER");
+  const answer = session.startRealtime("OFFER", { voice: "juniper", language: "zh-CN" });
   await tick();
   take("thread/start").resolve({ thread: { id: "rt1" } });
   await tick();
@@ -742,6 +742,9 @@ test("语音对话：先同步权限再用 v3 + WebRTC 开通话，answer 从通
   assert.deepEqual([start.params.version, start.params.outputModality, start.params.transport], ["v3", "audio", { type: "webrtc", sdp: "OFFER" }]);
   assert.equal(start.params.includeStartupContext, false, "没有管理员身份不给机器上的启动背景");
   assert.match(start.params.realtimeStartInstructions, /小明/, "语音先开口也带上记忆");
+  assert.equal(start.params.voice, "juniper", "页面选的音色");
+  assert.equal(start.params.initialItems[0].role, "developer");
+  assert.match(start.params.initialItems[0].text, /Simplified Chinese/, "页面选的语言用 developer 指令定");
   start.resolve({});
   notify("thread/realtime/sdp", { threadId: "rt1", sdp: "ANSWER" });
   assert.equal(await answer, "ANSWER");
@@ -769,13 +772,16 @@ test("语音对话：先同步权限再用 v3 + WebRTC 开通话，answer 从通
 test("语音对话：开通话时出错（对端报错）就失败，并让 app-server 收掉", async () => {
   calls.length = 0;
   const { session } = makeSession();
-  const answer = session.startRealtime("OFFER");
+  const answer = session.startRealtime("OFFER", { voice: "marin", language: "xx" });
   await tick();
   take("thread/start").resolve({ thread: { id: "rt2" } });
   await tick();
   take("thread/settings/update").resolve({});
   await tick();
-  take("thread/realtime/start").resolve({});
+  const start = take("thread/realtime/start");
+  assert.equal(start.params.voice, undefined, "v3 不支持的音色不传，用 Codex 默认");
+  assert.equal(start.params.initialItems, undefined, "认不出的语言就跟着用户说的走");
+  start.resolve({});
   notify("thread/realtime/error", { threadId: "rt2", message: '{"error":{"message":"Offer did not have an audio media section."}}' });
   await assert.rejects(answer, /audio media section/);
   take("thread/realtime/stop").resolve({});

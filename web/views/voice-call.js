@@ -6,34 +6,88 @@ import { currentAgentId } from "./slash.js";
 import { cancelVoice } from "./voice.js";
 
 // ---------- 实时语音对话（只有 Codex） ----------
-// 浏览器建 RTCPeerConnection（麦克风 + oai-events 数据通道），offer 交给服务端，服务端让 Codex app-server 去 OpenAI 建通话，
-// answer 拿回来连上。声音在浏览器和 OpenAI 之间直连，不经过 agent-loft。
+// 声音经服务器中转：服务器自己和 OpenAI 建 WebRTC（core/realtime-relay.ts），这里和服务器之间走现有的 WebSocket，
+// 两头都是 24kHz、16 位、单声道的 PCM（二进制帧）。采集、播放在 AudioWorklet 里做（lib/rt-worklet.js）。
+// 这样能打开网页的地方就能语音（反向代理、Cloudflare Tunnel 都能过），浏览器不直连 OpenAI。
 // 语音模型把要干的活转交给这条对话里的 Codex：那一轮像打字发的消息一样出现在对话里（用户消息前面带 🎙️）。
 // 通话时输入框换成通话条：音量动画、状态、字幕、静音、挂断（和 Codex 桌面端的语音模式一样）。
 
 /** 桌面端（Electron）没申请麦克风权限：macOS 上直接用会被系统拦掉，先不放 */
-const supported = !desktop && !!window.RTCPeerConnection && !!navigator.mediaDevices?.getUserMedia;
+const supported = !desktop && !!window.AudioWorkletNode && !!navigator.mediaDevices?.getUserMedia;
+
+/**
+ * 回复的声音直接从 AudioContext 放出来，iOS / Safari 的回声消除照样管得到；Chrome 等的回声消除只认 WebRTC 放出来的声音，
+ * 不绕一下模型会听到自己说话、自己打断自己：在本页里用一对 RTCPeerConnection 环回一下，再交给 <audio> 放
+ */
+const ua = navigator.userAgent;
+const appleAudio = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) || (/Safari\//.test(ua) && !/Chrome|Chromium|Edg|OPR|Firefox/.test(ua));
 
 const call = {
   /** idle / connecting / live */
   state: "idle",
   key: null,
-  pc: null,
   mic: null,
+  /** 播放用的 worklet 节点：服务器发来的 PCM 交给它 */
+  play: null,
+  /** Chrome 等的回声消除环回（见 appleAudio） */
+  loop: null,
   audio: null,
   muted: false,
   startedAt: 0,
   raf: 0,
-  ctx: null,
+  /** 音量表接上的节点，挂断时断开（AudioContext 本身留着，见 audioCtx） */
+  nodes: [],
   micLevel: null,
   outLevel: null,
   /** 字幕：谁在说、说了什么（一句说完 done 之后，下一句同一个人开口就换新的） */
   caption: { role: null, text: "", done: false },
   panel: null,
   els: null,
-  /** 连接短暂断开（disconnected）时等一会儿再判定挂了 */
-  dropTimer: 0,
 };
+
+// ---------- 音色和语言（按设备记在浏览器里） ----------
+
+const PREFS_KEY = "agent-loft.voiceCall";
+/** 和服务端 REALTIME_VOICES 一致（就是 ChatGPT 语音模式那几个）；空 = Codex 默认（cove） */
+const VOICES = [
+  ["", "默认（Cove）"],
+  ["cove", "Cove · 男声，沉着直接"],
+  ["juniper", "Juniper · 女声，开朗"],
+  ["maple", "Maple · 女声，爽朗坦率"],
+  ["vale", "Vale · 女声，明亮好奇"],
+  ["sol", "Sol · 女声，从容干练"],
+  ["spruce", "Spruce · 男声，平和"],
+  ["ember", "Ember · 男声，自信乐观"],
+  ["arbor", "Arbor · 男声，随和"],
+  ["breeze", "Breeze · 活泼真诚"],
+];
+/** 和服务端 REALTIME_LANGUAGES 一致；空 = 跟着你说的语言 */
+const LANGUAGES = [
+  ["", "跟着我说的语言"],
+  ["zh-CN", "普通话（简体）"],
+  ["zh-TW", "国语（繁体）"],
+  ["yue", "粤语"],
+  ["en", "English"],
+  ["ja", "日本語"],
+  ["ko", "한국어"],
+];
+
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
+    return { voice: typeof p.voice === "string" ? p.voice : "", language: typeof p.language === "string" ? p.language : "" };
+  } catch {
+    return { voice: "", language: "" };
+  }
+}
+
+function savePrefs(p) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch {
+    // 隐私模式等存不了：这次通话照样用
+  }
+}
 
 const ICON_WAVE =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></svg>';
@@ -76,6 +130,8 @@ async function startCall() {
   // 在点击里建好、先 play 一次：iOS 上不是用户手势里起的播放会被拦
   call.audio = h("audio", { autoplay: true, playsinline: true });
   call.audio.play().catch(() => {});
+  // AudioContext 也要在点击里建 / 恢复：iOS 上点击之外起的一直是 suspended，第二通起就没声音、录不到
+  audioCtx();
   mountPanel();
   try {
     const key = await ensureConversation();
@@ -83,31 +139,53 @@ async function startCall() {
     call.key = key;
     call.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     if (call.state === "idle") return stopTracks();
-    const pc = new RTCPeerConnection();
-    call.pc = pc;
-    for (const track of call.mic.getTracks()) pc.addTrack(track, call.mic);
-    // OpenAI 要求 offer 里有这个数据通道（事件走这里；字幕我们用服务端转来的）
-    pc.createDataChannel("oai-events");
-    pc.ontrack = (e) => {
-      const stream = e.streams[0] ?? new MediaStream([e.track]);
-      call.audio.srcObject = stream;
-      call.audio.play().catch(() => {});
-      call.outLevel = meter(stream);
+    // iOS 上偶尔拿到的是已经结束 / 被静音的轨道（音频会话被别的占着）：别假装在听
+    const track = call.mic.getAudioTracks()[0];
+    if (!track || track.readyState !== "live") throw new Error("麦克风没能打开，请关掉其他在用麦克风的页面或应用后重试");
+    if (track.muted) await waitUnmute(track, 1500);
+    const ctx = audioCtx();
+    if (!ctx) throw new Error("浏览器不支持音频处理");
+    await loadWorklet(ctx);
+    if (call.state === "idle") return stopTracks();
+    // 麦克风 → 采集（重采样到 24kHz，20ms 一块）→ WebSocket
+    const src = ctx.createMediaStreamSource(call.mic);
+    const capture = new AudioWorkletNode(ctx, "rt-capture", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    // 没有输出接到 destination 的节点有的浏览器不跑：接一个静音的
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
+    src.connect(capture);
+    capture.connect(sink);
+    sink.connect(ctx.destination);
+    capture.port.onmessage = (e) => {
+      const sock = WS.sock;
+      // 网络卡住时别越攒越多（攒下的说出去也晚了）
+      if (call.state === "live" && sock?.readyState === 1 && sock.bufferedAmount < 64 * 1024) sock.send(e.data);
     };
-    pc.onconnectionstatechange = () => {
-      const st = pc.connectionState;
-      clearTimeout(call.dropTimer);
-      if (st === "failed" || st === "closed") endCall("语音连接断开了");
-      // 网络抖一下会短暂 disconnected，几秒内没恢复才算断
-      else if (st === "disconnected") call.dropTimer = setTimeout(() => endCall("语音连接断开了"), 5000);
-    };
-    call.micLevel = meter(call.mic);
-    await pc.setLocalDescription(await pc.createOffer());
-    await iceGathered(pc, 1500);
+    // 服务器发来的 → 播放 → 扬声器
+    const play = new AudioWorkletNode(ctx, "rt-play", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+    call.play = play;
+    call.nodes.push(src, capture, sink, play);
+    call.micLevel = meter(src);
+    call.outLevel = meter(play);
+    if (appleAudio) {
+      play.connect(ctx.destination);
+    } else {
+      const dest = ctx.createMediaStreamDestination();
+      play.connect(dest);
+      call.nodes.push(dest);
+      try {
+        call.loop = await loopback(dest.stream);
+        call.audio.srcObject = call.loop.stream;
+        call.audio.play().catch(() => {});
+      } catch {
+        // 环回建不起来：直接放（可能有回声）
+        play.connect(ctx.destination);
+      }
+    }
     if (call.state === "idle") return;
-    const res = await WS.request({ t: "rt", op: "start", key, sdp: pc.localDescription.sdp }, 30_000);
+    const prefs = loadPrefs();
+    await WS.request({ t: "rt", op: "start", key, voice: prefs.voice, language: prefs.language }, 40_000);
     if (call.state === "idle") return;
-    await pc.setRemoteDescription({ type: "answer", sdp: res.sdp });
     call.state = "live";
     call.startedAt = Date.now();
     render();
@@ -123,15 +201,26 @@ export function endCall(reason, fromServer = false) {
   const key = call.key;
   call.state = "idle";
   if (key && !fromServer) WS.raw({ t: "rt", op: "stop", key });
-  clearTimeout(call.dropTimer);
   cancelAnimationFrame(call.raf);
-  call.pc?.close();
-  call.pc = null;
   stopTracks();
-  if (call.audio) call.audio.srcObject = null;
+  call.loop?.close();
+  call.loop = null;
+  call.play = null;
+  if (call.audio) {
+    call.audio.pause();
+    call.audio.srcObject = null;
+  }
   call.audio = null;
-  call.ctx?.close().catch(() => {});
-  call.ctx = null;
+  // 不 close：iOS 上关掉接过麦克风的 AudioContext，之后再开麦克风常常是静音的。断开节点、先暂停，下次点击时恢复
+  for (const n of call.nodes) {
+    try {
+      n.disconnect();
+    } catch {
+      // 已经断开
+    }
+  }
+  call.nodes = [];
+  if (sharedCtx?.state === "running") sharedCtx.suspend().catch(() => {});
   call.micLevel = call.outLevel = null;
   call.key = null;
   call.panel?.remove();
@@ -179,12 +268,14 @@ function mountPanel() {
   if (!call.panel) {
     const bars = [0, 1, 2, 3, 4].map(() => h("span", { class: "call-bar" }));
     const mute = h("button", { class: "call-ctl", title: "静音", "aria-label": "静音", onclick: toggleMute }, icon("mic"));
+    const gear = h("button", { class: "call-ctl", title: "音色和语言", "aria-label": "音色和语言", "aria-expanded": "false", onclick: toggleOpts }, icon("gear"));
     const end = h("button", { class: "call-ctl call-end", title: "结束语音对话", "aria-label": "结束语音对话", onclick: () => endCall() }, "结束");
     const status = h("span", { class: "call-status" });
     const time = h("span", { class: "call-time" });
     const who = h("span", { class: "call-who" });
     const text = h("span", { class: "call-text" });
-    call.els = { bars, mute, status, time, who, text };
+    const opts = optsRow();
+    call.els = { bars, mute, gear, opts, status, time, who, text };
     call.panel = h(
       "div",
       { class: "call-panel", role: "region", "aria-label": "语音对话" },
@@ -193,8 +284,9 @@ function mountPanel() {
         { class: "call-main" },
         h("div", { class: "call-wave", "aria-hidden": "true" }, bars),
         h("div", { class: "call-info" }, h("div", { class: "call-line" }, status, time), h("div", { class: "call-caption", "aria-live": "polite" }, who, text)),
-        h("div", { class: "call-ctls" }, mute, end),
+        h("div", { class: "call-ctls" }, mute, gear, end),
       ),
+      opts,
     );
   }
   ui.composer.classList.add("in-call");
@@ -202,6 +294,43 @@ function mountPanel() {
   render();
   cancelAnimationFrame(call.raf);
   call.raf = requestAnimationFrame(tick);
+}
+
+/** 通话条下面展开的一行：音色、语言。通话中改了就用新设置重新连一次（Codex 那边对话上下文还在） */
+function optsRow() {
+  const prefs = loadPrefs();
+  const pick = (label, list, value, name) => {
+    const sel = h("select", { "aria-label": label }, list.map(([v, t]) => h("option", { value: v }, t)));
+    sel.value = list.some(([v]) => v === value) ? value : "";
+    sel.addEventListener("change", () => {
+      savePrefs({ ...loadPrefs(), [name]: sel.value });
+      restartCall();
+    });
+    return h("label", { class: "call-opt" }, h("span", {}, label), sel);
+  };
+  return h(
+    "div",
+    { class: "call-opts", hidden: true },
+    pick("音色", VOICES, prefs.voice, "voice"),
+    pick("语言", LANGUAGES, prefs.language, "language"),
+    h("div", { class: "call-opts-hint" }, "记在这台设备上。通话中改了会重新连接，对话内容不受影响"),
+  );
+}
+
+function toggleOpts() {
+  const { opts, gear } = call.els;
+  opts.hidden = !opts.hidden;
+  gear.classList.toggle("active", !opts.hidden);
+  gear.setAttribute("aria-expanded", String(!opts.hidden));
+}
+
+/** 用新的音色 / 语言重连：挂掉当前这通，马上再开（在选择框的操作里，iOS 也允许播放） */
+function restartCall() {
+  if (call.state === "idle") return;
+  endCall("");
+  void startCall();
+  // startCall 同步就把新的通话条挂上了：设置行保持展开，方便接着试别的音色
+  if (call.els) toggleOpts();
 }
 
 function toggleMute() {
@@ -255,15 +384,42 @@ function clock(ms) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** 一路声音的音量（0~1 的均方根），给动画用 */
-function meter(stream) {
+/** 整个页面共用一个 AudioContext（iOS 上反复新建、关闭会把麦克风搞坏），在点击里调用来建 / 恢复 */
+let sharedCtx = null;
+function audioCtx() {
   try {
-    call.ctx ??= new AudioContext();
-    void call.ctx.resume();
-    const src = call.ctx.createMediaStreamSource(stream);
-    const an = call.ctx.createAnalyser();
+    if (!sharedCtx || sharedCtx.state === "closed") sharedCtx = new (window.AudioContext ?? window.webkitAudioContext)();
+    if (sharedCtx.state !== "running") sharedCtx.resume().catch(() => {});
+  } catch {
+    sharedCtx = null;
+  }
+  return sharedCtx;
+}
+
+/** 轨道 muted 时等它恢复一会儿；还是不行就报错 */
+function waitUnmute(track, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      track.removeEventListener("unmute", ok);
+      reject(new Error("麦克风被系统静音了，请检查是否有其他应用在用麦克风，或刷新页面后重试"));
+    }, ms);
+    const ok = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    track.addEventListener("unmute", ok, { once: true });
+  });
+}
+
+/** 一个节点的音量（0~1 的均方根），给动画用 */
+function meter(node) {
+  try {
+    const ctx = audioCtx();
+    if (!ctx) return null;
+    const an = ctx.createAnalyser();
     an.fftSize = 512;
-    src.connect(an);
+    node.connect(an);
+    call.nodes.push(an);
     const buf = new Float32Array(an.fftSize);
     return () => {
       an.getFloatTimeDomainData(buf);
@@ -276,18 +432,54 @@ function meter(stream) {
   }
 }
 
-/** 等 ICE 候选收集完（最多 ms 毫秒）：offer 里带上候选，不用另外传 */
-function iceGathered(pc, ms) {
-  if (pc.iceGatheringState === "complete") return Promise.resolve();
-  return new Promise((resolve) => {
-    const done = () => {
-      pc.removeEventListener("icegatheringstatechange", check);
-      resolve();
-    };
-    const check = () => pc.iceGatheringState === "complete" && done();
-    pc.addEventListener("icegatheringstatechange", check);
-    setTimeout(done, ms);
-  });
+/** 每个 AudioContext 加载一次 worklet */
+const workletLoaded = new WeakMap();
+function loadWorklet(ctx) {
+  let p = workletLoaded.get(ctx);
+  if (!p) {
+    p = ctx.audioWorklet.addModule(new URL("../lib/rt-worklet.js", import.meta.url));
+    p.catch(() => workletLoaded.delete(ctx));
+    workletLoaded.set(ctx, p);
+  }
+  return p;
+}
+
+/** 本页里一对 RTCPeerConnection 把声音环回一下，让浏览器的回声消除认得它（见 appleAudio） */
+async function loopback(stream) {
+  const a = new RTCPeerConnection();
+  const b = new RTCPeerConnection();
+  const close = () => {
+    a.close();
+    b.close();
+  };
+  try {
+    a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {});
+    b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {});
+    const got = new Promise((resolve, reject) => {
+      b.ontrack = (e) => resolve(e.streams[0] ?? new MediaStream([e.track]));
+      setTimeout(() => reject(new Error("环回超时")), 3000);
+    });
+    for (const t of stream.getTracks()) a.addTrack(t, stream);
+    await a.setLocalDescription(await a.createOffer());
+    await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription(await b.createAnswer());
+    await a.setRemoteDescription(b.localDescription);
+    return { stream: await got, close };
+  } catch (err) {
+    close();
+    throw err;
+  }
+}
+
+/** 服务器转来的回复声音（WebSocket 二进制帧：24kHz 16 位 PCM） */
+export function onRealtimeAudio(buf) {
+  if (call.state === "idle" || !call.play) return;
+  call.play.port.postMessage(buf, [buf]);
+}
+
+/** WebSocket 断了：声音走不了了，挂断 */
+export function onSocketLost() {
+  endCall("和服务器的连接断开了，语音对话已结束", true);
 }
 
 window.addEventListener("pagehide", () => endCall());

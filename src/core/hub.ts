@@ -50,6 +50,7 @@ import type {
   InteractionSpec,
   ModelInfo,
   RealtimeEvent,
+  RealtimeOptions,
   RuntimeInfo,
   SessionSummary,
   StepKind,
@@ -2057,7 +2058,7 @@ class Hub extends EventEmitter<{
   // ---------- 实时语音对话（只有 Codex） ----------
 
   /** 开始通话：offer 是浏览器的 WebRTC SDP，返回对端 answer。会话没拉起来就按绑定拉起 */
-  async realtimeStart(key: string, offer: string): Promise<string> {
+  async realtimeStart(key: string, offer: string, opts?: RealtimeOptions): Promise<string> {
     const conv = getConversation(key);
     if (!conv) throw new Error("会话不存在");
     if (conv.agent !== "codex") throw new Error("只有 Codex 的对话能语音对话");
@@ -2065,7 +2066,7 @@ class Hub extends EventEmitter<{
     const session = this.session(key);
     if (!session.startRealtime) throw new Error("这个 agent 不支持语音对话");
     touchConversation(key);
-    return session.startRealtime(offer);
+    return session.startRealtime(offer, opts);
   }
 
   async realtimeStop(key: string): Promise<void> {

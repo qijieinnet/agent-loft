@@ -19,6 +19,7 @@ import { skillEvents } from "../../core/skills.js";
 import { expertEvents } from "../../core/experts.js";
 import { enforceTerminalAccess, killAllTerminals, terminalEvents, watchTerminalAccess } from "../../core/terminals.js";
 import { RUNNING_VERSION } from "../../core/upgrade.js";
+import { RealtimeRelay, RELAY_RATE } from "../../core/realtime-relay.js";
 import type { RealtimeEvent, Settlement } from "../../core/types.js";
 import { getUser, isAdmin, legacyOwnerId, userEvents, type User } from "../../core/users.js";
 import { currentUser, handleApi, takeUploads } from "./api.js";
@@ -268,7 +269,23 @@ type Client = {
   pushEndpoint: string | null;
   /** 最后一次收到这个页面的消息（含 ping） */
   seen: number;
+  /** 这个页面正在打的语音对话：声音经这里中转（relay 建好之前是 undefined） */
+  rt?: { key: string; relay?: RealtimeRelay };
 };
+
+/** 一块麦克风 PCM 的上限（正常是 20ms ≈ 1KB） */
+const MAX_AUDIO_CHUNK = 64 * 1024;
+/** 发给页面的声音积压超过这么多就丢（手机网络卡住时别越攒越多、越放越晚） */
+const MAX_AUDIO_BACKLOG = 256 * 1024;
+
+/** 收掉这个页面的语音中转；stopCall：顺带让 Codex 挂断 */
+function endRelay(client: Client, stopCall: boolean): void {
+  const rt = client.rt;
+  if (!rt) return;
+  client.rt = undefined;
+  rt.relay?.close();
+  if (stopCall) void hub.realtimeStop(rt.key).catch(() => {});
+}
 
 /** 每次进程启动换一个：客户端发现变了，就知道 seq 已经从头计数，得整页重拉 */
 const EPOCH = Math.random().toString(36).slice(2, 10);
@@ -305,7 +322,10 @@ function broadcastEvent(env: EventEnvelope): void {
 
 /** 语音对话的字幕和状态：只推给订阅了这条对话的页面（不进缓冲区，刷新后不重放） */
 function broadcastRealtime({ key, ev }: { key: string; ev: RealtimeEvent }): void {
-  for (const client of clients) if (client.subs.has(key) && canSeeKey(client.user, key)) send(client, { t: "rt", key, ev });
+  for (const client of clients) {
+    if (ev.type === "closed" && client.rt?.key === key && client.rt.relay) endRelay(client, false);
+    if (client.subs.has(key) && canSeeKey(client.user, key)) send(client, { t: "rt", key, ev });
+  }
 }
 
 function broadcastInteraction(i: Interaction): void {
@@ -533,19 +553,45 @@ function handleClientMessage(client: Client, raw: string): void {
       }
 
       case "rt": {
-        // 实时语音对话：start 带浏览器的 SDP offer，ack 回对端 answer；stop 挂断
+        // 实时语音对话：服务器自己和 OpenAI 建 WebRTC，声音在这条 WebSocket 上中转（二进制帧，24kHz 16 位 PCM）。
+        // start 等连上了才 ack；stop 挂断
         if (!getConversation(key) || !canSeeKey(user, key)) return ack(false, { error: "会话不存在" });
         if (msg.op === "start") {
-          const sdp = typeof msg.sdp === "string" ? msg.sdp : "";
-          if (!sdp || sdp.length > 50_000) return ack(false, { error: "SDP 不对" });
+          endRelay(client, false);
+          const rt: NonNullable<Client["rt"]> = { key };
+          client.rt = rt;
           client.subs.add(key);
-          void hub
-            .realtimeStart(key, sdp)
-            .then((answer) => ack(true, { sdp: answer }))
-            .catch((err) => ack(false, { error: err instanceof Error ? err.message : String(err) }));
+          const opts = {
+            ...(typeof msg.voice === "string" && msg.voice ? { voice: msg.voice } : {}),
+            ...(typeof msg.language === "string" && msg.language ? { language: msg.language } : {}),
+          };
+          void (async () => {
+            const { relay, offer } = await RealtimeRelay.create();
+            if (client.rt !== rt) {
+              relay.close();
+              throw new Error("已挂断");
+            }
+            rt.relay = relay;
+            relay.onAudio = (pcm) => {
+              if (client.ws.readyState === client.ws.OPEN && client.ws.bufferedAmount < MAX_AUDIO_BACKLOG) client.ws.send(pcm, { binary: true });
+            };
+            relay.onFailed = (reason) => {
+              if (client.rt !== rt) return;
+              endRelay(client, true);
+              send(client, { t: "rt", key, ev: { type: "closed", reason } });
+            };
+            const answer = await hub.realtimeStart(key, offer, opts);
+            if (client.rt !== rt) throw new Error("已挂断");
+            await relay.accept(answer);
+            ack(true, { rate: RELAY_RATE });
+          })().catch((err) => {
+            if (client.rt === rt) endRelay(client, true);
+            ack(false, { error: err instanceof Error ? err.message : String(err) });
+          });
           return;
         }
         if (msg.op === "stop") {
+          if (client.rt?.key === key) endRelay(client, false);
           void hub.realtimeStop(key).then(() => ack(true), (err) => ack(false, { error: err instanceof Error ? err.message : String(err) }));
           return;
         }
@@ -653,15 +699,27 @@ export async function startWeb(): Promise<void> {
         const client: Client = { ws, subs: new Set(), alive: true, token, user, visible: false, viewing: null, foreground: false, pushEndpoint: null, seen: Date.now() };
         clients.add(client);
         ws.on("pong", () => (client.alive = true));
-        ws.on("message", (data) => {
+        ws.on("message", (data, isBinary) => {
           try {
+            // 二进制帧只有一种：语音对话里麦克风的 PCM
+            if (isBinary) {
+              const chunk = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as Buffer);
+              if (chunk.length <= MAX_AUDIO_CHUNK) client.rt?.relay?.pushAudio(chunk);
+              return;
+            }
             handleClientMessage(client, data.toString());
           } catch (err) {
             console.error("[web] 处理 WebSocket 消息出错:", err);
           }
         });
-        ws.on("close", () => clients.delete(client));
-        ws.on("error", () => clients.delete(client));
+        ws.on("close", () => {
+          clients.delete(client);
+          endRelay(client, true);
+        });
+        ws.on("error", () => {
+          clients.delete(client);
+          endRelay(client, true);
+        });
         send(client, { t: "hello", seq: hub.currentSeq(), epoch: EPOCH, version: RUNNING_VERSION });
       });
     } catch (err) {

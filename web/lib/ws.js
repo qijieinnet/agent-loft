@@ -11,7 +11,7 @@ import { setBusy } from "../views/composer.js";
 import { SH, shownHere } from "./shell.js";
 import { currentPushSub } from "./push.js";
 import { renderScheduled } from "../views/schedule.js";
-import { onRealtimeEvent } from "../views/voice-call.js";
+import { onRealtimeAudio, onRealtimeEvent, onSocketLost } from "../views/voice-call.js";
 import { reloadExperts } from "../views/experts.js";
 
 // ---------- WebSocket ----------
@@ -34,6 +34,8 @@ export const WS = {
     if (this.sock && (this.sock.readyState === 0 || this.sock.readyState === 1)) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const sock = new WebSocket(`${proto}://${location.host}/ws`);
+    // 二进制帧只有语音对话的声音
+    sock.binaryType = "arraybuffer";
     this.sock = sock;
     sock.onopen = () => {
       this.connected = true;
@@ -42,10 +44,11 @@ export const WS = {
       clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => this.raw({ t: "ping" }), 25000);
     };
-    sock.onmessage = (e) => onWsMessage(JSON.parse(e.data));
+    sock.onmessage = (e) => (typeof e.data === "string" ? onWsMessage(JSON.parse(e.data)) : onRealtimeAudio(e.data));
     sock.onclose = async (e) => {
       this.connected = false;
       clearInterval(this.pingTimer);
+      if (this.sock === sock) onSocketLost();
       for (const w of this.waiters.values()) w.reject(new Error("连接已断开"));
       this.waiters.clear();
       if (this.sock !== sock) return;

@@ -20,6 +20,7 @@ import type {
   InteractionSpec,
   InterruptOptions,
   QuestionSpec,
+  RealtimeOptions,
   RuntimeInfo,
   SavedAttachment,
   SessionOptions,
@@ -816,12 +817,12 @@ export class CodexSession implements AgentSession {
   // ---------- 实时语音对话（thread/realtime/*，实验接口） ----------
 
   /**
-   * 浏览器建好 RTCPeerConnection（麦克风 + oai-events 数据通道）把 offer 给过来，app-server 去 OpenAI 建通话，
-   * 对端 answer 从 thread/realtime/sdp 通知回来。声音在浏览器和 OpenAI 之间直连，不经过这里。
+   * offer 是服务器这边的 WebRTC 端点（core/realtime-relay.ts）建的，app-server 去 OpenAI 建通话，
+   * 对端 answer 从 thread/realtime/sdp 通知回来。声音经服务器中转，浏览器那头走 WebSocket。
    * 实测：ChatGPT 账号登录只能走 WebRTC（WebSocket 要 API key），协议版本要 v3。
    * 语音模型把要干的活转交给这条 thread，app-server 自己开一轮（见 turn/started 里的 externalPending）。
    */
-  async startRealtime(offer: string): Promise<string> {
+  async startRealtime(offer: string, opts: RealtimeOptions = {}): Promise<string> {
     if (this.disposed) throw new Error("会话已关闭");
     if (this.rt) await this.stopRealtime();
     const threadId = await this.open();
@@ -853,6 +854,7 @@ export class CodexSession implements AgentSession {
         // 启动背景里有这台机器上最近的会话和目录结构：只给内置专家的管理员
         includeStartupContext: !expert && this.opts.skills?.admin === true,
         ...(context ? { realtimeStartInstructions: context } : {}),
+        ...realtimeVoiceParams(opts),
       });
       return await answer;
     } catch (err) {
@@ -1334,6 +1336,32 @@ export class CodexSession implements AgentSession {
 function kindMark(kind: unknown): string {
   const k = typeof kind === "string" ? kind : (kind as { type?: string } | null)?.type;
   return k === "add" ? "+" : k === "delete" ? "-" : "~";
+}
+
+/** v3 实时语音能用的音色（实测是 thread/realtime/listVoices 里 v1 那组，给 v2 的会报不支持；默认 cove） */
+export const REALTIME_VOICES = ["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"] as const;
+
+/**
+ * 语音模型说哪种话：协议里没有语言参数，用 v3 的 initialItems 放一条 developer 指令。
+ * 不在表里（或「自动」）就不加，跟着用户说的语言走
+ */
+export const REALTIME_LANGUAGES: Record<string, string> = {
+  "zh-CN": "Always speak Mandarin Chinese (普通话) and use Simplified Chinese in any text, no matter what language the user speaks, unless the user explicitly asks you to switch languages.",
+  "zh-TW": "Always speak Mandarin Chinese (國語) and use Traditional Chinese in any text, no matter what language the user speaks, unless the user explicitly asks you to switch languages.",
+  yue: "Always speak Cantonese (粵語/廣東話), no matter what language the user speaks, unless the user explicitly asks you to switch languages.",
+  en: "Always speak English, no matter what language the user speaks, unless the user explicitly asks you to switch languages.",
+  ja: "Always speak Japanese (日本語), no matter what language the user speaks, unless the user explicitly asks you to switch languages.",
+  ko: "Always speak Korean (한국어), no matter what language the user speaks, unless the user explicitly asks you to switch languages.",
+};
+
+/** 页面选的音色、语言 → thread/realtime/start 的参数；认不出的忽略（用 Codex 默认） */
+export function realtimeVoiceParams(opts: RealtimeOptions): Record<string, unknown> {
+  const voice = (REALTIME_VOICES as readonly string[]).includes(opts.voice ?? "") ? opts.voice : undefined;
+  const language = opts.language ? REALTIME_LANGUAGES[opts.language] : undefined;
+  return {
+    ...(voice ? { voice } : {}),
+    ...(language ? { initialItems: [{ role: "developer", text: language }] } : {}),
+  };
 }
 
 /** 语音转交的一轮没拿到用户说的话时显示的占位 */

@@ -144,6 +144,9 @@ export type AgentEvents = {
   onRealtime?: (ev: RealtimeEvent) => void;
 };
 
+/** 实时语音对话的音色和语言（页面上选的，没选就用 Codex 默认） */
+export type RealtimeOptions = { voice?: string; language?: string };
+
 /** 实时语音对话的事件（Codex 的 thread/realtime/*） */
 export type RealtimeEvent =
   | { type: "started" }
@@ -315,7 +318,7 @@ export interface AgentSession {
   /** 开关计划模式。Claude 立即生效，Codex 下一轮生效 */
   setPlan?(on: boolean): Promise<void>;
   /** 开始实时语音对话（只有 Codex）：offer 是浏览器的 WebRTC SDP，返回对端的 answer */
-  startRealtime?(offer: string): Promise<string>;
+  startRealtime?(offer: string, opts?: RealtimeOptions): Promise<string>;
   /** 挂断实时语音对话；没在通话就什么都不做 */
   stopRealtime?(): Promise<void>;
 }
