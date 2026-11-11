@@ -270,7 +270,7 @@ type Client = {
   /** 最后一次收到这个页面的消息（含 ping） */
   seen: number;
   /** 这个页面正在打的语音对话：声音经这里中转（relay 建好之前是 undefined） */
-  rt?: { key: string; relay?: RealtimeRelay };
+  rt?: { key: string; relay?: RealtimeRelay; startedAt?: number };
 };
 
 /** 一块麦克风 PCM 的上限（正常是 20ms ≈ 1KB） */
@@ -283,8 +283,34 @@ function endRelay(client: Client, stopCall: boolean): void {
   const rt = client.rt;
   if (!rt) return;
   client.rt = undefined;
-  rt.relay?.close();
+  if (rt.relay) {
+    rt.relay.close();
+    if (rt.startedAt) console.log(`[rt] ${rt.key} 通话结束 ${relaySummary(rt.relay.stats, Date.now() - rt.startedAt)}`);
+  }
   if (stopCall) void hub.realtimeStop(rt.key).catch(() => {});
+}
+
+function relaySummary(s: RealtimeRelay["stats"], ms: number): string {
+  const pct = (n: number, total: number) => (total ? `${((n / total) * 100).toFixed(1)}%` : "0%");
+  return [
+    `时长 ${Math.round(ms / 1000)}s`,
+    `下行 收 ${s.rxPackets} 包 丢 ${s.rxLost}（${pct(s.rxLost, s.rxPackets + s.rxLost)}）补 ${s.rxConcealed}`,
+    `上行 发 ${s.txFrames} 帧 断流 ${s.txUnderruns} 次 丢 ${s.txDropped} 帧`,
+  ].join(" · ");
+}
+
+/** 浏览器那头报上来的播放 / 采集统计（数字字段才要，防止乱写日志） */
+function clientRtSummary(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const parts: string[] = [];
+  const labels: Record<string, string> = { starves: "播放放空", jitter: "其中抖动", jbMs: "缓冲", skippedMs: "跳过", sendDropped: "采集丢块", micLost: "麦克风中断", ua: "" };
+  for (const [k, label] of Object.entries(labels)) {
+    const v = (raw as Record<string, unknown>)[k];
+    if (k === "ua") {
+      if (typeof v === "string") parts.push(v.slice(0, 40).replace(/[^\w ./-]/g, ""));
+    } else if (typeof v === "number" && Number.isFinite(v)) parts.push(`${label} ${Math.round(v)}${k.endsWith("Ms") ? "ms" : ""}`);
+  }
+  return parts.length ? parts.join(" · ") : undefined;
 }
 
 /** 每次进程启动换一个：客户端发现变了，就知道 seq 已经从头计数，得整页重拉 */
@@ -572,6 +598,7 @@ function handleClientMessage(client: Client, raw: string): void {
               throw new Error("已挂断");
             }
             rt.relay = relay;
+            rt.startedAt = Date.now();
             relay.onAudio = (pcm) => {
               if (client.ws.readyState === client.ws.OPEN && client.ws.bufferedAmount < MAX_AUDIO_BACKLOG) client.ws.send(pcm, { binary: true });
             };
@@ -590,6 +617,9 @@ function handleClientMessage(client: Client, raw: string): void {
           });
           return;
         }
+        const clientStats = clientRtSummary(msg.stats);
+        if (clientStats) console.log(`[rt] ${key} 浏览器 ${clientStats}`);
+        if (msg.op === "stats") return ack(true);
         if (msg.op === "stop") {
           if (client.rt?.key === key) endRelay(client, false);
           void hub.realtimeStop(key).then(() => ack(true), (err) => ack(false, { error: err instanceof Error ? err.message : String(err) }));

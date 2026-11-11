@@ -29,6 +29,17 @@ const call = {
   mic: null,
   /** 播放用的 worklet 节点：服务器发来的 PCM 交给它 */
   play: null,
+  /** 采集用的 worklet 节点、接着麦克风的源节点（锁屏回来麦克风换了要重接） */
+  capture: null,
+  src: null,
+  /** 传输统计：play 那头报上来的 + 这边数的，挂断时带给服务器记日志 */
+  stats: null,
+  /** 屏幕常亮锁（通话中别自动锁屏：iOS 锁屏后网页收不到音） */
+  wakeLock: null,
+  /** 最近一次听到声音的时刻：状态文字防闪（字和字之间的停顿别跳回「正在听」） */
+  loudAt: 0,
+  /** 正在重新拿麦克风 */
+  recovering: false,
   /** Chrome 等的回声消除环回（见 appleAudio） */
   loop: null,
   audio: null,
@@ -139,6 +150,9 @@ async function startCall() {
   call.compact = false;
   call.muted = false;
   call.caption = { role: null, text: "", done: false };
+  call.stats = { sendDropped: 0, micLost: 0 };
+  call.loudAt = 0;
+  call.recovering = false;
   // 在点击里建好、先 play 一次：iOS 上不是用户手势里起的播放会被拦
   call.audio = h("audio", { autoplay: true, playsinline: true });
   call.audio.play().catch(() => {});
@@ -160,30 +174,35 @@ async function startCall() {
     if (!track || track.readyState !== "live") throw new Error("麦克风没能打开，请关掉其他在用麦克风的页面或应用后重试");
     track.enabled = !call.muted;
     if (track.muted) await waitUnmute(track, 1500);
+    watchTrack(track);
     if (session !== call.session) return;
     const ctx = audioCtx();
     if (!ctx) throw new Error("浏览器不支持音频处理");
     await loadWorklet(ctx);
     if (session !== call.session) return;
-    // 麦克风 → 采集（重采样到 24kHz，20ms 一块）→ WebSocket
-    const src = ctx.createMediaStreamSource(call.mic);
+    // 麦克风 → 采集（低通、重采样到 24kHz，20ms 一块）→ WebSocket
     const capture = new AudioWorkletNode(ctx, "rt-capture", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    call.capture = capture;
     // 没有输出接到 destination 的节点有的浏览器不跑：接一个静音的
     const sink = ctx.createGain();
     sink.gain.value = 0;
-    src.connect(capture);
     capture.connect(sink);
     sink.connect(ctx.destination);
     capture.port.onmessage = (e) => {
+      if (call.state !== "live") return;
       const sock = WS.sock;
       // 网络卡住时别越攒越多（攒下的说出去也晚了）
-      if (call.state === "live" && sock?.readyState === 1 && sock.bufferedAmount < 64 * 1024) sock.send(e.data);
+      if (sock?.readyState === 1 && sock.bufferedAmount < 64 * 1024) sock.send(e.data);
+      else call.stats.sendDropped++;
     };
+    attachMic(ctx);
     // 服务器发来的 → 播放 → 扬声器
     const play = new AudioWorkletNode(ctx, "rt-play", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+    play.port.onmessage = (e) => {
+      if (e.data && typeof e.data === "object") Object.assign(call.stats, e.data);
+    };
     call.play = play;
-    call.nodes.push(src, capture, sink, play);
-    call.micLevel = meter(src);
+    call.nodes.push(capture, sink, play);
     call.outLevel = meter(play);
     if (appleAudio) {
       play.connect(ctx.destination);
@@ -209,6 +228,7 @@ async function startCall() {
     if (session !== call.session) return;
     call.state = "live";
     call.startedAt = Date.now();
+    void keepAwake();
     render();
   } catch (err) {
     if (session !== call.session) return;
@@ -222,13 +242,17 @@ export function endCall(reason, fromServer = false) {
   if (call.state === "idle") return;
   const key = call.key;
   ++call.session;
+  const wasLive = call.state === "live";
   call.state = "idle";
-  if (key && !fromServer) WS.raw({ t: "rt", op: "stop", key });
+  const stats = wasLive && call.stats ? { ...call.stats, ua: deviceLabel() } : undefined;
+  if (key && !fromServer) WS.raw({ t: "rt", op: "stop", key, stats });
+  else if (key && stats) WS.raw({ t: "rt", op: "stats", key, stats });
   cancelAnimationFrame(call.raf);
+  releaseWakeLock();
   stopTracks();
   call.loop?.close();
   call.loop = null;
-  call.play = null;
+  call.play = call.capture = call.src = null;
   if (call.audio) {
     call.audio.pause();
     call.audio.srcObject = null;
@@ -261,6 +285,102 @@ function stopTracks() {
   for (const t of call.mic?.getTracks() ?? []) t.stop();
   call.mic = null;
 }
+
+/** 把 call.mic 接到采集节点上（换了麦克风先断开旧的） */
+function attachMic(ctx) {
+  try {
+    call.src?.disconnect();
+  } catch {
+    // 已经断开
+  }
+  const src = ctx.createMediaStreamSource(call.mic);
+  src.connect(call.capture);
+  call.src = src;
+  call.nodes.push(src);
+  call.micLevel = meter(src);
+}
+
+/** 盯着麦克风轨道：被系统结束了（锁屏、来电、被别的应用抢走）就试着重新拿 */
+function watchTrack(track) {
+  const session = call.session;
+  track.addEventListener?.("ended", () => {
+    if (session !== call.session || call.state === "idle" || call.mic?.getAudioTracks()[0] !== track) return;
+    call.stats.micLost++;
+    if (document.visibilityState === "visible") void recoverMic();
+  });
+}
+
+/**
+ * 从后台 / 锁屏回来：iOS 上锁屏时网页拿不到麦克风（PWA 也一样，系统不让），AudioContext 会被打断成 interrupted，
+ * 麦克风轨道可能已经结束或一直静音。这里把 AudioContext 恢复、麦克风重新拿一次接回去
+ */
+async function recoverMic() {
+  if (call.state !== "live" || call.recovering) return;
+  const session = call.session;
+  call.recovering = true;
+  try {
+    const ctx = audioCtx();
+    if (!ctx) return;
+    const old = call.mic?.getAudioTracks()[0];
+    if (old && old.readyState === "live" && !old.muted) return;
+    if (old?.muted) {
+      // 刚回到前台，系统一般马上就还回来
+      const back = await waitUnmute(old, 800).then(() => true, () => false);
+      if (back || session !== call.session) return;
+    }
+    const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (session !== call.session) {
+      for (const t of mic.getTracks()) t.stop();
+      return;
+    }
+    stopTracks();
+    call.mic = mic;
+    const track = mic.getAudioTracks()[0];
+    if (track) {
+      track.enabled = !call.muted;
+      watchTrack(track);
+    }
+    attachMic(ctx);
+    toast("麦克风已恢复（锁屏时 iOS 不让网页收音）");
+  } catch {
+    if (session === call.session) toast("麦克风被系统中断了，挂断后重新打一通试试", 4000);
+  } finally {
+    if (session === call.session) call.recovering = false;
+  }
+}
+
+/** 通话中保持屏幕常亮：iOS 自动锁屏后网页收不到音（手动按锁屏键挡不住） */
+async function keepAwake() {
+  if (!navigator.wakeLock || document.visibilityState !== "visible" || call.state !== "live") return;
+  try {
+    const lock = await navigator.wakeLock.request("screen");
+    if (call.state !== "live") return void lock.release().catch(() => {});
+    call.wakeLock = lock;
+    // 切到后台系统会自动释放，回来时再要
+    lock.addEventListener?.("release", () => {
+      if (call.wakeLock === lock) call.wakeLock = null;
+    });
+  } catch {
+    // 不支持 / 低电量模式下拒绝：算了
+  }
+}
+
+function releaseWakeLock() {
+  const lock = call.wakeLock;
+  call.wakeLock = null;
+  lock?.release().catch(() => {});
+}
+
+function deviceLabel() {
+  const standalone = window.matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true;
+  return `${appleAudio ? "Apple" : "Other"}${standalone ? " PWA" : ""}`;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || call.state !== "live") return;
+  void keepAwake();
+  void recoverMic();
+});
 
 /** 服务端转来的通话事件（ws 的 t: "rt"） */
 export function onRealtimeEvent(msg) {
@@ -431,7 +551,9 @@ function tick() {
   if (!call.els) return;
   const mic = call.muted ? 0 : (call.micLevel?.() ?? 0);
   const out = call.outLevel?.() ?? 0;
-  const speaking = out > 0.02;
+  // 字和字之间的停顿也会掉到阈值以下：响过之后 0.4 秒内都算在说，状态别来回闪
+  if (out > 0.02) call.loudAt = performance.now();
+  const speaking = out > 0.02 || performance.now() - call.loudAt < 400;
   const level = Math.min(1, (speaking ? out : mic) * 6);
   call.els.orb.style.setProperty("--voice-scale", (1 + level * 0.14).toFixed(3));
   call.panel.classList.toggle("speaking", speaking);

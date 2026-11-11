@@ -13,13 +13,36 @@ export const RELAY_RATE = 24000;
 const FRAME = 480;
 const FRAME_BYTES = FRAME * 2;
 const RTP_STEP = 960;
-/** 浏览器发过来的还没凑够一帧的、积压的上限（约 1 秒），再多说明来不及发，丢掉旧的 */
-const MAX_PENDING = RELAY_RATE * 2;
+/**
+ * 上行（麦克风）按 20ms 的节拍匀速发给 OpenAI：浏览器经 WebSocket（TCP、过代理 / 隧道）送来的声音是一阵一阵的，
+ * 来了就发，OpenAI 那头的抖动缓冲会把晚到的丢掉、把空档当成你说完了，识别断断续续。
+ * 断流后攒够 PREBUFFER 再开始发；积压超过 CATCHUP 就每拍多发一帧追上；超过 MAX_PENDING 丢掉最旧的
+ */
+const PREBUFFER = FRAME_BYTES * 3;
+const CATCHUP = FRAME_BYTES * 10;
+const MAX_PENDING = FRAME_BYTES * 50;
+const FRAME_MS = 20;
+const PACE_MS = 10;
 /**
  * 收的方向丢了几个包以内用 Opus 的丢包补偿填上（解码空包 = PLC，一次给 120ms，按丢的帧数截）。
  * 服务器到 OpenAI 这段常过代理，实测丢 2~3%：不填的话浏览器那头的缓冲每丢一包就少 20ms，过一阵就放空、一卡一卡
  */
 const MAX_CONCEAL = 6;
+/** libopus 的 CTL 编号 */
+const OPUS_SET_INBAND_FEC = 4012;
+const OPUS_SET_PACKET_LOSS_PERC = 4014;
+
+/** 一通电话的传输统计（挂断时打到日志里，用来判断卡在哪一段） */
+export interface RelayStats {
+  /** 下行（OpenAI → 这里）收到的包、序号上看丢了的包、用丢包补偿填上的帧 */
+  rxPackets: number;
+  rxLost: number;
+  rxConcealed: number;
+  /** 上行（这里 → OpenAI）发出的帧、断流（浏览器没及时送来）次数、积压太多丢掉的帧 */
+  txFrames: number;
+  txUnderruns: number;
+  txDropped: number;
+}
 
 export class RealtimeRelay {
   /** 收到 OpenAI 的声音（解码后的 PCM），交给浏览器 */
@@ -38,8 +61,23 @@ export class RealtimeRelay {
   /** 收到的上一个 RTP 包的序号 */
   private lastSeq: number | undefined;
   private dropTimer: NodeJS.Timeout | undefined;
+  private paceTimer: NodeJS.Timeout | undefined;
+  /** 上行正在匀速发（断流后要重新攒够 PREBUFFER） */
+  private sending = false;
+  /** 下一帧该发的时刻、上一帧实际发出的时刻（performance.now） */
+  private nextAt = 0;
+  private lastSentAt = 0;
+  readonly stats: RelayStats = { rxPackets: 0, rxLost: 0, rxConcealed: 0, txFrames: 0, txUnderruns: 0, txDropped: 0 };
 
   private constructor() {
+    // 带内 FEC：下一个包里捎上前一个包的低码率副本，丢一个包 OpenAI 那头能补回来（服务器到 OpenAI 常过代理，会丢包）
+    try {
+      this.encoder.setBitrate(32000);
+      this.encoder.encoderCTL(OPUS_SET_INBAND_FEC, 1);
+      this.encoder.encoderCTL(OPUS_SET_PACKET_LOSS_PERC, 10);
+    } catch {
+      // 设不上就用默认的
+    }
     this.pc = new RTCPeerConnection({
       codecs: { audio: [new RTCRtpCodecParameters({ mimeType: "audio/opus", clockRate: 48000, channels: 2 })] },
     });
@@ -52,9 +90,13 @@ export class RealtimeRelay {
           const gap = (seq - this.lastSeq) & 0xffff;
           // 重复的、迟到的（已经补过或跳过了）：丢掉，别打乱顺序
           if (gap === 0 || gap > 0x8000) return;
-          if (gap > 1 && gap - 1 <= MAX_CONCEAL) this.conceal(gap - 1);
+          if (gap > 1) {
+            this.stats.rxLost += gap - 1;
+            if (gap - 1 <= MAX_CONCEAL) this.conceal(gap - 1);
+          }
         }
         this.lastSeq = seq;
+        this.stats.rxPackets++;
         try {
           this.onAudio(Buffer.from(this.decoder.decode(rtp.payload)));
         } catch {
@@ -92,22 +134,58 @@ export class RealtimeRelay {
     await this.pc.setRemoteDescription({ type: "answer", sdp: answer });
   }
 
-  /** 浏览器发来的麦克风 PCM：凑够 20ms 就编码发出去 */
+  /** 浏览器发来的麦克风 PCM：先攒着，由节拍器每 20ms 编码发一帧（见 PREBUFFER） */
   pushAudio(pcm: Buffer): void {
     if (this.closed || !pcm.length) return;
     this.pending = this.pending.length ? Buffer.concat([this.pending, pcm]) : Buffer.from(pcm);
-    if (this.pending.length > MAX_PENDING) this.pending = this.pending.subarray(this.pending.length - MAX_PENDING);
-    while (this.pending.length >= FRAME_BYTES) {
-      const frame = this.pending.subarray(0, FRAME_BYTES);
-      this.pending = this.pending.subarray(FRAME_BYTES);
-      this.sendFrame(frame);
+    if (this.pending.length > MAX_PENDING) {
+      const over = this.pending.length - MAX_PENDING;
+      const frames = Math.ceil(over / FRAME_BYTES);
+      this.stats.txDropped += frames;
+      this.pending = this.pending.subarray(Math.min(this.pending.length, frames * FRAME_BYTES));
     }
+    this.paceTimer ??= setInterval(() => this.pace(), PACE_MS);
+    this.pace();
+  }
+
+  /** 节拍器：到点就发一帧；没货了算断流，等重新攒够再发 */
+  private pace(now = performance.now()): void {
+    if (this.closed) return;
+    if (!this.sending) {
+      if (this.pending.length < PREBUFFER) return;
+      this.sending = true;
+      // 断了一阵：时间戳跟着真实时间往前跳，OpenAI 那头当成中间没声音，而不是把后面的当迟到的扔掉
+      if (this.lastSentAt) {
+        const skipped = Math.round((now - this.lastSentAt) / FRAME_MS) - 1;
+        if (skipped > 0) this.ts = (this.ts + skipped * RTP_STEP) >>> 0;
+      }
+      this.nextAt = now;
+    }
+    while (now >= this.nextAt) {
+      if (this.pending.length < FRAME_BYTES) {
+        this.sending = false;
+        this.stats.txUnderruns++;
+        return;
+      }
+      this.sendFrame(this.takeFrame());
+      // 积压多了（浏览器卡了一阵又一下子涌来）：这一拍多发一帧，慢慢追回来
+      if (this.pending.length > CATCHUP) this.sendFrame(this.takeFrame());
+      this.lastSentAt = now;
+      this.nextAt += FRAME_MS;
+    }
+  }
+
+  private takeFrame(): Buffer {
+    const frame = this.pending.subarray(0, FRAME_BYTES);
+    this.pending = this.pending.subarray(FRAME_BYTES);
+    return frame;
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
     clearTimeout(this.dropTimer);
+    clearInterval(this.paceTimer);
     this.pending = Buffer.alloc(0);
     void this.pc.close().catch(() => {});
     for (const codec of [this.encoder, this.decoder]) {
@@ -129,6 +207,7 @@ export class RealtimeRelay {
     const header = new RtpHeader({ sequenceNumber: this.seq, timestamp: this.ts, marker: false, payloadType: 111 });
     this.seq = (this.seq + 1) & 0xffff;
     this.ts = (this.ts + RTP_STEP) >>> 0;
+    this.stats.txFrames++;
     try {
       this.track.writeRtp(new RtpPacket(header, Buffer.from(payload)));
     } catch {
@@ -141,6 +220,7 @@ export class RealtimeRelay {
     try {
       const pcm = this.decoder.decode(Buffer.alloc(0));
       this.onAudio(Buffer.from(pcm.subarray(0, Math.min(pcm.length, frames * FRAME_BYTES))));
+      this.stats.rxConcealed += frames;
     } catch {
       // 补不了就算了
     }
