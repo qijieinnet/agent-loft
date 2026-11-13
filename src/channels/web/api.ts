@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_IDS, config, listWorkspaceDirs, resolveWorkspacePath, saveConfig, type AppConfig } from "../../core/config.js";
+import { expandHomePath } from "../../core/paths.js";
 import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
@@ -352,8 +353,10 @@ function applyConfig(input: Partial<AppConfig>, selfOrigin?: string): void {
       }
       if (id === "workbuddy" && "cliPath" in patch) {
         const cli = (patch as { cliPath?: unknown }).cliPath;
-        if (typeof cli !== "string" || cli.length > 500 || (cli.trim() && !path.isAbsolute(cli.trim()))) throw new HttpError(400, "CLI 路径要写绝对路径，留空自动找");
-        (patch as { cliPath: string }).cliPath = cli.trim();
+        if (typeof cli !== "string" || cli.length > 500) throw new HttpError(400, "CLI 路径要写绝对路径（支持 ~/），留空自动找");
+        const expanded = expandHomePath(cli);
+        if (expanded && !path.isAbsolute(expanded)) throw new HttpError(400, "CLI 路径要写绝对路径（支持 ~/），留空自动找");
+        (patch as { cliPath: string }).cliPath = expanded;
       }
       if (id === "pi" && "defaultEffort" in patch && !["", "off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String((patch as { defaultEffort?: unknown }).defaultEffort))) {
         throw new HttpError(400, "pi 的思考程度只能是 off / minimal / low / medium / high / xhigh / max");
@@ -365,9 +368,9 @@ function applyConfig(input: Partial<AppConfig>, selfOrigin?: string): void {
           if (!(key in p)) continue;
           const v = p[key];
           if (typeof v !== "string" || v.length > 500) throw new HttpError(400, "路径不对");
-          const t = v.trim();
+          const t = expandHomePath(v);
           // dsh 可执行文件可以只写命令名（按 PATH 找），另外两个要么留空、要么绝对路径
-          if (t && key !== "path" && !path.isAbsolute(t)) throw new HttpError(400, key === "home" ? "DSH_HOME 要写绝对路径，留空用 ~/.dsh" : "patch 文件要写绝对路径，留空不加");
+          if (t && key !== "path" && !path.isAbsolute(t)) throw new HttpError(400, key === "home" ? "DSH_HOME 要写绝对路径（支持 ~/），留空用 ~/.dsh" : "patch 文件要写绝对路径（支持 ~/），留空不加");
           p[key] = key === "path" ? t || "dsh" : t;
         }
         if ("defaultEffort" in p && !["", "off", "low", "high", "max"].includes(String(p.defaultEffort))) throw new HttpError(400, "dsh 的思考程度只能是 off / low / high / max");

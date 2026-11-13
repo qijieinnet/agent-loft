@@ -222,6 +222,7 @@ function workbuddyLoginButton(after) {
 /** 设置 → Agent（管理员）：运行环境、启用、引擎自己的配置、输入框可选模型。默认模型 / 权限 / 加载在「专家」里各内置 Agent 的「设置」 */
 export function agentsTab(cfg, page) {
   page.append(agentHealthSection());
+  page.append(h("p", { class: "muted" }, "路径支持 ~ 和 ~/，代表运行 agent-loft 服务的用户家目录。"));
   const a = structuredClone(cfg.agents);
   for (const engine of ENGINES) {
     const label = ENGINE_LABEL[engine];
@@ -271,7 +272,7 @@ export function agentsTab(cfg, page) {
     if (engine === "dsh") {
       const path = h("input", { value: settings.path ?? "dsh", placeholder: "dsh" });
       const home = h("input", { value: settings.home ?? "", placeholder: "留空用 ~/.dsh" });
-      const patch = h("input", { value: settings.patch ?? "", placeholder: "留空不加（绝对路径，如 /home/me/.dsh/loft.patch.yml）" });
+      const patch = h("input", { value: settings.patch ?? "", placeholder: "留空不加（如 ~/.dsh/loft.patch.yml）" });
       dsh = { path, home, patch };
       config.append(
         h("p", { class: "muted" }, "dsh（DeepSeek Harness）：DeepSeek 官方的编程 agent，通过标准 ACP 协议接入，每个会话一个 dsh 进程（第一条消息要等 4~5 秒拉起）。用 dsh 自己的凭据（~/.dsh/.credentials.yaml 里的 DeepSeek API Key）和会话记录，dsh 网页里建的会话这里也能接着聊。权限用 dsh 的沙箱：逐次询问 = 只读、自动改文件 = 工作区可写、完全允许 = 不设沙箱；越界时弹授权卡。不支持自定义专家、分叉 / 回退、提问卡和图片直传（附件给路径）；设成「调用前询问」的 MCP 不会挂上。"),

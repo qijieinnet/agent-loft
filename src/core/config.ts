@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import { configPath, ensureDirs, readJson, writeJsonAtomic } from "../home.js";
 import { cleanCustomCommands, type CommandPrefs } from "./command-catalog.js";
 import { normalizeOrigin, validServerId } from "./servers.js";
+import { expandHomePath } from "./paths.js";
 
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -265,6 +266,16 @@ function normalizeCommands(cfg: AppConfig): void {
   for (const id of AGENT_IDS) cfg.commands[id].custom = cleanCustomCommands(cfg.commands[id].custom);
 }
 
+/** 所有入口统一展开，启动、健康检查和技能扫描读取同一个路径。 */
+function normalizeAgentPaths(cfg: AppConfig): void {
+  cfg.agents.codex.path = expandHomePath(cfg.agents.codex.path) || "codex";
+  cfg.agents.codex.home = expandHomePath(cfg.agents.codex.home);
+  cfg.agents.workbuddy.cliPath = expandHomePath(cfg.agents.workbuddy.cliPath);
+  cfg.agents.dsh.path = expandHomePath(cfg.agents.dsh.path) || "dsh";
+  cfg.agents.dsh.home = expandHomePath(cfg.agents.dsh.home);
+  cfg.agents.dsh.patch = expandHomePath(cfg.agents.dsh.patch);
+}
+
 let current: AppConfig | null = null;
 const listeners = new Set<(next: AppConfig, prev: AppConfig) => void>();
 
@@ -273,6 +284,7 @@ export function loadConfig(): AppConfig {
   ensureDirs();
   const raw = readJson<unknown>(configPath, null);
   const merged = mergeDefaults(defaultConfig(), raw);
+  normalizeAgentPaths(merged);
   merged.workspaceRoot = path.resolve(merged.workspaceRoot);
   merged.feishu.bots = merged.feishu.bots.map(normalizeBot);
   normalizeCommands(merged);
@@ -300,6 +312,7 @@ function watchExternalEdits(): void {
         const raw = readJson<unknown>(configPath, null);
         if (!raw || !current) return;
         const next = mergeDefaults(defaultConfig(), raw);
+        normalizeAgentPaths(next);
         next.workspaceRoot = path.resolve(next.workspaceRoot);
         next.feishu.bots = next.feishu.bots.map(normalizeBot);
         normalizeCommands(next);
@@ -330,6 +343,7 @@ export function config(): AppConfig {
 export function saveConfig(next: AppConfig): AppConfig {
   const prev = config();
   const normalized = mergeDefaults(defaultConfig(), next);
+  normalizeAgentPaths(normalized);
   normalized.workspaceRoot = path.resolve(normalized.workspaceRoot);
   normalized.feishu.bots = normalized.feishu.bots.map(normalizeBot);
   normalizeServers(normalized);
