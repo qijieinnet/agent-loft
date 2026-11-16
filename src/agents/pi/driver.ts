@@ -2,6 +2,7 @@
 //
 // 会话怎么跑见 session.ts；会话列表 / 历史自己读 data/pi/sessions 下的 JSONL（history.ts）。
 // 记录是树结构（id / parentId），分叉、回退都用 SDK 的 SessionManager 另存一条新会话，原会话不动。
+import type { AgentSession as PiAgentSession } from "@earendil-works/pi-coding-agent";
 import type { AgentCommand } from "../../core/command-catalog.js";
 import { config } from "../../core/config.js";
 import type {
@@ -38,8 +39,16 @@ export class PiDriver implements AgentDriver {
   }
   async stop(): Promise<void> {}
 
+  private sessions = new Map<string, PiAgentSession>();
+  private titled = new Set<string>();
+  private titling = new Map<string, Promise<string | undefined>>();
+
   createSession(opts: SessionOptions, events: AgentEvents, host: InteractionHost): AgentSession {
-    return new PiSession(opts, events, host);
+    return new PiSession(opts, events, host, (session, active) => {
+      const id = session.sessionId;
+      if (active) this.sessions.set(id, session);
+      else if (this.sessions.get(id) === session) this.sessions.delete(id);
+    });
   }
 
   async listSessions(cwd: string | undefined, limit = 10): Promise<SessionSummary[]> {
@@ -56,7 +65,54 @@ export class PiDriver implements AgentDriver {
   }
 
   async sessionTitle(id: string): Promise<string | undefined> {
-    return sessionTitleOf(id);
+    const name = sessionTitleOf(id);
+    if (name) return name;
+    const c = config().agents.pi;
+    if (!c.autoTitle) return undefined;
+    const pending = this.titling.get(id);
+    if (pending) return pending;
+    if (this.titled.has(id) || !sessionFile(id)) return undefined;
+    const history = readHistoryFile(id);
+    const first = history.findIndex((m) => m.role === "user" && m.text.trim());
+    if (first < 0) return undefined; // 空会话不消耗生成机会
+    this.titled.add(id); // 失败也不在每轮 / 同步重试时重复花 token
+    const task = this.generateTitle(id, c.titleModel, history.slice(first))
+      .catch((err) => {
+        console.error("[pi] 生成会话名称失败:", err instanceof Error ? err.message : err);
+        return undefined;
+      })
+      .finally(() => this.titling.delete(id));
+    this.titling.set(id, task);
+    return task;
+  }
+
+  /** 只发第一轮的问答，不带系统提示、工具结果或思考；后台调用不建新会话。 */
+  private async generateTitle(id: string, model: string, history: HistoryMessage[]): Promise<string | undefined> {
+    const file = sessionFile(id);
+    if (!file) return undefined;
+    const { pi } = await loadSdk();
+    const live = this.sessions.get(id);
+    const sm = live?.sessionManager ?? pi.SessionManager.open(file, SESSIONS_DIR);
+    const selected = sm.buildSessionContext().model;
+    const titleModel = model || (live?.model ? modelKey(live.model) : selected ? `${selected.provider}/${selected.modelId}` : "");
+    const answer = history[1]?.role === "assistant" ? history[1].text : undefined;
+    const out = (await this.complete({
+      system: "你给对话起标题。根据用户的第一条消息（和助手的回复）概括这次对话在做什么，输出一个简短的标题：和用户用同一种语言，中文不超过 15 个字，不加引号、句号和表情。",
+      prompt: `用户：\n${history[0]!.text.slice(0, 2000)}${answer ? `\n\n助手：\n${answer.slice(0, 1500)}` : ""}`,
+      schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false },
+      ...(titleModel ? { model: titleModel } : {}),
+      timeoutMs: 60_000,
+    })) as { title?: unknown };
+    if (typeof out?.title !== "string") return undefined;
+    const title = out.title.replace(/\s+/g, " ").trim().replace(/^["'“”‘’「」《》]+|["'“”‘’「」《》。.]+$/g, "").trim().slice(0, 80);
+    if (!title || !config().agents.pi.autoTitle || sessionFile(id) !== file) return undefined;
+    // 生成期间可能已有名称、续聊或恢复：重新取活实例 / 重读文件，不能接在旧 leaf 上丢掉后续分支。
+    const existing = sessionTitleOf(id);
+    if (existing) return existing;
+    const current = this.sessions.get(id);
+    if (current) current.setSessionName(title);
+    else pi.SessionManager.open(file, SESSIONS_DIR).appendSessionInfo(title);
+    return title;
   }
 
   async readHistory(id: string): Promise<HistoryMessage[]> {

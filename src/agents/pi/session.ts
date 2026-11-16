@@ -219,6 +219,8 @@ export class PiSession implements AgentSession {
     private readonly opts: SessionOptions,
     private readonly events: AgentEvents,
     private readonly host: InteractionHost,
+    /** 驱动写会话元数据时必须用活着的实例，不能另开一个持有旧 leaf 的 SessionManager */
+    private readonly onSession?: (session: PiAgentSession, active: boolean) => void,
   ) {
     this.allowAll = opts.permission === "full";
     if (opts.model) this.runtime.model = opts.model;
@@ -313,6 +315,7 @@ export class PiSession implements AgentSession {
     this.syncPlanTool(session);
     if (fork) this.forked = true;
     this.session = session;
+    this.onSession?.(session, true);
     this.runtime = { model: modelKey(model), ...(session.supportsThinking() ? { effort: session.thinkingLevel } : {}) };
     return session;
   }
@@ -560,6 +563,7 @@ export class PiSession implements AgentSession {
   private drop(session: PiAgentSession): void {
     if (this.session !== session) return;
     this.session = null;
+    this.onSession?.(session, false);
     try {
       session.dispose();
     } catch {

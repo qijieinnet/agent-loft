@@ -88,6 +88,10 @@ export type AppConfig = {
       /** 思考程度（off / minimal / low / medium / high / xhigh），空 = pi 默认 */
       defaultEffort: string;
       models: string[];
+      /** SDK 不自动起名，由 agent-loft 在第一轮后后台生成一次 */
+      autoTitle: boolean;
+      /** 空 = 跟随会话模型 */
+      titleModel: string;
     };
     /**
      * dsh（DeepSeek Harness，npm i -g @deepseek-ai/dsh）：每个会话一个 `dsh --profile acp` 进程。
@@ -186,7 +190,7 @@ export function defaultConfig(): AppConfig {
       // 默认不开：要先在设置里登录
       workbuddy: { enabled: false, environment: "workbuddy", cliPath: "", defaultModel: "", defaultEffort: "", models: [] },
       // 默认不开：要先填一家服务商的 API Key
-      pi: { enabled: false, defaultModel: "", defaultEffort: "", models: [] },
+      pi: { enabled: false, defaultModel: "", defaultEffort: "", models: [], autoTitle: true, titleModel: "" },
       // 默认不开：要先装 dsh、配 DeepSeek API Key
       dsh: { enabled: false, path: "dsh", home: "", patch: "", defaultModel: "", defaultEffort: "", models: [] },
     },

@@ -237,14 +237,18 @@ export function agentsTab(cfg, page) {
       const path = h("input", { value: settings.path });
       const home = h("input", { value: settings.home, placeholder: "留空用 ~/.codex" });
       const sandbox = h("select", {}, ["read-only", "workspace-write", "danger-full-access"].map((mode) => h("option", { value: mode, selected: mode === settings.sandbox }, mode)));
-      const titleOn = h("input", { type: "checkbox", checked: !!settings.autoTitle });
-      const titlePick = modelPicker("codex", settings.titleModel ?? "", "", "跟随 config.toml");
-      const titleModel = h("div", { class: "grow field" }, titlePick.modelEl);
-      const syncTitle = () => { titleModel.hidden = !titleOn.checked; };
-      titleOn.addEventListener("change", syncTitle);
-      syncTitle();
-      codex = { path, home, sandbox, titleOn, titlePick, titleModel };
+      codex = { path, home, sandbox };
       config.append(field("codex 可执行文件", path, "以系统服务运行时 PATH 很短，建议写绝对路径"), field("CODEX_HOME", home), field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"));
+    }
+    let titles = null;
+    if (engine === "codex" || engine === "pi") {
+      const on = h("input", { type: "checkbox", checked: settings.autoTitle ?? engine === "pi" });
+      const pick = modelPicker(engine, settings.titleModel ?? "", "", engine === "pi" ? "跟随会话模型" : "跟随 config.toml");
+      const model = h("div", { class: "grow field" }, pick.modelEl);
+      const sync = () => { model.hidden = !on.checked; };
+      on.addEventListener("change", sync);
+      sync();
+      titles = { on, pick, model };
     }
     let site = null;
     let cliPath = null;
@@ -283,7 +287,10 @@ export function agentsTab(cfg, page) {
     }
     config.append(h("small", { class: "muted" }, "默认模型、思考程度、权限和默认加载的技能 / MCP，在「设置 → 专家」里这个 Agent 的「设置」中修改。"));
     config.append(h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
-    if (codex) config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, codex.titleOn, "自动生成会话名称"), codex.titleModel));
+    if (titles) {
+      config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, titles.on, "自动生成会话名称"), titles.model));
+      if (engine === "pi") config.append(h("small", { class: "muted" }, "第一轮回复后在后台生成一次，会额外调用模型；留空跟随会话模型，可另选低成本模型。手动改名不会被覆盖。"));
+    }
     config.append(h("div", { class: "row" }, saveButton(() => {
       const selected = models.value();
       if (!selected) {
@@ -294,7 +301,8 @@ export function agentsTab(cfg, page) {
         enabled: on.checked, models: selected,
         ...(site ? { environment: site.value, cliPath: cliPath.value.trim() } : {}),
         ...(dsh ? { path: dsh.path.value.trim() || "dsh", home: dsh.home.value.trim(), patch: dsh.patch.value.trim() } : {}),
-        ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value, autoTitle: codex.titleOn.checked, titleModel: codex.titlePick.model() } : {}),
+        ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value } : {}),
+        ...(titles ? { autoTitle: titles.on.checked, titleModel: titles.pick.model() } : {}),
       } } });
     }, `保存 ${label} 设置`)));
     page.append(h("div", { class: "section", "data-agent": engine }, config));
