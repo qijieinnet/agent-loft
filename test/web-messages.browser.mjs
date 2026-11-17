@@ -79,6 +79,51 @@ async function fixture(t, viewport) {
   return page;
 }
 
+for (const width of [1280, 390]) for (const queued of [false, true]) test(`消息${queued ? "撤销" : "回退"}：确认后才提交，取消保留对话和草稿（${width}px）`, async (t) => {
+  const page = await fixture(t, { width, height: 800 });
+  const requests = [];
+  await page.route(`**/api/conversations/*/${queued ? "cancel-queued" : "rewind"}`, (route) => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ json: { queued, draft: { text: "待编辑的问题", uploads: [] } } });
+  });
+  await page.evaluate((queued) => {
+    window.S.convs.get(window.S.current).sessionId = "original-session";
+    if (queued) window.send("queued", true);
+    window.S.items.find((it) => it.id === (queued ? "queued" : "active")).el.id = "edit-target";
+    window.ui.input.value = "尚未发送的草稿";
+  }, queued);
+  const button = page.locator("#edit-target").getByRole("button", { name: queued ? "撤销并编辑" : "回退到此处", exact: true });
+  const dialog = page.locator(".confirm-dialog");
+  const count = await page.locator(".msg-user-group").count();
+  await page.locator("#edit-target").hover();
+  await button.click();
+  await dialog.waitFor({ state: "visible" });
+  assert.match(await dialog.textContent(), queued ? /当前回复和其他排队消息会继续/ : /这条消息及后续对话会被移除/);
+  assert.equal(requests.length, 0, "打开弹窗不会发送请求");
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(requests.length, 0, "取消不会发送请求");
+  assert.equal(await page.locator(".msg-user-group").count(), count);
+  assert.equal(await page.evaluate(() => window.ui.input.value), "尚未发送的草稿");
+  assert.equal(await button.isEnabled(), true, "取消后可以重新操作");
+
+  await page.locator("#edit-target").hover();
+  await button.click();
+  await dialog.waitFor({ state: "visible" });
+  await page.evaluate(() => { window.S.current = "web:other"; });
+  await dialog.getByRole("button", { name: queued ? "撤销并编辑" : "确认回退", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(requests.length, 0, "切换对话后确认不会操作原对话");
+
+  await page.evaluate(() => { window.S.current = "web:1"; });
+  await page.locator("#edit-target").hover();
+  await button.click();
+  await dialog.waitFor({ state: "visible" });
+  await dialog.getByRole("button", { name: queued ? "撤销并编辑" : "确认回退", exact: true }).click();
+  await page.waitForFunction(() => !window.S.editingMessage && window.ui.input.value === "待编辑的问题");
+  assert.deepEqual(requests, [{ id: queued ? "queued" : "active", sessionId: "original-session" }]);
+});
+
 for (const width of [1280, 390]) for (const scheme of ["light", "dark"]) test(`预览布局：图片、Mermaid 和 chart 的悬浮控件不遮挡画面（${width}px ${scheme}）`, async (t) => {
   const page = await fixture(t, { width, height: 800 });
   await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });

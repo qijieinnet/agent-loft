@@ -16,6 +16,7 @@ import { setTodos } from "./todos.js";
 import { expertIcon, findExpert, setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
 import { openImageViewer } from "../lib/image-viewer.js";
+import { confirmDialog } from "../lib/overlay.js";
 
 // ---------- 打开会话 ----------
 
@@ -550,13 +551,25 @@ function clampLongUsers(items) {
 async function editUserMessage(item, queued, button) {
   const key = S.current;
   if (!key || S.editingMessage || S.sending) return;
+  const sessionId = S.convs.get(key)?.sessionId;
   S.editingMessage = key;
   button.disabled = true;
   updateSendBtn();
   try {
+    const sure = await confirmDialog(queued ? {
+      title: "撤销这条排队消息？",
+      message: "这条消息会从队列移除，内容和附件会放回输入框供你编辑。当前回复和其他排队消息会继续。",
+      confirmText: "撤销并编辑",
+    } : {
+      title: "回退到这条消息之前？",
+      message: "这条消息及后续对话会被移除，正在进行的回复会停止，消息内容和附件会放回输入框供你编辑。已经执行的文件修改不会恢复。",
+      confirmText: "确认回退",
+      danger: true,
+    });
+    if (!sure || S.current !== key) return;
     const result = await api(`/api/conversations/${encodeURIComponent(key)}/${queued ? "cancel-queued" : "rewind"}`, {
       method: "POST",
-      body: { id: item.id, anchor: item.anchor, sessionId: S.convs.get(key)?.sessionId },
+      body: { id: item.id, anchor: item.anchor, sessionId },
     });
     if (S.current !== key) return;
     if (!queued && !result.queued) await openConversation(key);
