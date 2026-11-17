@@ -1,6 +1,6 @@
-/* ---------- logo 加载动画：三颗星依次跳起，台面跟着呼吸 ---------- */
-.loft-loader {
-  --size: 26px;
+/* ---------- 汇合：开屏三臂向内聚拢，回复中轻转并依次呼吸 ---------- */
+.loft-loader,
+.loft-stars {
   display: inline-block;
   flex-shrink: 0;
   width: var(--size);
@@ -8,118 +8,12 @@
   line-height: 0;
 }
 
-.loft-loader.xl {
-  --size: 72px;
-}
+.loft-loader { --size: 26px; }
+.loft-loader.xl { --size: 72px; }
+.loft-stars { --size: 18px; }
+.loft-stars.lg { --size: 32px; }
 
-.loft-loader svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-.loft-loader path {
-  transform-box: fill-box;
-  transform-origin: 50% 50%;
-  animation-duration: 1.6s;
-  animation-iteration-count: infinite;
-  animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1);
-  animation-fill-mode: both;
-  animation-delay: calc(var(--t, 0ms) + var(--d, 0ms));
-}
-
-.loft-loader .ll-star {
-  animation-name: loft-star;
-}
-
-.loft-loader .ll-l {
-  --d: 0ms;
-}
-
-.loft-loader .ll-c {
-  --d: 180ms;
-}
-
-.loft-loader .ll-r {
-  --d: 360ms;
-}
-
-.loft-loader .ll-plate {
-  animation-name: loft-plate;
-  --d: 260ms;
-}
-
-.loft-loader .ll-shadow {
-  animation-name: loft-shadow;
-  --d: 320ms;
-}
-
-@keyframes loft-star {
-  0%,
-  70%,
-  100% {
-    transform: translateY(0) scale(0.72);
-    opacity: 0.4;
-  }
-  28% {
-    transform: translateY(-22px) scale(1.06);
-    opacity: 1;
-  }
-  48% {
-    transform: translateY(0) scale(0.92);
-    opacity: 0.85;
-  }
-}
-
-@keyframes loft-plate {
-  0%,
-  100% {
-    opacity: 0.75;
-  }
-  45% {
-    opacity: 1;
-  }
-}
-
-@keyframes loft-shadow {
-  0%,
-  100% {
-    transform: translateY(-6px);
-    opacity: 0.32;
-  }
-  50% {
-    transform: translateY(6px);
-    opacity: 0.12;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loft-loader .ll-star {
-    animation-name: loft-star-calm;
-    animation-duration: 2.4s;
-  }
-  .loft-loader .ll-shadow {
-    animation: none;
-    opacity: 0.3;
-  }
-}
-
-/* 回复末尾的精简版：只有一颗星，旋转 + 放大缩小 */
-.loft-stars {
-  display: inline-block;
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  line-height: 0;
-}
-
-/* 打开会话、读历史时用的大一号 */
-.loft-stars.lg {
-  width: 32px;
-  height: 32px;
-}
-
+.loft-loader svg,
 .loft-stars svg {
   display: block;
   width: 100%;
@@ -127,42 +21,50 @@
   overflow: visible;
 }
 
-.loft-stars path {
-  transform-box: fill-box;
-  transform-origin: 50% 50%;
-  animation: loft-twirl 1.8s cubic-bezier(0.45, 0, 0.25, 1) infinite both;
-  animation-delay: var(--t, 0ms);
+/* 以 SVG 的原点为中心，外层各自的 120° 旋转不受动画影响。 */
+.lc-rotor,
+.lc-arm {
+  transform-box: view-box;
+  transform-origin: 0 0;
+}
+.lc-arm-0 { --d: 0ms; }
+.lc-arm-1 { --d: -600ms; }
+.lc-arm-2 { --d: -1200ms; }
+
+.loft-loader .lc-arm {
+  animation: loft-converge 1.8s cubic-bezier(0.45, 0, 0.25, 1) infinite both;
+  animation-delay: calc(var(--t, 0ms) + var(--d));
 }
 
-/* 四角星转 90° 正好回到原样，所以每轮转 180° 能无缝接上 */
-@keyframes loft-twirl {
-  0% {
-    transform: rotate(0deg) scale(0.6);
-    opacity: 0.55;
-  }
-  45% {
-    transform: rotate(110deg) scale(1.12);
-    opacity: 1;
-  }
-  100% {
-    transform: rotate(180deg) scale(0.6);
-    opacity: 0.55;
-  }
+@keyframes loft-converge {
+  0%, 100% { transform: translateY(-20px); opacity: 0.45; }
+  28%, 60% { transform: translateY(0); opacity: 1; }
+}
+
+.loft-stars .lc-rotor {
+  animation: loft-orbit 1.8s cubic-bezier(0.45, 0, 0.55, 1) infinite both;
+  animation-delay: var(--t, 0ms);
+}
+.loft-stars .lc-arm {
+  animation: loft-signal 1.8s ease-in-out infinite both;
+  animation-delay: calc(var(--t, 0ms) + var(--d));
+}
+
+@keyframes loft-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes loft-signal {
+  0%, 100% { opacity: 0.5; }
+  35%, 55% { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .loft-stars path {
-    animation-name: loft-star-calm;
-    animation-duration: 2.4s;
-  }
-}
-
-@keyframes loft-star-calm {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  40% {
+  .loft-loader .lc-arm,
+  .loft-stars .lc-arm,
+  .loft-stars .lc-rotor {
+    animation: none;
+    transform: none;
     opacity: 1;
   }
 }

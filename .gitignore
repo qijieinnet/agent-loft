@@ -3,3 +3,6 @@ node_modules/
 data/
 *.log
 .env
+
+# Local icon design explorations and preview renders.
+docs/icon-exploration/

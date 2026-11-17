@@ -1,4 +1,5 @@
 // ---------- 小工具 ----------
+import { LOFT_MOTION_MS, loftLoaderSvg } from "./loft-mark.js";
 
 export const $app = document.getElementById("app");
 export const isTouch = matchMedia("(pointer: coarse)").matches;
@@ -95,23 +96,21 @@ ICON.dsh = `<svg viewBox="0 0 320 320"><image href="${new URL("../dsh.png", impo
 ICON.pi = '<svg viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="14" fill="currentColor"/><path fill="none" stroke="var(--bg, #fff)" stroke-width="6" stroke-linecap="round" d="M15 21h34M25 21v24M40 21v18c0 4 2 6 6 6"/></svg>';
 
 /**
- * 星星加载动画（回复末尾、打开会话时用）。开屏那个带台面的完整 logo 动画直接写在 index.html 里。
- * 每个实例的渐变 id 唯一，避免页面里有隐藏的同 id 渐变时画不出来。
+ * 汇合加载动画（回复末尾、打开会话时用）；保留函数名供现有调用方使用。
+ * 每个实例的遮罩 id 唯一，隐藏或移除另一个实例不会影响当前图形。
  * 动画按全局时钟设负的起始延迟：回复被授权卡片分成几段时，新一段的动画接着播、不会一抖一抖地重来。
  */
 let loaderSeq = 0;
 
-/** 只有 logo 中间那颗大星，一边旋转一边放大缩小 */
-const STARS_MS = 1800;
 export function starsLoader(cls = "") {
-  const id = `loft-g${++loaderSeq}`;
+  const id = `loft-reply-center-${++loaderSeq}`;
   const el = h("span", {
     class: `loft-stars${cls ? ` ${cls}` : ""}`,
     role: "img",
     "aria-label": "回复中",
-    html: `<svg viewBox="180 82 152 152" aria-hidden="true"><defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="180" y1="82" x2="332" y2="234"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs><path d="M256 82C268.92 145.08 268.92 145.08 332 158C268.92 170.92 268.92 170.92 256 234C243.08 170.92 243.08 170.92 180 158C243.08 145.08 243.08 145.08 256 82Z" fill="url(#${id})"/></svg>`,
+    html: loftLoaderSvg(id),
   });
-  el.style.setProperty("--t", `${-(performance.now() % STARS_MS).toFixed(0)}ms`);
+  el.style.setProperty("--t", `${-(performance.now() % LOFT_MOTION_MS).toFixed(0)}ms`);
   return el;
 }
 

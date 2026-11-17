@@ -1,12 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-<!-- Agent Loft：agent 工作台 —— 一大两小几颗星（多个 agent）站在同一张台面上，统一管理 -->
-  <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="104" y1="104" x2="408" y2="408"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs>
-  <rect width="512" height="512" rx="116" fill="#fff"/>
-  <g transform="translate(256 257) scale(1.0) translate(-256 -257)">
-    <path d="M256 296L404 364L256 432L108 364Z" fill="url(#g)" fill-opacity=".3"/>
-    <path d="M256 252L404 320L256 388L108 320Z" fill="url(#g)"/>
-    <path d="M256 82C268.92 145.08 268.92 145.08 332 158C268.92 170.92 268.92 170.92 256 234C243.08 170.92 243.08 170.92 180 158C243.08 145.08 243.08 145.08 256 82Z" fill="url(#g)"/>
-    <path d="M152 186C158.46 217.54 158.46 217.54 190 224C158.46 230.46 158.46 230.46 152 262C145.54 230.46 145.54 230.46 114 224C145.54 217.54 145.54 217.54 152 186Z" fill="url(#g)" fill-opacity=".85"/>
-    <path d="M360 186C366.46 217.54 366.46 217.54 398 224C366.46 230.46 366.46 230.46 360 262C353.54 230.46 353.54 230.46 322 224C353.54 217.54 353.54 217.54 360 186Z" fill="url(#g)" fill-opacity=".85"/>
+  <title>Agent Loft — 汇合</title>
+  <rect width="512" height="512" rx="114" fill="#FFFFFF"/>
+  <defs>
+    <mask id="loft-center" maskUnits="userSpaceOnUse" x="-180" y="-180" width="360" height="360">
+      <rect x="-180" y="-180" width="360" height="360" fill="#FFFFFF"/>
+      <circle r="21" fill="#000000"/>
+    </mask>
+  </defs>
+  <g fill="#FF7444" color="#FF7444">
+    <g transform="translate(256 256)">
+      <g mask="url(#loft-center)">
+        <g class="lc-rotor">
+          <g class="lc-arm lc-arm-0"><rect x="-33" y="-133" width="66" height="139" rx="33" fill="#FF7444"/></g>
+          <g transform="rotate(120)"><g class="lc-arm lc-arm-1"><rect x="-33" y="-133" width="66" height="139" rx="33" fill="#FFB15B"/></g></g>
+          <g transform="rotate(240)"><g class="lc-arm lc-arm-2"><rect x="-33" y="-133" width="66" height="139" rx="33" fill="#F65364"/></g></g>
+        </g>
+      </g>
+    </g>
   </g>
 </svg>
