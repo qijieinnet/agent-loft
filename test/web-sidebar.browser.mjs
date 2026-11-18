@@ -60,6 +60,8 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
     const url = new URL(route.request().url());
     if (url.pathname.startsWith("/api/")) {
       let data = { ok: true };
+      if (url.pathname === "/api/account/feishu") data = { bots: [], links: [] };
+      if (url.pathname === "/api/web-sessions") data = [];
       if (url.pathname === "/api/me") data = { authed: true, user: { id: "u1", role: "admin" } };
       if (url.pathname === "/api/bootstrap") data = {
         user: { id: "u1", role: "admin" }, agents: feishu ? [{ id: "claude", enabled: true, available: true }, { id: "codex", enabled: true, available: true }] : [],
@@ -781,6 +783,83 @@ async function openEditor(page, mobile = false) {
   await page.getByRole("menuitem", { name: "编辑侧边栏", exact: true }).click();
   await page.getByRole("dialog", { name: "编辑侧边栏", exact: true }).waitFor();
 }
+
+test("侧栏设置占用主区域，返回原会话保留草稿和阅读位置", async (t) => {
+  const { page } = await fixture(t);
+  const input = page.getByPlaceholder("随心输入");
+  await input.fill("未发送的草稿");
+  await page.evaluate(() => {
+    ui.msgInner.style.minHeight = "3000px";
+    ui.follow = false;
+    ui.messages.scrollTop = 450;
+  });
+  await page.locator("#sidebar-more").click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  const settings = page.getByRole("main", { name: "设置" });
+  await settings.waitFor();
+  assert.equal(await page.locator(".overlay").count(), 0);
+  assert.equal(await input.isVisible(), false);
+  assert.equal(await page.locator("#sidebar-more.active").count(), 1);
+  await page.locator('.conv-item.recent[data-key="web:1"]').click();
+  await settings.waitFor({ state: "detached" });
+  assert.equal(await input.inputValue(), "未发送的草稿");
+  assert.equal(await page.evaluate(() => ui.messages.scrollTop), 450);
+  assert.equal(new URL(page.url()).hash, "#web%3A1");
+});
+
+test("较早的会话在设置页重连和刷新，返回仍是原会话", async (t) => {
+  const { page } = await fixture(t, { projects: true });
+  const settings = page.getByRole("main", { name: "设置" });
+  await page.locator("#sidebar-more").click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  await settings.getByRole("button", { name: "修改名称" }).click();
+  const name = settings.locator('input[autocomplete="username"]');
+  await name.fill("未保存的名称");
+  const other = page.locator('.conv-item.recent[data-key="web:b"]');
+  await other.click({ button: "right" });
+  await page.locator(".menu").getByRole("button", { name: "分叉", exact: true }).click();
+  await page.locator(".confirm-dialog").getByRole("button", { name: "取消", exact: true }).click();
+  await page.locator(".confirm-dialog").waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => S.current), "web:1");
+  await page.evaluate(async () => {
+    const { WS } = await import("/lib/ws.js");
+    WS.sock.onmessage({ data: JSON.stringify({ t: "replay", reset: true, key: S.current }) });
+  });
+  assert.equal(new URL(page.url()).hash, "#settings");
+  await page.locator('.conv-item.recent[data-key="web:1"]').click();
+  await page.locator(".confirm-dialog").getByRole("button", { name: "取消", exact: true }).click();
+  assert.equal(await name.inputValue(), "未保存的名称");
+  const warning = page.waitForEvent("dialog").then(async (dialog) => {
+    assert.equal(dialog.type(), "beforeunload");
+    await dialog.accept();
+  });
+  await Promise.all([warning, page.reload()]);
+  await settings.getByRole("button", { name: "返回" }).click();
+  assert.equal(new URL(page.url()).hash, "#web%3A1");
+  assert.equal(await page.evaluate(() => S.current), "web:1");
+});
+
+test("触屏首次加载设置分类期间可以离开，加载完成后仍在所选页面", async (t) => {
+  const { page } = await fixture(t, { mobile: true });
+  let release;
+  const delay = new Promise((resolve) => { release = resolve; });
+  await page.route("**/settings/tabs.js", async (route) => {
+    await delay;
+    await route.fallback();
+  });
+  const loaded = page.waitForResponse("**/settings/tabs.js");
+  await page.locator("#sidebar-more").click();
+  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  try {
+    await page.getByRole("status", { name: "加载设置" }).waitFor();
+    await page.getByRole("button", { name: "返回", exact: true }).click();
+  } finally {
+    release();
+  }
+  await loaded;
+  assert.equal(await page.getByRole("main", { name: "设置" }).count(), 0);
+  assert.equal(await page.getByPlaceholder("随心输入").isVisible(), true);
+});
 
 test("更多：悬停跨过间隙可操作，离开关闭；点击固定，键盘可关闭，设置从顶栏移走", async (t) => {
   const { page } = await fixture(t);

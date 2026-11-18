@@ -98,9 +98,9 @@ async function fixture(t, width, colorScheme, role = "member") {
     }
     if (url.pathname === "/api/account/history") return route.fulfill({ json: { conversations: 0, count: 0 } });
     if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `
-      <meta charset="utf-8">${styles}<div id="app"></div><script type="module">
-        import { openSettings } from '/settings/index.js'; import { S } from '/state.js';
-        S.user = { id: 'u_test', role: '${role}' }; await openSettings('记忆');
+      <meta charset="utf-8">${styles}<div id="app"><div class="layout"><main class="main"><textarea aria-label="聊天草稿">未发送的消息</textarea></main></div></div><script type="module">
+        import { openSettings } from '/settings/index.js'; import { S, ui } from '/state.js';
+        ui.layout = document.querySelector(".layout"); S.user = { id: 'u_test', role: '${role}' }; await openSettings('记忆');
       </script>` });
     try {
       return route.fulfill({ contentType: url.pathname.endsWith(".css") ? "text/css" : "text/javascript", body: await fs.readFile(new URL(vendor[url.pathname] ?? `web${url.pathname}`, root), "utf8") });
@@ -116,17 +116,18 @@ async function fixture(t, width, colorScheme, role = "member") {
 }
 
 for (const width of [1280, 390]) {
-  test(`${width}px：设置、嵌套专家编辑和重命名只通过按钮关闭，误点遮罩及 Esc 保留输入`, async (t) => {
+  test(`${width}px：设置替换聊天主区域，返回时保护未保存的修改，编辑弹层保留输入`, async (t) => {
     const { page } = await fixture(t, width, "light");
-    const settings = page.locator(".modal").filter({ has: page.locator(".settings") });
+    const settings = page.getByRole("main", { name: "设置", exact: true });
     const about = settings.locator("textarea").first();
     await about.fill("还没保存的自我介绍");
-    await page.locator(".overlay").click({ position: { x: 1, y: 1 } });
+    assert.equal(await page.locator(".overlay").count(), 0);
+    assert.equal(await page.locator(".main").isVisible(), false);
     await page.keyboard.press("Escape");
     assert.equal(await about.inputValue(), "还没保存的自我介绍");
     assert.equal(await page.locator(".confirm-dialog").count(), 0);
 
-    await settings.getByRole("button", { name: "关闭", exact: true }).click();
+    await settings.getByRole("button", { name: "返回", exact: true }).click();
     const confirm = page.locator(".confirm-dialog");
     await confirm.waitFor();
     await page.locator(".dialog-overlay").click({ position: { x: 1, y: 1 } });
@@ -135,9 +136,10 @@ for (const width of [1280, 390]) {
     await confirm.getByRole("button", { name: "取消", exact: true }).click();
     await confirm.waitFor({ state: "detached" });
     assert.equal(await about.inputValue(), "还没保存的自我介绍");
-    await settings.getByRole("button", { name: "关闭", exact: true }).click();
+    await settings.getByRole("button", { name: "返回", exact: true }).click();
     await confirm.getByRole("button", { name: "不保存", exact: true }).click();
-    await page.locator(".overlay").waitFor({ state: "detached" });
+    await settings.waitFor({ state: "detached" });
+    assert.equal(await page.getByRole("textbox", { name: "聊天草稿" }).inputValue(), "未发送的消息");
 
     await page.evaluate(async () => { const { openSettings } = await import('/settings/index.js'); await openSettings('专家'); });
     await settings.getByRole("button", { name: "新建", exact: true }).click();
@@ -148,13 +150,14 @@ for (const width of [1280, 390]) {
     await prompt.fill("编辑中的完整提示词");
     await page.locator(".overlay").last().click({ position: { x: 1, y: 1 } });
     await page.keyboard.press("Escape");
-    assert.equal(await page.locator(".modal").count(), 2);
+    assert.equal(await page.locator(".modal").count(), 1);
     assert.equal(await name.inputValue(), "尚未保存的专家");
     assert.equal(await prompt.inputValue(), "编辑中的完整提示词");
     await editor.getByRole("button", { name: "关闭", exact: true }).click();
-    assert.equal(await page.locator(".modal").count(), 1);
-    await settings.getByRole("button", { name: "关闭", exact: true }).click();
-    await page.locator(".overlay").waitFor({ state: "detached" });
+    assert.equal(await page.locator(".modal").count(), 0);
+    await settings.getByRole("button", { name: "返回", exact: true }).click();
+    await settings.waitFor({ state: "detached" });
+    assert.equal(await page.getByRole("textbox", { name: "聊天草稿" }).inputValue(), "未发送的消息");
 
     await page.evaluate(async () => {
       const { S } = await import('/state.js'); const { renameConv } = await import('/views/conv-actions.js');
@@ -270,7 +273,7 @@ for (const width of [390, 1280]) {
       await page.getByRole('heading', { name: '已开启通知的设备', exact: true }).waitFor();
       assert.equal(await page.locator('.settings-body').evaluate(el => el.scrollWidth > el.clientWidth + 1), false);
       // 旧入口和已保存的「通知」标签仍能定位到系统页。
-      await page.locator('.modal-head').getByRole('button', { name: '关闭', exact: true }).click();
+      await page.locator('.settings-header').getByRole('button', { name: '返回', exact: true }).click();
       await page.evaluate(async () => { localStorage.setItem('aim.settingsTab', '通知'); await (await import('/settings/index.js')).openSettings(); });
       await page.getByRole('heading', { name: '系统通知', exact: true }).waitFor();
       assert.equal(await page.locator('.settings-nav button.on').textContent(), '系统');

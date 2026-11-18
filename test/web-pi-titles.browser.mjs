@@ -43,9 +43,10 @@ for (const width of [390, 1280]) {
       if (url.pathname === "/api/agents/pi/providers") return route.fulfill({ json: { providers: [] } });
       if (url.pathname === "/api/agents/pi/custom") return route.fulfill({ json: { providers: [] } });
       if (url.pathname.startsWith("/api/")) return route.fulfill({ json: {} });
-      if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${styles}<div id="app"></div><script type="module">
+      if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${styles}<div id="app"><div class="layout"></div></div><script type="module">
         import { S, ui } from '/state.js'; import { openSettings } from '/settings/index.js';
-        ui.topbar = document.createElement('div'); S.current = 'fixture'; S.user = { id: 'admin', role: 'admin' }; await openSettings('Agent');
+        ui.topbar = document.createElement('div'); S.current = 'fixture'; ui.layout = document.querySelector(".layout");
+          S.user = { id: 'admin', role: 'admin' }; await openSettings('Agent');
       </script>` });
       try { return route.fulfill({ contentType: url.pathname.endsWith(".css") ? "text/css" : "text/javascript", body: await fs.readFile(new URL(vendor[url.pathname] ?? `web${url.pathname}`, root), "utf8") }); }
       catch { return route.fulfill({ status: 404, body: "" }); }
@@ -73,7 +74,7 @@ for (const width of [390, 1280]) {
     const codex = page.locator('.settings-page [data-agent="codex"]');
     assert.equal(await codex.getByRole("checkbox", { name: "自动生成会话名称", exact: true }).isChecked(), false);
     assert.equal(await codex.locator(".title-row select").isVisible(), false);
-    await page.getByRole("button", { name: "关闭", exact: true }).click();
+    await page.getByRole("button", { name: "返回", exact: true }).click();
     await page.evaluate(async () => { const { openSettings } = await import('/settings/index.js'); await openSettings('Agent'); });
     await picker.locator('option[value="faux/title"]').waitFor({ state: "attached" });
     assert.equal(await on.isChecked(), true);

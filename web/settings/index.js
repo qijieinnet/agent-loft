@@ -1,18 +1,10 @@
-import { fill, h } from "../lib/dom.js";
+import { fill, h, icon } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { isAdmin } from "../state.js";
-import { confirmDialog, modal } from "../lib/overlay.js";
-import { conversationTab, remoteTab } from "./general.js";
-import { commandsTab } from "./commands.js";
-import { agentsTab } from "./agents.js";
-import { feishuTab } from "./feishu.js";
-import { accountTab } from "./security.js";
-import { memoryTab } from "./memory.js";
-import { skillsTab } from "./skills.js";
-import { expertsTab, mcpTab } from "./experts.js";
-import { usageTab } from "./usage.js";
-import { serversTab } from "./servers.js";
-import { systemTab, usersTab } from "./users.js";
+import { contentHash, isAdmin, ui } from "../state.js";
+import { closeMenu, confirmDialog } from "../lib/overlay.js";
+import { closeSide, renderSidebar } from "../views/sidebar.js";
+import { syncDesktopMenu } from "../views/topbar.js";
+import { WS } from "../lib/ws.js";
 import { hasDirty, markDirty } from "./common.js";
 
 // ---------- 设置 ----------
@@ -26,59 +18,66 @@ const RENAMED = { 通用: "对话", 授权: "对话", 飞书机器人: "飞书",
 /** 成员没有 Agent 页了：以前记住的 / 外面传进来的「Agent」打开专家页 */
 const MEMBER_RENAMED = { Agent: "专家" };
 
-function groupsFor(cfg) {
-  const mine = {
-    name: "我的",
-    tabs: [
-      ["账号", (p) => accountTab(p)],
-      ["记忆", (p) => memoryTab(p)],
-      ["专家", (p) => expertsTab(p)],
-      ["技能", (p) => skillsTab(p)],
-      ["MCP", (p) => mcpTab(p)],
-      ["用量", (p) => usageTab(p)],
-    ],
-  };
-  // 成员的内置 Agent 默认设置在「专家」里（内置卡片上的「设置」），这里没有 Agent 页
-  if (!cfg) return [mine, { name: "系统", tabs: [["系统", (p) => systemTab(null, p)]] }];
-  return [
-    mine,
-    {
-      name: "Agent",
-      tabs: [
-        ["Agent", (p) => agentsTab(cfg, p)],
-        ["对话", (p) => conversationTab(cfg, p)],
-        ["命令", (p) => commandsTab(cfg, p)],
-      ],
-    },
-    {
-      name: "连接",
-      tabs: [
-        ["飞书", (p) => feishuTab(cfg, p)],
-        ["远程控制", (p) => remoteTab(cfg, p)],
-        ["服务器", (p) => serversTab(cfg, p)],
-      ],
-    },
-    {
-      name: "管理",
-      tabs: [
-        ["用户", (p) => usersTab(p)],
-        ["系统", (p) => systemTab(cfg, p)],
-      ],
-    },
-  ];
+function warnBeforeUnload(event) {
+  if (!ui.settings?.isDirty()) return;
+  event.preventDefault();
+  event.returnValue = true;
 }
 
 /** tab：直接打开哪一页（标签名，如「技能」），不给就是上次看的那页 */
 export async function openSettings(tab) {
-  const nav = h("div", { class: "settings-nav" });
-  const panel = h("div", { class: "settings-body" });
+  closeSide();
+  closeMenu();
+  if (ui.settings) {
+    return tab && ui.settings.selectTab(tab);
+  }
+  const nav = h("nav", { class: "settings-nav", "aria-label": "设置分类" });
+  const panel = h("div", { class: "settings-body" }, h("span", { class: "spinner", role: "status", "aria-label": "加载设置" }));
   let page = null;
-  const leaveOk = async () =>
-    !page ||
-    !hasDirty(page) ||
-    confirmDialog({ title: "有修改还没保存", message: "现在离开，这一页刚才改的内容不会保存。", confirmText: "不保存", danger: true });
-  // 设置弹窗高度固定，切标签页时不跟着内容一伸一缩
-  modal({ title: "设置", wide: true, tall: true, body: h("div", { class: "settings" }, nav, panel), beforeClose: leaveOk });
+  const isDirty = () => page?.isConnected && hasDirty(page);
+  let confirming = false;
+  const leaveOk = async () => {
+    if (!isDirty()) return true;
+    if (confirming) return false;
+    confirming = true;
+    try {
+      return await confirmDialog({ title: "有修改还没保存", message: "现在离开，这一页刚才改的内容不会保存。", confirmText: "不保存", danger: true });
+    } finally {
+      confirming = false;
+    }
+  };
+  const previousHash = contentHash();
+  const previousFocus = document.activeElement;
+  const scrollTop = ui.messages?.scrollTop;
+  const close = async () => {
+    if (!(await leaveOk()) || ui.settings !== settings) return false;
+    window.removeEventListener("beforeunload", warnBeforeUnload);
+    pane.remove();
+    ui.settings = null;
+    const returnHash = contentHash();
+    const { settingsReturnHash, ...state } = history.state ?? {};
+    history.replaceState(state, "", location.pathname + location.search + returnHash);
+    syncDesktopMenu();
+    renderSidebar();
+    WS.presence();
+    if (ui.messages && previousHash === returnHash) ui.messages.scrollTop = scrollTop;
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    return true;
+  };
+  const back = h("button", { class: "btn", onclick: close }, icon("back"), "返回");
+  const pane = h("main", { class: "settings-view", "aria-label": "设置" },
+    h("header", { class: "settings-header" }, back, h("h1", {}, "设置")),
+    h("div", { class: "settings" }, nav, panel),
+  );
+  const settings = { close, isDirty, selectTab: (name) => { tab = name; } };
+  ui.settings = settings;
+  window.addEventListener("beforeunload", warnBeforeUnload);
+  ui.layout.append(pane);
+  history.replaceState({ ...history.state, settingsReturnHash: previousHash }, "", "#settings");
+  syncDesktopMenu();
+  renderSidebar();
+  WS.presence();
+  back.focus({ preventScroll: true });
 
   // 带 data-form 的表单里改了东西：标成没保存（common.js 的 saveButton）
   const onEdit = (e) => {
@@ -89,34 +88,35 @@ export async function openSettings(tab) {
   panel.addEventListener("input", onEdit);
   panel.addEventListener("change", onEdit);
 
-  let cfg = null;
-  if (isAdmin()) {
-    try {
-      cfg = await api("/api/config");
-    } catch (err) {
-      panel.append(h("div", { class: "error-text" }, err.message));
-      return;
-    }
+  let cfg, groups;
+  try {
+    const [module, config] = await Promise.all([import("./tabs.js"), isAdmin() ? api("/api/config") : null]);
+    if (!pane.isConnected) return;
+    cfg = config;
+    groups = module.groupsFor(cfg);
+  } catch (err) {
+    fill(panel, h("div", { class: "error-text" }, err.message));
+    return;
   }
-  const groups = groupsFor(cfg);
   const tabs = groups.flatMap((g) => g.tabs);
   const buttons = [];
   let current = -1;
 
   const select = async (i) => {
-    if (i === current || !(await leaveOk())) return;
+    if (i === current || !(await leaveOk()) || !pane.isConnected) return;
     current = i;
     buttons.forEach((b, j) => b.classList.toggle("on", i === j));
     buttons[i].scrollIntoView({ block: "nearest", inline: "nearest" });
     localStorage.setItem(LAST_TAB, tabs[i][0]);
     // 每页一个新容器：慢的页还在等接口时切走了，它回来后写进的是已经不在页面上的旧容器，不会串到新页里
-    page = h("div", { class: "settings-page" });
+    const content = h("div", { class: "settings-page" });
+    page = content;
     fill(panel, page);
     panel.scrollTop = 0;
     try {
-      await tabs[i][1](page);
+      await tabs[i][1](content);
     } catch (err) {
-      if (page.isConnected) fill(page, h("div", { class: "error-text" }, err.message));
+      if (content.isConnected) fill(content, h("div", { class: "error-text" }, err.message));
     }
   };
 
@@ -130,7 +130,9 @@ export async function openSettings(tab) {
       nav.append(b);
     }
   }
-  const requested = tab || localStorage.getItem(LAST_TAB);
-  const want = (cfg ? undefined : MEMBER_RENAMED[requested]) ?? RENAMED[requested] ?? requested;
-  void select(Math.max(0, tabs.findIndex(([name]) => name === want)));
+  settings.selectTab = (requested) => {
+    const want = (cfg ? undefined : MEMBER_RENAMED[requested]) ?? RENAMED[requested] ?? requested;
+    return select(Math.max(0, tabs.findIndex(([name]) => name === want)));
+  };
+  await settings.selectTab(tab || localStorage.getItem(LAST_TAB));
 }

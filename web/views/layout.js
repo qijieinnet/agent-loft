@@ -1,6 +1,6 @@
 import { $app, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop, desktopMenu, desktopQuota, desktopSettings, framed, remoteTabs, S, ui } from "../state.js";
+import { contentHash, desktop, desktopMenu, desktopQuota, desktopSettings, framed, remoteTabs, S, ui } from "../state.js";
 import { clearAppNotifications, WS } from "../lib/ws.js";
 import { showAuth } from "./auth.js";
 import {
@@ -32,29 +32,22 @@ import { clearCommandCache, preloadCommands } from "./slash.js";
 import { releaseForeignPushSub } from "../lib/push.js";
 import { createSidebarNav } from "./sidebar-nav.js";
 import { bindSidebarGestures } from "./sidebar-gestures.js";
+import { openSettings } from "../settings/index.js";
 import "../lib/keyboard.js";
+
+export { openSettings };
 
 // ---------- 主界面 ----------
 
-/**
- * 设置页的代码占前端的三分之一，平时用不到：第一次打开设置时才加载。
- * 加载期间弹窗还没出来，连点 / 桌面端重复触发都会再开一层，所以加载中的再调用直接忽略。
- */
-let settingsLoading = false;
-/** tab：直接打开哪一页，如「技能」 */
-export function openSettings(tab) {
-  if (settingsLoading) return;
-  settingsLoading = true;
-  import("../settings/index.js").then(
-    (m) => {
-      settingsLoading = false;
-      return m.openSettings(tab);
-    },
-    (err) => {
-      settingsLoading = false;
-      toast(`设置加载失败，刷新页面再试：${err.message}`);
-    },
-  );
+async function navigate(action) {
+  if (ui.settings && !(await ui.settings.close())) return;
+  return action();
+}
+
+function showConversation(key) {
+  if (key) void navigate(() => {
+    if (key !== S.current || S.view) return openConversation(key);
+  });
 }
 
 /**
@@ -92,7 +85,7 @@ document.addEventListener("aim:remote", async () => {
 });
 
 window.addEventListener("keydown", (e) => {
-  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === "Backquote" && S.remote?.terminal?.allowed) {
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && !ui.settings && e.code === "Backquote" && S.remote?.terminal?.allowed) {
     e.preventDefault();
     toggleTerminalDock();
   }
@@ -100,7 +93,7 @@ window.addEventListener("keydown", (e) => {
 
 // 多服务器（lib/shell.js）：外壳让打开某条对话（点了这台的通知）、点了「管理服务器…」、切到别的服务器
 document.addEventListener("aim:shell-open", (e) => {
-  if (e.detail && e.detail !== S.current) void openConversation(e.detail);
+  showConversation(e.detail);
 });
 document.addEventListener("aim:open-settings", (e) => openSettings(e.detail));
 document.addEventListener("aim:server-leave", () => closeSide());
@@ -165,9 +158,11 @@ export async function boot() {
   if (desktopQuota) desktop.onQuota(applyDesktopQuota);
   else void loadQuota();
   if (srv && srv !== HOME) routeToServer(srv, decodeURIComponent(landing.hash.slice(1)));
-  const fromHash = decodeURIComponent(location.hash.slice(1));
+  const restoreSettings = location.hash === "#settings";
+  const fromHash = decodeURIComponent(contentHash().slice(1));
   // 地址里带了会话就打开它；否则打开最近活跃的 Web 对话，没有才进新对话页
   const latest = latestConversation("web");
+  if (restoreSettings) void openSettings();
   if (fromHash === "tasks") openTasksView();
   else if (fromHash === "library") openLibraryView();
   else if (fromHash === "new") newDraft({ inheritLatest: true });
@@ -186,16 +181,11 @@ export async function boot() {
   // 点了桌面端的系统通知 / 菜单栏里的待处理项：跳到对应会话
   desktop?.onOpen((key) => {
     // 不要求在 S.convs 里：侧栏分页，那条可能还没拉到；openConversation 会去服务端拿
-    if (key && key !== S.current) void openConversation(key);
+    showConversation(key);
   });
   // 页面的「更多」菜单在桌面端顶栏的「更多」里：点了哪项
   if (desktopMenu) desktop.onMenu(runDesktopMenu);
-  // 桌面端「更多」里点了这台服务器的设置；已经开着就不再叠一层
-  if (desktopSettings) {
-    desktop.onOpenSettings(() => {
-      if (!document.querySelector(".overlay .settings")) void openSettings();
-    });
-  }
+  if (desktopSettings) desktop.onOpenSettings(() => void openSettings());
   // 被嵌在别的服务器的页面里时，通知、角标都归外壳管
   if ("serviceWorker" in navigator && !framed) {
     navigator.serviceWorker.register("/sw.js").then(() => clearAppNotifications()).catch(() => {});
@@ -211,7 +201,7 @@ export async function boot() {
       // 这台自己的通知：外壳正显示着别的服务器的话切回来
       switchServer(HOME);
       const key = decodeURIComponent(url.hash.slice(1));
-      if (key && key !== S.current) void openConversation(key);
+      showConversation(key);
     });
   }
   shellBooted();
@@ -219,6 +209,7 @@ export async function boot() {
 }
 
 function renderLayout() {
+  ui.settings = null;
   ui.convList = h("div", { class: "conv-list" });
   // 双击重命名。第一下单击会打开会话、侧栏整体重绘，元素已经换了，浏览器自己的 dblclick
   // 不一定触发；所以按 data-key 自己判断「同一条、两次按下间隔很短」
@@ -274,9 +265,9 @@ function renderLayout() {
     h(
       "div",
       { class: "side-top" },
-      h("button", { class: "btn new-chat", onclick: () => (newDraft({ inheritLatest: true }), closeSide()) }, icon("plus"), "新建"),
+      h("button", { class: "btn new-chat", onclick: () => navigate(() => (newDraft({ inheritLatest: true }), closeSide())) }, icon("plus"), "新建"),
     ),
-    createSidebarNav({ search: openSearch, tasks: openTasksView, library: openLibraryView, remote: openRemoteView, settings: openSettings }),
+    createSidebarNav({ search: () => navigate(openSearch), tasks: () => navigate(openTasksView), library: () => navigate(openLibraryView), remote: () => navigate(openRemoteView), settings: openSettings }),
     ui.convList,
     // 底部只有额度：没有额度可显示（关了查询、还没查到）时整块藏起来，连分隔线一起
     (ui.sideBottom = h(

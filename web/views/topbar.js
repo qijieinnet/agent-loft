@@ -250,9 +250,9 @@ let desktopActions = new Map();
 let desktopMenuSig = "";
 
 /** 会话操作菜单变了就报给桌面端。 */
-function syncDesktopMenu() {
+export function syncDesktopMenu() {
   if (!desktopMenu) return;
-  const items = topMenuItems();
+  const items = ui.settings ? [] : topMenuItems();
   desktopActions = new Map(items.filter((it) => it !== "sep").map((it) => [it.id, it.onclick]));
   const menu = {
     items: items.map((it) => (it === "sep" ? { type: "separator" } : { id: it.id, label: it.detail && !it.detail.hidden ? `${it.label}  ${it.detail.textContent}` : it.label, ...(it.checked !== undefined ? { checked: it.checked } : {}) })),
@@ -521,7 +521,14 @@ function handoffItem(c) {
       icon: "handoff",
       disabled: !c.canHandoff,
       disabledReason: "这条对话还没有可以交接的内容",
-      children: targets.map((e) => ({ label: e.name, leading: expertIcon(e), onclick: () => handoffConversation(e, c.key) })),
+      children: targets.map((e) => ({
+        label: e.name,
+        leading: expertIcon(e),
+        onclick: async () => {
+          if (ui.settings && !(await ui.settings.close())) return;
+          await handoffConversation(e, c.key);
+        },
+      })),
     },
   ];
 }
@@ -545,6 +552,7 @@ function convMenuItems(key) {
       label: "分叉",
       icon: "fork",
       onclick: async () => {
+        if (ui.settings && !(await ui.settings.close())) return;
         if (c.canFork) return forkConversation(undefined, key);
         // 不支持另开一条的：只能在原对话里分叉，先切过去
         if (key !== S.current) await openConversation(key);

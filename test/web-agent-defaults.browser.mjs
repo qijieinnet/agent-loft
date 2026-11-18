@@ -47,9 +47,10 @@ for (const width of [390, 1280]) {
         if (url.pathname === "/api/experts") return route.fulfill({ json: { expertOrder: [], experts: [], builtin: [{ id: "claude", name: "Claude Code", engine: "claude" }, { id: "codex", name: "Codex", engine: "codex" }], engines: ["claude", "codex"], templates: [], access: [], skills: [], mcp: [], limits: {} } });
         if (url.pathname === "/api/agents/health") return route.fulfill({ json: { agents: [] } });
         if (/\/api\/agents\/\w+\/models/.test(url.pathname)) return route.fulfill({ json: { models: [{ id: "default", label: "默认", isDefault: true, efforts: ["low", "high"] }, { id: "opus", label: "Opus", efforts: ["low", "high"] }] } });
-        if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${styles}<div id="app"></div><script type="module">
+        if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${styles}<div id="app"><div class="layout"></div></div><script type="module">
           import { S, ui } from '/state.js'; import { openSettings } from '/settings/index.js';
           ui.topbar = document.createElement('div');
+          ui.layout = document.querySelector(".layout");
           S.user = { id: 'u_test', role: '${role}' }; S.current = 'fixture'; await openSettings('Agent');
         </script>` });
         try { return route.fulfill({ contentType: url.pathname.endsWith(".css") ? "text/css" : "text/javascript", body: await fs.readFile(new URL(vendor[url.pathname] ?? `web${url.pathname}`, root), "utf8") }); }

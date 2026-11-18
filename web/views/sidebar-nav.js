@@ -28,7 +28,7 @@ function configuredItems() {
 }
 
 const available = (item) => item.id !== "remote" || remoteTabs().length > 0;
-const isActive = (item) => ["tasks", "library", "remote"].includes(item.id) && S.view === item.id;
+const isActive = (item) => (ui.settings ? "settings" : S.view) === item.id;
 const remoteLive = () => S.remoteLive.desktop || S.remoteLive.terminals > 0;
 
 function navButton(item, inMenu = false) {

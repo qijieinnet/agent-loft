@@ -2,7 +2,7 @@ import { fill, h, icon, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { clockTime } from "../lib/time.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
-import { isAdmin, S, ui } from "../state.js";
+import { isAdmin, S, setContentHash, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { agentLabel, closeSide, renderSidebar } from "./sidebar.js";
 import { baseName, renderTopbar } from "./topbar.js";
@@ -97,7 +97,7 @@ export async function openTasks() {
   S.view = "tasks";
   S.items = [];
   S.turnAi = null;
-  history.replaceState(history.state, "", "#tasks");
+  setContentHash("#tasks");
   WS.presence();
   ui.spacer.style.height = "0px";
   // 对话页的「贴底跟随」在这里不要：内容一变它就会滚到最底下

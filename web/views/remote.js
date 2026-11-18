@@ -1,5 +1,5 @@
 import { fill, h, icon, toast } from "../lib/dom.js";
-import { remoteTabs, S, ui } from "../state.js";
+import { remoteTabs, S, setContentHash, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { closeSide, renderSidebar } from "./sidebar.js";
 import { renderTopbar } from "./topbar.js";
@@ -73,7 +73,7 @@ export async function openRemote(tab) {
 async function select(tab) {
   R.tab = tab;
   localStorage.setItem("aim.remoteTab", tab);
-  history.replaceState(history.state, "", `#remote/${tab}`);
+  setContentHash(`#remote/${tab}`);
   renderSwitch();
   ui.remoteDesk.hidden = tab !== "desktop";
   ui.remoteTerm.hidden = tab !== "terminal";
@@ -98,7 +98,7 @@ export function leaveRemote() {
   R.before = null;
   if (before === "tasks") return openTasksView();
   if (before === "library") return openLibraryView();
-  history.replaceState(history.state, "", S.current ? `#${encodeURIComponent(S.current)}` : location.pathname);
+  setContentHash(S.current ? `#${encodeURIComponent(S.current)}` : "");
   // 对话区藏着的时候滚动位置没了：放回原处
   ui.messages.scrollTop = R.scroll ?? ui.messages.scrollTop;
   renderTopbar();

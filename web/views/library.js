@@ -2,7 +2,7 @@ import { fill, h, icon, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
-import { S, ui } from "../state.js";
+import { S, setContentHash, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { closeSide, renderSidebar } from "./sidebar.js";
 import { renderTopbar } from "./topbar.js";
@@ -234,7 +234,7 @@ export function openLibrary() {
   S.view = "library";
   S.items = [];
   S.turnAi = null;
-  history.replaceState(history.state, "", "#library");
+  setContentHash("#library");
   WS.presence();
   ui.spacer.style.height = "0px";
   ui.follow = false;

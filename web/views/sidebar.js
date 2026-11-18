@@ -1,6 +1,6 @@
 import { fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop, S, ui } from "../state.js";
+import { contentHash, desktop, S, ui } from "../state.js";
 import { baseName } from "./topbar.js";
 import { newDraft, openConversation } from "./messages.js";
 import { convExpert, expertIcon, setDraftExpert } from "./experts.js";
@@ -442,7 +442,7 @@ function weixinState(id) {
 export function bootstrapQuery() {
   const q = new URLSearchParams({ recent: String(pages.recent.show), open: JSON.stringify(sideState.open.map((d) => [d, dirState(d).show])) });
   // 正开着的会话；刚打开页面时是地址里带的那条（可能在后面几页）
-  const current = S.current ?? decodeURIComponent(location.hash.slice(1));
+  const current = S.current ?? decodeURIComponent(contentHash().slice(1));
   if (current) q.set("current", current);
   return `?${q}`;
 }
@@ -558,7 +558,8 @@ export function renderSidebar() {
       : keys.some((k) => S.convs.get(k)?.busy)
         ? h("span", { class: "conv-spin", title: "进行中" })
         : null;
-  const open = (key) => {
+  const open = async (key) => {
+    if (ui.settings && !(await ui.settings.close())) return;
     closeSide();
     if (key !== S.current) void openConversation(key);
     // 在远程控制页上点进来之前那条对话：对话没动过，退出远程控制就露出来了
@@ -570,7 +571,7 @@ export function renderSidebar() {
     h(
       "button",
       {
-        class: `conv-item${cls}${c.key === S.current && !S.view ? " active" : ""}`,
+        class: `conv-item${cls}${c.key === S.current && !S.view && !ui.settings ? " active" : ""}`,
         "data-key": c.key,
         title: `${convTitle(c)}${forkNote(c)}\n${detail}\n双击重命名，右键更多操作`,
         onclick: () => open(c.key),
@@ -745,6 +746,7 @@ export function renderSidebar() {
               title: `在 ${baseName(dir)} 中开新对话`,
               onclick: async (e) => {
                 const button = e.currentTarget;
+                if (ui.settings && !(await ui.settings.close())) return;
                 button.disabled = true;
                 try {
                   let latest = convs[0];

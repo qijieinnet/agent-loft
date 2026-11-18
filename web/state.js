@@ -53,6 +53,19 @@ export function remoteTabs() {
 
 export const ui = {};
 
+/** 设置页保留底下的会话或工具页，刷新和后台重连都用同一条返回地址。 */
+export function contentHash() {
+  return location.hash === "#settings" ? (history.state?.settingsReturnHash ?? "") : location.hash;
+}
+
+export function setContentHash(hash) {
+  if (ui.settings) {
+    history.replaceState({ ...history.state, settingsReturnHash: hash }, "", "#settings");
+  } else {
+    history.replaceState(history.state, "", hash || location.pathname + location.search);
+  }
+}
+
 /**
  * 运行在 macOS 桌面端（agent-loft-desktop）里时，由它的 preload 注入。
  * 桌面端收不到 Web Push，系统通知、Dock 角标、菜单栏的待处理数都交给它。

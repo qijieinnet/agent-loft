@@ -109,7 +109,7 @@ export const WS = {
     const visible = document.visibilityState === "visible" && document.hasFocus() && Date.now() - lastInput < IDLE_MS && shownHere();
     // 在定时任务、远程控制页上：没在看哪条对话（远程控制页不清 S.current，回来时对话还在）
     this.raw({
-      t: "presence", visible, key: S.view ? "" : (S.current ?? ""),
+      t: "presence", visible, key: S.view || ui.settings ? "" : (S.current ?? ""),
       // 前台免打扰按设备判断，不受正在看哪条会话、是否空闲的影响。
       foreground: document.visibilityState === "visible",
       pushEndpoint: framed ? (SH.push?.subscription.endpoint ?? null) : this.pushEndpoint,

@@ -1,6 +1,6 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { desktop } from "../state.js";
+import { contentHash, desktop } from "../state.js";
 import { field, saveButton, saveConfig } from "./common.js";
 
 /** 设置 → 对话：所有会话共用的规矩——在哪个目录、多久算新会话、授权卡等多久、Claude 的「总是允许」 */
@@ -217,6 +217,7 @@ export function networkSection(cfg) {
       // 旧端口已经不再接新连接：带着当前会话跳到新端口
       const url = new URL(location.href);
       url.port = String(p);
+      url.hash = contentHash();
       toast(`已改为端口 ${p}，正在跳转…`);
       // 桌面端里由它改掉存着的服务器地址再重新打开（直接跳过去会被当成外部链接）
       if (typeof desktop?.serverMoved === "function") desktop.serverMoved(url.origin);

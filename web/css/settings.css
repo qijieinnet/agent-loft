@@ -1,5 +1,35 @@
 /* ---------- 设置 ---------- */
 
+.layout:has(> .settings-view) > :is(.main, .ws-panel) {
+  display: none;
+}
+
+.settings-view {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: calc(8px + env(safe-area-inset-top)) 16px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.settings-body > .settings-page {
+  max-width: 1100px;
+  margin-inline: auto;
+}
+
 /* 设置和从设置打开的弹层共用黑白主题，覆盖原生控件的系统强调色。 */
 .settings,
 body:has(.settings) > :is(.overlay, .menu) {

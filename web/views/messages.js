@@ -2,7 +2,7 @@ import { fill, h, icon, isTouch, starsLoader, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { clockTime, liveDuration, serverNow, setServerTime, tidyFooter } from "../lib/time.js";
 import { copyText, patchMarkdown, renderMarkdown } from "../lib/markdown.js";
-import { S, ui } from "../state.js";
+import { S, setContentHash, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { agentLabel, convTitle, renderSidebar } from "./sidebar.js";
 import { baseName, renderContext, renderTopbar, updateCtxVisibility, usableAgents } from "./topbar.js";
@@ -93,7 +93,7 @@ export function newDraft({ inheritLatest = false } = {}) {
   setTodos(null);
   setBusy(false);
   renderScheduled();
-  history.replaceState(history.state, "", "#new");
+  setContentHash("#new");
   WS.presence();
   renderTopbar();
   renderEmpty();
@@ -175,7 +175,7 @@ export async function openConversation(key) {
   setTodos(null);
   renderChips();
   renderScheduled();
-  history.replaceState(history.state, "", `#${encodeURIComponent(key)}`);
+  setContentHash(`#${encodeURIComponent(key)}`);
   WS.presence();
   renderTopbar();
   renderSidebar();
