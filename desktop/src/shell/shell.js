@@ -437,7 +437,7 @@ function trayPicker(items) {
       "div",
       { class: "grow" },
       "菜单栏显示额度",
-      h("div", { class: "sub" }, "图标换成所选 agent 的小宠物：身子是 5 小时额度，下面一条是周额度。只有周额度时用身子显示。都不选就只显示图标。"),
+      h("div", { class: "sub" }, "小宠物的身子显示 5 小时额度，下方显示周额度。只有周额度时，Codex 用圆环显示，Claude 用身子显示。都不选就只显示图标。"),
       h(
         "div",
         { class: "tray-pick" },

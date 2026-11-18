@@ -188,9 +188,9 @@ export async function runSmoke({ openPopover }) {
     if (isMac) {
       const servers = [{ id: "qnap", quotas: [{ agent: "codex", windows: [{ short: "7d", percent: 2 }] }] }];
       const bars = quotaBars(servers, ["qnap:codex"]);
-      if (bars.length !== 1 || bars[0].body !== 98 || bars[0].week !== undefined) return fail("只有周额度时应显示一条剩余 98% 的 Codex 额度条");
+      if (bars.length !== 1 || bars[0].ring !== 98) return fail("只有周额度时应显示剩余 98% 的 Codex 圆环");
       const image = await renderQuotaImage(bars);
-      if (!image || image.isEmpty()) return fail("只有周额度时 Codex 菜单栏图标没有画出来");
+      if (!image || image.isEmpty()) return fail("只有周额度时 Codex 菜单栏圆环没有画出来");
     }
 
     // 冷启动：页面先连一个还没监听的端口，服务稍后启动，应该自动恢复并挂回窗口。

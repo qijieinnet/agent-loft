@@ -1,15 +1,21 @@
 // macOS 菜单栏图标换成额度条：选的每一项一只小宠物，看外形就知道是谁（Claude 是带腿的像素小螃蟹，
-// Codex 是两只方眼睛的胶囊）。宠物的身子默认是 5 小时额度条，下面的胶囊是周额度条；只有周额度时用身子显示。
+// Codex 是两只方眼睛的胶囊）。宠物的身子默认是 5 小时额度条，下面的胶囊是周额度条。
+// Codex 只有周额度时改用 GPT 图标外的圆环。
 // 默认实心部分是还剩多少（像电池），设置里可以换成实心是用掉多少，另一部分变淡。
 // 图标上不写服务器名：按服务器选的项和「所有服务器」长得一样，顺序照设置里选的来。
 // 画成黑色 + 透明的模板图，系统按菜单栏的深浅色自己着色，淡的部分就是半透明。
 //
 // 主进程没有 canvas：用一个不显示的小窗口画，画好拿 PNG 回来。
 import { BrowserWindow, nativeImage } from "electron";
+import { readFile } from "node:fs/promises";
 
 /** 菜单栏图标的高度（pt），按 2 倍图画 */
 const HEIGHT = 22;
 const SCALE = 2;
+// OpenAI 的 Blossom 标志：https://openai.com/brand/
+const CHATGPT_MARK = new URL("../assets/chatgpt-blossom-black.svg", import.meta.url);
+
+/** @typedef {{ agent: "codex", ring: number } | { agent: string, body: number, week?: number }} QuotaBar */
 
 /** 有宠物外形的 agent（形状在 draw 里） */
 const PETS = ["claude", "codex"];
@@ -39,14 +45,14 @@ function maxUsed(servers, agent, short) {
 export const ALL_SERVERS = "*";
 
 /**
- * 按设置里选的项（顺序照选的来）挑出要画的宠物，body / week 是身子和下方周额度条的实心比例（0~100）。
+ * 按设置里选的项（顺序照选的来）挑出要画的额度，body / week / ring 是各条的实心比例（0~100）。
  *   「*:claude」：所有服务器的 Claude 取用得最多的（多半是同一个账号）：宁可提醒早一点。
  *   「<id>:claude」：只看那台服务器。
- * 只有周额度时用身子显示；两个窗口都没有时跳过。
+ * 只有周额度时，Codex 用圆环、Claude 用身子显示；两个窗口都没有时跳过。
  * @param {{ id: string, quotas?: { agent: string, windows?: { short: string, percent: number }[] }[] }[]} servers
  * @param {string[]} items
  * @param {"remaining" | "used"} mode 实心是剩余额度还是已用额度
- * @returns {{ agent: string, body: number, week?: number }[]}
+ * @returns {QuotaBar[]}
  */
 export function quotaBars(servers, items, mode = "remaining") {
   const fill = (used) => (used === undefined || mode === "used" ? used : 100 - used);
@@ -61,6 +67,10 @@ export function quotaBars(servers, items, mode = "remaining") {
     const week = fill(maxUsed(pool, agent, "7d"));
     const body = session ?? week;
     if (body === undefined) continue;
+    if (agent === "codex" && session === undefined) {
+      out.push({ agent, ring: body });
+      continue;
+    }
     out.push({ agent, body, ...(session !== undefined && week !== undefined ? { week } : {}) });
   }
   return out;
@@ -81,8 +91,8 @@ function ensurePainter() {
   return painter;
 }
 
-/** 在画图窗口里跑的：一只宠物一栏，返回 PNG 的 data URL 和逻辑宽度。坐标都按 pt 的像素格子来 */
-function draw(bars, height, scale) {
+/** 在画图窗口里跑的：每项一栏，返回 PNG 的 data URL 和逻辑宽度。坐标都按 pt 的像素格子来 */
+async function draw(bars, height, scale, logoData) {
   const W = 18;
   const GAP = 12;
   const PAD = 2;
@@ -129,6 +139,31 @@ function draw(bars, height, scale) {
   canvas.height = height * scale;
   const ctx = canvas.getContext("2d");
   const px = (v) => v * scale;
+  let logo;
+  if (logoData) {
+    logo = new Image();
+    logo.src = `data:image/svg+xml;base64,${logoData}`;
+    await logo.decode();
+  }
+  const drawRing = (x0, filled) => {
+    const x = x0 + W / 2;
+    const y = height / 2;
+    const start = -Math.PI / 2;
+    const turn = 2 * Math.PI;
+    ctx.lineWidth = px(2);
+    ctx.strokeStyle = "rgba(0,0,0,0.48)";
+    ctx.beginPath();
+    ctx.arc(px(x), px(y), px(8), start, start + turn);
+    ctx.stroke();
+    if (filled > 0) {
+      ctx.strokeStyle = "#000";
+      ctx.beginPath();
+      ctx.arc(px(x), px(y), px(8), start, start + turn * filled / 100);
+      ctx.stroke();
+    }
+    // 官方 SVG 四周自带留白，18 pt 的画布中标志本身约 9 pt。
+    ctx.drawImage(logo, px(x - 9), px(y - 9), px(18), px(18));
+  };
   const rect = (x0, [x, y, w, h]) => ctx.fillRect(px(x0 + x), px(y), px(w), px(h));
   const pill = (x0, [x, y, w, h]) => {
     ctx.beginPath();
@@ -150,6 +185,10 @@ function draw(bars, height, scale) {
   ctx.fillStyle = "#000";
   bars.forEach((b, i) => {
     const x0 = PAD + i * (W + GAP);
+    if ("ring" in b) {
+      drawRing(x0, b.ring);
+      return;
+    }
     const pet = PETS[b.agent];
     if (pet.pill) pill(x0, pet.pill);
     for (const r of pet.body ?? []) rect(x0, r);
@@ -168,7 +207,7 @@ let queue = Promise.resolve();
 
 /**
  * 画出菜单栏用的模板图。画不出来（窗口还没准备好之类）返回 null，调用方继续用原来的图标。
- * @param {{ agent: string, body: number, week?: number }[]} bars
+ * @param {QuotaBar[]} bars
  * @returns {Promise<Electron.NativeImage | null>}
  */
 export function renderQuotaImage(bars) {
@@ -177,7 +216,8 @@ export function renderQuotaImage(bars) {
     try {
       const win = ensurePainter();
       if (win.webContents.isLoading()) await new Promise((r) => win.webContents.once("did-finish-load", r));
-      const { url, width } = await win.webContents.executeJavaScript(`(${draw})(${JSON.stringify(bars)}, ${HEIGHT}, ${SCALE})`);
+      const logoData = bars.some((bar) => "ring" in bar) ? await readFile(CHATGPT_MARK, "base64") : null;
+      const { url, width } = await win.webContents.executeJavaScript(`(${draw})(${JSON.stringify(bars)}, ${HEIGHT}, ${SCALE}, ${JSON.stringify(logoData)})`);
       const image = nativeImage.createEmpty();
       image.addRepresentation({ scaleFactor: SCALE, width, height: HEIGHT, dataURL: url });
       image.setTemplateImage(true);
