@@ -385,6 +385,9 @@ export type WebConvEntry = {
 /** /web：最近的 Web 会话，点「接上」后这个聊天就接着它聊 */
 export function webListCard(params: {
   convs: WebConvEntry[];
+  assistants?: boolean;
+  page?: number;
+  pages?: number;
   /** 当前挂着的 Web 会话 */
   current?: string;
   /** 这个飞书聊天自己的会话键 */
@@ -402,8 +405,9 @@ export function webListCard(params: {
   if (params.current) {
     elements.push(buttonRow([button("回到本聊天", { a: "detach", k: params.sessionKey }, params.ctx)]));
   }
+  if (params.page && params.pages) elements.push({ tag: "markdown", content: `第 ${params.page} / ${params.pages} 页。发送 \`/bot 页码\` 翻页。` });
   if (params.convs.length === 0) {
-    elements.push({ tag: "hr" }, { tag: "markdown", content: "还没有 Web 会话。" });
+    elements.push({ tag: "hr" }, { tag: "markdown", content: params.assistants ? "还没有 bot，请在 Web 侧栏「bot」添加。" : "还没有 Web 会话。" });
   }
   params.convs.forEach((c, index) => {
     const isCurrent = c.key === params.current;
@@ -435,7 +439,7 @@ export function webListCard(params: {
       ],
     });
   });
-  return card(elements, { title: "Web 会话", template: "blue" });
+  return card(elements, { title: params.assistants ? "bot" : "Web 会话", template: "blue" });
 }
 
 /** 接上之后发一张：接的是哪条、最近聊到哪，以及回来的按钮 */

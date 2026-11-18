@@ -85,6 +85,7 @@ function resolveConv(task: Task): Resolved {
     ...(task.expert ? { expert: task.expert } : {}),
     ...(cwd ? { cwd } : {}),
     owner: task.owner,
+    ...(task.assistantKey ? { assistant: "related" } : {}),
     title: task.title.slice(0, 80),
   });
   updateConversation(key, { titleAuto: false, taskId: task.id });

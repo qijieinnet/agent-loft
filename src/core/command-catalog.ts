@@ -40,6 +40,7 @@ export const BUILTIN_COMMANDS: BuiltinSpec[] = [
   { name: "workbuddy", description: "换成 WorkBuddy 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
   { name: "pi", description: "换成 pi 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
   { name: "dsh", description: "换成 dsh 专家（开新会话）", multiAgentOnly: true, chatOnly: true },
+  { name: "bot", description: "在绑定私聊打开 bot", feishuOnly: true },
   { name: "web", description: "接上一条 Web 会话，在飞书里查看和回复", feishuOnly: true },
   { name: "detach", description: "不再接着 Web 会话，回到这个聊天自己的会话", feishuOnly: true },
   { name: "bind", args: "<绑定码>", description: "把这个飞书账号绑定到你的 agent-loft 用户（绑定码在 Web 的「设置 → 账号」里生成）", feishuOnly: true },

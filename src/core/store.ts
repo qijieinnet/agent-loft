@@ -53,6 +53,8 @@ export type Conversation = {
   cwd: string;
   /** cwd 是否用户显式指定。没指定过的跟随 workspaceRoot 变化 */
   cwdExplicit?: boolean;
+  /** 联系人主会话、已移除的主会话或由它派生的私人会话。 */
+  assistant?: "active" | "removed" | "related";
   perAgent: Record<string, AgentBinding>;
   /** 最后一次有人说话的时间，用于闲置过期 */
   activeAt: number;
@@ -80,6 +82,8 @@ export type Conversation = {
    * 账号时记下（见 core/feishu-links.ts）。飞书群聊、没绑定的私聊和升级前就有的 Web 会话没有，归管理员。
    */
   owner?: string;
+  /** 已绑定飞书私聊的发送人，用于再次核对 bot 消息的目的地。 */
+  boundOpenId?: string;
   /** 定时任务的专用对话：是哪个任务的（见 core/tasks.ts）。任务删了就清掉 */
   taskId?: string;
 };
@@ -202,6 +206,7 @@ export function ensureConversation(params: {
   title?: string;
   owner?: string;
   cwd?: string;
+  assistant?: Conversation["assistant"];
 }): Conversation {
   const existing = getConversation(params.key);
   if (existing) return existing;
@@ -214,6 +219,7 @@ export function ensureConversation(params: {
     ...(params.expert ? { expert: params.expert } : {}),
     cwd: params.cwd ?? config().workspaceRoot,
     ...(params.cwd && params.cwd !== config().workspaceRoot ? { cwdExplicit: true } : {}),
+    ...(params.assistant ? { assistant: params.assistant } : {}),
     perAgent: {},
     activeAt: now,
     createdAt: now,
@@ -255,9 +261,9 @@ export function touchConversation(key: string): void {
   persist();
 }
 
-export function isExpired(conv: Conversation, now = Date.now()): boolean {
+export function isExpired(conv: Conversation, now = Date.now(), lastActive = conv.activeAt): boolean {
   const ttl = config().sessionTtlMs;
-  return ttl > 0 && now - conv.activeAt > ttl;
+  return conv.assistant !== "active" && ttl > 0 && now - lastActive > ttl;
 }
 
 export function listConversations(): Conversation[] {
@@ -281,9 +287,15 @@ export function putConversation(conv: Conversation): void {
 // 记下每个 agent 会话 id 是哪个用户的对话里开出来的。没记过的（飞书、终端里开的、升级前的）归管理员。
 
 /** 第一次见到这个会话 id 时记下主人；已经有主了不改 */
-export function recordSessionOwner(sessionId: string | undefined, userId: string | undefined): void {
+export function recordSessionOwner(sessionId: string | undefined, userId: string | undefined, privateAssistant = false): void {
   if (!sessionId || !userId) return;
+  if (privateAssistant) sql("INSERT OR IGNORE INTO assistant_sessions (session_id, owner) VALUES (?, ?)").run(sessionId, userId);
   sql("INSERT OR IGNORE INTO session_owners (session_id, user_id) VALUES (?, ?)").run(sessionId, userId);
+}
+
+export function assistantSessionOwner(sessionId: string): string | undefined {
+  const row = sql("SELECT owner FROM assistant_sessions WHERE session_id = ?").get(sessionId) as { owner: string } | undefined;
+  return row?.owner;
 }
 
 export function sessionOwner(sessionId: string): string | undefined {

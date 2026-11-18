@@ -8,6 +8,8 @@
 //
 // 恢复：停掉服务 → gunzip 备份文件 → 覆盖 data/agent-loft.db → 删掉 agent-loft.db-wal 和 -shm → 启动。
 // 只备份数据库。配置和专家这些是 JSON 文件，不在这里面。
+import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
@@ -153,6 +155,7 @@ function prune(now: number): void {
 }
 
 /** 同一时间只做一份 */
+export const backupEvents = new EventEmitter<{ finished: [runId: string, ok: boolean, error?: string] }>();
 let running: Promise<BackupInfo> | undefined;
 let lastError: { at: number; message: string } | undefined;
 
@@ -161,6 +164,7 @@ export function backupNow(now = Date.now()): Promise<BackupInfo> {
   if (running) return running;
   running = (async () => {
     const dir = backupDir();
+    const runId = randomUUID();
     const name = `${PREFIX}${dayName(now)}${SUFFIX}`;
     const target = path.join(dir, name);
     try {
@@ -172,10 +176,12 @@ export function backupNow(now = Date.now()): Promise<BackupInfo> {
       lastError = undefined;
       const size = fs.statSync(target).size;
       console.log(`[备份] 数据库已备份到 ${target}（${(size / 1048576).toFixed(1)} MB）`);
+      backupEvents.emit("finished", runId, true);
       return { name, at: Date.now(), size };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       lastError = { at: Date.now(), message };
+      backupEvents.emit("finished", runId, false, message);
       console.error("[备份] 备份失败:", message);
       throw err;
     }

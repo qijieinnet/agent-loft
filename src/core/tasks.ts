@@ -70,6 +70,8 @@ export type Task = {
   updatedAt: number;
   /** 谁建的：用户在页面上建的，还是 agent 在对话里建的 */
   createdBy: "user" | "agent";
+  /** 创建时明确交办的 bot，独立运行的任务也能追溯来源。 */
+  assistantKey?: string;
   nextRunAt?: number;
   /** 最近的在前 */
   runs: TaskRun[];
@@ -132,6 +134,11 @@ export function listTasks(owner: string): Task[] {
   return load()
     .filter((t) => t.owner === owner)
     .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/** 调用方先按 owner 取任务，再按交办来源或投递会话找到相关事项。 */
+export function taskBelongsToAssistant(task: Task, key: string): boolean {
+  return task.assistantKey === key || task.target.key === key;
 }
 
 /** 只认主人：别人的任务一律当不存在 */
@@ -233,7 +240,7 @@ function cleanTarget(v: unknown, prev?: TaskTarget): TaskTarget {
   return prev?.kind === "dedicated" ? prev : { kind: "dedicated" };
 }
 
-export function createTask(owner: string, input: TaskInput, by: "user" | "agent", now = Date.now()): Task {
+export function createTask(owner: string, input: TaskInput, by: "user" | "agent", now = Date.now(), assistantKey?: string): Task {
   if (listTasks(owner).length >= TASKS_PER_USER) throw new Error(`每人最多 ${TASKS_PER_USER} 个定时任务，先删掉几个不用的`);
   const prompt = cleanPrompt(input.prompt);
   const schedule = normalizeSchedule(input.schedule, now);
@@ -259,6 +266,7 @@ export function createTask(owner: string, input: TaskInput, by: "user" | "agent"
     createdAt: now,
     updatedAt: now,
     createdBy: by,
+    ...(assistantKey ? { assistantKey } : {}),
     runs: [],
   };
   task.nextRunAt = task.enabled ? nextRun(schedule, now) : undefined;

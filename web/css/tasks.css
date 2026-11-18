@@ -544,3 +544,11 @@ button.task-run:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.assistant-list, .assistant-card { display: grid; gap: 12px; }
+.assistant-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.assistant-row, .assistant-task { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.assistant-list .grow { flex: 1 1 8em; min-width: 0; overflow-wrap: anywhere; }
+.assistant-row select { flex: 1; min-width: 0; }
+.assistant-list small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+.assistant-task { padding-top: 8px; border-top: 1px solid var(--border); }

@@ -36,6 +36,8 @@ const STATUS = {
   interrupted: { text: "中断", cls: "bad" },
 };
 
+export const runStatusText = (status) => STATUS[status]?.text ?? status;
+
 const FREQS = [
   ["once", "一次"],
   ["daily", "每天"],
@@ -464,12 +466,12 @@ export function openTaskForm(task, preset) {
   if (!T.channels) void api("/api/tasks").then((d) => ((T.channels = d.channels ?? null), renderPush()), () => {});
 
   // ---- 结果发到哪 ----
-  const currentTarget = task?.target?.kind === "conv" ? task.target.key : "dedicated";
+  const currentTarget = src.target?.kind === "conv" ? src.target.key : "dedicated";
   const target = h(
     "select",
     { class: "task-target" },
     h("option", { value: "dedicated", selected: currentTarget === "dedicated" }, task?.target?.kind === "dedicated" && task.convKey ? `专用对话「${task.convTitle || "对话"}」` : "专用对话（第一次运行时新建，之后都发到这条）"),
-    currentTarget !== "dedicated" ? h("option", { value: currentTarget, selected: true }, `对话「${convTargetInfo(currentTarget, task)?.title || "对话"}」`) : null,
+    currentTarget !== "dedicated" ? h("option", { value: currentTarget, selected: true }, `对话「${convTargetInfo(currentTarget, src)?.title || "对话"}」`) : null,
     targetChoices(currentTarget).map((c) => h("option", { value: c.key }, `对话「${c.title || "未命名"}」`)),
   );
   const picked = src.expert ?? src.agent ?? S.draftExpert;
@@ -538,7 +540,7 @@ export function openTaskForm(task, preset) {
   let convPermission = null;
   const syncConvBox = () => {
     convPermission = null;
-    const info = target.value === "dedicated" ? null : convTargetInfo(target.value, task);
+    const info = target.value === "dedicated" ? null : convTargetInfo(target.value, src);
     if (!info) return fill(convBox);
     const label = PERMISSIONS[info.permission]?.label ?? "默认";
     const levels = info.max ? permissionsUpTo(info.max, info.expert?.engine) : [];
@@ -622,7 +624,7 @@ export function openTaskForm(task, preset) {
       return;
     }
     const convLevel = convPermission?.value;
-    const convInfo = dedicated ? null : convTargetInfo(target.value, task);
+    const convInfo = dedicated ? null : convTargetInfo(target.value, src);
     const convLevelChanged = !!convLevel && convLevel !== convInfo?.permission;
     if (convLevelChanged && convLevel === "full" && !(await confirmDialog(FULL_WARNING))) return;
     const fresh = context.value === "fresh";
@@ -639,6 +641,7 @@ export function openTaskForm(task, preset) {
       return;
     }
     const payload = {
+      ...(!task && preset?.assistantKey ? { assistantKey: preset.assistantKey } : {}),
       title: title.value,
       prompt: prompt.value,
       schedule,

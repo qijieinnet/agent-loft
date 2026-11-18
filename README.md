@@ -36,6 +36,21 @@ Logo 是白底的三向汇合：橘红、暖橙和珊瑚红三个单元，表达
 
 ## 能做什么
 
+**bot**　打开 Web 侧栏的「bot」，选择已有专家并点击「添加 bot」。每个 bot 有固定聊天，可以查看交给它的定时任务、最近结果和待处理请求。在已绑定账号的飞书私聊发送 `/bot` 接着聊，发送 `/detach` 退出续聊。定时任务沿用各自的推送设置。移除 bot 联系人后，已有任务继续运行。
+
+**备份事件监听**　在「bot → 事件监听 → 新增监听」选择作业来源。管理员可以直接监听 agent-loft 的数据库备份。外部作业选择「外部备份 Webhook」，在上报端将地址保存为 `BOT_EVENT_URL`，将仅显示一次的令牌保存为 `BOT_EVENT_TOKEN`。作业结束时可这样上报。
+
+```sh
+curl --fail-with-body "$BOT_EVENT_URL" \
+  -H "Authorization: Bearer $BOT_EVENT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"runId":"nas-nightly-20261118","status":"failed","reason":"disk_full"}'
+```
+
+`runId` 由作业生成，同一次运行的重投沿用同一个值。成功上报 `status: "ok"`，失败上报 `"failed"`。可选的 `reason` 支持 `disk_full`、`offline`、`permission`、`io` 和 `unknown`。网络失败、HTTP 429 或 5xx 时，上报端应保留未确认结果并延后重试。
+
+每条监听默认只记录新失败。也可选择 Web 系统推送或已绑定的飞书私聊，并独立勾选「同时让 bot 分析故障」。成功和重复失败均不调用模型。事件页显示最近一次上报和最近 12 条失败。作业停止上报时，仍显示最后一次收到的时间。投递失败最多自动尝试四次，之后可在事件页手动重试。删除监听或移除 bot 会使令牌失效并清除对应事件记录。
+
 - **多个 agent**：Claude Code、Codex、WorkBuddy、pi、dsh。几个 agent 共用工作目录，能看到对方改过的文件，但聊天记录各自独立。
 - **WorkBuddy（腾讯）**：默认不启用。调用这台服务器上 **WorkBuddy 桌面版自带的 CLI**（官方 Agent SDK `@tencent-ai/agent-sdk` 驱动，账号站点 www.workbuddy.cn），也可以改用 CodeBuddy 国内版 / 国际版 / 腾讯 iOA 的账号（用 SDK 自带的 CLI，不用装桌面版）。到 设置 → Agent → WorkBuddy 勾上「启用」、选账号站点后保存，再在「运行环境」里点「登录 WorkBuddy」：在你自己的浏览器里打开登录页，**1 分钟内**登录完（CLI 只等这么久，超时重新点），整台服务器登一次就行，所有人共用。桌面版里登录过也要在这里再登一次（同一个账号）：桌面版的登录由它自己保管，不交给单独跑的 CLI；这边的令牌存在 `data/workbuddy-auth.json`（0600），不碰桌面版的数据。也可以给服务设 `CODEBUDDY_API_KEY`。支持流式回复、授权卡（逐次询问 / 自动改文件 / 完全允许）、提问卡、计划模式、中途换模型、图片附件、`/sessions` 恢复以前的会话、记忆和定时任务工具、个人技能和 MCP；管理员的会话读机器上的 `~/.codebuddy` 配置，成员只读项目里的。暂不支持自定义专家、分叉 / 回退、思考程度和额度显示；令牌过期后要回设置页重新登录。
 - **pi**：默认不启用。开源编程 agent [pi](https://pi.dev)，用官方 TypeScript SDK（`@earendil-works/pi-coding-agent`）在 agent-loft 进程里运行（需要 Node 22.19 以上）。按**模型服务商**配凭据，整台服务器共用：到 设置 → Agent → pi 勾上「启用」，在「模型服务商」里选一家（DeepSeek、智谱 Coding Plan、Kimi、通义 Token Plan、MiniMax、OpenRouter、Anthropic、OpenAI……）粘贴 API Key 保存；或者点「登录」用**订阅账号**（Claude Pro/Max、ChatGPT Plus/Pro、GitHub Copilot、Kimi Code、xAI……），在你自己的浏览器里完成，设备码直接显示在页面上，浏览器登录完跳到打不开的 127.0.0.1 地址时把地址栏整个粘贴回来即可（订阅能否用在第三方工具里以各家条款为准）；也可以给服务设对应的环境变量（如 `DEEPSEEK_API_KEY`）。本地模型和 OpenAI 兼容网关在「自定义服务商」里加（Ollama、LM Studio、vLLM、llama.cpp、one-api……，填地址、接口类型、Key，能「从服务读取模型列表」），写在 `data/pi/models.json`（0600，Key 按字面值保存，不会被当成环境变量或命令）。凭据、会话记录都存在 `data/pi/` 下（`auth.json` 0600、`sessions/`），不读也不写机器上的 `~/.pi`；项目里的 `.pi/` 扩展不加载。pi 自己没有权限系统，授权卡（逐次询问 / 自动改文件 / 完全允许）、计划模式、提问卡由 agent-loft 补上，「自动改文件」只放行工作目录和附件目录里的文件；跑命令（bash）没有沙箱。支持流式回复、中途换模型和思考程度、图片附件（模型支持时）、`/compact` 压缩上下文、`/sessions` 恢复、分叉 / 回退、费用显示、记忆和定时任务工具、个人技能和 MCP，记忆整理也可选 pi。可以建 pi 引擎的自定义专家（见下面「专家」）。

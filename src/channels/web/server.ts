@@ -14,6 +14,7 @@ import { GLOBAL_ALWAYS_DENIED, hub, type EventEnvelope } from "../../core/hub.js
 import { interactions, type Interaction } from "../../core/interactions.js";
 import { weixinEvents } from "../weixin/events.js";
 import { getConversation } from "../../core/store.js";
+import { botEvents } from "../../core/bot-events.js";
 import { findTask, taskEvents, taskPush } from "../../core/tasks.js";
 import { skillEvents } from "../../core/skills.js";
 import { expertEvents } from "../../core/experts.js";
@@ -363,6 +364,10 @@ function broadcastTasks(owner: string): void {
   for (const client of clients) if (client.user.id === owner) send(client, { t: "tasks" });
 }
 
+function broadcastBotEvents(owner: string): void {
+  for (const client of clients) if (client.user.id === owner) send(client, { t: "bot-events" });
+}
+
 function broadcastProjectDeleted(project: { owner: string; path: string; keys: string[] }): void {
   for (const client of clients) if (client.user.id === project.owner) send(client, { t: "project-deleted", path: project.path, keys: project.keys });
 }
@@ -465,6 +470,8 @@ function onWeixinUndelivered({ key, body }: { key: string; body: string }): void
 function pushEvent(env: EventEnvelope): void {
   const ev = env.ev;
   if (ev.type !== "result" && ev.type !== "error") return;
+  // 自动故障分析的提醒由监听选择的渠道发；之后用户在同一聊天里追问照常提醒。
+  if (ev.botAnalysis) return;
   // 定时任务这次判断不用提醒
   if (ev.type === "result" && ev.silent) return;
   // 定时任务的结果按任务选的推送渠道：没选 Web 就不推；选了的话发到飞书 / 微信对话里的也推
@@ -785,6 +792,7 @@ export async function startWeb(): Promise<void> {
   interactions.on("created", pushInteraction);
   interactions.on("updated", broadcastInteraction);
   interactions.on("settled", broadcastInteraction);
+  botEvents.on("changed", broadcastBotEvents);
   taskEvents.on("changed", broadcastTasks);
   skillEvents.on("changed", broadcastSkills);
   expertEvents.on("changed", broadcastExperts);
@@ -838,6 +846,7 @@ export async function stopWeb(): Promise<void> {
   interactions.off("created", pushInteraction);
   interactions.off("updated", broadcastInteraction);
   interactions.off("settled", broadcastInteraction);
+  botEvents.off("changed", broadcastBotEvents);
   taskEvents.off("changed", broadcastTasks);
   skillEvents.off("changed", broadcastSkills);
   expertEvents.off("changed", broadcastExperts);

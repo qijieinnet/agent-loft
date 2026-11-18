@@ -33,11 +33,11 @@ export class FeishuClient {
     });
   }
 
-  async sendText(chatId: string, text: string): Promise<string | undefined> {
+  async sendText(chatId: string, text: string, idType: "chat_id" | "open_id" = "chat_id", uuid?: string): Promise<string | undefined> {
     try {
       const res = await this.lark.im.v1.message.create({
-        params: { receive_id_type: "chat_id" },
-        data: { receive_id: chatId, msg_type: "text", content: JSON.stringify({ text }) },
+        params: { receive_id_type: idType },
+        data: { ...(uuid ? { uuid } : {}), receive_id: chatId, msg_type: "text", content: JSON.stringify({ text }) },
       });
       return res.data?.message_id;
     } catch (err) {

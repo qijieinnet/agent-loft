@@ -55,7 +55,9 @@ function onTaskResult(e: TaskTurnEnd): void {
     console.warn(`[飞书] 定时任务「${task.title}」要推送到飞书，但${task.feishuBot ? "指定的机器人不在线或已解绑" : "主人没有绑定在线的飞书机器人"}`);
     return;
   }
-  void bots.get(link.botId)!.client.sendCard(link.openId, replyCard(`⏰ **${e.title}**\n\n${e.text}`), "open_id");
+  const bot = bots.get(link.botId)!;
+  if (bot.deliversAssistantReply(e.key, link.openId)) return;
+  void bot.client.sendCard(link.openId, replyCard(`⏰ **${e.title}**\n\n${e.text}`), "open_id");
 }
 
 export function startFeishu(): void {

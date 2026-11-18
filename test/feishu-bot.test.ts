@@ -520,6 +520,55 @@ test("机器人直接勾选共享专家：绑定后默认使用、限制命令�
   }
 });
 
+test("/bot 只把固定 bot 接到本人绑定私聊，解绑后停止续聊和转发", { timeout: 10_000 }, async () => {
+  const { createUser } = await import("../src/core/users.js");
+  const { createLinkCode, unlink } = await import("../src/core/feishu-links.js");
+  const owner = createUser({ name: "bot-contact-owner", role: "admin", password: "password1" });
+  const key = "web:assistant-private";
+  hub.ensure({ key, defaultAgent: "codex", channel: "web", channelId: "web", title: "NAS 管家", assistant: "active", owner: owner.id });
+  const dm = "oc_assistant_personal";
+  const dmKey = bot.keyOf(dm);
+  const group = "oc_assistant_group";
+  await message("ou_owner", "/bind " + createLinkCode(owner.id).code, dm);
+  await message("ou_owner", "/bot", dm);
+  assert.equal(bot.attachedWeb(dmKey), key);
+  assert.equal(bot.deliversAssistantReply(key, "ou_owner"), true);
+  assert.deepEqual(bot.chatsOf(key), [dm]);
+  const runner = await import("../src/core/task-runner.js");
+  const { createTask } = await import("../src/core/tasks.js");
+  const task = createTask(owner.id, { expert: "codex", title: "bot 例行检查", prompt: "检查备份",
+    target: { kind: "conv", key }, schedule: { kind: "daily", time: "10:00" }, notify: "always" }, "user", Date.now(), key);
+  runner.startTaskRunner();
+  try {
+    const done = new Promise<void>((resolve) => hub.once("task", () => resolve()));
+    assert.equal(runner.runTaskNow(task), undefined);
+    await done;
+    await tick();
+    assert.equal(task.runs[0]?.status, "notified");
+    assert.ok(sent.some((entry) => entry.chatId === dm && cardText(entry.body).includes("bot 例行检查")));
+  } finally {
+    runner.stopTaskRunner();
+  }
+  sent.length = 0;
+  await groupMessage("ou_owner", "/bot", group);
+  await groupMessage("ou_owner", "/web", group);
+  assert.equal(cardText(sent).includes("NAS 管家"), false);
+  await assert.rejects(bot.attachTo(bot.keyOf(group), key));
+  const answer = interactions.create(key, { kind: "approval", title: "bot 任务", detail: "确认" }, 60_000);
+  const pending = interactions.listPending(key)[0]!;
+  const { createEnvelope } = await import("../src/channels/feishu/envelope.js");
+  const value = createEnvelope({ a: "approval", d: "allow-once", r: pending.id }, { operatorOpenId: "ou_owner", chatId: dm, expiresAt: Date.now() + 60_000 });
+  assert.equal(unlink("b1", "ou_owner", owner.id), true);
+  const stale = await (bot as any).handleCardAction({ token: "assistant-unbound", operator: { open_id: "ou_owner" }, context: { open_chat_id: dm }, action: { value } });
+  assert.equal(stale.toast.type, "error");
+  assert.equal(interactions.isPending(pending.id), true);
+  interactions.decide(pending.id, "deny", "test");
+  await answer;
+  assert.equal(bot.attachedWeb(dmKey), undefined);
+  assert.equal(bot.deliversAssistantReply(key, "ou_owner"), false);
+  assert.deepEqual(bot.chatsOf(key), []);
+});
+
 test("收尾", () => {
   bot.stop();
   fs.rmSync(home, { recursive: true, force: true });

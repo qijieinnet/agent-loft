@@ -16,7 +16,7 @@ const vendor = {
   "/vendor/xterm-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.mjs",
   "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
 };
-const defaults = ["search", "tasks", "library", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
+const defaults = ["search", "tasks", "assistants", "library", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
 
 async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null, recentConvs = null, bootstrap = {} } = {}) {
   const browser = await chromium.launch({
@@ -834,12 +834,12 @@ for (const mobile of [false, true]) {
       await page.screenshot({ path: `/tmp/agent-loft-sidebar-editor-${mobile ? "mobile" : "desktop"}-${colorScheme}.png` });
       await dialog.getByRole("button", { name: "完成", exact: true }).click();
       await dialog.waitFor({ state: "detached" });
-      assert.deepEqual(getSaved().filter((it) => it.visible).map((it) => it.id), ["library", "search"]);
-      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search"]);
+      assert.deepEqual(getSaved().filter((it) => it.visible).map((it) => it.id), ["library", "search", "assistants"]);
+      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search", "assistants"]);
       await page.reload();
       await page.waitForFunction(() => window.booted);
       if (mobile) await page.locator(".topbar .menu-btn").click();
-      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search"]);
+      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search", "assistants"]);
       await page.evaluate(() => { S.view = "remote"; S.remoteLive.terminals = 1; window.renderSidebar(); });
       assert.equal(await page.locator("#sidebar-more").evaluate((el) => el.classList.contains("active") && el.classList.contains("live")), true);
       if (mobile) await page.locator("#sidebar-more").tap();
@@ -885,5 +885,58 @@ test("编辑：取消不保存；保存失败保留编辑；支持键盘排序�
   assert.equal(await page.locator(".side-top .new-chat").isVisible(), true);
   await page.locator("#sidebar-more").focus();
   await page.keyboard.press("ArrowDown");
-  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "library", "remote", "settings"]);
+  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "assistants", "library", "remote", "settings"]);
+});
+
+test("bot：添加专家、固定聊天、创建监听与从系统通知打开事件记录", async (t) => {
+  const { page } = await fixture(t, { bootstrap: { agents: [{ id: "claude", enabled: true, available: true }] } });
+  let added = false;
+  const contact = { key: "web:assistant", agent: "claude", expert: { id: "claude", name: "Claude Code" },
+    tasks: [{ id: "t_backup", title: "检查备份", enabled: true, nextRunAt: Date.now(), resultKey: "web:assistant", last: { status: "notified", preview: "备份已完成" } }] };
+  await page.route("**/api/assistants", async (route) => {
+    if (route.request().method() === "POST") {
+      assert.deepEqual(route.request().postDataJSON(), { expert: "claude" });
+      added = true;
+      return route.fulfill({ json: { key: contact.key } });
+    }
+    return route.fulfill({ json: { assistants: added ? [contact] : [] } });
+  });
+  await page.route("**/api/conversations/web%3Aassistant/history", (route) => route.fulfill({ json: {
+    info: { ...contact, channel: "web", cwd: "/workspace", title: "bot 对话" }, messages: [], live: [], pending: [], seq: 0, allowedAgents: [],
+  } }));
+  await page.locator('.sidebar-nav [data-nav="assistants"]').click();
+  await page.getByRole("button", { name: "添加 bot" }).click();
+  await page.getByText("检查备份", { exact: true }).waitFor();
+  await page.getByText("备份已完成", { exact: true }).waitFor();
+  let watch;
+  await page.route("**/api/bot-events*", async (route) => {
+    if (route.request().method() === "POST") {
+      const payload = route.request().postDataJSON();
+      assert.deepEqual(payload, { key: contact.key, name: "NAS 夜间备份", source: "webhook", destination: "inbox", analyze: false });
+      watch = { ...payload, id: "watch-id", events: [] };
+      return route.fulfill({ status: 201, json: { id: watch.id, token: "test-token" } });
+    }
+    return route.fulfill({ json: { key: contact.key, admin: false, feishu: [], watches: watch ? [watch] : [] } });
+  });
+  await page.getByRole("button", { name: "事件监听" }).click();
+  await page.getByRole("button", { name: "新增监听" }).click();
+  await page.getByLabel("名称", { exact: true }).fill("NAS 夜间备份");
+  assert.equal(await page.getByLabel("来源").locator("option").count(), 1);
+  await page.getByRole("button", { name: "创建监听" }).click();
+  const secret = page.getByLabel("Webhook 令牌", { exact: true });
+  await secret.waitFor();
+  assert.equal(await secret.getAttribute("type"), "password");
+  await page.getByRole("button", { name: "显示令牌" }).click();
+  assert.equal(await secret.inputValue(), "test-token");
+  await page.locator(".overlay").last().getByRole("button", { name: "关闭" }).click();
+  await page.getByText("尚未收到上报", { exact: true }).waitFor();
+  await page.locator(".overlay").last().getByRole("button", { name: "关闭" }).click();
+  await page.locator('.sidebar-nav [data-nav="assistants"]').click();
+  await page.getByRole("button", { name: "打开对话" }).click();
+  await page.waitForURL("**/#web%3Aassistant");
+  assert.equal(await page.locator(".assistant-list").count(), 0);
+  await page.goto("https://sidebar.example.test/#bot-events/watch-id");
+  await page.reload();
+  await page.getByRole("heading", { name: "bot 事件监听" }).waitFor();
+  await page.getByText("NAS 夜间备份", { exact: true }).waitFor();
 });

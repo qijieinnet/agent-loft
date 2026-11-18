@@ -4,7 +4,7 @@ import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 
 export type SidebarNavItem = { id: string; visible: boolean };
-const NAV_IDS = ["search", "tasks", "library", "remote", "settings"];
+const NAV_IDS = ["search", "tasks", "assistants", "library", "remote", "settings"];
 type Prefs = { dirOrder?: string[]; sidebarNav?: SidebarNavItem[]; expertOrder?: string[] };
 
 const prefsPath = path.join(dataDir, "ui-prefs.json");

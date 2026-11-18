@@ -18,7 +18,7 @@ import { expertIdOf, getConversation } from "./store.js";
 import { forgetTask } from "./task-runner.js";
 import { describeSchedule, formatDateTime, nextRun, normalizeSchedule, parseLocalDateTime, serverTimeZone, type TaskSchedule } from "./task-schedule.js";
 import { TASK_TOOL_TIMEOUT_SEC, tasksSocketPath, verifyTaskCaller } from "./tasks-mcp.js";
-import { createTask, DEFAULT_PUSH, deleteTask, getTask, listTasks, PUSH_CHANNELS, taskPush, TASKS_PER_USER, updateTask, type PushChannel, type Task, type TaskInput } from "./tasks.js";
+import { createTask, DEFAULT_PUSH, deleteTask, getTask, listTasks, taskBelongsToAssistant, PUSH_CHANNELS, taskPush, TASKS_PER_USER, updateTask, type PushChannel, type Task, type TaskInput } from "./tasks.js";
 import { getUser } from "./users.js";
 import { SKILL_TOOL_NAMES, skillToolCall } from "./skills-bridge.js";
 
@@ -131,6 +131,12 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
   if (tool === "list_tasks") {
     const tasks = listTasks(user.id);
     const head = `现在是 ${formatDateTime(now)}（${serverTimeZone()}）。`;
+    if (conv.assistant === "active") {
+      const assigned = tasks.filter((t) => taskBelongsToAssistant(t, convKey));
+      const rest = tasks.filter((t) => !taskBelongsToAssistant(t, convKey));
+      const section = (title: string, list: Task[]) => title + (list.length ? "\n" + list.map((t) => describeTask(t, convKey)).join("\n") : "：无");
+      return { text: head + "\n" + section("这个 bot 负责的定时任务", assigned) + "\n" + section("用户的其他定时任务", rest) };
+    }
     if (tasks.length === 0) return { text: `${head}用户还没有定时任务。` };
     return { text: `${head}用户有 ${tasks.length} 个定时任务（最多 ${TASKS_PER_USER} 个）：\n\n${tasks.map((t) => describeTask(t, convKey)).join("\n")}` };
   }
@@ -182,7 +188,7 @@ async function call(userId: string, convKey: string, tool: string, args: Record<
     );
     if (!ok) return fail("用户没有同意，任务没有建。");
     try {
-      const task = createTask(user.id, input, "agent");
+      const task = createTask(user.id, input, "agent", Date.now(), conv.assistant === "active" ? convKey : undefined);
       return {
         text: `已建好 [${task.id}]「${task.title}」：${describeSchedule(task.schedule)}，${task.nextRunAt ? `下次 ${formatDateTime(task.nextRunAt)}` : "没有下次"}。用户可以在网页侧栏「定时任务」里查看和修改。`,
       };

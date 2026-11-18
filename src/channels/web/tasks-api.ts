@@ -33,7 +33,7 @@ function view(task: Task) {
 }
 
 /** convPermission：任务发到已有对话时，顺手改那条对话的权限（权限属于对话，不属于任务） */
-type TaskBody = TaskInput & { convPermission?: unknown };
+type TaskBody = TaskInput & { convPermission?: unknown; assistantKey?: unknown };
 
 /** 表单 / 请求里的字段先在这里核一遍：专家要是自己能用的、引擎要启用着，目录要在工作区里，对话要是自己的 */
 function checkInput(user: User, body: TaskBody): TaskInput {
@@ -102,7 +102,11 @@ export async function handleTasksApi(req: IncomingMessage, res: ServerResponse, 
     if (!body.expert && !body.agent) body.expert = hub.enabledAgents()[0]?.id;
     let task: Task;
     try {
-      task = createTask(user.id, checkInput(user, body), "user");
+      const source = typeof body.assistantKey === "string" ? getConversation(body.assistantKey) : undefined;
+      if (body.assistantKey !== undefined && (!source || source.owner !== user.id || source.assistant !== "active" || source.hidden || hub.assistantUnavailable(source))) {
+        throw new HttpError(400, "交办这项任务的 bot 已不可用");
+      }
+      task = createTask(user.id, checkInput(user, body), "user", Date.now(), source?.key);
     } catch (err) {
       throw bad(err);
     }

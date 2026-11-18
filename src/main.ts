@@ -20,6 +20,7 @@ import { buildHistoryIndex } from "./core/chat-history.js";
 import { migrateAllMemoryItems, migrateMemoryDefault } from "./core/memory.js";
 import { listUsers } from "./core/users.js";
 import { startScheduler, stopScheduler } from "./core/scheduled.js";
+import { startBotEvents, stopBotEvents } from "./bot-event-runner.js";
 import { startTaskRunner, stopTaskRunner } from "./core/task-runner.js";
 import { startTasksBridge, stopTasksBridge } from "./core/tasks-bridge.js";
 
@@ -101,6 +102,7 @@ async function main(): Promise<void> {
   // 定时任务：agent 用的工具通道先开，再开始按点运行（停机期间错过的补跑）
   startTasksBridge();
   startTaskRunner();
+  startBotEvents();
   // 先查一遍 agent 装没装、登没登录，网页打开时新对话里就只列出能用的
   void agentHealth().catch(() => {});
   // 读一次 Claude 的命令表：成员会话的技能白名单要带上 Claude Code 自带的那些（见 claude/session.ts 的 claudeBuiltins）
@@ -120,6 +122,7 @@ async function main(): Promise<void> {
     console.log(`[退出] 收到 ${signal}，正在收尾…`);
     const force = setTimeout(() => process.exit(0), 8000);
     force.unref();
+    stopBotEvents();
     stopScheduler();
     stopFeishu();
     stopWeixin();

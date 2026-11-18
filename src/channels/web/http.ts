@@ -85,7 +85,7 @@ export async function readBody(req: IncomingMessage, limit: number): Promise<Buf
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > limit) throw new HttpError(413, `内容太大（上限 ${Math.round(limit / 1024 / 1024)}MB）`);
+    if (size > limit) throw new HttpError(413, `内容太大（上限 ${limit < 1024 * 1024 ? Math.ceil(limit / 1024) + " KB" : Math.round(limit / 1024 / 1024) + " MB"}）`);
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks);
