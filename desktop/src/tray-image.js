@@ -1,5 +1,5 @@
 // macOS 菜单栏图标换成额度条：选的每一项一只小宠物，看外形就知道是谁（Claude 是带腿的像素小螃蟹，
-// Codex 是两只方眼睛的胶囊）。宠物的身子是 5 小时额度条，下面的胶囊是 7 天（周）额度条；
+// Codex 是两只方眼睛的胶囊）。宠物的身子默认是 5 小时额度条，下面的胶囊是周额度条；只有周额度时用身子显示。
 // 默认实心部分是还剩多少（像电池），设置里可以换成实心是用掉多少，另一部分变淡。
 // 图标上不写服务器名：按服务器选的项和「所有服务器」长得一样，顺序照设置里选的来。
 // 画成黑色 + 透明的模板图，系统按菜单栏的深浅色自己着色，淡的部分就是半透明。
@@ -39,14 +39,14 @@ function maxUsed(servers, agent, short) {
 export const ALL_SERVERS = "*";
 
 /**
- * 按设置里选的项（顺序照选的来）挑出要画的宠物，session / week 是条的实心比例（0~100）。
+ * 按设置里选的项（顺序照选的来）挑出要画的宠物，body / week 是身子和下方周额度条的实心比例（0~100）。
  *   「*:claude」：所有服务器的 Claude 取用得最多的（多半是同一个账号）：宁可提醒早一点。
  *   「<id>:claude」：只看那台服务器。
- * 还没查到 5 小时额度、服务器已经删了的项跳过；周额度没有就不画下面的胶囊。
+ * 只有周额度时用身子显示；两个窗口都没有时跳过。
  * @param {{ id: string, quotas?: { agent: string, windows?: { short: string, percent: number }[] }[] }[]} servers
  * @param {string[]} items
  * @param {"remaining" | "used"} mode 实心是剩余额度还是已用额度
- * @returns {{ agent: string, session: number, week?: number }[]}
+ * @returns {{ agent: string, body: number, week?: number }[]}
  */
 export function quotaBars(servers, items, mode = "remaining") {
   const fill = (used) => (used === undefined || mode === "used" ? used : 100 - used);
@@ -58,9 +58,10 @@ export function quotaBars(servers, items, mode = "remaining") {
     if (!PETS.includes(agent)) continue;
     const pool = sid === ALL_SERVERS ? servers : servers.filter((s) => s.id === sid);
     const session = fill(maxUsed(pool, agent, "5h"));
-    if (session === undefined) continue;
     const week = fill(maxUsed(pool, agent, "7d"));
-    out.push({ agent, session, ...(week === undefined ? {} : { week }) });
+    const body = session ?? week;
+    if (body === undefined) continue;
+    out.push({ agent, body, ...(session !== undefined && week !== undefined ? { week } : {}) });
   }
   return out;
 }
@@ -87,7 +88,7 @@ function draw(bars, height, scale) {
   const PAD = 2;
   /** 用掉的部分留多少不透明度 */
   const DIM = 0.3;
-  // 每只宠物：body 是 5 小时条的形状，holes 是眼睛（挖空），legs 不算进条里、一直是实的。
+  // 每只宠物：body 是身子额度条的形状，holes 是眼睛（挖空），legs 不算进条里、一直是实的。
   // fill 是百分比按哪段宽度算，span 是整条的左右范围（默认和 fill 一样）。Claude 两侧的耳朵不算进百分比：
   // 算进去的话剩 10% 时只有左耳是实的，身子全淡，看着像用完了；左耳有剩就实、右耳满了才实
   const PETS = {
@@ -153,7 +154,7 @@ function draw(bars, height, scale) {
     if (pet.pill) pill(x0, pet.pill);
     for (const r of pet.body ?? []) rect(x0, r);
     for (const [x, y, w, h] of pet.holes) ctx.clearRect(px(x0 + x), px(y), px(w), px(h));
-    dim(x0, pet.fill[0], pet.fill[1], BODY_Y[0], BODY_Y[1], b.session, pet.span);
+    dim(x0, pet.fill[0], pet.fill[1], BODY_Y[0], BODY_Y[1], b.body, pet.span);
     for (const r of pet.legs) rect(x0, r);
     if (b.week !== undefined) {
       pill(x0, WEEK);
@@ -167,7 +168,7 @@ let queue = Promise.resolve();
 
 /**
  * 画出菜单栏用的模板图。画不出来（窗口还没准备好之类）返回 null，调用方继续用原来的图标。
- * @param {{ agent: string, session: number, week?: number }[]} bars
+ * @param {{ agent: string, body: number, week?: number }[]} bars
  * @returns {Promise<Electron.NativeImage | null>}
  */
 export function renderQuotaImage(bars) {

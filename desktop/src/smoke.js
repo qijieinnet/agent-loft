@@ -8,6 +8,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { quotaBars, renderQuotaImage } from "./tray-image.js";
 
 export const smoke = process.env.AGENT_LOFT_DESKTOP_SMOKE === "1";
 
@@ -183,6 +184,14 @@ export async function runSmoke({ openPopover }) {
     await until(() => pop.executeJavaScript(`document.body.innerText.includes("冒烟测试")`), "菜单栏面板里的服务器");
     junk = junkIn(await pop.executeJavaScript("document.body.innerText"));
     if (junk) return fail(`菜单栏面板里有渲染残渣：「${junk}」`);
+
+    if (isMac) {
+      const servers = [{ id: "qnap", quotas: [{ agent: "codex", windows: [{ short: "7d", percent: 2 }] }] }];
+      const bars = quotaBars(servers, ["qnap:codex"]);
+      if (bars.length !== 1 || bars[0].body !== 98 || bars[0].week !== undefined) return fail("只有周额度时应显示一条剩余 98% 的 Codex 额度条");
+      const image = await renderQuotaImage(bars);
+      if (!image || image.isEmpty()) return fail("只有周额度时 Codex 菜单栏图标没有画出来");
+    }
 
     // 冷启动：页面先连一个还没监听的端口，服务稍后启动，应该自动恢复并挂回窗口。
     const delayed = http.createServer((req, res) => {
