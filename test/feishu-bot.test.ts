@@ -520,24 +520,26 @@ test("机器人直接勾选共享专家：绑定后默认使用、限制命令�
   }
 });
 
-test("/bot 只把固定 bot 接到本人绑定私聊，解绑后停止续聊和转发", { timeout: 10_000 }, async () => {
+test("旧版私人会话和已有任务可继续使用，解绑后停止续聊和转发", { timeout: 10_000 }, async () => {
   const { createUser } = await import("../src/core/users.js");
   const { createLinkCode, unlink } = await import("../src/core/feishu-links.js");
   const owner = createUser({ name: "bot-contact-owner", role: "admin", password: "password1" });
   const key = "web:assistant-private";
-  hub.ensure({ key, defaultAgent: "codex", channel: "web", channelId: "web", title: "NAS 管家", assistant: "active", owner: owner.id });
+  hub.ensure({ key, defaultAgent: "codex", channel: "web", channelId: "web", title: "NAS 管家", owner: owner.id });
+  const { updateConversation } = await import("../src/core/store.js");
+  updateConversation(key, { assistant: "active" });
   const dm = "oc_assistant_personal";
   const dmKey = bot.keyOf(dm);
   const group = "oc_assistant_group";
   await message("ou_owner", "/bind " + createLinkCode(owner.id).code, dm);
-  await message("ou_owner", "/bot", dm);
+  await bot.attachTo(dmKey, key, "ou_owner");
   assert.equal(bot.attachedWeb(dmKey), key);
   assert.equal(bot.deliversAssistantReply(key, "ou_owner"), true);
   assert.deepEqual(bot.chatsOf(key), [dm]);
   const runner = await import("../src/core/task-runner.js");
   const { createTask } = await import("../src/core/tasks.js");
   const task = createTask(owner.id, { expert: "codex", title: "bot 例行检查", prompt: "检查备份",
-    target: { kind: "conv", key }, schedule: { kind: "daily", time: "10:00" }, notify: "always" }, "user", Date.now(), key);
+    target: { kind: "conv", key }, schedule: { kind: "daily", time: "10:00" }, notify: "always" }, "user");
   runner.startTaskRunner();
   try {
     const done = new Promise<void>((resolve) => hub.once("task", () => resolve()));
@@ -550,7 +552,6 @@ test("/bot 只把固定 bot 接到本人绑定私聊，解绑后停止续聊和�
     runner.stopTaskRunner();
   }
   sent.length = 0;
-  await groupMessage("ou_owner", "/bot", group);
   await groupMessage("ou_owner", "/web", group);
   assert.equal(cardText(sent).includes("NAS 管家"), false);
   await assert.rejects(bot.attachTo(bot.keyOf(group), key));

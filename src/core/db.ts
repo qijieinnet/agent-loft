@@ -46,23 +46,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   data TEXT NOT NULL
 );
 
+-- 保留 0.2.122 创建的私人会话的历史归属。
 CREATE TABLE IF NOT EXISTS assistant_sessions (session_id TEXT PRIMARY KEY, owner TEXT NOT NULL);
-
-CREATE TABLE IF NOT EXISTS bot_watches (
-  id TEXT PRIMARY KEY, owner TEXT NOT NULL, conv TEXT NOT NULL, name TEXT NOT NULL,
-  source TEXT NOT NULL, destination TEXT NOT NULL, analyze INTEGER NOT NULL,
-  token_hash TEXT UNIQUE, last_seen INTEGER, last_status TEXT
-);
-CREATE INDEX IF NOT EXISTS bot_watches_owner ON bot_watches(owner, conv);
-
-CREATE TABLE IF NOT EXISTS bot_incidents (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, watch TEXT NOT NULL, run TEXT NOT NULL, reason TEXT NOT NULL,
-  at INTEGER NOT NULL, delivery TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-  next_try INTEGER NOT NULL DEFAULT 0, error TEXT, analysis TEXT NOT NULL, analysis_key TEXT,
-  UNIQUE(watch, run)
-);
-CREATE INDEX IF NOT EXISTS bot_incidents_pending ON bot_incidents(delivery, next_try);
-CREATE INDEX IF NOT EXISTS bot_incidents_analysis ON bot_incidents(analysis);
 
 CREATE TABLE IF NOT EXISTS session_owners (
   session_id TEXT PRIMARY KEY,

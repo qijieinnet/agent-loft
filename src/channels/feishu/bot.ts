@@ -48,14 +48,12 @@ type CardResponse = {
 
 export type BotStatus = { state: string; since: number; error?: string };
 
-type FeishuCommand = { kind: "bot"; page: number } | { kind: "web" } | { kind: "detach" } | { kind: "bind"; code: string };
+type FeishuCommand = { kind: "web" } | { kind: "detach" } | { kind: "bind"; code: string };
 
 /** 只在飞书里认的命令：挂到 Web 会话上 / 退回来 / 绑定账号。整条消息只有命令才算 */
 function feishuCommandOf(text: string): FeishuCommand | null {
   const t = text.trim().replace(/^／/, "/");
   const lower = t.toLowerCase();
-  const bot = /^\/bot(?:\s+([1-9]\d{0,5}))?$/.exec(lower);
-  if (bot) return { kind: "bot", page: Number(bot[1] ?? 1) };
   if (lower === "/web") return { kind: "web" };
   if (lower === "/detach") return { kind: "detach" };
   const bind = /^\/bind\s+([A-Za-z0-9]{4,16})$/i.exec(t);
@@ -308,7 +306,7 @@ export class FeishuBot {
     console.log(`${this.tag} ${feishuKey} 接上 Web 会话 ${webKey}`);
     // 最近几句：读历史可能要一会儿，读不到也不影响接上
     const history = await hub.history(webKey).catch(() => []);
-    if (conv.assistant && this.attachedWeb(feishuKey) !== webKey) throw new Error("bot 绑定已变化");
+    if (conv.assistant && this.attachedWeb(feishuKey) !== webKey) throw new Error("会话绑定已变化");
     const recent = history
       .filter((m) => m.role !== "question" && m.text.trim())
       .slice(-4)
@@ -334,25 +332,17 @@ export class FeishuBot {
     return `已回到这个聊天自己的会话${title ? `，不再接着「${title}」` : ""}。之后发 \`/web\` 可以再接上。`;
   }
 
-  /** /web 列最近的聊天；/bot 的联系人可以翻页。 */
-  private async sendWebList(feishuKey: string, chatId: string, assistantPage?: number): Promise<void> {
-    const assistants = assistantPage !== undefined;
+  /** 发 /web：列最近的 Web 会话 */
+  private async sendWebList(feishuKey: string, chatId: string): Promise<void> {
     const current = this.attachedWeb(feishuKey);
-    const visible = listConversations().filter((c) => c.channel === "web" && !c.hidden
-      && (!assistants || c.assistant === "active") && this.canSee(feishuKey, c));
-    const pages = Math.max(1, Math.ceil(visible.length / 10));
-    const page = Math.min(assistantPage ?? 1, pages);
-    visible.sort(assistants ? (a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key) : (a, b) => b.activeAt - a.activeAt);
-    const convs = visible.slice((page - 1) * 10, page * 10).map((c) => this.webEntry(c.key)!);
-    if (assistants && visible.length === 1) {
-      await this.attachTo(feishuKey, convs[0]!.key, getConversation(feishuKey)?.boundOpenId);
-      return;
-    }
+    const convs = hub
+      .list((c) => c.channel === "web" && !c.hidden && this.canSee(feishuKey, c))
+      .slice(0, 10)
+      .map((c) => this.webEntry(c.key)!)
+      .filter(Boolean);
     await this.client.sendCard(
       chatId,
       webListCard({
-        assistants,
-        ...(assistants && pages > 1 ? { page, pages } : {}),
         convs,
         ...(current ? { current } : {}),
         sessionKey: feishuKey,
@@ -368,7 +358,7 @@ export class FeishuBot {
     detach(feishuKey);
     void this.client.sendCard(
       this.chatIdOf(feishuKey),
-      replyCard(getConversation(target)?.assistant ? "之前接着的 bot 已不可用，已回到这个聊天自己的会话。" : "之前接着的 Web 会话已经被删除，已回到这个聊天自己的会话。"),
+      replyCard(getConversation(target)?.assistant ? "之前接着的私人会话已不可用，已回到这个聊天自己的会话。" : "之前接着的 Web 会话已经被删除，已回到这个聊天自己的会话。"),
     );
     return true;
   }
@@ -815,14 +805,7 @@ export class FeishuBot {
     sender?: { openId: string; p2p: boolean },
   ): Promise<void> {
     try {
-      if (cmd.kind === "bot") {
-        const own = getConversation(ownKey);
-        if (sender?.p2p === false || !own?.owner || linkedUser(this.cfg.id, own.boundOpenId)?.id !== own.owner) {
-          await this.client.sendText(chatId, "请先在 Web 添加 bot，再到已绑定账号的飞书私聊发送 /bot。");
-          return;
-        }
-        await this.sendWebList(ownKey, chatId, cmd.page);
-      } else if (cmd.kind === "web") await this.sendWebList(ownKey, chatId);
+      if (cmd.kind === "web") await this.sendWebList(ownKey, chatId);
       else if (cmd.kind === "detach") await this.client.sendCard(chatId, replyCard(this.detachFrom(ownKey)));
       else await this.client.sendCard(chatId, replyCard(await this.bind(cmd.code, ownKey, sender)));
     } catch (err) {
@@ -961,7 +944,7 @@ export class FeishuBot {
       ...(i?.settled ? { card: { type: "raw", data: settledCard(i) } } : {}),
     });
 
-    const denied = { toast: { type: "error" as const, content: "此聊天已不能操作该 bot" } };
+    const denied = { toast: { type: "error" as const, content: "此聊天已不能操作该私人会话" } };
     const request = "r" in envelope ? interactions.get(envelope.r) : undefined;
     const targetKey = "k" in envelope ? envelope.k : request?.convKey;
     const target = targetKey ? getConversation(targetKey) : undefined;

@@ -285,9 +285,6 @@ function onWsMessage(msg) {
     case "ix":
       upsertInteraction(msg.interaction);
       return;
-    case "bot-events":
-      document.dispatchEvent(new Event("aim:bot-events"));
-      break;
     case "tasks":
       // 自己的定时任务变了：定时任务页开着的话会去重新拉（views/tasks.js）
       document.dispatchEvent(new Event("aim:tasks"));

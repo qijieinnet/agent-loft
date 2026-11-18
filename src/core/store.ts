@@ -53,7 +53,7 @@ export type Conversation = {
   cwd: string;
   /** cwd 是否用户显式指定。没指定过的跟随 workspaceRoot 变化 */
   cwdExplicit?: boolean;
-  /** 联系人主会话、已移除的主会话或由它派生的私人会话。 */
+  /** 0.2.122 的个人 bot 及派生会话沿用仅主人可见的权限。 */
   assistant?: "active" | "removed" | "related";
   perAgent: Record<string, AgentBinding>;
   /** 最后一次有人说话的时间，用于闲置过期 */
@@ -261,9 +261,9 @@ export function touchConversation(key: string): void {
   persist();
 }
 
-export function isExpired(conv: Conversation, now = Date.now(), lastActive = conv.activeAt): boolean {
+export function isExpired(conv: Conversation, now = Date.now()): boolean {
   const ttl = config().sessionTtlMs;
-  return conv.assistant !== "active" && ttl > 0 && now - lastActive > ttl;
+  return ttl > 0 && now - conv.activeAt > ttl;
 }
 
 export function listConversations(): Conversation[] {

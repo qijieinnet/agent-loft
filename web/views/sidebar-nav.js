@@ -6,7 +6,6 @@ import { remoteTabs, S, ui } from "../state.js";
 const ITEMS = [
   { id: "search", label: "搜索", icon: "search" },
   { id: "tasks", label: "定时任务", icon: "clock" },
-  { id: "assistants", label: "bot", icon: "chat" },
   { id: "library", label: "资料库", icon: "library" },
   { id: "remote", label: "远程控制", icon: "monitor" },
   { id: "settings", label: "设置", icon: "gear" },

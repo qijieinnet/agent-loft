@@ -109,8 +109,8 @@ export type ConvEvent =
    * task：这一轮是定时任务发起的；silent：任务让 agent 自己判断要不要提醒，它判断这次不用 ——
    * 推送、飞书都不发，网页上折叠显示
    */
-  | { type: "result"; text: string; footer: string; at: number; anchor?: string; task?: { id: string; title: string }; silent?: true; botAnalysis?: true }
-  | { type: "error"; message: string; botAnalysis?: true }
+  | { type: "result"; text: string; footer: string; at: number; anchor?: string; task?: { id: string; title: string }; silent?: true }
+  | { type: "error"; message: string }
   | { type: "notice"; text: string }
   | { type: "state"; busy: boolean }
   | { type: "meta" };
@@ -316,7 +316,7 @@ class Hub extends EventEmitter<{
    * 已经交给 agent 会话、还没出结果的消息，和 inflight、turnTags 一一对应：第一条在跑，后面的在排队。
    * 用来告诉页面哪条消息轮到了 / 被丢了，以及「打断并发送」时把哪条挪到前面
    */
-  private turnFifo = new Map<string, { id: string; input: UserInput; queued: boolean; botAnalysis?: true }[]>();
+  private turnFifo = new Map<string, { id: string; input: UserInput; queued: boolean }[]>();
   private pendingInputs = new Map<string, Map<string, { input: UserInput; cancelled: boolean }>>();
   private rewinding = new Set<string>();
   /** 收到了、还在串行队列里没交给 agent 的消息数：这时再来的消息也算排队 */
@@ -663,7 +663,6 @@ class Hub extends EventEmitter<{
     channel: string;
     channelId: string;
     defaultAgent: string;
-    assistant?: Conversation["assistant"];
     /** 自定义专家的 id（新建时才用）。不给就是内置专家 defaultAgent */
     expert?: string;
     /** 新建时的工作目录。不给就是工作区根目录 */
@@ -677,7 +676,6 @@ class Hub extends EventEmitter<{
       channel: params.channel,
       channelId: params.channelId,
       agent: params.defaultAgent,
-      assistant: params.assistant,
       ...(params.expert && !isBuiltin(params.expert) ? { expert: params.expert } : {}),
       ...(params.cwd ? { cwd: params.cwd } : {}),
       ...(params.title ? { title: params.title } : {}),
@@ -894,7 +892,6 @@ class Hub extends EventEmitter<{
             ...(result.anchor && !tag?.isolated ? { anchor: result.anchor } : {}),
             ...(tag ? { task: { id: tag.taskId, title: tag.title } } : {}),
             ...(silent ? { silent: true as const } : {}),
-            ...(this.turnFifo.get(key)?.[0]?.botAnalysis ? { botAnalysis: true } : {}),
           });
           if (tag) this.emit("task", { ...tag, key, status: silent ? "silent" : "notified", text: result.text });
           const conv = getConversation(key);
@@ -925,7 +922,7 @@ class Hub extends EventEmitter<{
             // 用户自己点的停止：中断导致的「没能正常收尾」不是故障
             this.emitEvent(key, { type: "notice", text: "已中断。" });
           } else {
-            this.emitEvent(key, { type: "error", message: diagnosis.chatMessage, ...(this.turnFifo.get(key)?.[0]?.botAnalysis ? { botAnalysis: true } : {}) });
+            this.emitEvent(key, { type: "error", message: diagnosis.chatMessage });
           }
           this.setInflight(key, (this.inflight.get(key) ?? 1) - 1);
           this.finishTurn(key);
@@ -1267,9 +1264,10 @@ class Hub extends EventEmitter<{
           return;
         }
         // 收到之后发生过显式切换（恢复 / 分叉 / 新会话…）：用户已经明确指定了会话，不再按旧的闲置时间作废它。
-        // 定时任务和固定 bot 均可接续旧上下文，空闲的引擎进程仍按原规则释放。
+        // 定时任务也不按闲置过期：每天跑一次的任务要接着上次的上下文
+        const ttl = config().sessionTtlMs;
         const switchedAfterEntry = (this.lastSwitch.get(key)?.at ?? 0) >= g.at;
-        const expired = !task && !switchedAfterEntry && isExpired(conv, Date.now(), lastActive);
+        const expired = !task && !switchedAfterEntry && ttl > 0 && Date.now() - lastActive > ttl;
         if (expired) {
           await this.expireNow(key);
           if (waiting.cancelled) return;
@@ -1309,7 +1307,7 @@ class Hub extends EventEmitter<{
           // 从这里到 sendNow 没有 await：换下去的会话一定等得到这一轮的结束（见 endIsolatedRun）
           this.parkChatSession(key, task.runId);
         }
-        this.sendNow(key, task ? input : this.withTaskResults(key, input), task ?? null, { id: shown.id, queued: shown.queued, ...(origin.channel === "bot-event" ? { botAnalysis: true } : {}) });
+        this.sendNow(key, task ? input : this.withTaskResults(key, input), task ?? null, { id: shown.id, queued: shown.queued });
       } finally {
         pendingInputs.delete(shown.id);
         if (!pendingInputs.size) this.pendingInputs.delete(key);
@@ -1491,10 +1489,10 @@ class Hub extends EventEmitter<{
   }
 
   /** msg：页面上那条消息的编号和收到时是否排队（见 send 里的 shown） */
-  private sendNow(key: string, input: UserInput, tag: TaskTurn | null, msg: { id: string; queued: boolean; botAnalysis?: true }): void {
+  private sendNow(key: string, input: UserInput, tag: TaskTurn | null, msg: { id: string; queued: boolean }): void {
     const fail = (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      this.emitEvent(key, { type: "error", message, ...(msg.botAnalysis ? { botAnalysis: true } : {}) });
+      this.emitEvent(key, { type: "error", message });
       if (tag) this.emit("task", { ...tag, key, status: "error", text: message });
     };
     let session: AgentSession;
@@ -1605,7 +1603,7 @@ class Hub extends EventEmitter<{
   private async resumeNow(key: string, sessionId: string, originCwd: string | undefined, op: SwitchOp): Promise<string> {
     const conv = getConversation(key)!;
     const privateOwner = assistantSessionOwner(sessionId);
-    if (privateOwner && (!conv.assistant || conv.owner !== privateOwner)) return "请在本人的 bot 对话里恢复这段历史。";
+    if (privateOwner && (!conv.assistant || conv.owner !== privateOwner)) return "请在本人的私人对话里恢复这段历史。";
     const driver = this.requireDriver(conv.agent);
     if (!(await withTimeout(driver.sessionExists(sessionId, conv.cwd), "查询会话"))) {
       return `找不到会话 ${sessionId}。\n发 /sessions 看看有哪些可恢复的。`;

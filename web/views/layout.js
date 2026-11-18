@@ -100,16 +100,10 @@ window.addEventListener("keydown", (e) => {
 
 // 多服务器（lib/shell.js）：外壳让打开某条对话（点了这台的通知）、点了「管理服务器…」、切到别的服务器
 document.addEventListener("aim:shell-open", (e) => {
-  openNoticeTarget(e.detail);
+  if (e.detail && e.detail !== S.current) void openConversation(e.detail);
 });
 document.addEventListener("aim:open-settings", (e) => openSettings(e.detail));
 document.addEventListener("aim:server-leave", () => closeSide());
-
-function openNoticeTarget(key) {
-  if (key?.startsWith("bot-events/")) {
-    import("./bot-events.js").then((m) => m.openBotEvents({ watch: key.slice("bot-events/".length) })).catch((err) => toast(err.message));
-  } else if (key && key !== S.current) void openConversation(key);
-}
 
 /**
  * 通知点开的地址：别的服务器的带着 srv=那台的 id（服务端 push.ts 的 relay），交给外壳切过去。
@@ -188,12 +182,11 @@ export async function boot() {
   else newDraft();
   preloadCommands();
   // 以前的技能页地址：技能现在在设置里
-  if (fromHash.startsWith("bot-events/")) openNoticeTarget(fromHash);
   if (fromHash === "skills") openSettings("技能");
   // 点了桌面端的系统通知 / 菜单栏里的待处理项：跳到对应会话
   desktop?.onOpen((key) => {
     // 不要求在 S.convs 里：侧栏分页，那条可能还没拉到；openConversation 会去服务端拿
-    openNoticeTarget(key);
+    if (key && key !== S.current) void openConversation(key);
   });
   // 页面的「更多」菜单在桌面端顶栏的「更多」里：点了哪项
   if (desktopMenu) desktop.onMenu(runDesktopMenu);
@@ -218,7 +211,7 @@ export async function boot() {
       // 这台自己的通知：外壳正显示着别的服务器的话切回来
       switchServer(HOME);
       const key = decodeURIComponent(url.hash.slice(1));
-      openNoticeTarget(key);
+      if (key && key !== S.current) void openConversation(key);
     });
   }
   shellBooted();
@@ -283,7 +276,7 @@ function renderLayout() {
       { class: "side-top" },
       h("button", { class: "btn new-chat", onclick: () => (newDraft({ inheritLatest: true }), closeSide()) }, icon("plus"), "新建"),
     ),
-    createSidebarNav({ assistants: () => import("./assistants.js").then((m) => m.openAssistants()).catch((err) => toast(err.message)), search: openSearch, tasks: openTasksView, library: openLibraryView, remote: openRemoteView, settings: openSettings }),
+    createSidebarNav({ search: openSearch, tasks: openTasksView, library: openLibraryView, remote: openRemoteView, settings: openSettings }),
     ui.convList,
     // 底部只有额度：没有额度可显示（关了查询、还没查到）时整块藏起来，连分隔线一起
     (ui.sideBottom = h(

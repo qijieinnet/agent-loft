@@ -9,7 +9,7 @@ import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
-import { agentBinding, conversationLabels, expertIdOf, flushStore, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
+import { agentBinding, conversationLabels, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
 import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import { mentions, resolveReplyFile } from "../../core/reply-files.js";
@@ -96,9 +96,6 @@ import {
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clampLimit, dirsOf, inDir, pageOf, parseCursor, recentPageOf, searchConvs } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson, setServerTiming } from "./http.js";
-import { listTasks, taskBelongsToAssistant } from "../../core/tasks.js";
-import { clearWatches } from "../../core/bot-events.js";
-import { handleBotEventsApi, receiveBackup } from "./bot-events-api.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleLibraryApi } from "./library-api.js";
 import { attachToConversation, canSeeFile, deleteConversationFiles, getLibraryFile } from "../../core/library.js";
@@ -133,7 +130,6 @@ const uploads = new Map<string, { key: string; attachment: SavedAttachment; at: 
 /** 单条删除和项目批量删除共用清理规则，保留 agent 自己的文字记录。 */
 function hideConversation(key: string): void {
   const conv = getConversation(key);
-  if (conv?.assistant === "active" && conv.owner) clearWatches(conv.owner, key);
   updateConversation(key, { hidden: true });
   // 删对话：聊天记录索引和摘要真的删掉，不只是搜不到（agent 自己的文字记录还留着，它们不归这里管）
   if (conv) {
@@ -628,8 +624,6 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const p = url.pathname;
   const ip = clientIp(req);
 
-  if (p === "/api/bot-events/receive" && method === "POST") return receiveBackup(req, res);
-
   // ----- 无需登录 -----
   if (p === "/api/me" && method === "GET") {
     const user = currentUser(req);
@@ -677,7 +671,6 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const user = currentUser(req);
   if (!user) throw new HttpError(401, "请先登录");
   if (adminOnly(p) && !isAdmin(user)) throw new HttpError(403, "只有管理员能做这个操作");
-  if (p === "/api/bot-events" || p.startsWith("/api/bot-events/")) return handleBotEventsApi(req, res, url, user);
   const admin = isAdmin(user);
   const visible = (c: Parameters<typeof canSeeConv>[1]) => canSeeConv(user, c);
 
@@ -979,48 +972,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 200, hub.list(visible));
     return;
   }
-  if (p === "/api/assistants" && method === "GET") {
-    const tasks = listTasks(user.id);
-    const assistants = listConversations().filter((c) => c.owner === user.id && c.assistant === "active" && !c.hidden).map((c) => {
-      const info = hub.info(c.key)!;
-      const assigned = tasks.filter((t) => taskBelongsToAssistant(t, c.key));
-      return {
-        key: c.key, expert: info.expert, agent: c.agent, cwd: c.cwd, title: c.title,
-        permission: info.permission, permissionMax: info.permissionMax,
-        unavailable: hub.assistantUnavailable(c), busy: info.busy, pending: interactions.listPending(c.key).length,
-        tasks: assigned.map((t) => {
-          const last = t.runs[0];
-          const key = last?.convKey ?? t.target.key;
-          const target = key ? getConversation(key) : undefined;
-          const resultKey = target?.owner === user.id && !target.hidden ? target.key : undefined;
-          const runningHere = resultKey && hub.currentTaskTurn(resultKey)?.taskId === t.id;
-          return {
-            id: t.id, title: t.title, enabled: t.enabled, nextRunAt: t.nextRunAt,
-            last, resultKey, pending: runningHere ? interactions.listPending(resultKey).length : 0,
-          };
-        }),
-      };
-    });
-    sendJson(res, 200, { assistants });
-    return;
-  }
-  if (p === "/api/assistants" && method === "DELETE") {
-    const { key } = await readJsonBody<{ key?: string }>(req);
-    const conv = typeof key === "string" ? getConversation(key) : undefined;
-    if (!conv || conv.owner !== user.id || (conv.assistant !== "active" && conv.assistant !== "removed")) throw new HttpError(404, "找不到这个 bot");
-    clearWatches(user.id, conv.key);
-    updateConversation(conv.key, { assistant: "removed" });
-    flushStore();
-    hub.emitEvent(conv.key, { type: "meta" });
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-  if ((p === "/api/conversations" || p === "/api/assistants") && method === "POST") {
+  if (p === "/api/conversations" && method === "POST") {
     // expert：新对话页上选的专家（内置的 claude / codex，或者自己的、共享的专家 id）。agent 是以前的叫法
     const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string }>(req);
     const enabled = hub.enabledAgents().map((d) => d.id);
-    const assistant = p === "/api/assistants";
-    if (assistant && (typeof body.expert !== "string" || !body.expert)) throw new HttpError(400, "请选择 bot 使用的专家");
     const wanted = body.expert ?? body.agent;
     if (wanted && !canUseExpert(user.id, wanted)) throw new HttpError(400, "这个专家或 Agent 不存在、已取消共享或未获授权");
     const expertId = wanted || hub.expertChoices(user.id, enabled)[0]?.id;
@@ -1028,21 +983,6 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const custom = isBuiltin(expertId) ? undefined : getExpert(expertId);
     const agent = custom ? custom.engine : expertId;
     if (!enabled.includes(agent)) throw new HttpError(400, `${hub.label(agent)} 没有启用，用不了这个专家`);
-    if (assistant) {
-      // 查询和创建在同一个同步区间，多个标签同时添加也只会创建一个联系人。
-      const contacts = listConversations().filter((c) => c.owner === user.id && !c.hidden && expertIdOf(c) === expertId);
-      const existing = contacts.find((c) => c.assistant === "active") ?? contacts.find((c) => c.assistant === "removed" && c.agent === agent);
-      if (existing) {
-        if (existing.agent !== agent) throw new HttpError(409, "专家已更换引擎，请移除旧 bot 后重新添加");
-        if (existing.assistant !== "active") {
-          updateConversation(existing.key, { assistant: "active" });
-          flushStore();
-          hub.emitEvent(existing.key, { type: "meta" });
-        }
-        sendJson(res, 200, hub.info(existing.key));
-        return;
-      }
-    }
     // 新对话发第一条消息前在页面上选的工作目录；和 /cd 一样只能在工作区之内。没选就用专家默认的
     let cwd: string | undefined;
     const rawCwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : custom?.cwd;
@@ -1052,8 +992,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       cwd = resolved;
     }
     const key = `web:${crypto.randomBytes(6).toString("hex")}`;
-    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent, ...(custom ? { expert: custom.id } : {}), ...(cwd ? { cwd } : {}), owner: user.id,
-      ...(assistant ? { assistant: "active", title: custom?.name ?? hub.label(agent) } : {}) });
+    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent, ...(custom ? { expert: custom.id } : {}), ...(cwd ? { cwd } : {}), owner: user.id });
     sendJson(res, 200, hub.info(key));
     return;
   }

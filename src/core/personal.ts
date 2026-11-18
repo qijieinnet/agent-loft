@@ -1,4 +1,3 @@
-import { clearWatches } from "./bot-events.js";
 // 「这条对话是谁的」在个人数据（记忆、飞书绑定）上的落点。
 import { deleteMemory, memoryPrompt, readMemory } from "./memory.js";
 import { purgeConversationHistory, purgeHistory } from "./chat-history.js";
@@ -77,7 +76,6 @@ export function purgeHiddenConversationsOnce(): number {
 
 /** 删用户时一起删掉的个人数据：记忆、聊天记录索引、飞书和微信绑定、定时任务、技能（他建的技能，装了的人也就没了）、专家和 MCP */
 export function purgeUserData(userId: string): void {
-  clearWatches(userId);
   deleteMemory(userId);
   purgeHistory(userId);
   unlinkUser(userId);
