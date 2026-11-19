@@ -35,6 +35,7 @@ const newUser = (enabled = true) => {
 };
 
 const prompts: string[] = [];
+const engineHistory = new Map<string, import("../src/core/types.js").HistoryMessage[]>();
 let answer: (prompt: string, call: number) => unknown = () => ({ add: [], update: [], remove: [] });
 const driver = {
   id: "claude",
@@ -55,7 +56,7 @@ hub.registerDriver({
   },
   listSessions: async () => [],
   sessionExists: async () => true,
-  readHistory: async () => [],
+  readHistory: async (session: string) => engineHistory.get(session) ?? [],
   listModels: async () => [],
   catalog: async () => [],
   defaults: async () => ({}),
@@ -671,13 +672,34 @@ test("很长的一串字母不会让切词变慢", async () => {
   assert.match(ftsIndexText("用 OpenClash 配置"), /OpenClash Open Clash/);
 });
 
-test("太长的一句头尾都留：长回复的结论在最后", () => {
+test("长回复保存完整正文", () => {
   const u = newUser();
   const long = `开头的内容${"中".repeat(20000)}结论是买这个`;
   history.appendRecords(u.id, [rec("web:cap", "a", long, Date.now())]);
   const t = history.readRecords(u.id)[0]!.t;
-  assert.ok(t.length <= history.TEXT_MAX);
+  assert.equal(t,long);
   assert.ok(t.startsWith("开头的内容") && t.endsWith("结论是买这个"));
+});
+
+test("跨实例的长消息可逐段读完，旧片段只在匹配完整原文时补回", async () => {
+  const u = newUser();
+  const key = "sync/" + "a".repeat(32) + "/web:long";
+  const full = "开头".repeat(5500) + " uniquerecovered " + "末尾".repeat(9000);
+  const old = history.legacyExcerpt(full);
+  history.appendRecords(u.id, [rec(key, "a", old, 1)]);
+  assert.equal(history.searchHistory(u.id, "uniquerecovered").length, 0);
+  const [excerpt] = await mcp(u.id, { search: true }, [{ name: "read_past_chat", arguments: { conversation: key } }]);
+  assert.match(excerpt!.text, /历史正文不完整/);
+  history.recoverExcerpt(u.id, key, "claude", "a", old, full);
+  assert.equal(history.searchHistory(u.id, "uniquerecovered")[0]!.key, key);
+  const [first] = await mcp(u.id, { search: true }, [{ name: "read_past_chat", arguments: { conversation: key } }]);
+  const offset = Number(/char_offset: (\d+)/.exec(first!.text)![1]);
+  assert.ok(offset > 0 && offset < full.length);
+  assert.ok(first!.text.includes(full.slice(0, offset)));
+  const [rest] = await mcp(u.id, { search: true }, [
+    { name: "read_past_chat", arguments: { conversation: key, offset: 0, char_offset: offset } },
+  ]);
+  assert.ok(rest!.text.endsWith(full.slice(offset)));
 });
 
 test("索引分批补：老数据（写入时没进索引的）第一次搜索前补齐", async () => {
@@ -1087,4 +1109,19 @@ test("删用户：条目、记录、摘要、搜索统计全清", () => {
   assert.deepEqual(summaries.countSummaries(u.id), { conv: 0, month: 0 });
   assert.equal(history.searchStats(u.id, "2000-01-01").searches, 0);
   assert.equal((sql("SELECT count(*) AS n FROM memory_summaries_fts WHERE memory_summaries_fts MATCH ?").get('"要 被 删"') as { n: number }).n, 0);
+});
+
+test("升级后从已结束的引擎会话补回旧长消息", async () => {
+  const u = newUser(false);
+  const key = "web:recover-from-prior";
+  conv(key, u.id);
+  const { updateAgentBinding } = await import("../src/core/store.js");
+  updateAgentBinding(key, "claude", { sessionId: "current", pastSessions: ["prior"] });
+  const full = "前".repeat(10000) + " forgottenchunk " + "后".repeat(5000);
+  engineHistory.set("prior", [{role:"assistant",text:full}]);
+  history.appendRecords(u.id, [rec(key, "a", history.legacyExcerpt(full), 123)]);
+  history.patchMeta(u.id, {backfilled:true});
+  await curator.sweepOnce();
+  assert.equal(history.readConversationRecords(u.id,key).rows[0]!.t,full);
+  assert.equal(history.searchHistory(u.id,"forgottenchunk")[0]?.key,key);
 });

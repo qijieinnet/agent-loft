@@ -19,7 +19,7 @@ import {
   updateMemoryItem,
 } from "../core/memory.js";
 import { parseDay } from "../core/memory-dates.js";
-import { readConversationRecords, recordSearch, searchHistory } from "../core/chat-history.js";
+import { incompleteExcerpt, readConversationRecords, recordSearch, searchHistory } from "../core/chat-history.js";
 import { listSummaries, searchSummaries, type MemorySummary } from "../core/memory-summaries.js";
 import { conversationLabels } from "../core/store.js";
 
@@ -128,6 +128,7 @@ const TOOLS = [
       properties: {
         conversation: { type: "string", description: "对话 id" },
         around: { type: "number", description: "句子编号（搜索结果里的 #数字）" },
+        char_offset: { type: "integer", minimum: 0, description: "从 offset 指定的那一句的第几个字符继续，按上次返回值填写" },
         offset: { type: "number", description: "从第几句开始，默认 0" },
         limit: { type: "number", description: "读几句，默认 20，最多 100" },
       },
@@ -168,8 +169,13 @@ function dateRange(args: Record<string, unknown>): { after?: number; before?: nu
   return out;
 }
 
+function sourceLabel(key: string): string {
+  const device = /^sync\/([a-f0-9]{8})[a-f0-9]{24}\//.exec(key);
+  return device ? ` · 来源实例 ${device[1]}` : "";
+}
+
 function summaryLine(s: MemorySummary): string {
-  const label = s.kind === "month" ? `${s.scope} 月度摘要` : `${localDate(s.toTs)} 对话摘要 · 对话 id: ${s.scope}`;
+  const label = s.kind === "month" ? `${s.scope.split("/").at(-1)} 月度摘要${sourceLabel(s.scope)}` : `${localDate(s.toTs)} 对话摘要 · 对话 id: ${s.scope}`;
   return `【${label}】「${s.title}」${s.project ? `（${s.project}）` : ""}\n${s.text}`;
 }
 
@@ -189,7 +195,7 @@ function search(args: Record<string, unknown>) {
   const blocks = hits.map((h, i) => {
     const title = convs.get(h.key)?.title ?? (h.key.startsWith("feishu:") ? "飞书私聊" : h.key.startsWith("weixin:") ? "微信" : "未命名对话");
     return [
-      `[${i + 1}] ${localDate(h.ts)} · 「${title}」 · 对话 id: ${h.key} · #${h.rowId}`,
+      `[${i + 1}] ${localDate(h.ts)} · 「${title}」${sourceLabel(h.key)} · 对话 id: ${h.key} · #${h.rowId}`,
       ...(h.user ? [`用户：${h.user}`] : []),
       ...(h.assistant ? [`助手：${h.assistant}`] : []),
     ].join("\n");
@@ -213,17 +219,24 @@ function readChat(args: Record<string, unknown>) {
     ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
   });
   if (total === 0) return text(`没有 id 为 ${key} 的对话记录。`, true);
-  // 一次给太多会把上下文撑爆（一句最长 8000 字）：放不下的告诉它接着从哪读
+  // Paginate within a single long reply as well as between messages.
   const lines: string[] = [];
   let size = 0;
   for (const r of rows) {
-    const line = `#${r.rowId} ${localDate(r.ts)} ${r.r === "u" ? "用户" : "助手"}：${r.t}`;
+    const start = lines.length ? 0 : Math.max(0, Math.floor(Number(args.char_offset) || 0));
+    const prefix = `#${r.rowId} ${localDate(r.ts)} ${r.r === "u" ? "用户" : "助手"}${incompleteExcerpt(r.t) ? "（历史正文不完整）" : ""}：`;
+    if (!lines.length && r.t.length - start > READ_MAX - prefix.length) {
+      let end = start + READ_MAX - prefix.length;
+      if (/[\uD800-\uDBFF]/.test(r.t[end-1]!)) end--;
+      return text(`${prefix}${r.t.slice(start,end)}\n\n本句未完，接着用 offset: ${offset}，char_offset: ${end}。`);
+    }
+    const line = prefix + r.t.slice(start);
     if (lines.length > 0 && size + line.length > READ_MAX) break;
     lines.push(line);
     size += line.length;
   }
   const next = offset + lines.length;
-  return text(`这段对话一共 ${total} 句，下面是第 ${offset + 1}–${next} 句${next < total ? `（后面还有，要接着看就用 offset: ${next}）` : ""}：\n\n${lines.join("\n\n")}`);
+  return text(`这段对话一共 ${total} 句${sourceLabel(key)}，下面是第 ${offset + 1}–${next} 句${next < total ? `（后面还有，要接着看就用 offset: ${next}）` : ""}：\n\n${lines.join("\n\n")}`);
 }
 
 function timeline(args: Record<string, unknown>) {

@@ -96,6 +96,7 @@ import {
 import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clampLimit, dirsOf, inDir, pageOf, parseCursor, recentPageOf, searchConvs } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson, setServerTiming } from "./http.js";
+import { syncApi } from "./memory-sync-api.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleLibraryApi } from "./library-api.js";
 import { attachToConversation, canSeeFile, deleteConversationFiles, getLibraryFile } from "../../core/library.js";
@@ -624,6 +625,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const p = url.pathname;
   const ip = clientIp(req);
 
+  if (p.startsWith("/api/memory-sync/v1/")) return syncApi(req,res,p);
+
   // ----- 无需登录 -----
   if (p === "/api/me" && method === "GET") {
     const user = currentUser(req);
@@ -671,6 +674,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const user = currentUser(req);
   if (!user) throw new HttpError(401, "请先登录");
   if (adminOnly(p) && !isAdmin(user)) throw new HttpError(403, "只有管理员能做这个操作");
+  if (p === "/api/account/memory/sync" || p.startsWith("/api/account/memory/sync/")) return syncApi(req,res,p,user.id);
   const admin = isAdmin(user);
   const visible = (c: Parameters<typeof canSeeConv>[1]) => canSeeConv(user, c);
 

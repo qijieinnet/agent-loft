@@ -335,3 +335,18 @@ for (const width of [390, 1280]) {
     if (process.env.MEMORY_SHOTS) await page.screenshot({ path: `${process.env.MEMORY_SHOTS}/memory-${width}.png`, fullPage: false });
   });
 }
+
+test("跨实例配对码仅在签发后显示，生成后展示中转状态", async (t) => {
+  const { page } = await fixture(t, 390, "light");
+  let mode = "off";
+  await page.route("**/api/account/memory/sync", (route) => route.fulfill({ json: { mode, pending: 0, conflicts: [], peers: [] } }));
+  await page.route("**/api/account/memory/sync/invite", (route) => {
+    mode = "relay";
+    return route.fulfill({ json: { code: "local-test-pairing-code" } });
+  });
+  await page.getByText("跨实例同步", { exact: true }).click();
+  await page.getByRole("button", { name: "生成配对码" }).click();
+  await page.getByText("本实例作为中转", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("一次性配对码", { exact: true }).inputValue(), "local-test-pairing-code");
+  assert.equal(await page.getByRole("button", { name: "连接中转" }).count(), 0);
+});

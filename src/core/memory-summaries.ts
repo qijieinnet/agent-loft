@@ -164,7 +164,8 @@ function removeRow(userId: string, s: MemorySummary): void {
   sql("DELETE FROM memory_summaries WHERE id = ? AND user_id = ?").run(s.id, userId);
   if (s.kind !== "conv") return;
   // 这段对话跨过的每个月：月度摘要都可能含有它的内容，删掉，还有别的对话的月份下次重新合成
-  const months = sql("SELECT id FROM memory_summaries WHERE user_id = ? AND kind = 'month' AND scope >= ? AND scope <= ?").all(userId, localMonth(s.fromTs), localMonth(s.toTs)) as { id: number }[];
+  const origin = /^sync\/[a-f0-9]{32}\//.exec(s.scope)?.[0] ?? "";
+  const months = sql("SELECT id FROM memory_summaries WHERE user_id = ? AND kind = 'month' AND scope >= ? AND scope <= ?").all(userId, origin + localMonth(s.fromTs), origin + localMonth(s.toTs)) as { id: number }[];
   for (const m of months) {
     sql("DELETE FROM memory_summaries_fts WHERE rowid = ?").run(m.id);
     sql("DELETE FROM memory_summaries WHERE id = ?").run(m.id);
@@ -202,7 +203,7 @@ export function purgeSummaries(userId: string): void {
  */
 export function monthsToRollup(userId: string, now = Date.now()): string[] {
   const current = localMonth(now);
-  const rows = sql("SELECT to_ts, updated_at FROM memory_summaries WHERE user_id = ? AND kind = 'conv'").all(userId) as { to_ts: number; updated_at: number }[];
+  const rows = sql("SELECT to_ts, updated_at FROM memory_summaries WHERE user_id = ? AND kind = 'conv' AND scope NOT LIKE 'sync/%'").all(userId) as { to_ts: number; updated_at: number }[];
   const newest = new Map<string, number>();
   for (const r of rows) {
     const month = localMonth(r.to_ts);
@@ -220,6 +221,6 @@ export function monthsToRollup(userId: string, now = Date.now()): string[] {
 
 /** 某个月的全部对话摘要，从早到晚 */
 export function convSummariesOfMonth(userId: string, month: string): MemorySummary[] {
-  const rows = sql(`SELECT ${COLUMNS} FROM memory_summaries WHERE user_id = ? AND kind = 'conv' ORDER BY to_ts`).all(userId) as Row[];
+  const rows = sql(`SELECT ${COLUMNS} FROM memory_summaries WHERE user_id = ? AND kind = 'conv' AND scope NOT LIKE 'sync/%' ORDER BY to_ts`).all(userId) as Row[];
   return rows.map(toSummary).filter((s) => localMonth(s.toTs) === month);
 }

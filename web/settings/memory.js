@@ -1,3 +1,4 @@
+import { showMemorySync } from "./memory-sync.js";
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
@@ -435,6 +436,7 @@ export async function memoryTab(panel, refresh = false) {
     ),
     otherItemsSection("归档", "archive", mem.counts?.archive ?? 0, "过时了的事。不放进系统提示，agent 问到以前的情况时能搜到。", reload, run),
     otherItemsSection("回收站", "trash", mem.counts?.trash ?? 0, "删掉的放在这里 30 天，之后彻底删除。", reload, run),
+    lazySection("sync", "跨实例同步", showMemorySync),
     logSection(reload),
     summariesSection(mem),
     dataSection(mem, reload),

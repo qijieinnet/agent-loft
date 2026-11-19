@@ -10,6 +10,7 @@
 // 索引不在写入时维护，而是按 index_state 里的进度补（见 syncHistoryIndex）：写入路径不用多一步，
 // 导入的、老版本写的也都能补上。英文词中间的片段（lowercase 写的 openclash 搜 clash）FTS 查不到，
 // 最近的一段记录再用 instr 扫一遍兜底，扫描量有上限。
+import { deleteConvSummary } from "./memory-summaries.js";
 import { sql, transaction } from "./db.js";
 import { bigrams, ftsIndexText, ftsMatch, isCjk, needles, terms } from "./fts.js";
 
@@ -43,6 +44,7 @@ export type CurationLog = {
 export type Meta = {
   /** 已有对话回填过了 */
   backfilled?: boolean;
+  fullTextChecked?: string;
   /** 每条对话整理记忆整理到了哪个时刻（这之后的话还没整理过） */
   extracted: Record<string, number>;
   /** 「每天一次」上次跑的是哪天（本地日期 YYYY-MM-DD） */
@@ -57,15 +59,39 @@ export type Meta = {
   lastRollup?: string;
 };
 
-/** 一句话最多存这么多字：长篇代码、整页网页没必要全存 */
+/** 旧版录入上限。只用于识别、修复以前被截短的记录。 */
 export const TEXT_MAX = 8000;
 /** 太长时头尾都留：长回复的结论通常在最后 */
 const TEXT_TAIL = 2000;
 
-function capText(text: string): string {
+export function legacyExcerpt(text: string): string {
   if (text.length <= TEXT_MAX) return text;
   const gap = "\n…（中间省略）…\n";
   return `${text.slice(0, TEXT_MAX - TEXT_TAIL - gap.length)}${gap}${text.slice(-TEXT_TAIL)}`;
+}
+
+export function incompleteExcerpt(text: string): boolean {
+  return text.length === TEXT_MAX && text.slice(0, -TEXT_TAIL).endsWith("\n…（中间省略）…\n");
+}
+
+/** Update the exact surviving row. A deletion or rewind during asynchronous recovery wins. */
+export function recoverExcerpt(user: string, key: string, agent: string, role: string, original: string, complete: string) {
+  transaction(() => {
+    const rows = sql("SELECT id FROM history WHERE user_id=? AND conv_key=? AND agent=? AND role=? AND text=?").all(
+      user,
+      key,
+      agent,
+      role,
+      original,
+    );
+    if (rows.length !== 1) return;
+    const id = Number(rows[0]!.id);
+    sql("UPDATE history SET text=? WHERE id=?").run(complete, id);
+    if (id <= indexedUpTo()) {
+      sql("DELETE FROM history_fts WHERE rowid=?").run(id);
+      sql("INSERT INTO history_fts(rowid,text) VALUES(?,?)").run(id, ftsIndexText(complete));
+    }
+  });
 }
 
 function checkUser(userId: string): string {
@@ -73,9 +99,9 @@ function checkUser(userId: string): string {
   return userId;
 }
 
-type Row = { id: number; conv_key: string; agent: string; role: "u" | "a"; text: string; ts: number; msg_id: string | null };
+type Row = { id: number; conv_key: string; agent: string; role: "u" | "a"; text: string; ts: number; msg_id: string | null; source_order: number | null };
 
-const COLUMNS = "id, conv_key, agent, role, text, ts, msg_id";
+const COLUMNS = "id, conv_key, agent, role, text, ts, msg_id, source_order";
 
 function toRecord(row: Row): HistoryRecord {
   return { ...(row.msg_id ? { id: row.msg_id } : {}), k: row.conv_key, a: row.agent, r: row.role, t: row.text, ts: row.ts };
@@ -83,7 +109,7 @@ function toRecord(row: Row): HistoryRecord {
 
 function insertRecords(userId: string, records: HistoryRecord[]): void {
   const insert = sql("INSERT INTO history (user_id, conv_key, agent, role, text, ts, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  for (const r of records) insert.run(userId, r.k, r.a, r.r, capText(r.t), r.ts, r.id ?? null);
+  for (const r of records) insert.run(userId, r.k, r.a, r.r, r.t, r.ts, r.id ?? null);
 }
 
 export function appendRecords(userId: string, records: HistoryRecord[]): void {
@@ -109,7 +135,7 @@ export function removeHistoryRecord(userId: string, key: string, id: string): vo
   checkUser(userId);
   transaction(() => {
     sql("DELETE FROM history_fts WHERE rowid IN (SELECT id FROM history WHERE user_id = ? AND conv_key = ? AND msg_id = ?)").run(userId, key, id);
-    sql("DELETE FROM history WHERE user_id = ? AND conv_key = ? AND msg_id = ?").run(userId, key, id);
+    if (sql("DELETE FROM history WHERE user_id = ? AND conv_key = ? AND msg_id = ?").run(userId, key, id).changes) deleteConvSummary(userId,key);
   });
 }
 
@@ -135,6 +161,7 @@ export function replaceConversationRecords(userId: string, key: string, records:
   checkUser(userId);
   transaction(() => {
     deleteConversationRows(userId, key);
+    deleteConvSummary(userId, key);
     insertRecords(userId, records);
   });
 }
@@ -191,7 +218,7 @@ export function pendingConversations(
   const meta = readMeta(userId);
   // 先只看每段对话的最后一句（走覆盖索引，不读正文），再去读真正要整理的那几段。
   // 不能把 extracted 交给库去 JOIN：json_each 没有索引，句数 × 对话数，几年后要跑几分钟还卡住主进程
-  const convs = sql("SELECT conv_key, max(ts) AS last FROM history WHERE user_id = ? GROUP BY conv_key").all(userId) as { conv_key: string; last: number }[];
+  const convs = sql("SELECT conv_key, max(ts) AS last FROM history WHERE user_id = ? AND conv_key NOT LIKE 'sync/%' GROUP BY conv_key").all(userId) as { conv_key: string; last: number }[];
   const out: { key: string; records: HistoryRecord[]; last: number }[] = [];
   const rows = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND ts > ? ORDER BY id`);
   for (const { conv_key: key, last } of convs.sort((a, b) => a.last - b.last)) {
@@ -348,7 +375,7 @@ export function searchHistory(userId: string, query: string, opts: SearchOptions
   const byId = new Map<number, Row>();
   if (match) {
     // CROSS JOIN 固定先查索引：普通 JOIN 时规划器会选「扫这个人的全部记录，每行跑一次 FTS」，慢上千倍
-    const from = `SELECT h.id, h.conv_key, h.agent, h.role, h.text, h.ts, h.msg_id FROM history_fts CROSS JOIN history h ON h.id = history_fts.rowid
+    const from = `SELECT h.id, h.conv_key, h.agent, h.role, h.text, h.ts, h.msg_id, h.source_order FROM history_fts CROSS JOIN history h ON h.id = history_fts.rowid
        WHERE history_fts MATCH ? AND h.user_id = ?${timeSql.replace(/ ts /g, " h.ts ")}`;
     // 边读边过滤，名额只算 skip 留下的：不然常见词的候选可能全是要跳过的对话（按专家筛选时、当前对话很长时），结果就空了
     const take = (order: string, quota: number) => {
@@ -382,14 +409,14 @@ export function searchHistory(userId: string, query: string, opts: SearchOptions
   const used = new Set<number>();
   const perConv = new Map<string, number>();
   // 配对在同一段对话里找：同时开着几段对话时，用户记录里紧挨着的下一句可能是别的对话的
-  const next = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND id > ? ORDER BY id LIMIT 1`);
-  const prev = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND id < ? ORDER BY id DESC LIMIT 1`);
+  const next = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND coalesce(source_order,id) > ? ORDER BY coalesce(source_order,id) LIMIT 1`);
+  const prev = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? AND coalesce(source_order,id) < ? ORDER BY coalesce(source_order,id) DESC LIMIT 1`);
   for (const { row, score } of scored) {
     if (out.length >= limit) break;
     if (used.has(row.id)) continue;
     if (opts.perConv && (perConv.get(row.conv_key) ?? 0) >= opts.perConv) continue;
     // 配上同一条对话里紧挨着的另一半：问配答，答配问
-    const pair = (row.role === "u" ? next : prev).get(userId, row.conv_key, row.id) as Row | undefined;
+    const pair = (row.role === "u" ? next : prev).get(userId, row.conv_key, row.source_order ?? row.id) as Row | undefined;
     const partner = pair && pair.role !== row.role ? pair : undefined;
     used.add(row.id);
     if (partner) used.add(partner.id);
@@ -419,10 +446,10 @@ export function readConversationRecords(
   const total = (sql("SELECT count(*) AS n FROM history WHERE user_id = ? AND conv_key = ?").get(userId, key) as { n: number }).n;
   let offset = Math.max(0, Math.round(Number(opts.offset ?? 0)) || 0);
   if (opts.around !== undefined && Number.isFinite(opts.around)) {
-    const before = (sql("SELECT count(*) AS n FROM history WHERE user_id = ? AND conv_key = ? AND id < ?").get(userId, key, opts.around) as { n: number }).n;
+    const before = (sql("SELECT count(*) AS n FROM history WHERE user_id = ? AND conv_key = ? AND coalesce(source_order,id) < (SELECT coalesce(source_order,id) FROM history WHERE user_id=? AND conv_key=? AND id=?)").get(userId, key, userId,key,opts.around) as { n: number }).n;
     offset = Math.max(0, before - Math.floor(limit / 2));
   }
-  const rows = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? ORDER BY id LIMIT ? OFFSET ?`).all(userId, key, limit, offset) as Row[];
+  const rows = sql(`SELECT ${COLUMNS} FROM history WHERE user_id = ? AND conv_key = ? ORDER BY coalesce(source_order,id) LIMIT ? OFFSET ?`).all(userId, key, limit, offset) as Row[];
   return { rows: rows.map((r) => ({ ...toRecord(r), rowId: r.id })), total, offset };
 }
 

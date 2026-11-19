@@ -13,6 +13,7 @@ import { startFeishu, stopFeishu } from "./channels/feishu/index.js";
 import { startWeixin, stopWeixin } from "./channels/weixin/index.js";
 import { startWeb, stopWeb } from "./channels/web/server.js";
 import { home } from "./home.js";
+import { startMemorySync } from "./core/memory-sync.js";
 import { startMemoryCurator } from "./core/memory-curator.js";
 import { backupBeforeMigration, startBackups } from "./core/backup.js";
 import { purgeHiddenConversationsOnce } from "./core/personal.js";
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
     .then((n) => n && console.log(`[记忆] 全文索引补上了 ${n} 句聊天`))
     .catch((err) => console.error("[记忆] 建全文索引失败:", err));
   startMemoryCurator();
+  const syncTimer = startMemorySync(u => hub.memoryChanged(u));
   startBackups();
 
   startFeishu();
@@ -115,6 +117,7 @@ async function main(): Promise<void> {
 
   let stopping = false;
   const shutdown = async (signal: string) => {
+    clearInterval(syncTimer);
     if (stopping) return;
     stopping = true;
     console.log(`[退出] 收到 ${signal}，正在收尾…`);

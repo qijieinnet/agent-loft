@@ -15,9 +15,12 @@
 //      合成一份月度摘要（一个月一次调用）。存取见 memory-summaries.ts。
 //
 // 定期扫描顺带做维护：补全文索引、到期的记忆归档、清回收站、让别的会话换上 agent 刚记下的记忆。
+import { sql } from "./db.js";
 import { hub } from "./hub.js";
 import {
   appendRecords,
+  recoverExcerpt,
+  legacyExcerpt,
   markExtracted,
   patchMeta,
   pendingConversations,
@@ -156,6 +159,46 @@ export async function backfill(userId: string): Promise<number> {
 }
 
 // ---------- 整理 ----------
+
+/** Only read engine sessions whose local index still contains a legacy excerpt. */
+async function recoverFullText(user: string, today: string) {
+  const checked = readMeta(user).fullTextChecked;
+  if (checked === "complete" || checked === today) return;
+  const rows = sql(
+    "SELECT DISTINCT conv_key,agent FROM history WHERE user_id=? AND conv_key NOT LIKE 'sync/%' AND instr(text,'…（中间省略）…')>0",
+  ).all(user) as { conv_key: string; agent: string }[];
+  for (const { conv_key: key, agent } of rows) {
+    const conv = hub.conversation(key);
+    const driver = hub.driver(agent);
+    const binding = conv?.perAgent[agent];
+    if (!conv || conv.hidden || memoryOwnerOf(conv) !== user || !driver || !binding) continue;
+    const sessions = new Set([binding.sessionId, binding.parked?.sessionId, ...(binding.pastSessions ?? [])]);
+    try {
+      const candidates = new Map<string, { role: string; short: string; full: string } | null>();
+      for (const session of sessions) {
+        if (!session) continue;
+        const messages = await withTimeout(driver.readHistory(session, conv.cwd), 30_000);
+        for (const m of messages) {
+          if (m.role !== "user" && m.role !== "assistant") continue;
+          const role = m.role === "user" ? "u" : "a";
+          const attachmentNames = m.attachments?.map(a => a.name).join("、");
+          const forms = attachmentNames ? [m.text, [m.text, `（附件：${attachmentNames}）`].filter(Boolean).join("\n")] : [m.text];
+          for (const full of forms) {
+            const short = legacyExcerpt(full);
+            if (short === full) continue;
+            const id = role + short;
+            if (!candidates.has(id)) candidates.set(id, {role, short, full});
+            else if (candidates.get(id)?.full !== full) candidates.set(id, null);
+          }
+        }
+      }
+      for (const c of candidates.values()) if (c) recoverExcerpt(user, key, agent, c.role, c.short, c.full);
+    } catch {
+      /* Engine unavailable; the excerpt remains readable. Retry next day. */
+    }
+  }
+  patchMeta(user, { fullTextChecked: rows.length ? today : "complete" });
+}
 
 export const CURATE_SYSTEM = [
   "你在帮一个 AI 助手整理它对用户的长期记忆。会给你：用户自己写的「关于我」、已有的记忆条目（带 id 和时间），以及用户最近的一段或几段对话（每段有编号，带日期）。这份记忆要用很多年。",
@@ -540,6 +583,12 @@ export async function curateBatch(
   let succeeded = 0;
   let failed = 0;
   let changed = false;
+  // A response from before a rewind/deletion must not repopulate its old summary.
+  const historyVersion = (p: Pending) => {
+    const row = sql("SELECT count(*) AS n,max(id) AS last FROM history WHERE user_id=? AND conv_key=? AND ts<=?").get(userId, p.key, p.last)!;
+    return `${row.n}/${row.last}`;
+  };
+  const versions = new Map(batches.flat().map(p => [p, historyVersion(p)]));
   for (const whole of batches) {
     if (streak >= STOP_AFTER) break;
     const batch = whole.filter((p) => !failedKeys.has(p.key));
@@ -564,6 +613,7 @@ export async function curateBatch(
       console.warn(`[记忆] 整理 ${userId} 的 ${batch.length} 段对话失败:`, log.error);
       continue;
     }
+    if (batch.some(p => versions.get(p) !== historyVersion(p))) continue;
     succeeded++;
     streak = 0;
     const result = applyProposal(userId, raw, batch.map((p) => p.key));
@@ -721,6 +771,7 @@ export function sweepOnce(opts: { now?: number } = {}): Promise<void> {
       try {
         // 回填不看记忆开关：侧栏搜索也要搜以前的聊天
         if (!readMeta(user.id).backfilled) await backfill(user.id);
+        await recoverFullText(user.id, localDate(now));
         maintainMemory(user.id, now);
         refreshOtherSessions(user.id);
         const memory = readMemory(user.id);
