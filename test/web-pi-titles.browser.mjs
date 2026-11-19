@@ -74,7 +74,7 @@ for (const width of [390, 1280]) {
     const codex = page.locator('.settings-page [data-agent="codex"]');
     assert.equal(await codex.getByRole("checkbox", { name: "自动生成会话名称", exact: true }).isChecked(), false);
     assert.equal(await codex.locator(".title-row select").isVisible(), false);
-    await page.getByRole("button", { name: "返回", exact: true }).click();
+    await page.evaluate(async () => (await import("/state.js")).ui.settings.close());
     await page.evaluate(async () => { const { openSettings } = await import('/settings/index.js'); await openSettings('Agent'); });
     await picker.locator('option[value="faux/title"]').waitFor({ state: "attached" });
     assert.equal(await on.isChecked(), true);

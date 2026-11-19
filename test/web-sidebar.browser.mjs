@@ -797,6 +797,8 @@ test("侧栏设置占用主区域，返回原会话保留草稿和阅读位置",
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   const settings = page.getByRole("main", { name: "设置" });
   await settings.waitFor();
+  assert.equal(await settings.getByRole("button", { name: "返回", exact: true, includeHidden: true }).count(), 0);
+  assert.equal(await settings.getByRole("button", { name: "会话列表", includeHidden: true }).isVisible(), false);
   assert.equal(await page.locator(".overlay").count(), 0);
   assert.equal(await input.isVisible(), false);
   assert.equal(await page.locator("#sidebar-more.active").count(), 1);
@@ -834,7 +836,8 @@ test("较早的会话在设置页重连和刷新，返回仍是原会话", async
     await dialog.accept();
   });
   await Promise.all([warning, page.reload()]);
-  await settings.getByRole("button", { name: "返回" }).click();
+  await page.locator('.conv-item.recent[data-key="web:1"]').click();
+  await settings.waitFor({ state: "detached" });
   assert.equal(new URL(page.url()).hash, "#web%3A1");
   assert.equal(await page.evaluate(() => S.current), "web:1");
 });
@@ -852,7 +855,11 @@ test("触屏首次加载设置分类期间可以离开，加载完成后仍在�
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   try {
     await page.getByRole("status", { name: "加载设置" }).waitFor();
-    await page.getByRole("button", { name: "返回", exact: true }).click();
+    const settings = page.getByRole("main", { name: "设置" });
+    assert.equal(await settings.getByRole("button", { name: "返回", exact: true, includeHidden: true }).count(), 0);
+    await settings.getByRole("button", { name: "会话列表" }).tap();
+    await page.locator('.conv-item.recent[data-key="web:1"]').tap();
+    await settings.waitFor({ state: "detached" });
   } finally {
     release();
   }

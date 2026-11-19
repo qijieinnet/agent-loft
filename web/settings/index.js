@@ -2,7 +2,7 @@ import { fill, h, icon } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { contentHash, isAdmin, ui } from "../state.js";
 import { closeMenu, confirmDialog } from "../lib/overlay.js";
-import { closeSide, renderSidebar } from "../views/sidebar.js";
+import { closeSide, openSide, renderSidebar } from "../views/sidebar.js";
 import { syncDesktopMenu } from "../views/topbar.js";
 import { WS } from "../lib/ws.js";
 import { hasDirty, markDirty } from "./common.js";
@@ -64,9 +64,12 @@ export async function openSettings(tab) {
     if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
     return true;
   };
-  const back = h("button", { class: "btn", onclick: close }, icon("back"), "返回");
+  const title = h("h1", { tabindex: "-1" }, "设置");
   const pane = h("main", { class: "settings-view", "aria-label": "设置" },
-    h("header", { class: "settings-header" }, back, h("h1", {}, "设置")),
+    h("header", { class: "settings-header" },
+      h("button", { class: "icon-btn menu-btn", onclick: openSide, title: "会话列表" }, icon("menu")),
+      title,
+    ),
     h("div", { class: "settings" }, nav, panel),
   );
   const settings = { close, isDirty, selectTab: (name) => { tab = name; } };
@@ -77,7 +80,7 @@ export async function openSettings(tab) {
   syncDesktopMenu();
   renderSidebar();
   WS.presence();
-  back.focus({ preventScroll: true });
+  title.focus({ preventScroll: true });
 
   // 带 data-form 的表单里改了东西：标成没保存（common.js 的 saveButton）
   const onEdit = (e) => {

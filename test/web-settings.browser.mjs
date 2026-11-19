@@ -115,6 +115,10 @@ async function fixture(t, width, colorScheme, role = "member") {
   return { page, mem, failNextRefresh: () => { failRefresh = true; } };
 }
 
+function requestSettingsClose(page) {
+  return page.evaluate(async () => { void (await import("/state.js")).ui.settings.close(); });
+}
+
 for (const width of [1280, 390]) {
   test(`${width}px：设置替换聊天主区域，返回时保护未保存的修改，编辑弹层保留输入`, async (t) => {
     const { page } = await fixture(t, width, "light");
@@ -127,7 +131,7 @@ for (const width of [1280, 390]) {
     assert.equal(await about.inputValue(), "还没保存的自我介绍");
     assert.equal(await page.locator(".confirm-dialog").count(), 0);
 
-    await settings.getByRole("button", { name: "返回", exact: true }).click();
+    await requestSettingsClose(page);
     const confirm = page.locator(".confirm-dialog");
     await confirm.waitFor();
     await page.locator(".dialog-overlay").click({ position: { x: 1, y: 1 } });
@@ -136,7 +140,7 @@ for (const width of [1280, 390]) {
     await confirm.getByRole("button", { name: "取消", exact: true }).click();
     await confirm.waitFor({ state: "detached" });
     assert.equal(await about.inputValue(), "还没保存的自我介绍");
-    await settings.getByRole("button", { name: "返回", exact: true }).click();
+    await requestSettingsClose(page);
     await confirm.getByRole("button", { name: "不保存", exact: true }).click();
     await settings.waitFor({ state: "detached" });
     assert.equal(await page.getByRole("textbox", { name: "聊天草稿" }).inputValue(), "未发送的消息");
@@ -155,7 +159,7 @@ for (const width of [1280, 390]) {
     assert.equal(await prompt.inputValue(), "编辑中的完整提示词");
     await editor.getByRole("button", { name: "关闭", exact: true }).click();
     assert.equal(await page.locator(".modal").count(), 0);
-    await settings.getByRole("button", { name: "返回", exact: true }).click();
+    await requestSettingsClose(page);
     await settings.waitFor({ state: "detached" });
     assert.equal(await page.getByRole("textbox", { name: "聊天草稿" }).inputValue(), "未发送的消息");
 
@@ -273,8 +277,11 @@ for (const width of [390, 1280]) {
       await page.getByRole('heading', { name: '已开启通知的设备', exact: true }).waitFor();
       assert.equal(await page.locator('.settings-body').evaluate(el => el.scrollWidth > el.clientWidth + 1), false);
       // 旧入口和已保存的「通知」标签仍能定位到系统页。
-      await page.locator('.settings-header').getByRole('button', { name: '返回', exact: true }).click();
-      await page.evaluate(async () => { localStorage.setItem('aim.settingsTab', '通知'); await (await import('/settings/index.js')).openSettings(); });
+      await page.evaluate(async () => {
+        await (await import('/state.js')).ui.settings.close();
+        localStorage.setItem('aim.settingsTab', '通知');
+        await (await import('/settings/index.js')).openSettings();
+      });
       await page.getByRole('heading', { name: '系统通知', exact: true }).waitFor();
       assert.equal(await page.locator('.settings-nav button.on').textContent(), '系统');
     });

@@ -92,7 +92,7 @@ for (const mobile of [false, true]) {
     assert.deepEqual(await choiceOrder(page), expected);
     assert.equal(await page.locator(".settings-body").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false);
     await page.screenshot({ path: `/tmp/agent-loft-expert-order-${mobile ? "mobile" : "desktop"}.png` });
-    await page.getByRole("button", { name: "返回", exact: true }).click();
+    await page.evaluate(async () => (await import("/state.js")).ui.settings.close());
     await page.locator('[title="选择专家"]').click();
     assert.deepEqual(await page.locator(".expert-pop .pop-item .t").allTextContents(), ["共享专家", "Claude Code", "Codex", "我的专家"]);
     await page.locator(".expert-pop .pop-item").first().click();

@@ -7,7 +7,7 @@
     padding-left: 12px;
   }
 
-  .topbar .menu-btn,
+  .menu-btn.icon-btn,
   .top-actions {
     border-radius: 999px;
     background: var(--bg-input);
@@ -15,13 +15,13 @@
   }
 
   @media (prefers-color-scheme: dark) {
-    .topbar .menu-btn,
+    .menu-btn.icon-btn,
     .top-actions {
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24), 0 2px 5px rgba(0, 0, 0, 0.12);
     }
   }
 
-  .topbar .menu-btn {
+  .menu-btn.icon-btn {
     width: 44px;
     height: 44px;
     color: var(--fg);
@@ -127,7 +127,7 @@
     }
   }
 
-  .topbar .menu-btn {
+  .menu-btn.icon-btn {
     display: inline-grid;
   }
 
