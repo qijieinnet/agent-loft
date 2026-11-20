@@ -5,7 +5,8 @@
 // preload 转给这里，弹系统通知（桌面端收不到 Web Push）。菜单栏（Windows / Linux 是托盘）另有图标，
 // 鼠标移上去 / 点一下弹出各服务器的额度和待处理（见 tray.js）。
 // Windows / Linux 用系统自己的标题栏，菜单栏默认收起（按 Alt 出来）。
-import { app, BaseWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, WebContentsView } from "electron";
+import { app, BaseWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, systemPreferences, WebContentsView } from "electron";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApple } from "./apple.js";
@@ -842,6 +843,23 @@ function scheduleQuota() {
 
 // ---------- 启动和退出 ----------
 
+function registerMacAppIcon() {
+  if (!isMac || !app.isPackaged) return;
+  const bundle = path.resolve(process.resourcesPath, "../..");
+  if (bundle.startsWith("/Volumes/") || bundle.includes("/AppTranslocation/")) return;
+  const key = "AgentLoftRegisteredAppIcon";
+  const registration = JSON.stringify([bundle, app.getVersion()]);
+  try {
+    if (systemPreferences.getUserDefault(key, "string") === registration) return;
+    // 通知中心左侧的图标由 macOS 从应用包读取。升级后先刷新本应用的登记，再开始收通知。
+    const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+    execFileSync(lsregister, ["-f", bundle], { stdio: "ignore", timeout: 2000 });
+    systemPreferences.setUserDefault(key, "string", registration);
+  } catch (err) {
+    console.warn("刷新 macOS 应用登记失败", err.message);
+  }
+}
+
 function quit() {
   quitting = true;
   app.quit();
@@ -859,6 +877,7 @@ app.on("window-all-closed", () => {});
 
 app.whenReady().then(() => {
   app.setName("Agent Loft");
+  registerMacAppIcon();
   loadStore();
   syncOpenAtLogin(store.prefs().openAtLogin);
   void refreshLocal().then(() => local.startWithDesktop());

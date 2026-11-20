@@ -88,20 +88,21 @@ function languageFor(name, CM) {
  * 在 parent 里建一个编辑器。onChange：内容变了；onSave：按了 Ctrl / ⌘ + S。
  * 返回 { text, setText, focus, measure, destroy }；text() 给的是还原了换行符、可以直接存的内容
  */
-export async function createEditor({ parent, text, name, onChange, onSave }) {
+export async function createEditor({ parent, text, name, onChange, onSave, collaboration }) {
   const CM = await loadCodeMirror();
   const dark = matchMedia("(prefers-color-scheme: dark)");
   const theme = new CM.Compartment();
   const themeOf = () => (dark.matches ? CM.oneDark : []);
-  let eol = detectEol(text);
+  let eol = collaboration ? (collaboration.crlf ? "crlf" : "mixed") : detectEol(text);
+  const editorText = value => collaboration?.crlf ? value.replace(/\r\n/g, "\n") : value;
   const language = languageFor(name, CM);
   // 混用换行符的文件：只认 \n，\r 留在文字里（显示成特殊字符），存回去一字不差
   const separator = new CM.Compartment();
-  const separatorOf = () => (eol === "mixed" ? CM.EditorState.lineSeparator.of("\n") : []);
+  const separatorOf = () => (collaboration || eol === "mixed" ? CM.EditorState.lineSeparator.of("\n") : []);
   const view = new CM.EditorView({
     parent,
     state: CM.EditorState.create({
-      doc: text,
+      doc: editorText(text),
       extensions: [
         CM.keymap.of([
           {
@@ -115,6 +116,7 @@ export async function createEditor({ parent, text, name, onChange, onSave }) {
           // Tab 缩进。键盘用户按 Esc 再按 Tab 可以离开编辑器（CodeMirror 自带）
           CM.indentWithTab,
         ]),
+        ...(collaboration ? [CM.collab(collaboration)] : []),
         CM.basicSetup,
         CM.EditorView.lineWrapping,
         theme.of(themeOf()),
@@ -128,13 +130,43 @@ export async function createEditor({ parent, text, name, onChange, onSave }) {
   });
   const onTheme = () => view.dispatch({ effects: theme.reconfigure(themeOf()) });
   dark.addEventListener("change", onTheme);
+  let confirmed = view.state.doc;
   return {
+    collaboration: collaboration && {
+      revision: () => CM.getSyncedVersion(view.state),
+      pending: () => CM.sendableUpdates(view.state).length,
+      outgoing() {
+        const updates = [];
+        let size = 0;
+        for (const update of CM.sendableUpdates(view.state).slice(0, 128)) {
+          const json = update.changes.toJSON();
+          const length = JSON.stringify(json).length;
+          if (updates.length && size + length > 3_000_000) break;
+          size += length;
+          updates.push(json);
+        }
+        return updates;
+      },
+      receive(packet) {
+        const skip = CM.getSyncedVersion(view.state) - packet.from;
+        if (skip < 0) throw new Error("缺少协作修改记录");
+        if (skip >= packet.updates.length) return false;
+        const updates = packet.updates.slice(skip).map(u => ({ clientID: u.clientID, changes: CM.ChangeSet.fromJSON(u.changes) }));
+        for (const u of updates) confirmed = u.changes.apply(confirmed);
+        view.dispatch(CM.receiveUpdates(view.state, updates));
+        return true;
+      },
+      savedText: () => restoreEol(confirmed.toString(), eol),
+    },
     text: () => restoreEol(view.state.doc.toString(), eol),
     setText(next) {
-      eol = detectEol(next);
-      view.dispatch({ effects: separator.reconfigure(separatorOf()) });
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
+      if (!collaboration) {
+        eol = detectEol(next);
+        view.dispatch({ effects: separator.reconfigure(separatorOf()) });
+      }
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: editorText(next) } });
     },
+    insertAtSelection: (text) => view.dispatch(view.state.replaceSelection(text)),
     focus: () => view.focus(),
     /** 编辑器被藏起来再放回来之后要重新量尺寸 */
     measure: () => view.requestMeasure(),

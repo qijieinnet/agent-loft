@@ -1,7 +1,8 @@
 // 打进 web/vendor-built/codemirror.js 的内容。要加语言：在这里导出，再到 web/views/file-editor.js 里对上后缀，
 // 然后 npm run build:editor。
 export { EditorView, basicSetup } from "codemirror";
-export { Compartment, EditorState } from "@codemirror/state";
+export { collab, getSyncedVersion, receiveUpdates, sendableUpdates } from "@codemirror/collab";
+export { ChangeSet, Compartment, EditorState } from "@codemirror/state";
 export { keymap } from "@codemirror/view";
 export { indentWithTab } from "@codemirror/commands";
 export { StreamLanguage } from "@codemirror/language";

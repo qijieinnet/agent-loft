@@ -16,7 +16,7 @@ const vendor = {
   "/vendor/xterm-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.mjs",
   "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
 };
-const defaults = ["search", "tasks", "library", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
+const defaults = ["search", "tasks", "library", "memos", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
 
 async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null, recentConvs = null, bootstrap = {} } = {}) {
   const browser = await chromium.launch({
@@ -920,12 +920,12 @@ for (const mobile of [false, true]) {
       await page.screenshot({ path: `/tmp/agent-loft-sidebar-editor-${mobile ? "mobile" : "desktop"}-${colorScheme}.png` });
       await dialog.getByRole("button", { name: "完成", exact: true }).click();
       await dialog.waitFor({ state: "detached" });
-      assert.deepEqual(getSaved().filter((it) => it.visible).map((it) => it.id), ["library", "search"]);
-      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search"]);
+      assert.deepEqual(getSaved().filter((it) => it.visible).map((it) => it.id), ["library", "search", "memos"]);
+      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search", "memos"]);
       await page.reload();
       await page.waitForFunction(() => window.booted);
       if (mobile) await page.locator(".topbar .menu-btn").click();
-      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search"]);
+      assert.deepEqual(await page.locator(".sidebar-nav [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["library", "search", "memos"]);
       await page.evaluate(() => { S.view = "remote"; S.remoteLive.terminals = 1; window.renderSidebar(); });
       assert.equal(await page.locator("#sidebar-more").evaluate((el) => el.classList.contains("active") && el.classList.contains("live")), true);
       if (mobile) await page.locator("#sidebar-more").tap();
@@ -971,5 +971,187 @@ test("编辑：取消不保存；保存失败保留编辑；支持键盘排序�
   assert.equal(await page.locator(".side-top .new-chat").isVisible(), true);
   await page.locator("#sidebar-more").focus();
   await page.keyboard.press("ArrowDown");
-  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "library", "remote", "settings"]);
+  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "library", "memos", "remote", "settings"]);
+});
+
+for (const mobile of [false, true]) {
+  test(`备忘录 ${mobile ? "手机" : "桌面"}：目录、编辑、粘贴图片、保存后重开预览`, async t => {
+    const { page } = await fixture(t, { mobile });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZBoAAAAASUVORK5CYII=", "base64");
+    let text = "# 日记", attachments = 0, offline = mobile;
+    const file = "旅行/今天.md";
+    await page.route("**/api/memos/**", async route => {
+      const u = new URL(route.request().url());
+      const p = u.searchParams.get("path");
+      const op = u.pathname.split("/").pop();
+      let json;
+      if (op === "sources") json = [{ id: "vault", kind: "webdav", name: "我的笔记" }];
+      if (op === "tree") json = { entries: p ? [{name: "今天.md", directory: false}] : [{name: "旅行", directory: true}], next: "" };
+      if (op === "file") {
+        assert.equal(p, file);
+        if (route.request().method() === "PUT" && offline) return route.fulfill({ status: 503, json: { error: "暂时离线" } });
+        if (route.request().method() === "PUT") text = route.request().postDataJSON().text;
+        json = { text, version: '"1"' };
+      }
+      if (op === "attachment") {
+        attachments++;
+        assert.equal(p, file);
+        assert.deepEqual(route.request().postDataBuffer(), png);
+        json = { relative: "assets/test.png" };
+      }
+      if (op === "image") {
+        assert.equal(p, "旅行/assets/test.png");
+        return route.fulfill({ contentType: "image/png", body: png });
+      }
+      return route.fulfill({json});
+    });
+    await page.locator('[data-nav="memos"]').click();
+    const openNote = async () => {
+      await page.locator('.memo-tree [data-path="旅行"]').click();
+      await page.locator('.memo-tree [data-path="旅行/今天.md"]').click();
+    };
+    await openNote();
+    await page.locator(".memo-reading h1").waitFor();
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    const doc = page.locator(".memo-editor .cm-content");
+    await doc.click();
+    await page.keyboard.press("Control+End");
+    await page.keyboard.press("Enter");
+    await doc.evaluate((el, base64) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([Uint8Array.from(atob(base64), c => c.charCodeAt(0))], "pasted.png", { type: "image/png" }));
+      el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+    }, png.toString("base64"));
+    await page.getByText("待自动保存", {exact:true}).waitFor();
+    if (mobile) {
+      await page.waitForFunction(() => sessionStorage.getItem("aim.memoDraft.u1")?.includes("assets/test.png"));
+      page.once("dialog", dialog => dialog.accept());
+      await page.reload();
+      offline = false;
+    }
+    await page.getByText("已保存", {exact:true}).waitFor();
+    assert.equal(attachments, 1);
+    assert.equal(text, "# 日记\n![图片](assets/test.png)");
+    await page.reload();
+    await openNote();
+    await page.waitForFunction(() => document.querySelector(".memo-reading img")?.naturalWidth === 1);
+    assert.ok(await page.locator(".memo-reading img").isVisible());
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  });
+}
+
+test("备忘录从空状态连接 S3、新建目录和 JSON 文件，保存遇到冲突可另存副本", async t => {
+  const { page } = await fixture(t);
+  const files = new Map();
+  let folder = false, connected = false;
+  const source = { id: "s3-test", name: "家庭笔记", kind: "s3" };
+  await page.route("**/api/memos/**", async route => {
+    const u = new URL(route.request().url()), p = u.searchParams.get("path");
+    let json;
+    switch (u.pathname.split("/").pop()) {
+      case "sources":
+        if (route.request().method() === "POST") {
+          const body = route.request().postDataJSON();
+          assert.equal(body.kind, "s3");
+          assert.equal(body.bucket, "family-notes");
+          assert.equal(body.secret, "test-secret");
+          connected = true;
+          json = source;
+        } else json = connected ? [source] : [];
+        break;
+      case "tree":
+        json = { next: "", entries: p ? [...files.keys()].map(k => ({ name: k.split("/").pop(), directory: false })) : folder ? [{ name: "清单", directory: true }] : [] };
+        break;
+      case "folder":
+        assert.equal(p, "清单");
+        folder = true;
+        json = { ok: true };
+        break;
+      case "file": {
+        const data = route.request().postDataJSON();
+        if (data.version !== null) return route.fulfill({ status: 409, json: { error: "文件已被其他设备修改" } });
+        files.set(p, data.text);
+        json = { version: '"1"' };
+      }
+    }
+    return route.fulfill({ json });
+  });
+  await page.locator('[data-nav="memos"]').click();
+  await page.getByRole("button", { name: "连接笔记库", exact: true }).click();
+  const form = page.locator("form.memo-fields");
+  await form.getByLabel("名称", {exact:true}).fill(source.name);
+  await form.getByLabel("数据源").selectOption("s3");
+  await form.getByLabel("存储桶").fill("family-notes");
+  await form.getByLabel("Access Key ID").fill("test-id");
+  await form.getByLabel("Secret Access Key").fill("test-secret");
+  await form.getByRole("button", { name: "连接笔记库" }).click();
+  await page.getByRole("button", { name: "新建文件夹", exact: true }).click();
+  const name = page.getByRole("textbox", { name: "名称", exact: true });
+  await name.fill("清单"); await name.press("Enter");
+  await page.locator('.memo-tree [data-path="清单"]').waitFor();
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
+  await name.fill("list.json"); await name.press("Enter");
+  const doc = page.locator(".memo-editor .cm-content");
+  await doc.fill('{"日期": 20}');
+  await page.getByText("远端已更改", {exact:true}).waitFor();
+  await page.getByRole("button", { name: "另存副本", exact: true }).click();
+  await name.press("Enter");
+  await page.getByText("已保存", {exact:true}).waitFor();
+  assert.equal(files.get("清单/list.json"), "");
+  assert.equal(files.get("清单/list-副本.json"), '{"日期": 20}');
+});
+
+test("备忘录在自动保存期间继续输入，切换文件写回最新正文，旧版本可预览并恢复", async t => {
+  const { page } = await fixture(t);
+  const files = new Map([["a.md", "起稿"], ["b.md", "第二篇"]]);
+  const history = [];
+  let release, notify;
+  const firstWrite = new Promise(resolve => { notify = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  let failNext = false;
+  await page.route("**/api/memos/**", async route => {
+    const req = route.request(), u = new URL(req.url()), path = u.searchParams.get("path");
+    const op = u.pathname.split("/").pop();
+    if (op === "sources") return route.fulfill({ json: [{ id: "vault", kind: "webdav", name: "笔记" }] });
+    if (op === "tree") return route.fulfill({ json: { entries: [...files.keys()].map(name => ({ name, directory: false })) } });
+    if (op === "history") {
+      const id = u.searchParams.get("id");
+      return route.fulfill({ json: id ? { text: history[Number(id) - 1] } : history.map((_, i) => ({ id: i + 1, at: i + 1 })).reverse() });
+    }
+    if (req.method() === "PUT") {
+      const data = req.postDataJSON();
+      if (failNext) { failNext = false; return route.fulfill({status:502, json:{error:"存储暂时离线"}}); }
+      if (!history.length) { notify(); await gate; }
+      assert.equal(data.version, String(history.length));
+      history.push(files.get(path));
+      files.set(path, data.text);
+    }
+    return route.fulfill({ json: { version: String(history.length), text: files.get(path) } });
+  });
+  await page.locator('[data-nav="memos"]').click();
+  const open = name => page.locator('.memo-tree').getByRole("button", { name, exact:true }).click();
+  await open("a.md");
+  await page.getByRole("button", { name: "编辑", exact:true }).click();
+  const doc = page.locator(".memo-editor .cm-content");
+  await doc.fill("第一稿");
+  await firstWrite;
+  await doc.fill("第二稿");
+  await open("b.md");
+  release();
+  await page.getByText("第二篇", {exact:true}).last().waitFor();
+  assert.deepEqual(history, ["起稿", "第一稿"]);
+  assert.equal(files.get("a.md"), "第二稿");
+  await open("a.md");
+  await page.getByRole("button", {name:"版本历史"}).click();
+  await page.getByLabel("选择历史版本").selectOption("1");
+  await page.locator(".memo-snapshot").filter({ hasText: /^起稿$/ }).waitFor();
+  await page.getByRole("button", {name:"恢复此版本"}).click();
+  await page.locator(".memo-reading p").filter({ hasText: /^起稿$/ }).waitFor();
+  assert.deepEqual(history, ["起稿", "第一稿", "第二稿"]);
+  await page.getByRole("button", { name: "编辑", exact:true }).click();
+  failNext = true;
+  await doc.fill("断线恢复");
+  await page.getByText("保存失败", {exact:true}).waitFor();
+  await page.getByText("已保存", {exact:true}).waitFor();
+  assert.equal(files.get("a.md"), "断线恢复");
 });

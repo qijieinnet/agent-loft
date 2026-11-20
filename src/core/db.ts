@@ -43,6 +43,12 @@ function loadSqlite(): typeof import("node:sqlite") {
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY, at INTEGER NOT NULL);
 
+CREATE TABLE IF NOT EXISTS memo_versions (
+  id INTEGER PRIMARY KEY, owner TEXT NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL,
+  at INTEGER NOT NULL, digest TEXT NOT NULL, content BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memo_versions_file ON memo_versions (owner, source, path, id);
+
 CREATE TABLE IF NOT EXISTS conversations (
   key TEXT PRIMARY KEY,
   data TEXT NOT NULL

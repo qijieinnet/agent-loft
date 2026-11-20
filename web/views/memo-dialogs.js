@@ -1,0 +1,100 @@
+import { h } from "../lib/dom.js";
+import { modal } from "../lib/overlay.js";
+import { api } from "../lib/api.js";
+
+export function connectSource(onConnect) {
+  const kind = h("select", { class: "input" }, h("option", { value: "webdav" }, "WebDAV"), h("option", { value: "s3" }, "S3 / 兼容存储"));
+  const input = (name, placeholder = "", type = "text") => h("input", { class: "input", name, placeholder, type, autocomplete: "off" });
+  const name = input("name", "我的笔记"), endpoint = input("endpoint", "https://nas.example.com/dav/Notes/", "url");
+  const username = input("username"), secret = input("secret", "", "password");
+  const bucket = input("bucket"), region = input("region", "us-east-1"), prefix = input("prefix", "可选，如 Notes");
+  const label = (caption, field) => h("label", {}, caption, field);
+  const userLabel = h("span"), secretLabel = h("span");
+  const s3 = h("div", { class: "memo-fields" }, label("存储桶", bucket), label("区域", region), label("目录前缀", prefix));
+  const configure = () => {
+    const aws = kind.value === "s3";
+    s3.hidden = !aws;
+    bucket.required = username.required = secret.required = aws;
+    endpoint.required = !aws;
+    endpoint.placeholder = aws ? "兼容存储填写端点，AWS 可留空" : "https://nas.example.com/dav/Notes/";
+    userLabel.textContent = aws ? "Access Key ID" : "用户名";
+    secretLabel.textContent = aws ? "Secret Access Key" : "密码 / 应用专用密码";
+  };
+  configure();
+  kind.onchange = configure;
+  name.required = true;
+  const error = h("div", { class: "memo-error", role: "alert" });
+  const submit = h("button", { class: "btn primary", type: "submit" }, "连接笔记库");
+  const form = h("form", { class: "modal-body memo-fields" }, label("名称", name), label("数据源", kind), label("服务地址", endpoint), s3, label(userLabel, username), label(secretLabel, secret), error, submit);
+  const close = modal({ title: "连接笔记库", body: form, beforeClose: () => !submit.disabled });
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (submit.disabled) return;
+    submit.disabled = true;
+    submit.textContent = "正在验证连接…";
+    error.textContent = "";
+    try {
+      const source = await api("/api/memos/sources", { method: "POST", body: {
+        ...Object.fromEntries(new FormData(form)), kind: kind.value,
+      } });
+      close();
+      await onConnect(source);
+    } catch (err) { error.textContent = err.message; }
+    finally { submit.disabled = false; submit.textContent = "连接笔记库"; }
+  };
+  name.focus();
+}
+
+export function askMemoName(title, initial, directory) {
+  return new Promise(resolve => {
+    const input = h("input", { class: "input", required: true, value: initial, "aria-label": "名称" });
+    const form = h("form", { class: "modal-body memo-fields" },
+      h("label", {}, "位置", h("span", { class: "memo-path" }, "/" + directory)),
+      h("label", {}, "名称", input), h("button", { class: "btn primary" }, "确定"));
+    const close = modal({ title, body: form, beforeClose: () => { resolve(null); } });
+    input.oninput = () => input.setCustomValidity("");
+    form.onsubmit = e => {
+      e.preventDefault();
+      const name = input.value.trim();
+      if (!name || name === "." || name === ".." || /[\\/]/.test(name)) {
+        input.setCustomValidity("请输入单个文件或文件夹名称");
+        input.reportValidity();
+        return;
+      }
+      close();
+      resolve(name);
+    };
+    input.focus();
+    input.setSelectionRange(0, initial.lastIndexOf(".") > 0 ? initial.lastIndexOf(".") : initial.length);
+  });
+}
+
+/** Only fetch the selected snapshot. Restoring returns its text to the normal conditional save path. */
+export async function chooseMemoVersion(url) {
+  const versions = await api(url);
+  return new Promise(resolve => {
+    let request = 0, selected = null;
+    const select = h("select", { class: "input", "aria-label": "选择历史版本" },
+      versions.map(v => h("option", { value: v.id }, new Date(v.at).toLocaleString() + " · #" + v.id)));
+    const preview = h("pre", { class: "memo-snapshot", "aria-label": "版本正文" });
+    const apply = h("button", { class: "btn primary", disabled: true, onclick: () => { close(); resolve(selected); } }, "恢复此版本");
+    const body = h("div", { class: "modal-body memo-fields" },
+      versions.length ? [select, preview, apply] : h("p", {}, "还没有历史版本。下次保存修改时，会保留修改前的正文。"));
+    const close = modal({ title: "版本历史", body, beforeClose: () => { resolve(null); } });
+    async function load() {
+      const seq = ++request;
+      selected = null;
+      apply.disabled = true;
+      preview.textContent = "正在读取…";
+      try {
+        const { text } = await api(url + "&id=" + encodeURIComponent(select.value));
+        if (seq !== request) return;
+        selected = text;
+        preview.textContent = text || "（空文件）";
+        apply.disabled = false;
+      } catch (err) { if (seq === request) preview.textContent = err.message; }
+    }
+    select.onchange = load;
+    if (versions.length) void load();
+  });
+}

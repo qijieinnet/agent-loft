@@ -13,6 +13,7 @@ import { sql } from "./db.js";
 import { listConversations, type Conversation } from "./store.js";
 import { getUser, legacyOwnerId } from "./users.js";
 import { deleteBuiltinAgentDefaults } from "./builtin-agents.js";
+import { deleteMemoSources } from "./memo-sources.js";
 import { deleteUiPrefs } from "./ui-prefs.js";
 
 /**
@@ -86,6 +87,7 @@ export function purgeUserData(userId: string): void {
   purgeUserSkills(userId);
   purgeUserExperts(userId);
   purgeUserMcp(userId);
+  deleteMemoSources(userId);
   deleteUiPrefs(userId);
   deleteBuiltinAgentDefaults(userId);
 }

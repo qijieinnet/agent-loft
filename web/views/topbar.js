@@ -16,10 +16,8 @@ import { syncCall } from "./voice-call.js";
 
 export function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
-  const tasks = S.view === "tasks";
-  const remote = S.view === "remote";
-  const library = S.view === "library";
-  const showExpert = c && !tasks && !remote && !library;
+  const viewTitle = { tasks: "定时任务", remote: "远程控制", library: "资料库", memos: "备忘录" }[S.view];
+  const showExpert = c && !viewTitle;
   // 老版本桌面端把菜单放在窗口顶栏；菜单没有内容时也不放。
   const showMore = !desktopMenu && topMenuItems().length > 0;
   fill(ui.topbar,
@@ -27,8 +25,8 @@ export function renderTopbar() {
     h(
       "div",
       { class: "top-title" },
-      tasks || remote || library
-        ? h("span", { class: "conv-name" }, tasks ? "定时任务" : library ? "资料库" : "远程控制")
+      viewTitle
+        ? h("span", { class: "conv-name" }, viewTitle)
         : c
           ? h("span", { class: "conv-name", title: convTitle(c) }, convTitle(c))
           : null,

@@ -3,7 +3,7 @@ import { remoteTabs, S, setContentHash, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
 import { closeSide, renderSidebar } from "./sidebar.js";
 import { renderTopbar } from "./topbar.js";
-import { openLibraryView, openTasksView } from "./layout.js";
+import { openLibraryView, openMemosView, openTasksView } from "./layout.js";
 
 // ---------- 远程控制 ----------
 // 侧栏「定时任务」下面的入口：上面切「桌面 / 终端」，下面是对应的那一块。
@@ -97,6 +97,7 @@ export function leaveRemote() {
   const before = R.before;
   R.before = null;
   if (before === "tasks") return openTasksView();
+  if (before === "memos") return openMemosView();
   if (before === "library") return openLibraryView();
   setContentHash(S.current ? `#${encodeURIComponent(S.current)}` : "");
   // 对话区藏着的时候滚动位置没了：放回原处

@@ -33,6 +33,7 @@ import { HttpError, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "
 import { hasSubscriptions, pushToAll } from "./push.js";
 import { closeListener, listen, listening, rebind } from "./listen.js";
 import { closeTerminalClients, pingTerminalClients, recheckTerminalClients, upgradeTerminal } from "./terminal.js";
+import { closeMemoRooms } from "./memo-collab.js";
 import { closeDesktopClients, pingDesktopClients, recheckDesktopClients, upgradeDesktop } from "./desktop.js";
 import { stopDesktop } from "../../core/desktop.js";
 
@@ -829,6 +830,7 @@ function onRevoked(): void {
 }
 
 export async function stopWeb(): Promise<void> {
+  closeMemoRooms();
   authEvents.off("revoked", onRevoked);
   hub.off("event", broadcastEvent);
   hub.off("realtime", broadcastRealtime);

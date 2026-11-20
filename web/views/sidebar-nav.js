@@ -7,6 +7,7 @@ const ITEMS = [
   { id: "search", label: "搜索", icon: "search" },
   { id: "tasks", label: "定时任务", icon: "clock" },
   { id: "library", label: "资料库", icon: "library" },
+  { id: "memos", label: "备忘录", icon: "clipboard" },
   { id: "remote", label: "远程控制", icon: "monitor" },
   { id: "settings", label: "设置", icon: "gear" },
 ];

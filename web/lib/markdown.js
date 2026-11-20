@@ -21,7 +21,7 @@ export function renderMarkdown(text, opts) {
  * enhance(box, { final })：每块画好后再加工一下（比如把文件路径变成链接、完整相册块变成网格）。
  * 按块拼起来和整段解析的结果一样（marked 的 parser 本来就是逐块拼接的）。
  */
-export function patchMarkdown(div, text, { live = false, enhance } = {}) {
+export function patchMarkdown(div, text, { live = false, enhance, prepare, sanitizeOptions } = {}) {
   const tokens = marked.lexer(text ?? "");
   const links = JSON.stringify(tokens.links ?? {});
   // 引用式链接的定义可能在后面才出现（流式输出时地址还会一点点变长），会影响前面的块：定义变了就整个重画
@@ -53,7 +53,14 @@ export function patchMarkdown(div, text, { live = false, enhance } = {}) {
     chunk.links = tokens.links;
     // 在本页的元素里解析（DOMPurify 直接返回的节点属于另一个 document，搬过来后 IntersectionObserver 就不灵了）
     const box = document.createElement("div");
-    box.innerHTML = DOMPurify.sanitize(marked.parser(chunk), { ADD_ATTR: ["target"] });
+    const html = DOMPurify.sanitize(marked.parser(chunk), sanitizeOptions ?? { ADD_ATTR: ["target"] });
+    if (prepare) {
+      // Resolve vault links while the document is inert, before the browser fetches images.
+      const template = document.createElement("template");
+      template.innerHTML = html;
+      prepare(template.content);
+      box.append(template.content);
+    } else box.innerHTML = html;
     decorate(box, final);
     enhance?.(box, { final });
     const nodes = [...box.childNodes];

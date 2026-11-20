@@ -2,7 +2,7 @@
   "name": "agent-loft-desktop",
   "productName": "Agent Loft",
   "desktopName": "agent-loft-desktop.desktop",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "description": "agent-loft 的桌面端（macOS / Windows / Linux）：同时连多台 agent-loft 服务器，菜单栏 / 托盘显示额度和待处理，检测并升级服务端",
   "author": "qijieinnet",
@@ -37,9 +37,13 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "afterPack": "./scripts/rename-mac-icon.js",
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.png",
+      "extendInfo": {
+        "CFBundleIconFile": "AgentLoft-Confluence.icns"
+      },
       "target": [
         "dmg",
         "zip"

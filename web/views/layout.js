@@ -124,6 +124,10 @@ export function openLibraryView() {
   );
 }
 
+export function openMemosView() {
+  return import("./memos.js").then(m => m.openMemos(), err => toast(`备忘录加载失败：${err.message}`));
+}
+
 export async function boot() {
   const me = await api("/api/me");
   if (!me.authed) return showAuth();
@@ -164,6 +168,7 @@ export async function boot() {
   const latest = latestConversation("web");
   if (restoreSettings) void openSettings();
   if (fromHash === "tasks") openTasksView();
+  else if (fromHash === "memos") await openMemosView();
   else if (fromHash === "library") openLibraryView();
   else if (fromHash === "new") newDraft({ inheritLatest: true });
   else if (fromHash.startsWith("remote") && remoteTabs().length) {
@@ -267,7 +272,7 @@ function renderLayout() {
       { class: "side-top" },
       h("button", { class: "btn new-chat", onclick: () => navigate(() => (newDraft({ inheritLatest: true }), closeSide())) }, icon("plus"), "新建"),
     ),
-    createSidebarNav({ search: () => navigate(openSearch), tasks: () => navigate(openTasksView), library: () => navigate(openLibraryView), remote: () => navigate(openRemoteView), settings: openSettings }),
+    createSidebarNav({ search: () => navigate(openSearch), tasks: () => navigate(openTasksView), library: () => navigate(openLibraryView), memos: () => navigate(openMemosView), remote: () => navigate(openRemoteView), settings: openSettings }),
     ui.convList,
     // 底部只有额度：没有额度可显示（关了查询、还没查到）时整块藏起来，连分隔线一起
     (ui.sideBottom = h(

@@ -5,7 +5,8 @@ export async function api(path, opts = {}) {
     method: opts.method ?? "GET",
     credentials: "same-origin",
     keepalive: opts.keepalive ?? false,
-    headers: opts.body !== undefined && !(opts.body instanceof Blob) ? { "Content-Type": "application/json" } : opts.headers,
+    signal: opts.signal,
+    headers: opts.body !== undefined && !(opts.body instanceof Blob) ? { "Content-Type": "application/json", ...opts.headers } : opts.headers,
     body: opts.body === undefined ? undefined : opts.body instanceof Blob ? opts.body : JSON.stringify(opts.body),
   });
   let data = null;
@@ -16,7 +17,7 @@ export async function api(path, opts = {}) {
   }
   if (res.status === 401 && !path.startsWith("/api/me") && !path.startsWith("/api/login")) {
     showAuth();
-    throw new Error("请先登录");
+    throw Object.assign(new Error("请先登录"), { status: 401 });
   }
   if (!res.ok) {
     const err = new Error(data?.error ?? `请求失败（${res.status}）`);

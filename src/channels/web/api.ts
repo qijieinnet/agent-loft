@@ -98,6 +98,7 @@ import { clampLimit, dirsOf, inDir, pageOf, parseCursor, recentPageOf, searchCon
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson, setServerTiming } from "./http.js";
 import { syncApi } from "./memory-sync-api.js";
 import { handleTasksApi } from "./tasks-api.js";
+import { handleMemosApi } from "./memos-api.js";
 import { handleLibraryApi } from "./library-api.js";
 import { attachToConversation, canSeeFile, deleteConversationFiles, getLibraryFile } from "../../core/library.js";
 import { handleSkillsApi } from "./skills-api.js";
@@ -844,6 +845,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 定时任务 -----
   if (p.startsWith("/api/tasks") && (await handleTasksApi(req, res, p, user))) return;
+  if (p.startsWith("/api/memos/")) return handleMemosApi(req, res, url, user, () => currentUser(req));
   if (p.startsWith("/api/library") && (await handleLibraryApi(req, res, p, user))) return;
   if (p.startsWith("/api/skills") && (await handleSkillsApi(req, res, url, user))) return;
   if ((p === "/api/agents/defaults" || p.startsWith("/api/experts") || p.startsWith("/api/mcp")) && (await handleExpertsApi(req, res, p, user))) return;
