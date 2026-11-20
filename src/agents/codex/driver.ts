@@ -45,6 +45,13 @@ type HistoryItem = {
   summary?: string[];
 };
 
+type HistoryTurn = {
+  id?: string;
+  items?: HistoryItem[];
+  startedAt?: number | null;
+  completedAt?: number | null;
+};
+
 export class CodexDriver implements AgentDriver {
   readonly id = "codex";
   readonly label = "Codex";
@@ -122,10 +129,33 @@ export class CodexDriver implements AgentDriver {
   /** 本进程里已经生成过（或试过）名称的线程：失败了也不反复重试，每轮结束都会来问 */
   private titled = new Set<string>();
 
+  private async *readTurns(id: string, itemsView: "full" | "notLoaded" = "full"): AsyncGenerator<HistoryTurn, void> {
+    const { thread } = await appServer.call<{
+      thread: { historyMode?: string; turns?: HistoryTurn[] };
+    }>("thread/read", { threadId: id, includeTurns: true });
+    if (thread.historyMode !== "paginated") {
+      yield* thread.turns ?? [];
+      return;
+    }
+
+    // 分页历史的 thread/read 即使带 includeTurns 也只返回元数据。
+    let cursor: string | null = null;
+    do {
+      const page: { data: HistoryTurn[]; nextCursor: string | null } = await appServer.call("thread/turns/list", {
+        threadId: id,
+        sortDirection: "asc",
+        itemsView,
+        ...(cursor ? { cursor } : {}),
+      });
+      yield* page.data;
+      cursor = page.nextCursor;
+    } while (cursor);
+  }
+
   /** 按第一轮的问答起个短标题，写回线程（thread/name/set），Codex App 里也能看到 */
   private async generateTitle(id: string, model: string): Promise<string | undefined> {
-    const res = await appServer.call<{ thread: { turns?: { items?: HistoryItem[] }[] } }>("thread/read", { threadId: id, includeTurns: true });
-    const items = res.thread.turns?.[0]?.items ?? [];
+    const { value: turn } = await this.readTurns(id).next();
+    const items = turn?.items ?? [];
     const user = items
       .filter((i) => i.type === "userMessage")
       .flatMap((i) => (i.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")))
@@ -133,7 +163,7 @@ export class CodexDriver implements AgentDriver {
     const question = splitAttachmentNote(stripContext(user)).text.trim();
     if (!question) return undefined;
     const answer = items
-      .filter((i) => i.type === "agentMessage" && i.phase !== "commentary" && i.text)
+      .filter((i) => i.text && (i.type === "plan" || (i.type === "agentMessage" && i.phase !== "commentary")))
       .map((i) => i.text)
       .join("\n\n");
     const out = (await this.complete({
@@ -154,14 +184,8 @@ export class CodexDriver implements AgentDriver {
   }
 
   async readHistory(id: string): Promise<HistoryMessage[]> {
-    const res = await appServer.call<{
-      thread: { turns?: { id?: string; items?: HistoryItem[]; startedAt?: number | null; completedAt?: number | null }[] };
-    }>(
-      "thread/read",
-      { threadId: id, includeTurns: true },
-    );
     const out: HistoryMessage[] = [];
-    for (const turn of res.thread.turns ?? []) {
+    for await (const turn of this.readTurns(id)) {
       let assistant: HistoryMessage | null = null;
       const ts = turn.startedAt ? turn.startedAt * 1000 : undefined;
       for (const item of turn.items ?? []) {
@@ -183,8 +207,8 @@ export class CodexDriver implements AgentDriver {
           continue;
         }
         assistant ??= { role: "assistant", text: "", steps: [] };
-        if (item.type === "agentMessage" && item.text?.trim()) {
-          if (item.phase === "commentary") assistant.steps!.push(`💬 ${summarize(item.text)}`);
+        if ((item.type === "agentMessage" || item.type === "plan") && item.text?.trim()) {
+          if (item.type === "agentMessage" && item.phase === "commentary") assistant.steps!.push(`💬 ${summarize(item.text)}`);
           else assistant.text += (assistant.text ? "\n\n" : "") + item.text;
         } else if (item.type === "commandExecution" && item.command) {
           assistant.steps!.push(`🔧 ${summarize(item.command, 70)}`);
@@ -220,11 +244,12 @@ export class CodexDriver implements AgentDriver {
   }
 
   async rewindTo(id: string, cwd: string, anchor: string): Promise<string | undefined> {
-    const res = await appServer.call<{ thread: { turns?: { id: string }[] } }>("thread/read", { threadId: id, includeTurns: true });
-    const turns = res.thread.turns ?? [];
-    const index = turns.findIndex((turn) => turn.id === anchor);
-    if (index < 0) throw new Error("在会话记录里找不到这条消息，请刷新后重试");
-    return index === 0 ? undefined : this.forkAt(id, cwd, turns[index - 1]!.id);
+    let previous: string | undefined;
+    for await (const turn of this.readTurns(id, "notLoaded")) {
+      if (turn.id === anchor) return previous ? this.forkAt(id, cwd, previous) : undefined;
+      previous = turn.id;
+    }
+    throw new Error("在会话记录里找不到这条消息，请刷新后重试");
   }
 
   async listModels(): Promise<ModelInfo[]> {

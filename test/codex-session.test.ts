@@ -10,6 +10,7 @@ const keepAlive = setInterval(() => {}, 1000);
 after(() => clearInterval(keepAlive));
 
 const { appServer } = await import("../src/agents/codex/app-server.js");
+const { CodexDriver } = await import("../src/agents/codex/driver.js");
 const { CodexSession } = await import("../src/agents/codex/session.js");
 import type { AgentEvents, ContextUsage, InteractionSpec, SessionOptions, Settlement, TokenUsage, TurnResult } from "../src/core/types.js";
 import type { ExpertRuntime } from "../src/core/experts.js";
@@ -704,6 +705,50 @@ test("计划模式：这一轮带 collaborationMode=plan，方案当回复；问
   notify("turn/completed", { threadId: "th-plan", turn: { id: "tu-3", status: "completed" } });
   await tick();
   void session.dispose();
+});
+
+test("重开 Codex 会话时从旧版和分页历史还原方案正文", async () => {
+  const turns = [
+    {
+      id: "plan-turn",
+      items: [
+        { type: "userMessage", content: [{ type: "text", text: "加个按钮" }] },
+        { type: "agentMessage", phase: "commentary", text: "先看看页面结构" },
+        { type: "plan", text: "1. 加一个按钮\n2. 验证点击行为" },
+      ],
+    },
+    {
+      id: "next-turn",
+      items: [
+        { type: "userMessage", content: [{ type: "text", text: "按方案执行" }] },
+        { type: "agentMessage", phase: "final_answer", text: "已完成" },
+      ],
+    },
+  ];
+  const expected = [
+    { role: "user", anchor: "plan-turn", text: "加个按钮" },
+    { role: "assistant", anchor: "plan-turn", text: "1. 加一个按钮\n2. 验证点击行为", steps: ["💬 先看看页面结构"] },
+    { role: "user", anchor: "next-turn", text: "按方案执行" },
+    { role: "assistant", anchor: "next-turn", text: "已完成", steps: [] },
+  ];
+
+  calls.length = 0;
+  const driver = new CodexDriver();
+  const legacy = driver.readHistory("legacy");
+  take("thread/read").resolve({ thread: { turns } });
+  assert.deepEqual(await legacy, expected);
+
+  const paginated = driver.readHistory("paginated");
+  take("thread/read").resolve({ thread: { historyMode: "paginated", turns: [] } });
+  await tick();
+  const first = take("thread/turns/list");
+  assert.deepEqual(first.params, { threadId: "paginated", sortDirection: "asc", itemsView: "full" });
+  first.resolve({ data: [turns[0]], nextCursor: "page-2" });
+  await tick();
+  const second = take("thread/turns/list");
+  assert.equal(second.params.cursor, "page-2");
+  second.resolve({ data: [turns[1]], nextCursor: null });
+  assert.deepEqual(await paginated, expected);
 });
 
 test("生图：存下来的图片写进回复里（网页只显示回复里写过的路径），额度用完给个提示", async () => {
