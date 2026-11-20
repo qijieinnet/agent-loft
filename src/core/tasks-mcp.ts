@@ -42,6 +42,13 @@ export function verifyTaskCaller(userId: string, convKey: string, sig: string): 
  */
 export const SKILLS_MCP_NAME = "agent_loft_skills";
 
+export const MEMOS_MCP_NAME = "agent_loft_memos";
+
+export function memosMcpSpawn(userId: string, convKey: string, via: string): StdioSpawn {
+  const base = tasksMcpSpawn(userId, convKey, via);
+  return { ...base, env: { ...base.env, AGENT_LOFT_TOOLSET: "memos" } };
+}
+
 export function skillsMcpSpawn(userId: string, convKey: string, via: string): StdioSpawn {
   const base = tasksMcpSpawn(userId, convKey, via);
   return { ...base, env: { ...base.env, AGENT_LOFT_TOOLSET: "skills" } };

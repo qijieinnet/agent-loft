@@ -12,7 +12,7 @@ import { RICH_REPLY_LINES } from "../../core/expert-prompt.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import type { PermissionLevel } from "../../core/permission.js";
 import { codexSkillLines } from "../../core/skill-runtime.js";
-import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { MEMOS_MCP_NAME, memosMcpSpawn, SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import type {
   AgentEvents,
   AgentSession,
@@ -46,6 +46,7 @@ export function appendPrompt(opts: SessionOptions): string {
     RICH_REPLY_LINES.join("\n"),
     "ask_user_question 工具在这里用不了（没有提问界面）：需要用户拿主意时，直接在回复里问，然后结束这一轮。",
     opts.memory?.prompt,
+    opts.memoPrompt,
     codexSkillLines(opts.skills).join("\n"),
     opts.plan ? PLAN_LINES.join("\n") : "",
   ]
@@ -67,6 +68,7 @@ export function mcpServersOf(opts: SessionOptions): { servers: McpServer[]; skip
   if (opts.tasks) {
     stdio(TASKS_MCP_NAME, tasksMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "dsh"));
     stdio(SKILLS_MCP_NAME, skillsMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "dsh"));
+    stdio(MEMOS_MCP_NAME, memosMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "dsh"));
   }
   const builtin = opts.builtinMcp;
   for (const [name, spec] of Object.entries(builtin?.mcp ?? {})) {

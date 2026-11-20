@@ -348,28 +348,26 @@ export async function systemTab(cfg, page) {
   const render = () => {
     const recheck = h("button", { class: "btn small", disabled: checking }, checking ? "检查中…" : "检查更新");
     recheck.onclick = () => void checkVersion(true);
-    const status = checking
-      ? h("span", { class: "status-tag" }, "正在检查更新…")
-      : !v
-        ? null
-        : v.updateAvailable
-          ? h("span", { class: "status-tag ok" }, `有新版本 ${v.latest}`)
-          : v.latest
-            ? h("span", { class: "status-tag" }, "已是最新版本")
-            : h("span", { class: "status-tag bad", title: v.latestError ?? "" }, "查不到最新版本");
-    const upgradeBtn = v?.updateAvailable && v.canUpgrade && !checking ? h("button", { class: "btn small primary" }, `升级到 ${v.latest}`) : null;
+    let status = null;
+    if (checking) status = h("span", { class: "status-tag" }, "正在检查更新…");
+    else if (v?.upgrading) status = h("span", { class: "status-tag" }, "正在下载并检查新版…");
+    else if (v?.pendingVersion) {
+      const state = v.version === v.pendingVersion ? "正在验证" : "等待重启验证";
+      status = h("span", { class: "status-tag" }, `${v.pendingVersion} ${state}`);
+    } else if (v?.updateAvailable) status = h("span", { class: "status-tag ok" }, `有新版本 ${v.latest}`);
+    else if (v?.latest) status = h("span", { class: "status-tag" }, "已是最新版本");
+    else if (v) status = h("span", { class: "status-tag bad", title: v.latestError ?? "" }, "查不到最新版本");
+    const upgradeBtn = v?.updateAvailable && v.canUpgrade && !v.upgrading && !v.pendingVersion && !checking ? h("button", { class: "btn small primary" }, `升级到 ${v.latest}`) : null;
     if (upgradeBtn) {
       upgradeBtn.onclick = async () => {
         upgradeBtn.disabled = true;
         upgradeBtn.textContent = "正在升级…";
         try {
-          const r = await api("/api/server/upgrade", { method: "POST" });
-          toast(r.restarting ? `已升级到 ${r.to}，服务正在重启，页面会自动重连` : `已升级到 ${r.to}，重启 agent-loft 后生效`, 6000);
-          void checkVersion(false);
+          await api("/api/server/upgrade?background=1", { method: "POST" });
+          await followUpgrade(v.latest);
         } catch (err) {
           toast(`升级失败：${err.message}`, 6000);
-          upgradeBtn.disabled = false;
-          upgradeBtn.textContent = `升级到 ${v.latest}`;
+          void checkVersion(false);
         }
       };
     }
@@ -378,6 +376,7 @@ export async function systemTab(cfg, page) {
       h("h4", {}, "服务端"),
       h("div", { class: "row" }, h("b", {}, `agent-loft ${v?.version ?? sys.version}`), status),
       h("div", { class: "muted" }, `Node ${sys.node} · 已运行 ${uptime(sys.uptimeMs)} · ${sys.underSystemd ? "以系统服务运行" : "前台运行（重启需要在终端里操作）"}`),
+      v?.upgradeError && !v.pendingVersion ? h("div", { class: "muted" }, v.upgradeError) : null,
       v && !checking && !v.latest && v.latestError ? h("div", { class: "muted" }, v.latestError) : null,
       v?.updateAvailable && !v.canUpgrade && v.reason ? h("div", { class: "muted" }, v.reason) : null,
       v?.updateAvailable && v.canUpgrade && !v.service ? h("div", { class: "muted" }, "agent-loft 是在前台手动运行的，升级后要自己重启一下。") : null,
@@ -404,6 +403,32 @@ export async function systemTab(cfg, page) {
     checking = false;
     if (sys) render();
   };
+  async function followUpgrade(target) {
+    let disconnectedAt = 0;
+    while (sysBox.isConnected) {
+      let progress;
+      try {
+        progress = await api("/api/server/upgrade");
+        disconnectedAt = 0;
+      } catch (err) {
+        if (err.status && err.status < 500) throw err;
+        // 服务重启时反向代理可能短暂返回 502，继续等新进程报告结果。
+        disconnectedAt ||= Date.now();
+        if (Date.now() - disconnectedAt > 150_000) {
+          toast("暂时连不上服务，恢复连接后可在设置里查看升级结果", 6000);
+          return;
+        }
+      }
+      if (progress?.error) throw new Error(progress.error);
+      if (progress && !progress.upgrading && (!progress.pendingVersion || !v?.service)) {
+        if (progress.pendingVersion) toast("新版已准备好，重启 agent-loft 后验证并启用", 6000);
+        else if (progress.version === target) toast(`已验证并启用 ${target}`, 6000);
+        await checkVersion(false);
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
   const versionDone = checkVersion(false);
   try {
     sys = await api("/api/system");
@@ -413,6 +438,7 @@ export async function systemTab(cfg, page) {
   }
   render();
   await versionDone;
+  if (v?.upgrading || (v?.pendingVersion && v.service)) void followUpgrade(v.pendingVersion || v.latest).catch(err => { toast(err.message); void checkVersion(false); });
 }
 
 /** 运行了多久：分钟 / 小时 / 天 */

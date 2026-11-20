@@ -126,11 +126,12 @@ export function contextBlock(
   expert: { prompt: PromptExpert; cwd: string } | undefined,
   memory: string | undefined,
   skills: string[] = [],
+  memoPrompt?: string,
 ): string {
   const head = expert
     ? [...persona(expert.prompt), "", "## 你能做什么（agent-loft 按这个专家的配置生成）", "", ...capabilityLines(expert.prompt, searchLabel("codex", expert.prompt), expert.cwd)]
     : [];
-  const sections = [head, RICH_REPLY_LINES, memory ? [memory] : [], skills].filter((s) => s.length > 0);
+  const sections = [head, RICH_REPLY_LINES, memory ? [memory] : [], skills, memoPrompt ? [memoPrompt] : []].filter((s) => s.length > 0);
   return wrapContext(sections.flatMap((s, i) => (i ? ["", ...s] : s)));
 }
 

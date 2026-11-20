@@ -1,3 +1,4 @@
+import { MEMO_TOOLS } from "../../mcp/memo-tools.js";
 // 一条会话 ↔ 一个常驻的 Claude query。
 //
 // 必须用「流式输入」模式：setModel / interrupt / supportedModels / applyFlagSettings
@@ -22,7 +23,7 @@ import { usageOf } from "../../core/usage.js";
 import { expertAppend, expertSystemPrompt, RICH_REPLY_LINES, searchLabel } from "../../core/expert-prompt.js";
 import { ACCESS_LEVELS, type ExpertAccess } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
-import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { MEMOS_MCP_NAME, memosMcpSpawn, SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import type { PermissionLevel } from "../../core/permission.js";
 import { PLUGIN_NAME, projectCommandNames } from "../../core/skill-runtime.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
@@ -152,6 +153,7 @@ const MEMORY_TOOLS = new Set(["remember", "forget", "update_memory", "search_mem
 /** 定时任务工具：要用户确认的那几个由 agent-loft 自己弹卡（tasks-bridge.ts），这里不再问一遍 */
 const TASK_TOOLS = new Set(["list_tasks", "create_task", "update_task", "delete_task"].map((t) => `mcp__${TASKS_MCP_NAME}__${t}`));
 /** 技能工具：建、改技能前由 agent-loft 自己弹卡（skills-bridge.ts） */
+const MEMO_TOOL_NAMES = new Set(MEMO_TOOLS.map(t => `mcp__${MEMOS_MCP_NAME}__${t.name}`));
 const SKILL_TOOLS = new Set(["list_skills", "get_skill", "create_skill", "update_skill", "skill_request"].map((t) => `mcp__${SKILLS_MCP_NAME}__${t}`));
 /**
  * Claude Code 自带的命令和技能名（supportedCommands 里标了 builtin 的），driver 读命令表时顺手记下。
@@ -204,6 +206,7 @@ function loftMcp(opts: SessionOptions): Record<string, McpServerConfig> {
       ? {
           [TASKS_MCP_NAME]: { type: "stdio", ...tasksMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "claude") },
           [SKILLS_MCP_NAME]: { type: "stdio", ...skillsMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "claude") },
+          [MEMOS_MCP_NAME]: { type: "stdio", ...memosMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "claude") },
         }
       : {}),
   };
@@ -232,7 +235,7 @@ export function expertOptions(opts: SessionOptions): Partial<Options> {
   const expert = opts.expert;
   if (!expert) {
     const mcpServers = { ...opts.builtinMcp?.mcp, ...loftMcp(opts) };
-    const append = [RICH_REPLY_LINES.join("\n"), memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n");
+    const append = [RICH_REPLY_LINES.join("\n"), memory?.prompt, skills?.prompt, opts.memoPrompt].filter(Boolean).join("\n\n");
     return {
       systemPrompt: { type: "preset", preset: "claude_code", append, snapshot: false },
       ...(opts.builtinMcp && !opts.builtinMcp.inheritMachine ? { strictMcpConfig: true, mcpServers } : Object.keys(mcpServers).length ? { mcpServers } : {}),
@@ -253,10 +256,10 @@ export function expertOptions(opts: SessionOptions): Partial<Options> {
       ? {
           type: "preset",
           preset: "claude_code",
-          append: [expertAppend(prompt, search, opts.cwd), memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n"),
+          append: [expertAppend(prompt, search, opts.cwd), memory?.prompt, skills?.prompt, opts.memoPrompt].filter(Boolean).join("\n\n"),
           snapshot: false,
         }
-      : { type: "custom", prompt: expertSystemPrompt(prompt, search, opts.cwd, [memory?.prompt, skills?.prompt].filter(Boolean).join("\n\n") || undefined), snapshot: false };
+      : { type: "custom", prompt: expertSystemPrompt(prompt, search, opts.cwd, [memory?.prompt, skills?.prompt, opts.memoPrompt].filter(Boolean).join("\n\n") || undefined), snapshot: false };
   return {
     systemPrompt,
     ...plan,
@@ -554,7 +557,7 @@ export class ClaudeSession implements AgentSession {
     // 自家的记忆工具，以及自定义专家配好的联网工具、MCP（没标「调用前询问」的）：不问。
     // 不用 allowedTools 放行 —— SDK 会对每个会话打一条「canUseTool 被绕过」的警告
     if (MEMORY_TOOLS.has(toolName) && this.opts.memory) return { behavior: "allow", updatedInput: input };
-    if ((TASK_TOOLS.has(toolName) || SKILL_TOOLS.has(toolName)) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
+    if ((TASK_TOOLS.has(toolName) || SKILL_TOOLS.has(toolName) || MEMO_TOOL_NAMES.has(toolName)) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
     if (this.expertPreApproved(toolName)) return { behavior: "allow", updatedInput: input };
 
     // 提问不是授权：它问的是「你选哪个」

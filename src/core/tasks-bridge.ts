@@ -1,3 +1,5 @@
+import { memoToolCall } from "./memos-bridge.js";
+import { MEMO_TOOLS } from "../mcp/memo-tools.js";
 // 主进程这头的定时任务工具：mcp/tasks-server.ts 经 unix socket 把 agent 的调用转过来，这里核对身份、
 // 弹授权卡、真正增删改。
 //
@@ -119,6 +121,10 @@ function card(fields: { schedule?: TaskSchedule; notify?: string; push?: PushCha
 }
 
 async function call(userId: string, convKey: string, tool: string, args: Record<string, unknown>): Promise<Reply> {
+  if (MEMO_TOOLS.some(t => t.name === tool)) {
+    try { return { text: JSON.stringify(await memoToolCall(userId, convKey, tool, args)) }; }
+    catch (err) { return fail(err instanceof Error ? err.message : "备忘录操作失败"); }
+  }
   const user = getUser(userId);
   if (!user || user.disabled) return fail("账号已停用。");
   const conv = getConversation(convKey);

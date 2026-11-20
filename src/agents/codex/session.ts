@@ -8,7 +8,7 @@ import { config } from "../../core/config.js";
 import { contextBlock, stripContext, VOICE_MARK } from "../../core/expert-prompt.js";
 import { ACCESS_LEVELS, type CodexTool, type ExpertAccess, type ExpertRuntime } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
-import { SKILLS_MCP_NAME, skillsMcpSpawn, TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { MEMOS_MCP_NAME, memosMcpSpawn, SKILLS_MCP_NAME, skillsMcpSpawn, TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import type { PermissionLevel } from "../../core/permission.js";
 import { codexSkillLines } from "../../core/skill-runtime.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
@@ -176,7 +176,7 @@ export async function userMcpServers(): Promise<string[]> {
   if (userMcpCache && Date.now() - userMcpCache.at < 60_000) return userMcpCache.names;
   try {
     const res = await appServer.call<{ config?: { mcp_servers?: Record<string, unknown> | null } }>("config/read", {});
-    const names = Object.keys(res.config?.mcp_servers ?? {}).filter((n) => n !== MEMORY_MCP_NAME && n !== TASKS_MCP_NAME && n !== SKILLS_MCP_NAME);
+    const names = Object.keys(res.config?.mcp_servers ?? {}).filter((n) => n !== MEMORY_MCP_NAME && n !== TASKS_MCP_NAME && n !== SKILLS_MCP_NAME && n !== MEMOS_MCP_NAME);
     userMcpCache = { names, at: Date.now() };
     return names;
   } catch (err) {
@@ -488,6 +488,7 @@ export class CodexSession implements AgentSession {
         ? {
             [`mcp_servers.${TASKS_MCP_NAME}`]: { ...tasksMcpSpawn(tasks.userId, tasks.convKey, "codex"), tool_timeout_sec: TASK_TOOL_TIMEOUT_SEC },
             [`mcp_servers.${SKILLS_MCP_NAME}`]: { ...skillsMcpSpawn(tasks.userId, tasks.convKey, "codex"), tool_timeout_sec: TASK_TOOL_TIMEOUT_SEC },
+            [`mcp_servers.${MEMOS_MCP_NAME}`]: { ...memosMcpSpawn(tasks.userId, tasks.convKey, "codex"), tool_timeout_sec: TASK_TOOL_TIMEOUT_SEC },
           }
         : {}),
     };
@@ -649,7 +650,7 @@ export class CodexSession implements AgentSession {
     // 放在最后：Codex 拿第一条消息的开头当会话预览，不能被这段背景占掉
     const expert = this.opts.expert;
     const context = this.contextPending
-      ? contextBlock(expert ? { prompt: expert, cwd: this.opts.cwd } : undefined, this.opts.memory?.prompt, codexSkillLines(this.opts.skills))
+      ? contextBlock(expert ? { prompt: expert, cwd: this.opts.cwd } : undefined, this.opts.memory?.prompt, codexSkillLines(this.opts.skills), this.opts.memoPrompt)
       : "";
     const text = [input.text, note, texts, context].filter(Boolean).join("\n\n");
     const images = input.attachments.filter((a) => a.kind === "image").map((a) => a.path);
@@ -839,7 +840,7 @@ export class CodexSession implements AgentSession {
     // 专家、记忆、技能清单：打字的第一轮会附在消息后面；语音先开口的话，在这里交给背后的 Codex
     const expert = this.opts.expert;
     const context = this.contextPending
-      ? contextBlock(expert ? { prompt: expert, cwd: this.opts.cwd } : undefined, this.opts.memory?.prompt, codexSkillLines(this.opts.skills))
+      ? contextBlock(expert ? { prompt: expert, cwd: this.opts.cwd } : undefined, this.opts.memory?.prompt, codexSkillLines(this.opts.skills), this.opts.memoPrompt)
       : "";
     const answer = new Promise<string>((resolve, reject) => {
       this.rt = { answer: resolve, fail: reject };

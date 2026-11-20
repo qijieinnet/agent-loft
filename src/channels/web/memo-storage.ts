@@ -92,9 +92,9 @@ export class MemoStorage {
   }
 
   async list(dir: string, cursor = "") {
-    const entries: { name: string; directory: boolean }[] = [];
-    const add = (name: string, directory: boolean) => {
-      if (!name.includes("/") && validMemoPath(name)) entries.push({ name, directory });
+    const entries: { name: string; directory: boolean; etag?: string }[] = [];
+    const add = (name: string, directory: boolean, etag?: string | null) => {
+      if (!name.includes("/") && validMemoPath(name)) entries.push({ name, directory, ...(etag && /^"[^"\r\n]*"$/.test(etag) ? { etag } : {}) });
     };
     let next = "";
     if (this.source.kind === "s3") {
@@ -105,13 +105,13 @@ export class MemoStorage {
       for (const [tag, key, directory] of [["Contents", "Key", false], ["CommonPrefixes", "Prefix", true]] as const) {
         for (const el of Array.from(root.getElementsByTagNameNS("*", tag))) {
           const val = el.getElementsByTagNameNS("*", key)[0]?.textContent;
-          if (val?.startsWith(prefix)) add(val.slice(prefix.length).replace(/\/$/, ""), directory);
+          if (val?.startsWith(prefix)) add(val.slice(prefix.length).replace(/\/$/, ""), directory, el.getElementsByTagNameNS("*", "ETag")[0]?.textContent);
         }
       }
       next = root.getElementsByTagNameNS("*", "NextContinuationToken")[0]?.textContent ?? "";
     } else {
       const url = this.objectURL(dir ? dir + "/" : "");
-      const r = await this.request("PROPFIND", url, { depth: "1", "content-type": "application/xml" }, Buffer.from('<propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>'));
+      const r = await this.request("PROPFIND", url, { depth: "1", "content-type": "application/xml" }, Buffer.from('<propfind xmlns="DAV:"><prop><resourcetype/><getetag/></prop></propfind>'));
       const root = xml(r, "multistatus");
       const base = decodeURIComponent(url.pathname);
       for (const item of Array.from(root.getElementsByTagNameNS("DAV:", "response"))) {
@@ -119,7 +119,7 @@ export class MemoStorage {
         if (!href) continue;
         const child = new URL(href, url);
         const path = decodeURIComponent(child.pathname);
-        if (child.origin === url.origin && path.startsWith(base)) add(path.slice(base.length).replace(/\/$/, ""), item.getElementsByTagNameNS("DAV:", "collection").length > 0);
+        if (child.origin === url.origin && path.startsWith(base)) add(path.slice(base.length).replace(/\/$/, ""), item.getElementsByTagNameNS("DAV:", "collection").length > 0, item.getElementsByTagNameNS("DAV:", "getetag")[0]?.textContent);
       }
     }
     return { entries: entries.sort((a,b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name, "zh-CN", { numeric: true })), next };
@@ -128,6 +128,15 @@ export class MemoStorage {
   async read(path: string, limit = TEXT_LIMIT) {
     const r = checked(await this.request("GET", this.objectURL(path), {}, undefined, limit));
     return { bytes: r.body, version: revision(r) };
+  }
+
+  async readText(path: string) {
+    const { bytes, version } = await this.read(path);
+    let text;
+    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw new HttpError(415, "仅支持 UTF-8 文本"); }
+    if (text.includes("\0")) throw new HttpError(415, "此文件包含二进制数据");
+    return { text, version };
   }
 
   async put(path: string, bytes: Buffer, type: string, version: string | null, beforeReplace?: (bytes: Buffer) => void) {

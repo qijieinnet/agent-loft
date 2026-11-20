@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readRelease, releaseStore, stageRelease } from "./upgrade-releases.js";
 import { config, saveConfig } from "./config.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -32,17 +33,23 @@ function npmEnv(): NodeJS.ProcessEnv {
 function run(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     let out = "";
+    const npmCli = path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
+    if (process.platform === "win32" && cmd === npmBin() && fs.existsSync(npmCli)) {
+      args = [npmCli, ...args];
+      cmd = process.execPath;
+    }
     const child = spawn(cmd, args, { env: npmEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (out += d));
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    child.stdout.on("data", (d) => (out = (out + d).slice(-8000)));
+    child.stderr.on("data", (d) => (out = (out + d).slice(-8000)));
     child.on("error", (err) => {
       clearTimeout(timer);
       resolve({ code: -1, out: err.message });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? -1, out: out.trim() });
+      resolve({ code: code ?? -1, out: timedOut ? `操作超时（${timeoutMs / 1000} 秒）。${out.trim()}` : out.trim() });
     });
   });
 }
@@ -68,7 +75,7 @@ function globalPrefix(): string | null {
       return null;
     }
   };
-  const self = real(root);
+  const self = real(path.dirname(releaseStore(root)));
   if (!self || path.basename(path.dirname(self)) !== "node_modules") return null;
   if (process.platform === "win32") {
     const prefix = path.dirname(path.dirname(self));
@@ -118,9 +125,22 @@ export type VersionInfo = {
   /** 不能在线升级时说明原因和手动办法 */
   reason?: string;
   upgrading: boolean;
+  pendingVersion?: string;
+  upgradeError?: string;
 };
 
 let upgrading = false;
+let installError: string | undefined;
+
+// npm 安装可能比反向代理的请求时限更长，设置页用短请求读取进度。
+export function upgradeStatus() {
+  return { version: RUNNING_VERSION, upgrading, pendingVersion: readRelease(releaseStore(root), "pending")?.version, error: installError };
+}
+
+export function beginUpgrade(): void {
+  if (upgrading) return;
+  void upgrade().catch(err => console.error("[升级]", err.message));
+}
 
 export async function versionInfo(refresh = false): Promise<VersionInfo> {
   const [kind, latest] = await Promise.all([installKind(), latestVersion(refresh)]);
@@ -131,7 +151,16 @@ export async function versionInfo(refresh = false): Promise<VersionInfo> {
       : kind === "unknown"
         ? "不是用 npm install -g 装的，没法在线升级"
         : undefined;
+  const store = releaseStore(root);
+  const pending = readRelease(store, "pending");
+  let upgradeError: string | undefined;
+  try {
+    upgradeError = fs.readFileSync(path.join(store, "last-error"), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
   return {
+    pendingVersion: pending?.version, upgradeError,
     version: RUNNING_VERSION,
     latest: latest.version,
     ...(latest.error ? { latestError: latest.error } : {}),
@@ -150,25 +179,32 @@ export async function versionInfo(refresh = false): Promise<VersionInfo> {
  */
 export async function upgrade(): Promise<{ from: string; to: string; restarting: boolean; output: string }> {
   if (upgrading) throw new Error("正在升级，稍等");
-  const info = await versionInfo(true);
-  if (!info.canUpgrade) throw new Error(info.reason ?? "没法在线升级");
-  if (!info.latest) throw new Error(`查不到最新版本：${info.latestError ?? ""}`);
-  if (!info.updateAvailable) throw new Error(`已经是最新版本 ${RUNNING_VERSION}`);
   upgrading = true;
+  installError = undefined;
   try {
-    // 明确指定 prefix：装回原来那个位置，不受当前 npm 配置影响
-    const prefix = globalPrefix()!;
-    const r = await run(npmBin(), ["install", "-g", "--prefix", prefix, `${NAME}@${info.latest}`, "--no-audit", "--no-fund"], 10 * 60_000);
-    const installed = readPackage().version;
-    if (r.code !== 0 || installed !== info.latest) {
-      throw new Error(`npm install 失败：${r.out.slice(-600) || `退出码 ${r.code}`}`);
-    }
+    const info = await versionInfo(true);
+    if (!info.canUpgrade) throw new Error(info.reason ?? "没法在线升级");
+    if (info.pendingVersion) throw new Error("已有更新等待重启验证");
+    if (!info.latest) throw new Error(`查不到最新版本：${info.latestError ?? ""}`);
+    if (!info.updateAvailable) throw new Error(`已经是最新版本 ${RUNNING_VERSION}`);
+    const version = info.latest;
+    const output = await stageRelease(root, version, async (prefix) => {
+      const r = await run(npmBin(), ["install", "-g", "--prefix", prefix, `${NAME}@${version}`, "--no-audit", "--no-fund"], 10 * 60_000);
+      if (r.code !== 0) throw new Error(`npm install 失败：${r.out || `退出码 ${r.code}`}`);
+      return r.out;
+    }, async (cli) => {
+      const r = await run(process.execPath, [cli, "--help"], 15_000);
+      if (r.code !== 0) throw new Error(`新版 CLI 无法启动：${r.out || r.code}`);
+    });
     const restarting = !!info.service;
     if (restarting) {
-      console.log(`[升级] 已装好 ${installed}，退出进程，由 ${info.service} 拉起新版本`);
+      console.log(`[升级] 已准备 ${version}，重启后验证`);
       setTimeout(() => process.exit(0), 1500).unref();
     }
-    return { from: RUNNING_VERSION, to: installed, restarting, output: r.out.slice(-2000) };
+    return { from: RUNNING_VERSION, to: version, restarting, output: output.slice(-2000) };
+  } catch (err) {
+    installError = err instanceof Error ? err.message : String(err);
+    throw err;
   } finally {
     upgrading = false;
   }

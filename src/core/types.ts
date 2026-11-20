@@ -260,6 +260,8 @@ export type SessionOptions = {
    * 不给就是内置专家：原装提示词和工具，技能与 MCP 按账号的内置默认配置加载。
    */
   expert?: ExpertRuntime;
+  /** 当前主人有授权的可写笔记库时提供的整理说明。 */
+  memoPrompt?: string;
   /** 这条对话主人的记忆：prompt 拼进系统提示，userId 交给记忆工具（记给谁由这里定死） */
   memory?: {
     userId: string;

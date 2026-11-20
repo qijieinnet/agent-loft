@@ -153,3 +153,31 @@ export async function pushMemo(key: string, token: string, account: string, sinc
   wake(room);
   return result;
 }
+
+// Called under the file lock after reading the current remote version. Use the
+// same change log as the editors so their pending keystrokes can be rebased.
+export async function editMemoRange(key: string, account: string, original: string, version: string,
+  start: number, end: number, insert: string, persist: (text: string, version: string, expected: string) => Promise<string>) {
+  const room = rooms.get(key);
+  const separator = room?.crlf ? "\r\n" : "\n";
+  const matching = room && room.doc.sliceString(0, room.doc.length, separator) === original;
+  // Some servers supply an ETag on GET but omit it on PUT. The same text
+  // can then have two revision representations while an editor stays open.
+  const crlf = matching ? room.crlf : original.includes("\r\n") && !/[\r\n]/.test(original.replaceAll("\r\n", ""));
+  if (crlf) insert = insert.replace(/\r?\n/g, "\r\n");
+  const text = original.slice(0, start) + insert + original.slice(end);
+  if (!matching) {
+    const saved = await persist(text, version, original);
+    if (room) invalidateMemo(key);
+    return saved;
+  }
+  room.version = version;
+  const pos = (offset: number) => Text.of(original.slice(0, offset).split(separator)).length;
+  const change = ChangeSet.of({ from: pos(start), to: pos(end), insert: Text.of(insert.split(separator)) }, room.doc.length);
+  if (change.apply(room.doc).sliceString(0, change.newLength, separator) !== text) throw new HttpError(409, "修改位置与协作文档不匹配，请重新读取");
+  const client = joinMemo(key, account, original, version);
+  try {
+    const result = await pushMemo(key, client.token, account, client.startVersion, [change.toJSON()], persist);
+    return result.version;
+  } finally { rooms.get(key)?.clients.delete(client.token); }
+}

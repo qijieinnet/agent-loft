@@ -2,6 +2,53 @@ import { h } from "../lib/dom.js";
 import { modal } from "../lib/overlay.js";
 import { api } from "../lib/api.js";
 
+function memoAccessField(value = "off") {
+  const select = h("select", { class: "input", name: "access", "aria-label": "智能体访问" },
+    h("option", { value: "off" }, "关闭"), h("option", { value: "read" }, "只读"), h("option", { value: "write" }, "读写"));
+  select.value = value;
+  const hint = h("small", {}, "授权后，Agent Loft 会在服务器建立本库的全文索引。");
+  const update = () => { hint.hidden = select.value === "off"; };
+  select.addEventListener("change", update);
+  update();
+  return { select, field: h("label", {}, "智能体访问", select, hint) };
+}
+
+export function memoAccessSettings(source) {
+  const { field, select } = memoAccessField(source.access);
+  const status = h("p", { role: "status" });
+  const refresh = h("button", { class: "btn", type: "button" }, "立即刷新索引");
+  const save = h("button", { class: "btn primary", type: "submit" }, "保存权限");
+  const form = h("form", { class: "modal-body memo-fields" }, field, status, refresh, save);
+  let timer, sequence = 0;
+  const url = action => "/api/memos/" + action + "?" + new URLSearchParams({ source: source.id });
+  async function load(method = "GET") {
+    clearTimeout(timer);
+    const request = ++sequence;
+    refresh.hidden = source.access === "off" || !source.access;
+    if (refresh.hidden) { status.textContent = ""; return; }
+    try {
+      const index = await api(url("index"), { method });
+      if (!form.isConnected || sequence !== request) return;
+      const last = index.success ? "最近成功：" + new Date(index.success).toLocaleString() : "首次索引尚未完成";
+      status.textContent = [index.running ? "正在扫描，已检查 " + index.scanned + " 份文本" : "", index.error, last].filter(Boolean).join(" · ");
+      refresh.disabled = index.running;
+      if (index.running) timer = setTimeout(load, 1500);
+    } catch (err) { if (sequence === request) status.textContent = err.message; }
+  }
+  modal({ title: source.name + " · 智能体访问", body: form, beforeClose: () => { if (save.disabled) return false; clearTimeout(timer); ++sequence; } });
+  refresh.onclick = () => void load("POST");
+  form.onsubmit = async e => {
+    e.preventDefault();
+    save.disabled = true;
+    try {
+      Object.assign(source, await api(url("access"), { method: "PUT", body: { access: select.value } }));
+      await load();
+    } catch (err) { status.textContent = err.message; }
+    finally { save.disabled = false; }
+  };
+  void load();
+}
+
 export function connectSource(onConnect) {
   const kind = h("select", { class: "input" }, h("option", { value: "webdav" }, "WebDAV"), h("option", { value: "s3" }, "S3 / 兼容存储"));
   const input = (name, placeholder = "", type = "text") => h("input", { class: "input", name, placeholder, type, autocomplete: "off" });
@@ -25,7 +72,7 @@ export function connectSource(onConnect) {
   name.required = true;
   const error = h("div", { class: "memo-error", role: "alert" });
   const submit = h("button", { class: "btn primary", type: "submit" }, "连接笔记库");
-  const form = h("form", { class: "modal-body memo-fields" }, label("名称", name), label("数据源", kind), label("服务地址", endpoint), s3, label(userLabel, username), label(secretLabel, secret), error, submit);
+  const form = h("form", { class: "modal-body memo-fields" }, label("名称", name), label("数据源", kind), label("服务地址", endpoint), s3, label(userLabel, username), label(secretLabel, secret), memoAccessField().field, error, submit);
   const close = modal({ title: "连接笔记库", body: form, beforeClose: () => !submit.disabled });
   form.onsubmit = async e => {
     e.preventDefault();

@@ -55,7 +55,7 @@ test("提示：计划模式的说明用户看不到；MCP 直接给模型；系�
   assert.match(p.text, /exit_plan_mode/);
   assert.equal(stripContext(p.text), "看看");
   const servers = mcpServers({ cwd: "/w", uploadsDir: "/u", memory: { userId: "u1", prompt: "记得他叫阿杰" }, tasks: { userId: "u1", convKey: "c1" } });
-  assert.deepEqual(servers.map((s) => s.name).sort(), ["agent_loft_memory", "agent_loft_skills", "agent_loft_tasks"]);
+  assert.deepEqual(servers.map((s) => s.name).sort(), ["agent_loft_memory", "agent_loft_memos", "agent_loft_skills", "agent_loft_tasks"]);
   assert.ok(servers.every((s) => s.config.exposure === "direct" && s.config.type === "stdio"));
   assert.match(appendPrompt({ cwd: "/w", uploadsDir: "/u", memory: { userId: "u1", prompt: "记得他叫阿杰" } }), /记得他叫阿杰/);
 });

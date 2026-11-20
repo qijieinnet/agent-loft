@@ -37,6 +37,8 @@ import {
 } from "./store.js";
 import { formatDateTime } from "./task-schedule.js";
 import { attachmentInfo, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
+import { memoAccessEvents, memoSources, hasWritableMemo } from "./memo-sources.js";
+import { MEMO_WRITING_GUIDE } from "../mcp/memo-tools.js";
 import { memoryOwnerOf, sessionMemory } from "./personal.js";
 import { engineSupports, exceedsPermission, forEngine, minPermission, PERMISSION_LABEL, permissionCapOfAccess, permissionOfSandbox, type PermissionLevel } from "./permission.js";
 import { readMemory } from "./memory.js";
@@ -372,6 +374,7 @@ class Hub extends EventEmitter<{
       }
     });
     // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
+    memoAccessEvents.on("changed", owner => this.personalChanged(new Set([owner])));
     skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
     // 专家修改只影响自定义专家；MCP 和内置默认配置修改也更新该账号的内置会话。
     expertEvents.on("changed", (_owner, id) => {
@@ -835,6 +838,7 @@ class Hub extends EventEmitter<{
         ...(taskOwner && getUser(taskOwner)?.role !== "admin" ? { noSessionGrant: true } : {}),
         ...(expert ? { expert } : {}),
         ...(memory ? { memory } : {}),
+        ...(taskOwner && hasWritableMemo(memoSources(taskOwner)) ? { memoPrompt: MEMO_WRITING_GUIDE } : {}),
         ...(taskOwner ? { tasks: { userId: taskOwner, convKey: key } } : {}),
         ...(skills ? { skills } : {}),
         ...(builtin.builtinMcp ? { builtinMcp: builtin.builtinMcp } : {}),

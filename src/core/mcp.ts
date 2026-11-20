@@ -23,7 +23,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { MEMORY_MCP_NAME } from "./memory-mcp.js";
-import { SKILLS_MCP_NAME, TASKS_MCP_NAME } from "./tasks-mcp.js";
+import { MEMOS_MCP_NAME, SKILLS_MCP_NAME, TASKS_MCP_NAME } from "./tasks-mcp.js";
 import { getUser, listUsers } from "./users.js";
 
 export type McpPair = { name: string; value: string; secret: boolean };
@@ -57,7 +57,7 @@ export type McpSpec =
 
 export const MCP_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const PAIR_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
-const RESERVED = new Set([MEMORY_MCP_NAME, TASKS_MCP_NAME, SKILLS_MCP_NAME]);
+const RESERVED = new Set([MEMORY_MCP_NAME, TASKS_MCP_NAME, SKILLS_MCP_NAME, MEMOS_MCP_NAME]);
 export const MACHINE_PREFIX = "machine:";
 
 export const MCP_LIMITS = { perUser: 50, description: 500, command: 1000, args: 50, arg: 2000, pairs: 30, value: 4000, url: 2000 };

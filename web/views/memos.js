@@ -5,7 +5,7 @@ import { confirmDialog } from "../lib/overlay.js";
 import { WS } from "../lib/ws.js";
 import { S, setContentHash, ui } from "../state.js";
 import { createEditor } from "./file-editor.js";
-import { askMemoName, chooseMemoVersion, connectSource } from "./memo-dialogs.js";
+import { askMemoName, chooseMemoVersion, connectSource, memoAccessSettings } from "./memo-dialogs.js";
 import { closeSide, renderSidebar } from "./sidebar.js";
 import { renderTopbar } from "./topbar.js";
 
@@ -478,7 +478,7 @@ function notebook() {
       refreshTree();
     });
   }, true);
-  fill(side, h("div", { class: "memo-sources" }, choose, button("连接其他笔记库", addSource, "plus"), button("断开笔记库", () => run(disconnect), "unplug")),
+  fill(side, h("div", { class: "memo-sources" }, choose, button("智能体访问", () => memoAccessSettings(source), "gear"), button("连接其他笔记库", addSource, "plus"), button("断开笔记库", () => run(disconnect), "unplug")),
     h("div", { class: "memo-tree-tools" }, button("新建笔记", () => run(() => create(false))), button("新建文件夹", () => run(() => create(true)), "folder"), button("刷新目录", refreshTree, "refresh"), h("button", { class: "btn memo-return", onclick: () => root.classList.remove("show-tree") }, "返回文件")), tree);
   fill(root, side, pane);
   async function init() {

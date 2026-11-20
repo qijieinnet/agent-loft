@@ -5,6 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
 
 const { chromium } = await import(process.env.AGENT_LOFT_PLAYWRIGHT || "playwright-core");
@@ -53,7 +55,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   cleanup.push(stopWeb);
   const browser = await chromium.launch({headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, args:["--no-sandbox"]});
   cleanup.push(() => browser.close());
-  const errors = [];
+  const errors = [], httpErrors = [];
   async function open(user) {
     const ctx = await browser.newContext({serviceWorkers:"block"});
     await ctx.addCookies([{name:"aim_session",value:createSession(user.id,"127.0.0.1","test"),url:base}]);
@@ -63,8 +65,10 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
     assert.equal(response.status(),201);
     const page = await ctx.newPage();
     page.on("pageerror", e => errors.push(e.message));
+    page.on("response", r => { if (r.status() >= 400) httpErrors.push(r.status() + " " + new URL(r.url()).pathname); });
     await page.goto(base+"/#memos", {waitUntil:"domcontentloaded"});
-    await page.locator('.memo-tree [data-path="team.md"]').click();
+    try { await page.locator('.memo-tree [data-path="team.md"]').click({timeout: 10000}); }
+    catch (err) { throw new Error([err.message, ...errors, ...httpErrors, await page.locator("body").innerText()].join("\n")); }
     await page.getByRole("button",{name:"编辑",exact:true}).click();
     return page;
   }
@@ -96,6 +100,54 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await b.getByRole("button",{name:"预览",exact:true}).click();
   await insert(a,"同步");
   await b.locator(".memo-reading p").filter({hasText:"同步"}).waitFor();
+  await a.getByRole("button", {name:"智能体访问"}).click();
+  await a.getByRole("combobox", {name:"智能体访问", exact:true}).selectOption("write");
+  await a.getByRole("button", {name:"保存权限"}).click();
+  await a.getByText(/最近成功：/).waitFor();
+  await a.getByRole("button", {name:"关闭", exact:true}).last().click();
+
+  const { startTasksBridge, stopTasksBridge } = await import("../src/core/tasks-bridge.ts");
+  const { memosMcpSpawn } = await import("../src/core/tasks-mcp.ts");
+  const { ensureConversation } = await import("../src/core/store.ts");
+  const conv = ensureConversation({key:"web:memo-browser",channel:"web",channelId:"web",agent:"codex",owner:users[0].id});
+  startTasksBridge();
+  cleanup.push(stopTasksBridge);
+  const spec = memosMcpSpawn(users[0].id, conv.key, "test");
+  const child = spawn(spec.command, spec.args, {env:{...process.env,...spec.env},stdio:["pipe","pipe","inherit"]});
+  cleanup.push(() => child.kill());
+  const lines = createInterface({input:child.stdout})[Symbol.asyncIterator]();
+  let id = 0;
+  async function call(method, params) {
+    child.stdin.write(JSON.stringify({jsonrpc:"2.0",id:++id,method,params}) + "\n");
+    const response = JSON.parse((await lines.next()).value);
+    assert.equal(response.id, id);
+    assert.ok(!response.error);
+    return response.result;
+  }
+  const invoke = async (name, args) => {
+    const result = await call("tools/call", {name, arguments:args});
+    assert.ok(!result.isError, result.content[0].text);
+    return JSON.parse(result.content[0].text);
+  };
+  assert.equal((await call("tools/list", {})).tools.length, 7);
+  const {hits} = await invoke("search_memos", {query:"第二行"});
+  const target = {source:hits[0].source,path:hits[0].path};
+  const latest = await invoke("read_memo", target);
+  // Hold a real user's unsaved change while the agent appends to the remote note.
+  let held, resume;
+  const pending = new Promise(r => { held = r; }), proceed = new Promise(r => { resume = r; });
+  await a.route("**/api/memos/changes?**", async route => {
+    if (route.request().method() === "POST") { held(); await proceed; }
+    return route.continue();
+  });
+  await insert(a, "待提交");
+  await pending;
+  try {
+    await invoke("append_memo", {...target, version:latest.version, text:"\n智能体追加"});
+    await b.locator(".memo-reading").getByText(/智能体追加/).waitFor();
+  } finally { resume(); }
+  await b.locator(".memo-reading").getByText(/待提交/).waitFor();
+  assert.ok(note.includes("待提交") && note.endsWith("\r\n智能体追加"));
   await a.getByRole("button",{name:"版本历史"}).click();
   await a.locator(".memo-snapshot").waitFor();
   await a.getByRole("button",{name:"关闭",exact:true}).last().click();

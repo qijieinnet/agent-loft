@@ -17,7 +17,7 @@ import { ACCESS_LEVELS, type ExpertAccess } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import type { PermissionLevel } from "../../core/permission.js";
 import { codexSkillLines } from "../../core/skill-runtime.js";
-import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { MEMOS_MCP_NAME, memosMcpSpawn, SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import { describeAttachments, inlineTextBlocks, readTextAttachments } from "../../core/uploads.js";
 import type {
   AgentEvents,
@@ -58,7 +58,7 @@ export function userMcp(opts: Pick<SessionOptions, "expert" | "builtinMcp">): { 
   return opts.builtinMcp ? { mcp: opts.builtinMcp.mcp, askMcp: opts.builtinMcp.askMcp } : undefined;
 }
 
-const AGENT_LOFT_MCP = new Set([MEMORY_MCP_NAME, TASKS_MCP_NAME, SKILLS_MCP_NAME]);
+const AGENT_LOFT_MCP = new Set([MEMORY_MCP_NAME, TASKS_MCP_NAME, SKILLS_MCP_NAME, MEMOS_MCP_NAME]);
 
 const PLAN_LINES = [
   "## 计划模式",
@@ -157,7 +157,7 @@ export function buildPrompt(input: UserInput, images: boolean, plan: boolean, no
  */
 export function promptParts(opts: SessionOptions): { system?: string; append: string } {
   const e = opts.expert;
-  const skills = codexSkillLines(opts.skills).join("\n");
+  const skills = [...codexSkillLines(opts.skills), opts.memoPrompt].filter(Boolean).join("\n");
   const join = (parts: (string | undefined)[]) => parts.filter(Boolean).join("\n\n");
   if (!e) return { append: join([RICH_REPLY_LINES.join("\n"), opts.memory?.prompt, skills]) };
   // pi 没有联网搜索 / 读网页的工具（要联网就给专家挂 MCP）
@@ -181,6 +181,7 @@ export function mcpServers(opts: SessionOptions): McpEntry[] {
   if (opts.tasks) {
     add(TASKS_MCP_NAME, { type: "stdio", ...tasksMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "pi") });
     add(SKILLS_MCP_NAME, { type: "stdio", ...skillsMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "pi") });
+    add(MEMOS_MCP_NAME, { type: "stdio", ...memosMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "pi") });
   }
   return out;
 }

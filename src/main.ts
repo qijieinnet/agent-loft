@@ -1,3 +1,6 @@
+import { RUNNING_VERSION } from "./core/upgrade.js";
+import { verifyUpgradeWeb } from "./core/upgrade-health.js";
+import { startMemoIndexer, stopMemoIndexer } from "./core/memo-index.js";
 // 入口：拉起 agent 驱动、飞书机器人和 Web 服务。
 import { config, loadConfig, onConfigChange } from "./core/config.js";
 import { hub } from "./core/hub.js";
@@ -102,6 +105,7 @@ async function main(): Promise<void> {
   });
   // 定时任务：agent 用的工具通道先开，再开始按点运行（停机期间错过的补跑）
   startTasksBridge();
+  startMemoIndexer();
   startTaskRunner();
   // 先查一遍 agent 装没装、登没登录，网页打开时新对话里就只列出能用的
   void agentHealth().catch(() => {});
@@ -123,6 +127,7 @@ async function main(): Promise<void> {
     console.log(`[退出] 收到 ${signal}，正在收尾…`);
     const force = setTimeout(() => process.exit(0), 8000);
     force.unref();
+    stopMemoIndexer();
     stopScheduler();
     stopFeishu();
     stopWeixin();
@@ -138,6 +143,15 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("exit", (code) => console.log(`[退出] agent-loft 结束，退出码 ${code}`));
   process.on("unhandledRejection", (err) => console.error("[未处理的异常]", err));
+  if (process.env.AGENT_LOFT_UPGRADE_TRIAL && process.send) {
+    const { host, port } = config().web;
+    try {
+      await verifyUpgradeWeb(host, port);
+      process.send({ type: "upgrade-health", version: RUNNING_VERSION });
+    } catch (err) {
+      process.send({ type: "upgrade-health", error: String(err) });
+    }
+  }
 }
 
 void main();

@@ -70,7 +70,7 @@ import { WORKBUDDY_ENVIRONMENTS } from "../../agents/workbuddy/sdk.js";
 import { listProviders as piProviders, removeCredential as piRemoveCredential, setApiKey as piSetApiKey } from "../../agents/pi/sdk.js";
 import { CUSTOM_APIS as PI_CUSTOM_APIS, deleteCustom as piDeleteCustom, discoverModels as piDiscoverModels, listCustom as piListCustom, saveCustom as piSaveCustom } from "../../agents/pi/custom.js";
 import { answerOAuth as piAnswerOAuth, cancelOAuth as piCancelOAuth, oauthState as piOAuthState, startOAuth as piStartOAuth } from "../../agents/pi/oauth.js";
-import { installCodex, upgrade, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
+import { beginUpgrade, installCodex, upgrade, upgradeStatus, useInstalledCodex, versionInfo } from "../../core/upgrade.js";
 import { feishuBots } from "../feishu/index.js";
 import { weixinStatus } from "../weixin/index.js";
 import { ensureWeixinConversation, weixinExpertChoices } from "../weixin/conversation.js";
@@ -1321,7 +1321,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     sendJson(res, 200, await versionInfo(url.searchParams.get("refresh") === "1"));
     return;
   }
+  if (p === "/api/server/upgrade" && method === "GET") {
+    sendJson(res, 200, upgradeStatus());
+    return;
+  }
   if (p === "/api/server/upgrade" && method === "POST") {
+    if (url.searchParams.has("background")) {
+      beginUpgrade();
+      sendJson(res, 202, upgradeStatus());
+      return;
+    }
     sendJson(res, 200, await upgrade().catch((err) => {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }));

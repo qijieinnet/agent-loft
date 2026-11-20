@@ -350,3 +350,27 @@ test("跨实例配对码仅在签发后显示，生成后展示中转状态", as
   assert.equal(await page.getByLabel("一次性配对码", { exact: true }).inputValue(), "local-test-pairing-code");
   assert.equal(await page.getByRole("button", { name: "连接中转" }).count(), 0);
 });
+
+test("系统升级在重启期间收到 502，重连确认运行版本后显示成功", async (t) => {
+  const { page } = await fixture(t, 1280, "light", "admin");
+  let posts = 0;
+  let polls = 0;
+  await page.route("**/api/server/version*", route => route.fulfill({ json: {
+    version: polls < 2 ? "1.0.0" : "1.1.0", latest: "1.1.0", updateAvailable: polls < 2,
+    canUpgrade: true, service: "systemd",
+  } }));
+  await page.route("**/api/server/upgrade*", route => {
+    if (route.request().method() === "POST") {
+      posts++;
+      assert.equal(new URL(route.request().url()).searchParams.get("background"), "1");
+      return route.fulfill({ status: 202, json: { upgrading: true } });
+    }
+    if (++polls === 1) return route.fulfill({ status: 502, body: "" });
+    return route.fulfill({ json: { version: "1.1.0", upgrading: false } });
+  });
+  await page.evaluate(async () => { const { openSettings } = await import("/settings/index.js"); await openSettings("系统"); });
+  await page.getByRole("button", { name: "升级到 1.1.0", exact: true }).click();
+  await page.getByText("已验证并启用 1.1.0", { exact: true }).waitFor();
+  assert.equal(posts, 1);
+  assert.equal(polls, 2);
+});

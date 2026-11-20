@@ -1,3 +1,4 @@
+import { MEMO_TOOLS } from "../../mcp/memo-tools.js";
 // 一条会话 ↔ 一个常驻的 WorkBuddy（CodeBuddy Code）CLI 进程。
 //
 // 用的是 SDK 的 V2 会话（unstable_v2_createSession / resumeSession），不是 query()：
@@ -13,7 +14,7 @@ import fs from "node:fs";
 import type { McpServerConfig, Message, PermissionMode, PermissionResult, SessionOptions as SdkSessionOptions, UserMessage } from "@tencent-ai/agent-sdk";
 import { RICH_REPLY_LINES } from "../../core/expert-prompt.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
-import { SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
+import { MEMOS_MCP_NAME, memosMcpSpawn, SKILLS_MCP_NAME, skillsMcpSpawn, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import type { PermissionLevel } from "../../core/permission.js";
 import { codexSkillLines } from "../../core/skill-runtime.js";
 import { describeAttachments } from "../../core/uploads.js";
@@ -62,6 +63,7 @@ function buildContent(input: UserInput): string | ContentBlock[] {
 
 const MEMORY_TOOLS = new Set(["remember", "forget", "update_memory", "search_memory", "search_past_chats", "read_past_chat", "memory_timeline"].map((t) => `mcp__${MEMORY_MCP_NAME}__${t}`));
 const TASK_TOOLS = new Set(["list_tasks", "create_task", "update_task", "delete_task"].map((t) => `mcp__${TASKS_MCP_NAME}__${t}`));
+const MEMO_TOOL_NAMES = new Set(MEMO_TOOLS.map(t => `mcp__${MEMOS_MCP_NAME}__${t.name}`));
 const SKILL_TOOLS = new Set(["list_skills", "get_skill", "create_skill", "update_skill", "skill_request"].map((t) => `mcp__${SKILLS_MCP_NAME}__${t}`));
 
 /** 内置专家的会话选项：读不读本机 CodeBuddy 配置、挂哪些 MCP、系统提示后面追加什么 */
@@ -77,10 +79,11 @@ export function sessionOptions(opts: SessionOptions): Partial<SdkSessionOptions>
       ? {
           [TASKS_MCP_NAME]: { type: "stdio", ...tasksMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "workbuddy") },
           [SKILLS_MCP_NAME]: { type: "stdio", ...skillsMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "workbuddy") },
+          [MEMOS_MCP_NAME]: { type: "stdio", ...memosMcpSpawn(opts.tasks.userId, opts.tasks.convKey, "workbuddy") },
         }
       : {}),
   };
-  const append = [RICH_REPLY_LINES.join("\n"), memory?.prompt, codexSkillLines(skills).join("\n")].filter(Boolean).join("\n\n");
+  const append = [RICH_REPLY_LINES.join("\n"), memory?.prompt, codexSkillLines(skills).join("\n"), opts.memoPrompt].filter(Boolean).join("\n\n");
   // SDK 默认什么本地配置都不读。管理员（或没主人的对话）读全部，和直接用 CLI 一样；
   // 成员只读项目里的 —— 机器主人的 ~/.codebuddy 里的 MCP、技能、规则不给成员用（和 Claude 那边一致）
   const machine = !skills || (skills.admin && skills.machineSkills !== false);
@@ -304,7 +307,7 @@ export class WorkBuddySession implements AgentSession {
 
   private async canUseTool(toolName: string, input: Record<string, unknown>): Promise<PermissionResult> {
     if (MEMORY_TOOLS.has(toolName) && this.opts.memory) return { behavior: "allow", updatedInput: input };
-    if ((TASK_TOOLS.has(toolName) || SKILL_TOOLS.has(toolName)) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
+    if ((TASK_TOOLS.has(toolName) || SKILL_TOOLS.has(toolName) || MEMO_TOOL_NAMES.has(toolName)) && this.opts.tasks) return { behavior: "allow", updatedInput: input };
     const mcp = /^mcp__(.+?)__/.exec(toolName)?.[1];
     const builtin = this.opts.builtinMcp;
     const configured = !!builtin && !!mcp && mcp in builtin.mcp;

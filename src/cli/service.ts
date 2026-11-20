@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { releaseStore } from "../core/upgrade-releases.js";
 import { home, logsDir } from "../home.js";
 
 const UNIT = "agent-loft";
@@ -13,7 +14,8 @@ const LABEL = "com.agent-loft";
 /** 改名前的服务名。装新服务时顺手卸掉，免得新旧两个进程抢同一个飞书机器人的消息 */
 const LEGACY_UNIT = "im-agent";
 const LEGACY_LABEL = "com.im-agent";
-const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../bin/cli.js");
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const entry = path.join(path.dirname(releaseStore(packageRoot)), "bin/cli.js");
 
 function unitPath(): string {
   return process.platform === "darwin"

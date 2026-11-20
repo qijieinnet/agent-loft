@@ -43,6 +43,18 @@ function loadSqlite(): typeof import("node:sqlite") {
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY, at INTEGER NOT NULL);
 
+CREATE TABLE IF NOT EXISTS memo_scans (
+  owner TEXT NOT NULL, source TEXT NOT NULL, success INTEGER NOT NULL, PRIMARY KEY(owner,source)
+);
+CREATE TABLE IF NOT EXISTS memo_documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL,
+  version TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(owner,source,path)
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memo_fts USING fts5(path, body, content='', contentless_delete=1, tokenize='unicode61');
+CREATE TRIGGER IF NOT EXISTS memo_documents_delete AFTER DELETE ON memo_documents BEGIN
+  DELETE FROM memo_fts WHERE rowid = old.id;
+END;
+
 CREATE TABLE IF NOT EXISTS memo_versions (
   id INTEGER PRIMARY KEY, owner TEXT NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL,
   at INTEGER NOT NULL, digest TEXT NOT NULL, content BLOB NOT NULL

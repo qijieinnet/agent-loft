@@ -1,9 +1,11 @@
+import { memoFile } from "./memo-file.js";
+import { clearMemoIndex, memoIndexStatus, refreshMemoIndex } from "../../core/memo-index.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { invalidateMemo, joinMemo, pullMemo, pushMemo, withMemoLock } from "./memo-collab.js";
 import { posix } from "node:path";
-import { addMemoSource, memoHistoryKey, memoSources, parseMemoSource, publicSource, removeMemoSource, validMemoPath } from "../../core/memo-sources.js";
-import { memoVersions, memoVersionText, rememberMemoVersion } from "../../core/memo-versions.js";
+import { addMemoSource, canReadMemo, parseMemoAccess, setMemoAccess, memoHistoryKey, memoSources, parseMemoSource, publicSource, removeMemoSource, validMemoPath } from "../../core/memo-sources.js";
+import { memoVersions, memoVersionText } from "../../core/memo-versions.js";
 import { sniff } from "../../core/uploads.js";
 import { isAdmin, type User } from "../../core/users.js";
 import { HttpError, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
@@ -20,13 +22,29 @@ export async function handleMemosApi(req: IncomingMessage, res: ServerResponse, 
     catch (err) { throw new HttpError(400, err instanceof Error ? err.message : "数据源配置无效"); }
     await new MemoStorage(source, isAdmin(user)).list("");
     addMemoSource(user.id, source);
+    if (canReadMemo(source)) void refreshMemoIndex(user.id, source);
     return sendJson(res, 201, publicSource(source));
   }
   const source = memoSources(user.id).find(s => s.id === url.searchParams.get("source"));
   if (!source) throw new HttpError(404, "笔记库不存在");
   if (action === "sources" && method === "DELETE") {
+    clearMemoIndex(user.id, source.id);
     removeMemoSource(user.id, source.id);
     return sendJson(res, 200, { ok: true });
+  }
+  if (action === "access" && method === "PUT") {
+    const body = await readJsonBody(req, 1024);
+    let access;
+    try { access = parseMemoAccess(body.access); }
+    catch { throw new HttpError(400, "智能体访问权限无效"); }
+    if (access === "off" || !canReadMemo(source)) clearMemoIndex(user.id, source.id);
+    const updated = setMemoAccess(user.id, source.id, access);
+    if (access !== "off" && !canReadMemo(source)) void refreshMemoIndex(user.id, updated);
+    return sendJson(res, 200, publicSource(updated));
+  }
+  if (action === "index" && (method === "GET" || method === "POST")) {
+    if (method === "POST" && canReadMemo(source)) void refreshMemoIndex(user.id, source);
+    return sendJson(res, 200, memoIndexStatus(user.id, source.id));
   }
   const storage = new MemoStorage(source, isAdmin(user));
   const path = url.searchParams.get("path") ?? "";
@@ -65,22 +83,12 @@ export async function handleMemosApi(req: IncomingMessage, res: ServerResponse, 
     await storage.put(posix.join(dir, name), bytes, type.mediaType, null);
     return sendJson(res, 201, { relative: "assets/" + name });
   }
-  // The same storage identity and relative path identify a shared file across Loft accounts.
-  // An editor token is issued only after a successful remote read or write with that account's source.
-  const lockKey = storage.objectURL(path).href;
-  const key = createHash("sha256").update(JSON.stringify([source.kind, lockKey, source.username, source.secret])).digest("hex");
-  const account = JSON.stringify([user.id, source.id, user.role]);
   const joining = url.searchParams.get("collab") === "1";
   const checkAccess = () => {
     const active = current();
     if (active?.id !== user.id || active.role !== user.role || !memoSources(user.id).some(s => s.id === source.id)) throw new HttpError(403, "协作连接已失效");
   };
-  const persist = (text: string, version: string | null, expected?: string) =>
-    storage.put(path, Buffer.from(text), /\.md$/i.test(path) ? "text/markdown; charset=utf-8" : "text/plain; charset=utf-8", version, previous => {
-      if (!memoSources(user.id).some(s => s.id === source.id)) throw new HttpError(404, "笔记库已断开");
-      if (expected !== undefined && !previous.equals(Buffer.from(expected))) throw new HttpError(409, "远端正文已被修改");
-      rememberMemoVersion(user.id, memoHistoryKey(source), path, previous);
-    });
+  const { lockKey, key, account, persist, read } = memoFile(user, source, path, checkAccess);
   if (action === "changes") {
     const token = String(req.headers["x-memo-client"] ?? "");
     const since = Number(url.searchParams.get("since") ?? NaN);
@@ -101,11 +109,7 @@ export async function handleMemosApi(req: IncomingMessage, res: ServerResponse, 
   }
   if (action === "file" && method === "GET") {
     const result = await withMemoLock(lockKey, async () => {
-      const { bytes, version } = await storage.read(path);
-      let text;
-      try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
-      catch { throw new HttpError(415, "仅支持 UTF-8 文本"); }
-      if (text.includes("\0")) throw new HttpError(415, "此文件包含二进制数据");
+      const { text, version } = await read();
       return { text, version, collab: joining ? joinMemo(key, account, text, version) : undefined };
     });
     return sendJson(res, 200, result);
@@ -114,8 +118,6 @@ export async function handleMemosApi(req: IncomingMessage, res: ServerResponse, 
     const data = await readJsonBody(req, TEXT_LIMIT * 6 + 1024);
     const { text, version } = data ?? {};
     if (typeof text !== "string" || text.includes("\0") || (version !== null && typeof version !== "string")) throw new HttpError(400, "正文或版本无效");
-    const bytes = Buffer.from(text);
-    if (bytes.length > TEXT_LIMIT) throw new HttpError(413, "文本上限为 2 MB");
     const result = await withMemoLock(lockKey, async () => {
       const saved = await persist(text, version);
       invalidateMemo(key);

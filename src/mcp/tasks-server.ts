@@ -1,3 +1,4 @@
+import { MEMO_TOOLS } from "./memo-tools.js";
 // 定时任务工具的 MCP 服务（stdio）：给 agent 用的 list / create / update / delete。
 // 环境变量 AGENT_LOFT_TOOLSET=skills 时换成技能工具（list / get / create / update_skill），走同一条通道。
 //
@@ -227,8 +228,8 @@ const SKILL_TOOLS = [
   },
 ];
 
-const skillsOnly = process.env.AGENT_LOFT_TOOLSET === "skills";
-const ACTIVE = skillsOnly ? SKILL_TOOLS : TOOLS;
+const toolset = process.env.AGENT_LOFT_TOOLSET;
+const ACTIVE = toolset === "memos" ? MEMO_TOOLS : toolset === "skills" ? SKILL_TOOLS : TOOLS;
 
 function text(t: string, isError = false) {
   return { content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) };
@@ -238,7 +239,7 @@ function text(t: string, isError = false) {
 function forward(tool: string, args: Record<string, unknown>): Promise<{ text: string; isError?: boolean }> {
   return new Promise((resolve) => {
     if (!socketPath || !caller.user || !caller.conv) {
-      resolve({ text: `${skillsOnly ? "技能" : "定时任务"}工具没有正确配置（缺少用户或对话）。`, isError: true });
+      resolve({ text: `内置工具没有正确配置（缺少用户或对话）。`, isError: true });
       return;
     }
     const sock = net.createConnection(socketPath);
@@ -274,7 +275,7 @@ async function handle(req: Request): Promise<unknown> {
       return {
         protocolVersion: typeof req.params?.protocolVersion === "string" ? req.params.protocolVersion : "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: skillsOnly ? "agent-loft-skills" : "agent-loft-tasks", version: "1.0.0" },
+        serverInfo: { name: `agent-loft-${toolset ?? "tasks"}`, version: "1.0.0" },
       };
     case "ping":
       return {};

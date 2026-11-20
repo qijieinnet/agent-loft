@@ -1,17 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { sql } from "./db.js";
 
+export type MemoAccess = "off" | "read" | "write";
+export function parseMemoAccess(value: unknown): MemoAccess {
+  if (value === "off" || value === "read" || value === "write") return value;
+  throw new Error("智能体访问权限无效");
+}
+export const canReadMemo = (source: MemoSource) => source.access === "read" || source.access === "write";
+
 export type MemoSource = {
-  id: string; name: string; kind: "webdav" | "s3"; endpoint: string;
+  access?: MemoAccess; id: string; name: string; kind: "webdav" | "s3"; endpoint: string;
   username: string; secret: string; bucket: string; region: string; prefix: string;
 };
 
 const file = (user: string) => path.join(dataDir, "memo-sources", encodeURIComponent(user) + ".json");
 export const memoSources = (user: string) => readJson<MemoSource[]>(file(user), []);
-export const publicSource = ({ id, name, kind }: MemoSource) => ({ id, name, kind });
+export const publicSource = ({ id, name, kind, access }: MemoSource) => ({ id, name, kind, access: access ?? "off" });
 // A connection can be removed and re-added with a new password or display name.
 export function memoHistoryKey(s: MemoSource): string {
   const library = [s.kind, s.endpoint, s.username];
@@ -21,6 +29,8 @@ export function memoHistoryKey(s: MemoSource): string {
 
 export function deleteMemoSources(user: string) {
   fs.rmSync(file(user), { force: true });
+  sql("DELETE FROM memo_documents WHERE owner = ?").run(user);
+  sql("DELETE FROM memo_scans WHERE owner = ?").run(user);
   sql("DELETE FROM memo_versions WHERE owner = ?").run(user);
 }
 
@@ -41,14 +51,32 @@ export function parseMemoSource(input: Record<string, unknown>): MemoSource {
   const url = new URL(str("endpoint").trim() || (kind === "s3" ? `https://s3.${region}.amazonaws.com` : ""));
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("请输入 HTTP(S) 服务地址，凭据请单独填写");
   url.pathname = url.pathname.replace(/\/*$/, "/");
-  return { id: randomUUID(), name, kind, endpoint: url.href, username, secret, region, bucket, prefix };
+  return { access: parseMemoAccess(input.access ?? "off"), id: randomUUID(), name, kind, endpoint: url.href, username, secret, region, bucket, prefix };
+}
+
+export const memoAccessEvents = new EventEmitter<{ changed: [string] }>();
+export const hasWritableMemo = (sources: MemoSource[]) => sources.some(s => s.access === "write");
+
+function saveSources(user: string, previous: MemoSource[], next: MemoSource[]) {
+  writeJsonAtomic(file(user), next);
+  if (hasWritableMemo(previous) !== hasWritableMemo(next)) memoAccessEvents.emit("changed", user);
 }
 
 export function addMemoSource(user: string, source: MemoSource) {
   const sources = memoSources(user);
-  writeJsonAtomic(file(user), [...sources, source]);
+  saveSources(user, sources, [...sources, source]);
 }
 
 export function removeMemoSource(user: string, id: string) {
-  writeJsonAtomic(file(user), memoSources(user).filter(s => s.id !== id));
+  const sources = memoSources(user);
+  saveSources(user, sources, sources.filter(s => s.id !== id));
+}
+
+export function setMemoAccess(user: string, id: string, access: MemoAccess) {
+  const sources = memoSources(user);
+  const source = sources.find(s => s.id === id);
+  if (!source) throw new Error("笔记库已断开");
+  const updated = { ...source, access };
+  saveSources(user, sources, sources.map(s => s.id === id ? updated : s));
+  return updated;
 }
