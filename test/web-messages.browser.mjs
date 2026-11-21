@@ -751,6 +751,47 @@ test("Codex 对话按模型显示快速开关和倍率，开关状态来自服�
   assert.equal(await slider.count(), 0);
 });
 
+test("已有会话先显示缓存，后台刷新只更新尚未操作的弹窗", async (t) => {
+  const page = await fixture(t, { width: 390, height: 850 });
+  const models = [{ id: "sol", efforts: ["low", "high"] }];
+  const info = { ...conv, agent: "codex", model: "sol", runtimeEffort: "high" };
+  await page.route("**/api/agents/codex/models", (route) => route.fulfill({ json: { models } }));
+  let pending = Promise.withResolvers();
+  await page.route("**/api/conversations/*/models", (route) => pending.resolve(route));
+  await page.route("**/api/conversations/*/action", (route) => {
+    const { action, value } = route.request().postDataJSON();
+    assert.equal(action, "effort");
+    return route.fulfill({ json: { info: { ...info, runtimeEffort: value } } });
+  });
+  await page.evaluate(async (info) => {
+    window.S.convs.set(info.key, info);
+    const { agentCatalog, renderContext } = await import("/views/topbar.js");
+    await agentCatalog(info.agent);
+    renderContext();
+  }, info);
+  const pill = page.locator(".model-pill");
+  const slider = page.getByRole("slider", { name: "思考程度" });
+  const live = { models, current: "sol", currentEffort: "low", effortSupported: true };
+  await pill.click();
+  const first = await pending.promise;
+  assert.equal(await slider.getAttribute("aria-valuetext"), "高");
+  await first.fulfill({ json: live });
+  await page.waitForFunction(() => document.querySelector(".effort-slider")?.getAttribute("aria-valuetext") === "低");
+  await pill.click();
+
+  pending = Promise.withResolvers();
+  await page.evaluate(async () => {
+    const { openModelPicker } = await import("/views/composer-models.js");
+    window.pickerRefresh = openModelPicker();
+  });
+  const second = await pending.promise;
+  await slider.press("Home");
+  await page.waitForFunction(() => window.S.convs.get(window.S.current).runtimeEffort === "low");
+  await second.fulfill({ json: { ...live, currentEffort: "high" } });
+  await page.evaluate(() => window.pickerRefresh);
+  assert.equal(await slider.getAttribute("aria-valuetext"), "低");
+});
+
 test("草稿的快速模式应用于第一轮，下一条新对话默认关闭", async (t) => {
   const page = await fixture(t, { width: 1280, height: 850 });
   const model = { id: "sol", label: "Sol", isDefault: true, fastMode: { description: "2x speed" } };

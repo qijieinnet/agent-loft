@@ -4,7 +4,7 @@ import { closeMenu, placePopover, showPopover } from "../lib/overlay.js";
 import { S, ui } from "../state.js";
 import { doAction } from "./conv-actions.js";
 import { findExpert } from "./experts.js";
-import { agentCatalog, catalogDefaults, draftPick, effortLabel, composerModelLabel, modelName, renderContext, saveDraftPick, visibleModels } from "./topbar.js";
+import { agentCatalog, catalogDefaults, catalogLoaded, draftPick, effortLabel, composerModelLabel, modelName, renderContext, saveDraftPick, visibleModels } from "./topbar.js";
 
 export async function openModelPicker(view = "effort", catalog) {
   const anchor = ui.modelSlot;
@@ -36,34 +36,18 @@ export async function openModelPicker(view = "effort", catalog) {
     window.visualViewport?.removeEventListener("resize", position);
     if (pop.contains(document.activeElement)) trigger()?.focus({ preventScroll: true });
   };
-  fill(pop, h("div", { class: "pop-loading", role: "status", "aria-label": "正在读取模型" }, h("span", { class: "spinner" })));
-  position();
-
   let models, current, currentEffort, fastModel;
-  let effortSupported = true;
-  try {
-    if (conv) {
-      const [data] = await Promise.all([
-        catalog ?? api(`/api/conversations/${encodeURIComponent(key)}/models`),
-        agentCatalog(agent).catch(() => []),
-      ]);
-      ({ models, current, currentEffort, fastModel, effortSupported } = data);
-    } else {
-      models = await agentCatalog(agent);
-      if (ui.menu !== pop) return;
-      const expert = findExpert(expertId);
-      current = draftPick().model || expert?.model || catalogDefaults.get(agent)?.model;
-      currentEffort = draftPick().effort || expert?.effort;
-      fastModel = S.draftFastModel;
-    }
-  } catch (err) {
-    if (ui.menu === pop) fill(pop, h("div", { class: "pop-error", role: "alert" }, err.message));
-    return;
+  let effortSupported, configuredEffort;
+  let provisional = false;
+  function render(data) {
+    const focus = !pop.dataset.view || pop.contains(document.activeElement);
+    ({ models, current, currentEffort, fastModel, effortSupported = true } = data);
+    current ||= (models.find((m) => m.isDefault) ?? models.find((m) => m.id === "default"))?.id;
+    currentEffort ||= catalogDefaults.get(agent)?.effort;
+    configuredEffort = [findExpert(conv ? (conv.expert?.id ?? agent) : expertId)?.effort, catalogDefaults.get(agent)?.effort];
+    if (view === "model" || !supportsControls()) showModels(focus);
+    else showEffort(focus);
   }
-  if (ui.menu !== pop || !pop.matchesContext()) return;
-  current ||= (models.find((m) => m.isDefault) ?? models.find((m) => m.id === "default"))?.id;
-  currentEffort ||= catalogDefaults.get(agent)?.effort;
-  const shown = visibleModels(agent, models);
   const selectedModel = () => {
     const exact = models.find((m) => m.id === current);
     if (exact) return exact;
@@ -71,7 +55,6 @@ export async function openModelPicker(view = "effort", catalog) {
     return models.find((m) => m.id !== "default" && (m.label || m.id) === name);
   };
 
-  const configuredEffort = [findExpert(conv ? (conv.expert?.id ?? agent) : expertId)?.effort, catalogDefaults.get(agent)?.effort];
   let busy = false;
   async function save(kind, value) {
     if (!pop.matchesContext()) return false;
@@ -109,13 +92,14 @@ export async function openModelPicker(view = "effort", catalog) {
     setView("models");
     const selected = selectedModel();
     const list = h("div", { class: "picker-options", "aria-label": "选择模型", role: "group" });
+    const shown = visibleModels(agent, models);
     for (const m of shown) {
       list.append(h("button", {
         class: "picker-option", "aria-pressed": String(m === selected),
         onclick: async () => {
           if (busy) return;
           busy = true;
-          const ok = m === selected || await save("model", m.id);
+          const ok = (!provisional && m === selected) || await save("model", m.id);
           busy = false;
           if (ok && ui.menu === pop) {
             if (supportsControls()) showEffort(true);
@@ -202,8 +186,52 @@ export async function openModelPicker(view = "effort", catalog) {
     if (focus) (slider?.el ?? name).focus({ preventScroll: true });
   }
 
-  if (view === "model" || !supportsControls()) showModels(true);
-  else showEffort(true);
+  const isOpen = () => ui.menu === pop && pop.matchesContext();
+  const cached = catalogLoaded.get(agent);
+  let interacted = false;
+  if (conv && catalog && cached) return render(catalog);
+  if (conv && cached?.length) {
+    provisional = true;
+    render({
+      models: cached,
+      current: conv.runtimeModel ?? conv.model ?? catalogDefaults.get(agent)?.model,
+      currentEffort: conv.runtimeEffort ?? conv.effort,
+      fastModel: conv.fastModel,
+      effortSupported: S.agents.find((a) => a.id === agent)?.capabilities?.effort,
+    });
+    // 一旦开始操作，保留这次打开的控件与选择，避免迟到的响应打断点击或拖动。
+    const markInteraction = () => { interacted = true; };
+    for (const event of ["pointerdown", "keydown", "click"]) {
+      pop.addEventListener(event, markInteraction, { capture: true, once: true });
+    }
+  } else {
+    fill(pop, h("div", { class: "pop-loading", role: "status", "aria-label": "正在读取模型" }, h("span", { class: "spinner" })));
+    position();
+  }
+  try {
+    if (conv) {
+      const [data] = await Promise.all([
+        catalog ?? api(`/api/conversations/${encodeURIComponent(key)}/models`),
+        cached ?? agentCatalog(agent).catch(() => []),
+      ]);
+      if (isOpen() && !interacted) {
+        provisional = false;
+        render(data);
+      }
+    } else {
+      const models = await agentCatalog(agent);
+      if (!isOpen()) return;
+      const expert = findExpert(expertId);
+      render({
+        models,
+        current: draftPick().model || expert?.model || catalogDefaults.get(agent)?.model,
+        currentEffort: draftPick().effort || expert?.effort,
+        fastModel: S.draftFastModel,
+      });
+    }
+  } catch (err) {
+    if (isOpen() && !provisional) fill(pop, h("div", { class: "pop-error", role: "alert" }, err.message));
+  }
 }
 
 /** 拖动时按连续坐标绘制，释放时吸附到最近档位并保存。 */
