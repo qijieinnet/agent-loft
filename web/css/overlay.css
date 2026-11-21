@@ -459,29 +459,167 @@ button.list-item:hover {
   height: 18px;
 }
 
-.popover .effort-seg {
-  display: flex;
-  gap: 2px;
-  margin: 2px 6px 6px;
-  padding: 3px;
-  background: var(--bg-soft);
-  border-radius: 999px;
+/* 输入框的强度滑杆与模型列表共用一个锚点。 */
+.model-pop {
+  width: 256px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 16px;
+  background: var(--bg-input);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--fg) 9%, transparent);
+  transform-origin: bottom right;
+  animation: picker-open 140ms ease-out;
 }
 
-.popover .effort-seg button {
-  flex: 1;
+.model-pop[data-view="effort"] {
+  padding: 6px 12px 8px;
+  overflow: visible;
+}
+
+.effort-header {
+  position: relative;
+  display: grid;
+  padding: 3px 26px 0;
+  text-align: center;
+}
+
+.effort-value { color: var(--fg); font-size: 14px; font-weight: 600; line-height: 20px; }
+.effort-center { min-width: 0; }
+.model-pop .picker-model-link {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 13px;
+  max-width: 100%;
+  gap: 1px;
+  padding: 0 3px;
   color: var(--fg-soft);
+  font-size: 12px;
+  line-height: 18px;
 }
+.effort-value { display: block; }
+.picker-model-link > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-model-link svg { width: 11px; height: 11px; transform: rotate(180deg); }
 
-.popover .effort-seg button.on {
-  background: var(--bg);
-  color: var(--fg);
-  font-weight: 500;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+.model-pop .picker-icon {
+  position: absolute;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  padding: 0;
+  color: var(--fg-faint);
+}
+.picker-icon svg { width: 15px; height: 15px; }
+.picker-fast { left: -8px; }
+.picker-reset { right: -8px; }
+.model-pop .picker-fast[aria-checked="true"] { color: var(--fg); }
+.picker-fast[aria-checked="true"] svg { fill: currentColor; }
+.picker-tip {
+  position: absolute;
+  z-index: 1;
+  bottom: calc(100% + 5px);
+  left: max(50%, calc(42px - var(--picker-left)));
+  transform: translate(-50%, 3px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: #1c1d1f;
+  color: #bdbec0;
+  font-size: 12px;
+  line-height: 17px;
+  text-align: left;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px #0002;
+  transition: opacity 100ms, transform 100ms, visibility 100ms;
+}
+.picker-tip strong { display: block; color: white; font-weight: 500; }
+@media (hover: hover) {
+  .picker-fast:hover .picker-tip { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+}
+.picker-fast:focus-visible .picker-tip { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+
+.effort-slider {
+  position: relative;
+  display: grid;
+  align-items: center;
+  height: 36px;
+  margin-top: 7px;
+  touch-action: none;
+  user-select: none;
+  overflow: clip;
+  overflow-clip-margin: 3px;
+  cursor: pointer;
+}
+.effort-slider::before {
+  content: "";
+  position: absolute;
+  inset: 6px 0;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--fg) 10%, var(--bg-input));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.effort-lane { position: relative; height: 24px; margin: 0 13px; pointer-events: none; }
+.effort-fill {
+  position: absolute;
+  inset: 0 auto 0 -13px;
+  width: calc(13px + var(--position));
+  border-radius: 99px 0 0 99px;
+  background: var(--fg);
+  transition: width 150ms cubic-bezier(.2,.85,.25,1);
+}
+.effort-lane i {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--fg) 24%, transparent);
+}
+.effort-lane i.passed { background: color-mix(in srgb, var(--bg) 55%, transparent); }
+.effort-handle {
+  position: absolute;
+  inset: 0;
+  transform: translateX(var(--position));
+  transition: transform 150ms cubic-bezier(.2,.85,.25,1);
+}
+.effort-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 27px;
+  height: 27px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--bg-input);
+  border: 1px solid color-mix(in srgb, var(--fg) 22%, var(--bg-input));
+  box-shadow: 0 1px 3px #0002;
+}
+.effort-slider.dragging { cursor: grabbing; }
+.effort-slider.dragging :is(.effort-handle, .effort-fill) { transition: none; }
+
+.model-pop[data-view="models"] { padding: 5px; }
+.model-pop .pop-head { padding: 3px 7px; font-weight: 500; }
+.picker-options { min-height: 0; max-height: 300px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.model-pop .picker-option { width: 100%; padding: 4px 7px; min-height: 29px; line-height: 20px; justify-content: space-between; }
+.picker-option svg { width: 15px; height: 15px; }
+.model-pop :is(button, [role="slider"]):focus-visible,
+.model-pill:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; border-radius: 8px; }
+
+@keyframes picker-open {
+  from { opacity: 0; transform: translateY(3px) scale(.985); }
+}
+@media (pointer: coarse) {
+  .effort-slider { height: 44px; }
+  .effort-slider::before { inset-block: 10px; }
+  .model-pop .picker-option { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-pop, .model-pop *, .model-pill { animation: none; transition: none; }
 }
 
 .popover .pop-loading,

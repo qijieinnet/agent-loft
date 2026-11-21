@@ -196,6 +196,7 @@ export type ModelInfo = {
   label: string;
   description?: string;
   efforts?: string[];
+  defaultEffort?: string;
   fastMode?: { description: string };
   isDefault?: boolean;
 };

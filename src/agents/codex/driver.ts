@@ -265,6 +265,7 @@ export class CodexDriver implements AgentDriver {
           ...(m.supportedReasoningEfforts?.length
             ? { efforts: m.supportedReasoningEfforts.map((e) => e.reasoningEffort) }
             : {}),
+          ...(m.defaultReasoningEffort ? { defaultEffort: m.defaultReasoningEffort } : {}),
           ...(fast ? { fastMode: { description: fast.description } } : {}),
           ...(m.isDefault ? { isDefault: true } : {}),
         };

@@ -1,3 +1,4 @@
+import { openModelPicker } from "./composer-models.js";
 import { fill, h, icon, ICON, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
@@ -7,7 +8,7 @@ import { convExpert, expertChoices, expertIcon, findExpert } from "./experts.js"
 import { closeMenu, modal, placePopover, showMenu, showPopover, submenuButton } from "../lib/overlay.js";
 import { openConversation } from "./messages.js";
 import { openSchedule } from "./schedule.js";
-import { changeCwd, deleteConv, doAction, forkConversation, handoffConversation, openModelPicker, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
+import { changeCwd, deleteConv, doAction, forkConversation, handoffConversation, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
 import { capOfAccess, defaultPermissionFor, minPermission, permissionsUpTo, PERMISSIONS } from "../lib/permission.js";
 import { canSeeChanges, syncWorkspace, toggleWorkspace, workspaceButtons, workspaceStats } from "./workspace-entry.js";
 import { syncCall } from "./voice-call.js";
@@ -374,6 +375,14 @@ export function modelName(agent, id) {
   return id;
 }
 
+const effortLabels = new Map(Object.entries({
+  off: "关闭", none: "无", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最大", ultra: "极高",
+}));
+export const effortLabel = (value) => effortLabels.get(value) ?? value;
+
+export const composerModelLabel = (agent, name) => agent === "codex"
+  ? name.replace(/^(gpt-[\d.]+)-(sol|astra|terra|luna)$/i, "$1 $2") : name;
+
 /** 输入框上方的上下文条（目录 / agent）和输入框里的模型按钮 */
 export function renderContext() {
   if (!ui.ctxBar) return;
@@ -415,8 +424,12 @@ export function renderContext() {
     const fastModel = c ? c.fastModel : S.draftFastModel;
     fastOn = !!fastModel && fastModel === effectiveId;
     model = modelName(modelAgent, id) ?? (catalogLoaded.has(modelAgent) ? "选择模型" : "…");
-    effort = (c ? (c.runtimeEffort ?? c.effort) : (pick.effort ?? (draft?.effort || undefined))) ?? defaults.effort;
+    const selected = catalogLoaded.get(modelAgent)?.find((m) => m.id === effectiveId);
+    effort = (c ? (c.runtimeEffort ?? c.effort) : (pick.effort ?? (draft?.effort || undefined))) ?? defaults.effort ?? selected?.defaultEffort;
+    if (selected && !selected.efforts?.includes(effort)) effort = undefined;
   }
+  const picker = ui.menu?.dataset.for === "model" ? ui.menu : null;
+  if (picker && !picker.matchesContext()) closeMenu();
   renderCtxRing();
   renderPermission(c, expert);
   fill(
@@ -424,11 +437,14 @@ export function renderContext() {
     model
       ? h(
           "button",
-          { class: "model-pill", title: "切换模型和思考程度", onclick: () => void openModelPicker() },
-          h("span", { class: "model-name" }, model),
-          fastOn ? h("span", { title: "快速模式已开启", "aria-label": "快速模式已开启" }, "⚡") : null,
-          effort ? h("span", { class: "sub" }, effort) : null,
-          icon("down"),
+          {
+            class: "model-pill", title: "切换模型和思考程度", "aria-haspopup": "dialog",
+            "aria-expanded": String(ui.menu?.dataset.for === "model"), onclick: () => void openModelPicker(),
+          },
+          fastOn ? h("span", { class: "fast-mark", role: "img", "aria-label": "快速模式已开启" }, icon("bolt")) : null,
+          h("span", { class: "model-name" }, composerModelLabel(modelAgent, model)),
+          effort ? h("span", { class: "sub", title: effort }, effortLabel(effort)) : null,
+          h("span", { class: "picker-prompt" }, "选择推理强度"),
         )
       : null,
   );

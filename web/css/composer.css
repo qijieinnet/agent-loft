@@ -138,6 +138,7 @@ button.ctx-item:hover {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
   max-width: min(260px, 45vw);
   height: 32px;
   padding: 0 10px;
@@ -145,10 +146,25 @@ button.ctx-item:hover {
   font-size: 14px;
   color: var(--fg);
   white-space: nowrap;
+  transition: background-color 140ms ease;
 }
 
-.model-pill:hover {
+.model-pill:hover,
+.model-pill[aria-expanded="true"] {
   background: var(--bg-hover);
+}
+
+
+.model-pill .picker-prompt { display: none; }
+.model-slot[data-picker="effort"] .model-pill > :not(.picker-prompt) { display: none; }
+.model-slot[data-picker="effort"] .picker-prompt { display: inline; color: var(--fg-faint); }
+.model-pill .fast-mark {
+  display: inline-flex;
+}
+
+.model-pill .fast-mark svg {
+  color: var(--fg);
+  fill: currentColor;
 }
 
 .model-pill .model-name {
@@ -157,7 +173,7 @@ button.ctx-item:hover {
 }
 
 .model-pill .sub {
-  color: var(--fg-faint);
+  color: var(--fg-soft);
   flex-shrink: 0;
 }
 

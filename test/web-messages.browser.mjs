@@ -664,17 +664,20 @@ test("Codex 对话按模型显示快速开关和倍率，开关状态来自服�
   const page = await fixture(t, { width: 390, height: 850 });
   const info = { ...conv, agent: "codex", model: "sol", effort: "high" };
   const models = [
-    { id: "sol", label: "Sol", fastMode: { description: "1.5x speed, increased usage" }, efforts: ["low", "high"] },
+    { id: "sol", label: "Sol", fastMode: { description: "1.5x speed, increased usage" }, efforts: ["low", "medium", "high"], defaultEffort: "medium" },
     { id: "basic", label: "Basic" },
+    ...Array.from({ length: 24 }, (_, i) => ({ id: `model-${i}`, label: `Model ${i}` })),
   ];
   await page.route("**/api/agents/codex/models", (route) => route.fulfill({ json: { models } }));
   await page.route("**/api/conversations/*/models", (route) => route.fulfill({ json: {
     models, current: info.model, currentEffort: info.effort, effortSupported: true, fastModel: info.fastModel,
   } }));
+  const effortsSaved = [];
   await page.route("**/api/conversations/*/action", (route) => {
     const { action, value } = route.request().postDataJSON();
     if (action === "model") info.model = value;
-    info.fastModel = action === "fastModel" && value ? value : undefined;
+    if (action === "effort") { info.effort = value; effortsSaved.push(value); }
+    if (action !== "effort") info.fastModel = action === "fastModel" && value ? value : undefined;
     return route.fulfill({ json: { info, text: "已保存" } });
   });
   await page.evaluate(async (info) => {
@@ -683,20 +686,69 @@ test("Codex 对话按模型显示快速开关和倍率，开关状态来自服�
   }, info);
   const pill = page.locator(".model-pill");
   await pill.click();
-  const toggle = page.getByRole("switch", { name: /快速模式.*1.5 倍生成速度/ });
-  assert.equal(await toggle.getAttribute("aria-checked"), "false");
+  const dialog = page.getByRole("dialog", { name: "模型设置" });
+  const toggle = dialog.getByRole("switch", { name: "快速模式" });
+  const slider = dialog.getByRole("slider", { name: "思考程度" });
+  const tooltip = dialog.locator('[role="tooltip"]');
+  assert.equal(await slider.getAttribute("aria-valuetext"), "高");
+  assert.equal(await tooltip.isVisible(), false);
+  await toggle.hover();
+  await tooltip.waitFor({ state: "visible" });
+  assert.match(await tooltip.textContent(), /1.5 倍速度/);
   await toggle.click();
-  await page.locator('.model-pill [aria-label="快速模式已开启"]').waitFor();
-  assert.equal(await toggle.getAttribute("aria-checked"), "true");
-  assert.match(await pill.textContent(), /high/);
+  await page.waitForFunction(() => document.querySelector(".picker-fast")?.getAttribute("aria-checked") === "true");
+
+  const lane = await dialog.locator(".effort-lane").boundingBox();
+  const x = lane.x, y = lane.y + lane.height / 2;
+  await page.mouse.move(x + lane.width, y);
+  await tooltip.waitFor({ state: "hidden" });
+  await page.mouse.down();
+  await page.mouse.move(x + lane.width * .32, y, { steps: 8 });
+  assert.equal(await slider.getAttribute("aria-valuetext"), "中");
+  const position = await slider.locator(".effort-handle").boundingBox();
+  assert.ok(Math.abs(position.x - (x + lane.width * .32)) < 2, "滑块连续跟随指针");
+  assert.deepEqual(effortsSaved, [], "拖动中仅预览");
+  await page.mouse.move(x, y);
+  await page.mouse.up();
+  await page.waitForFunction(() => window.S.convs.get(window.S.current).effort === "low");
+  assert.deepEqual(effortsSaved, ["low"]);
+  const touch = await page.context().newCDPSession(page);
+  const point = (type, at) => touch.send("Input.dispatchTouchEvent", {
+    type, touchPoints: at === undefined ? [] : [{ x: at, y }],
+  });
+  await point("touchStart", x);
+  await point("touchMove", x + lane.width);
+  await point("touchCancel");
+  assert.equal(await slider.getAttribute("aria-valuetext"), "低", "中断触摸还原到原档位");
+  assert.deepEqual(effortsSaved, ["low"]);
+  await point("touchStart", x);
+  await point("touchMove", x + lane.width);
+  await point("touchEnd");
+  await page.waitForFunction(() => window.S.convs.get(window.S.current).effort === "high");
+  assert.deepEqual(effortsSaved, ["low", "high"]);
+  await touch.detach();
+  await dialog.getByRole("button", { name: "恢复默认思考程度" }).click();
+  await page.waitForFunction(() => window.S.convs.get(window.S.current).effort === "medium");
+  await slider.focus();
+  await page.keyboard.press("End");
+  await page.waitForFunction(() => window.S.convs.get(window.S.current).effort === "high");
+  await page.keyboard.press("Escape");
+  assert.equal(await pill.evaluate((el) => el === document.activeElement), true);
+  assert.equal(await pill.locator('[aria-label="快速模式已开启"]').isVisible(), true);
   await pill.click();
-  await pill.click();
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
-  await toggle.click();
-  await page.locator('.model-pill [aria-label="快速模式已开启"]').waitFor({ state: "detached" });
-  assert.equal(await toggle.getAttribute("aria-checked"), "false");
-  await page.getByRole("button", { name: "Basic" }).click();
-  await toggle.waitFor({ state: "detached" });
+  await dialog.getByRole("button", { name: "选择模型" }).click();
+  assert.equal(await slider.isVisible(), false);
+  await dialog.getByRole("button", { name: "Model 23", exact: true }).scrollIntoViewIfNeeded();
+  const bounds = await dialog.boundingBox();
+  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
+  await dialog.getByRole("button", { name: "Basic", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await pill.locator(".sub").count(), 0);
+  await pill.click();
+  await dialog.getByRole("button", { name: "Basic", exact: true }).waitFor();
+  assert.equal(await toggle.count(), 0);
+  assert.equal(await slider.count(), 0);
 });
 
 test("草稿的快速模式应用于第一轮，下一条新对话默认关闭", async (t) => {
@@ -719,7 +771,7 @@ test("草稿的快速模式应用于第一轮，下一条新对话默认关闭",
   });
   const pill = page.locator(".model-pill");
   await pill.click();
-  const toggle = page.getByRole("switch", { name: /快速模式.*2 倍生成速度/ });
+  const toggle = page.getByRole("switch", { name: "快速模式" });
   assert.equal(await toggle.getAttribute("aria-checked"), "false");
   await toggle.click();
   assert.equal(await toggle.getAttribute("aria-checked"), "true");

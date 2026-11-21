@@ -3,16 +3,16 @@ import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { S, ui } from "../state.js";
 import { agentLabel, convTitle, forgetProject, renderSidebar } from "./sidebar.js";
-import { agentCatalog, baseName, catalogDefaults, draftPick, modelName, renderContext, renderTopbar, saveDraftPick, visibleModels } from "./topbar.js";
+import { baseName, renderContext, renderTopbar } from "./topbar.js";
 import { closeMenu, confirmDialog, modal, placePopover, showPopover } from "../lib/overlay.js";
 import { newDraft, openConversation, renderEmpty } from "./messages.js";
-import { findExpert, setDraftExpert } from "./experts.js";
+import { setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
 import { FULL_WARNING, PERMISSIONS, permissionsUpTo, PLAN_INFO } from "../lib/permission.js";
 
 // ---------- 会话操作 ----------
 
-export async function doAction(action, value, extra = {}) {
+export async function doAction(action, value, extra = {}, { quiet = false } = {}) {
   if (!S.current) return;
   try {
     const res = await api(`/api/conversations/${encodeURIComponent(S.current)}/action`, {
@@ -21,7 +21,7 @@ export async function doAction(action, value, extra = {}) {
     });
     S.convs.set(res.info.key, res.info);
     renderTopbar();
-    toast(res.text);
+    if (!quiet) toast(res.text);
     if (["new", "fork", "resume", "agent", "cd"].includes(action)) await openConversation(res.info.key);
     return res;
   } catch (err) {
@@ -76,127 +76,6 @@ export function switchAgent(id) {
   preloadCommands();
   renderTopbar();
   renderEmpty();
-}
-
-/** 模型 / 思考程度选择：已有会话直接切，新对话先记下，发第一条消息时带过去 */
-export async function openModelPicker(anchor = ui.modelSlot) {
-  if (!anchor) return;
-  if (ui.menu?.dataset.for === "model") return closeMenu();
-  const pop = showPopover(anchor);
-  pop.dataset.for = "model";
-  pop.classList.add("model-pop");
-  fill(pop, h("div", { class: "pop-loading" }, h("span", { class: "spinner" })));
-  placePopover(pop, anchor);
-
-  const conv = S.current ? S.convs.get(S.current) : null;
-  let models;
-  let current;
-  let currentEffort;
-  let fastModel;
-  let effortSupported = true;
-  try {
-    if (conv) {
-      // 顺便把这个 agent 的默认模型 / 显示名准备好（缓存过就不会再请求）
-      const [data] = await Promise.all([
-        api(`/api/conversations/${encodeURIComponent(S.current)}/models`),
-        agentCatalog(conv.agent).catch(() => []),
-      ]);
-      ({ models, current, currentEffort, effortSupported, fastModel } = data);
-    } else {
-      models = await agentCatalog(S.draftAgent);
-      const pick = draftPick();
-      current = pick.model || findExpert(S.draftExpert)?.model || catalogDefaults.get(S.draftAgent)?.model;
-      fastModel = S.draftFastModel;
-      currentEffort = pick.effort;
-    }
-  } catch (err) {
-    if (ui.menu === pop) fill(pop, h("div", { class: "pop-error" }, err.message));
-    return;
-  }
-  if (ui.menu !== pop) return;
-  current ||= (models.find((m) => m.isDefault) ?? models.find((m) => m.id === "default"))?.id;
-
-  const choose = async (kind, value) => {
-    if (conv) {
-      pop.inert = true;
-      const res = await doAction(kind, value);
-      pop.inert = false;
-      if (!res || ui.menu !== pop) return;
-      fastModel = res.info.fastModel;
-    } else {
-      if (kind === "fastModel") {
-        S.draftFastModel = value || null;
-      } else {
-        if (kind === "model" && value !== S.draftFastModel) S.draftFastModel = null;
-        draftPick()[kind] = value;
-        saveDraftPick();
-      }
-      fastModel = S.draftFastModel;
-      renderContext();
-    }
-    if (kind === "model") current = value;
-    if (kind === "effort") currentEffort = value;
-    if (kind === "effort") closeMenu();
-    else if (ui.menu === pop) render();
-  };
-
-  const agent = conv ? conv.agent : S.draftAgent;
-  // 当前值可能是别名、完整名或空（默认）：先按 id 对，对不上再按显示名对，只勾一项
-  const currentItem = (list) => {
-    const byId = list.find((m) => m.id === current);
-    if (byId) return byId;
-    const name = modelName(agent, current);
-    return list.find((m) => m.id !== "default" && (m.label || m.id) === name) ?? null;
-  };
-
-  function render() {
-    const shown = visibleModels(agent, models);
-    const on = currentItem(shown);
-    const selected = on ?? currentItem(models);
-    const fast = selected?.fastMode;
-    const fastOn = !!fast && fastModel === selected.id;
-    const speed = fast?.description?.match(/(\d+(?:\.\d+)?)\s*[x×]/i)?.[1];
-    const efforts = selected?.efforts ?? models.find((m) => m.efforts?.length)?.efforts ?? [];
-    if (!currentEffort) currentEffort = catalogDefaults.get(agent)?.effort;
-    fill(
-      pop,
-      h("div", { class: "pop-head" }, "模型"),
-      shown.map((m) =>
-        h(
-          "button",
-          { class: `pop-item${m === on ? " on" : ""}`, onclick: () => void choose("model", m.id) },
-          h("span", { class: "grow" }, h("span", { class: "t" }, m.label || m.id), m.description ? h("span", { class: "s" }, m.description) : null),
-          m === on ? h("span", { class: "check" }, "✓") : null,
-        ),
-      ),
-      effortSupported && efforts.length
-        ? [
-            h("div", { class: "sep" }),
-            h("div", { class: "pop-head" }, "思考程度"),
-            h(
-              "div",
-              { class: "effort-seg" },
-              efforts.map((e) => h("button", { class: e === currentEffort ? "on" : "", onclick: () => void choose("effort", e) }, e)),
-            ),
-          ]
-        : null,
-      fast ? [
-        h("div", { class: "sep" }),
-        h("button", {
-          class: "pop-item", role: "switch", "aria-checked": String(fastOn),
-          onclick: () => void choose("fastModel", fastOn ? "" : selected.id),
-        },
-          h("span", { class: "grow" },
-            h("span", { class: "t" }, "⚡ 快速模式"),
-            h("span", { class: "s", title: fast.description }, speed ? `${speed} 倍生成速度，用量更多` : "用量更多"),
-          ),
-          h("span", { class: "switch", "aria-hidden": "true" }, h("span", { class: "slider" })),
-        ),
-      ] : null,
-    );
-    placePopover(pop, anchor);
-  }
-  render();
 }
 
 /**

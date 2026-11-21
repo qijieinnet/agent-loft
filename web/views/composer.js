@@ -1,3 +1,4 @@
+import { openModelPicker } from "./composer-models.js";
 import { fill, h, icon, ICON, isTouch, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { desktop, S, ui } from "../state.js";
@@ -10,7 +11,7 @@ import { renderTodos } from "./todos.js";
 import { cancelVoice, SpeechRec, toggleVoice } from "./voice.js";
 import { callButton, canCall } from "./voice-call.js";
 import { closeSlashMenu, commandUsage, oneLine, slashKeydown, updateSlashMenu } from "./slash.js";
-import { doAction, openModelPicker, openSessions } from "./conv-actions.js";
+import { doAction, openSessions } from "./conv-actions.js";
 
 // ---------- 输入框 ----------
 
@@ -385,7 +386,7 @@ async function showCommandReply(text, reply, info) {
       await openSessions(reply.allDirs);
       return;
     case "models":
-      await openModelPicker();
+      await openModelPicker(head === "effort" ? "effort" : "model", reply);
       return;
     case "agents":
       note(
