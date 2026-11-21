@@ -42,7 +42,7 @@ export async function handleTerminalApi(req: IncomingMessage, res: ServerRespons
     sendJson(res, 200, { ...terminalStatus(user), terminals: canUseTerminal(user) ? listTerminals(user.id) : [] });
     return true;
   }
-  if (!canUseTerminal(user)) throw new HttpError(403, "你没有使用终端的权限，找管理员在 设置 → 用户 里开通");
+  if (!canUseTerminal(user)) throw new HttpError(403, "你没有使用终端的权限，找管理员在 设置 → 用户与权限 里开通");
   if (p === "/api/terminals" && method === "POST") {
     const body = await readJsonBody<{ cwd?: unknown; cols?: unknown; rows?: unknown }>(req);
     try {

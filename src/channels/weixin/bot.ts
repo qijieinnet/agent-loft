@@ -214,7 +214,7 @@ export class WeixinBot {
     if (this.status.state === "expired") return;
     this.setStatus("expired", "微信登录已失效");
     console.error(`${this.tag} 微信登录已失效，需要重新扫码`);
-    this.warnWeb("微信登录已失效，收不到微信消息了。请到「设置 → 账号 → 微信」重新扫码。", true);
+    this.warnWeb("微信登录已失效，收不到微信消息了。请到「设置 → 账号绑定 → 微信」重新扫码。", true);
   }
 
   private onInbound(msg: WeixinMessage): void {

@@ -44,6 +44,7 @@ async function fixture(t, width, colorScheme, role = "member") {
     const url = new URL(route.request().url());
     const method = route.request().method();
     if (url.pathname === "/api/config") return route.fulfill({ json: { web: { host: "127.0.0.1", port: 3000 } } });
+    if (url.pathname === "/api/skills") return route.fulfill({ json: { skills: [] } });
     if (url.pathname === "/api/push") return route.fulfill({ json: { subscriptions: [] } });
     if (url.pathname === "/api/system") return route.fulfill({ json: { version: "1.0", node: "v22", uptimeMs: 1000, underSystemd: false } });
     if (url.pathname === "/api/server/version") return route.fulfill({ json: { version: "1.0", latest: "1.0", updateAvailable: false } });
@@ -122,7 +123,8 @@ function requestSettingsClose(page) {
 for (const width of [1280, 390]) {
   test(`${width}px：设置替换聊天主区域，返回时保护未保存的修改，编辑弹层保留输入`, async (t) => {
     const { page } = await fixture(t, width, "light");
-    const settings = page.getByRole("main", { name: "设置", exact: true });
+    await page.getByRole("button", { name: "记忆偏好", exact: true }).click();
+    const settings = page.locator(".settings-view");
     const about = settings.locator("textarea").first();
     await about.fill("还没保存的自我介绍");
     assert.equal(await page.locator(".overlay").count(), 0);
@@ -199,7 +201,6 @@ async function checkScroll(page, before) {
     window.recordScroll = false;
     return [...window.scrollSamples, document.querySelector(".settings-body").scrollTop];
   });
-  assert.ok(before > 100, "操作前已向下滚动");
   assert.ok(samples.every((top) => Math.abs(top - before) <= 1), `更新期间应保持位置 ${before}，实际范围 ${Math.min(...samples)}–${Math.max(...samples)}`);
 }
 
@@ -207,7 +208,8 @@ for (const width of [1280, 390]) {
   for (const colorScheme of ["light", "dark"]) {
     test(`${width}px ${colorScheme}：设置焦点使用主题灰色，增删改记忆不跳动`, async (t) => {
       const { page, failNextRefresh } = await fixture(t, width, colorScheme);
-      for (const selector of ['.settings-page input[type="text"], .settings-page input:not([type])', ".settings-page textarea", ".settings-page select"]) {
+      await page.getByRole("button", { name: "记忆偏好", exact: true }).click();
+      for (const selector of [".settings-page textarea", ".settings-page select"]) {
         const input = page.locator(selector).first();
         await input.focus();
         const colors = await input.evaluate((el) => ({
@@ -224,6 +226,7 @@ for (const width of [1280, 390]) {
         }, colors.theme);
         assert.equal(colors.border, expected);
       }
+      await page.evaluate(async () => (await import("/settings/index.js")).openSettings("记忆"));
       const memories = page.locator(".settings-page > .section").filter({ has: page.getByRole("heading", { name: /^记住的事/ }) });
       const add = memories.getByRole("button", { name: "添加", exact: true });
       await memories.getByPlaceholder(/^手动加一条/).fill("新增的测试记忆");
@@ -249,6 +252,7 @@ for (const width of [1280, 390]) {
       const del = row.getByRole("button", { name: "删除", exact: true });
       await del.scrollIntoViewIfNeeded();
       before = await recordScroll(page);
+      assert.ok(before > 100, "删除前已向下滚动");
       await del.click();
       await page.getByRole("heading", { name: "记住的事（40）", exact: true }).waitFor({ state: "attached" });
       await checkScroll(page, before);
@@ -267,13 +271,12 @@ for (const width of [1280, 390]) {
 
 for (const width of [390, 1280]) {
   for (const role of ["member", "admin"]) {
-    test(`${width}px ${role}：通知归入系统，保留个人设备设置且管理项按权限显示`, async (t) => {
+    test(`${width}px ${role}：设备通知独立成页，保留个人设备设置且管理项按权限显示`, async (t) => {
       const { page } = await fixture(t, width, "light", role);
-      assert.equal(await page.locator('.settings-nav').getByRole('button', { name: '通知', exact: true }).count(), 0);
-      await page.locator('.settings-nav').getByRole('button', { name: '系统', exact: true }).click();
-      await page.getByRole('heading', { name: '系统通知', exact: true }).waitFor();
-      const headings = await page.locator('.settings-page > .section > h4:first-child').allTextContents();
-      assert.deepEqual(headings, role === 'admin' ? ['服务端', '网络访问', '系统通知'] : ['系统通知']);
+      await page.evaluate(async () => (await import("/settings/index.js")).openSettings("设备通知"));
+      await page.getByRole("heading", { name: "系统通知", exact: true }).waitFor();
+      assert.equal(await page.locator('.settings-nav [data-page="service"]').count(), role === "admin" ? 1 : 0);
+      assert.equal(await page.locator('.settings-page').getByText("服务端", { exact: true }).count(), 0);
       await page.getByRole('heading', { name: '已开启通知的设备', exact: true }).waitFor();
       assert.equal(await page.locator('.settings-body').evaluate(el => el.scrollWidth > el.clientWidth + 1), false);
       // 旧入口和已保存的「通知」标签仍能定位到系统页。
@@ -283,7 +286,7 @@ for (const width of [390, 1280]) {
         await (await import('/settings/index.js')).openSettings();
       });
       await page.getByRole('heading', { name: '系统通知', exact: true }).waitFor();
-      assert.equal(await page.locator('.settings-nav button.on').textContent(), '系统');
+      assert.equal(await page.locator('.settings-nav [aria-current="page"]').textContent(), '设备通知');
     });
   }
 }
@@ -373,4 +376,85 @@ test("系统升级在重启期间收到 502，重连确认运行版本后显示�
   await page.getByText("已验证并启用 1.1.0", { exact: true }).waitFor();
   assert.equal(posts, 1);
   assert.equal(polls, 2);
+});
+
+for (const width of [390, 1280]) {
+  test(`${width}px：从目录搜索定位字段，跨页时保护输入，返回时恢复原页面`, async t => {
+    const { page } = await fixture(t, width, "light", "admin");
+    await page.getByRole("button", { name: "记忆偏好", exact: true }).click();
+    const about = page.getByPlaceholder(/^比如：我叫小明/);
+    await about.fill("正在修改的简介");
+    const directory = page.getByRole("navigation", { name: "设置目录" });
+    const search = directory.getByRole("searchbox");
+    if (width === 390) await page.getByRole("button", { name: "目录", exact: true }).click();
+    const requests = [];
+    page.on("request", req => { if (new URL(req.url()).pathname.startsWith("/api/")) requests.push(req.url()); });
+    await search.fill("改端口");
+    const result = directory.getByRole("button", { name: /监听端口/ });
+    await result.waitFor();
+    assert.deepEqual(requests, []);
+    await search.press("ArrowDown");
+    assert.equal(await result.evaluate(el => el === document.activeElement), true);
+    await result.press("Enter");
+    const dialog = page.locator(".confirm-dialog");
+    await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    assert.equal(await about.inputValue(), "正在修改的简介");
+    if (width === 390) {
+      assert.equal(await about.isVisible(), true);
+      await page.getByRole("button", { name: "目录", exact: true }).click();
+    }
+    await result.click();
+    await dialog.getByRole("button", { name: "不保存", exact: true }).click();
+    await page.waitForFunction(() => document.activeElement?.dataset.section === "port");
+    assert.equal(new URL(page.url()).hash, "#settings/network/port");
+    assert.equal(await page.locator(".settings-body").evaluate(el => el.scrollWidth <= el.clientWidth + 1), true);
+    if (process.env.SETTINGS_SHOTS) await page.screenshot({ path: process.env.SETTINGS_SHOTS + "/network-" + width + ".png" });
+    if (width === 390) await page.getByRole("button", { name: "目录", exact: true }).click();
+    await search.fill("");
+    if (process.env.SETTINGS_SHOTS) await page.screenshot({ path: process.env.SETTINGS_SHOTS + "/directory-" + width + ".png" });
+    await search.fill("换模型");
+    assert.ok(await directory.getByRole("button", { name: /Claude Code/ }).isVisible());
+    assert.ok(await directory.getByRole("button", { name: /专家/ }).isVisible());
+    await search.fill("安装技能");
+    await directory.getByRole("button", { name: /技能.*助手中心/ }).waitFor();
+    await search.press("Enter");
+    await page.waitForFunction(() => document.activeElement?.dataset.section === "shared");
+    assert.equal(new URL(page.url()).hash, "#assistants/skills/shared");
+    await page.getByRole("button", { name: "返回原页面" }).click();
+    assert.equal(await page.getByRole("textbox", { name: "聊天草稿" }).inputValue(), "未发送的消息");
+  });
+}
+
+test("网络访问只保存监听配置，成员搜索与旧链接均无法读取实例配置", async t => {
+  const { page } = await fixture(t, 1280, "light", "admin");
+  const writes = [];
+  await page.route("**/api/config", r => {
+    const web = { host: "127.0.0.1", port: 8800 };
+    if (r.request().method() === "PUT") {
+      writes.push(r.request().postDataJSON());
+      Object.assign(web, writes.at(-1).web);
+    }
+    return r.fulfill({ json: { web } });
+  });
+  await page.evaluate(async () => (await import("/settings/index.js")).openSettings("network/port"));
+  await page.locator('input[data-section="port"]').fill("8801");
+  await page.evaluate(async () => (await import("/settings/index.js")).openSettings("network/lan"));
+  assert.equal(await page.locator(".confirm-dialog").count(), 0);
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.section), "lan");
+  assert.equal(await page.locator('input[data-section="port"]').inputValue(), "8801");
+  await page.getByRole("button", { name: "保存网络设置" }).click();
+  await page.waitForFunction(() => document.querySelector('input[data-section="port"]')?.value === "8801" &&
+    !document.querySelector("[data-dirty]"));
+  assert.deepEqual(writes, [{ web: { host: "127.0.0.1", port: 8801 } }]);
+
+  const member = (await fixture(t, 390, "dark", "member")).page;
+  let reads = 0;
+  member.on("request", req => { if (new URL(req.url()).pathname === "/api/config") reads++; });
+  await member.route("**/api/web-sessions", r => r.fulfill({ json: [] }));
+  await member.evaluate(async () => (await import("/settings/index.js")).openSettings("network/port"));
+  await member.getByRole("heading", { name: "账号与安全", exact: true }).waitFor();
+  await member.getByRole("button", { name: "目录", exact: true }).click();
+  await member.getByRole("searchbox").fill("改端口");
+  await member.getByText("没有匹配项，试试其他关键词。").waitFor();
+  assert.equal(reads, 0);
 });

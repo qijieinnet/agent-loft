@@ -1,7 +1,7 @@
 // WorkBuddy 的报错翻译成人话（口径同 claude/errors.ts）
 import type { Diagnosis } from "../../core/types.js";
 
-const LOGIN_HINT = "到 设置 → Agent → WorkBuddy 点「登录 WorkBuddy」，在浏览器里登录；或者给服务设 CODEBUDDY_API_KEY 环境变量。";
+const LOGIN_HINT = "到 设置 → 模型与运行环境 → WorkBuddy 点「登录 WorkBuddy」，在浏览器里登录；或者给服务设 CODEBUDDY_API_KEY 环境变量。";
 
 export function diagnose(err: unknown): Diagnosis {
   const raw = err instanceof Error ? err.message : String(err);
@@ -9,7 +9,7 @@ export function diagnose(err: unknown): Diagnosis {
   if (text.includes("authentication required") || text.includes("/login") || text.includes("unauthorized") || text.includes("invalid api key") || text.includes("token expired")) {
     return {
       kind: "auth_missing",
-      chatMessage: "WorkBuddy 还没登录（或登录已过期），我暂时无法工作。\n请机器主人到 设置 → Agent → WorkBuddy 重新登录。",
+      chatMessage: "WorkBuddy 还没登录（或登录已过期），我暂时无法工作。\n请机器主人到 设置 → 模型与运行环境 → WorkBuddy 重新登录。",
       consoleHint: `WorkBuddy 未登录：${LOGIN_HINT}`,
     };
   }

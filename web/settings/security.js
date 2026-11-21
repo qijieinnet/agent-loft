@@ -26,7 +26,7 @@ export async function accountTab(page) {
   const pw = h("input", { type: "password", autocomplete: "new-password" });
   const name = h("input", { value: S.user?.name ?? "", autocomplete: "username", autocapitalize: "off", spellcheck: "false", maxlength: "32" });
   const currentName = h("span", {}, S.user?.name ?? "");
-  const devicesBox = h("div", { class: "section" }, h("h4", {}, "已登录的设备"), h("span", { class: "spinner" }));
+  const devicesBox = h("div", { class: "section", "data-section": "devices" }, h("h4", {}, "已登录的设备"), h("span", { class: "spinner" }));
   const nameForm = h("div", { class: "account-edit", "data-form": "", hidden: true });
   const passwordForm = h("div", { class: "account-edit", "data-form": "", hidden: true });
   const hideForms = () => {
@@ -74,8 +74,6 @@ export async function accountTab(page) {
       nameForm,
       passwordForm,
     ),
-    feishuLinkSection(),
-    weixinLinkSection(),
     devicesBox,
   );
   const loadDevices = async () => {
@@ -91,6 +89,14 @@ export async function accountTab(page) {
     fill(devicesBox, h("h4", {}, `已登录的设备（${mine.length}）`), deviceList(mine, { onChange: loadDevices }));
   };
   await loadDevices();
+}
+
+export function bindingsTab(page) {
+  const feishu = feishuLinkSection();
+  const weixin = weixinLinkSection();
+  feishu.dataset.section = "feishu";
+  weixin.dataset.section = "weixin";
+  page.append(feishu, weixin);
 }
 
 /** 登录设备列表，每台一个「下线」。showOwner：标上是谁的（管理员看所有人时） */

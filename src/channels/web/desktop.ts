@@ -39,7 +39,7 @@ export async function handleDesktopApi(req: IncomingMessage, res: ServerResponse
     return true;
   }
   if (p === "/api/desktop/session" && method === "POST") {
-    if (!canUseDesktop(user)) throw new HttpError(403, "你没有使用远程桌面的权限，找管理员在 设置 → 用户 里开通");
+    if (!canUseDesktop(user)) throw new HttpError(403, "你没有使用远程桌面的权限，找管理员在 设置 → 用户与权限 里开通");
     let target;
     try {
       target = await desktopTarget();

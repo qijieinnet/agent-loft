@@ -1,7 +1,7 @@
 import { fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { copyText } from "../lib/markdown.js";
-import { desktopQuota, S } from "../state.js";
+import { desktopQuota, S, ui } from "../state.js";
 import { defaultEntryName, usableAgents } from "../views/topbar.js";
 import { renderEmpty } from "../views/messages.js";
 import { field, saveButton, saveConfig } from "./common.js";
@@ -21,7 +21,7 @@ const WORKBUDDY_SITES = [
  * 全部勾上存成空数组 = 「全部显示」，以后 agent 新增的模型也会自动出现；
  * 只勾了一部分就只显示这些。一个都不勾不允许保存。
  */
-function modelChecklist(agent, selected) {
+function modelChecklist(modelList, selected) {
   const box = h("div", { class: "model-checks" }, h("small", {}, "正在读取模型列表…"));
   const summaryText = h("span", {}, "正在读取模型列表…");
   const summary = h("summary", { class: "input model-check-summary" }, summaryText, icon("down"));
@@ -40,7 +40,7 @@ function modelChecklist(agent, selected) {
       summary.focus();
     }
   });
-  api(`/api/agents/${agent}/models`)
+  modelList
     .then((data) => {
       const models = data?.models ?? [];
       if (!models.length) {
@@ -81,7 +81,7 @@ function modelChecklist(agent, selected) {
 }
 
 /** Agent 运行环境：装没装、登没登录；没好的给出在终端里执行的命令 */
-function agentHealthSection() {
+function agentHealthSection(engine) {
   const box = h("div", { class: "section" });
   const load = async (refresh) => {
     const recheck = h("button", { class: "btn small", onclick: () => load(true) }, "重新检查");
@@ -103,7 +103,7 @@ function agentHealthSection() {
     fill(
       box,
       h("h4", {}, "运行环境", h("span", { class: "grow" }), recheck),
-      ...data.agents.map((a) => {
+      ...data.agents.filter(a => a.id === engine).map((a) => {
         const ok = a.installed && a.loggedIn === true;
         const state = !a.installed ? "未安装" : a.loggedIn === false ? "未登录" : a.loggedIn === null ? "无法确认" : "正常";
         return h(
@@ -219,95 +219,119 @@ function workbuddyLoginButton(after) {
   return h("div", {}, btn, status);
 }
 
-/** 设置 → Agent（管理员）：运行环境、启用、引擎自己的配置、输入框可选模型。默认模型 / 权限 / 加载在「专家」里各内置 Agent 的「设置」 */
-export function agentsTab(cfg, page) {
-  page.append(agentHealthSection());
-  page.append(h("p", { class: "muted" }, "路径支持 ~ 和 ~/，代表运行 agent-loft 服务的用户家目录。"));
-  const a = structuredClone(cfg.agents);
-  for (const engine of ENGINES) {
-    const label = ENGINE_LABEL[engine];
-    const settings = a[engine];
-    if (!settings) continue;
-    const on = h("input", { type: "checkbox", checked: settings.enabled });
-    const models = modelChecklist(engine, settings.models ?? []);
-    const config = h("div", { class: "agent-config", "data-form": "" },
-      h("h4", {}, label, h("span", { class: "grow" }), h("label", { class: "check" }, on, "启用")));
-    let codex = null;
-    if (engine === "codex") {
-      const path = h("input", { value: settings.path });
-      const home = h("input", { value: settings.home, placeholder: "留空用 ~/.codex" });
-      const sandbox = h("select", {}, ["read-only", "workspace-write", "danger-full-access"].map((mode) => h("option", { value: mode, selected: mode === settings.sandbox }, mode)));
-      codex = { path, home, sandbox };
-      config.append(field("codex 可执行文件", path, "以系统服务运行时 PATH 很短，建议写绝对路径"), field("CODEX_HOME", home), field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱"));
-    }
-    let titles = null;
-    if (engine === "codex" || engine === "pi") {
-      const on = h("input", { type: "checkbox", checked: settings.autoTitle ?? engine === "pi" });
-      const pick = modelPicker(engine, settings.titleModel ?? "", "", engine === "pi" ? "跟随会话模型" : "跟随 config.toml");
-      const model = h("div", { class: "grow field" }, pick.modelEl);
-      const sync = () => { model.hidden = !on.checked; };
-      on.addEventListener("change", sync);
-      sync();
-      titles = { on, pick, model };
-    }
-    let site = null;
-    let cliPath = null;
-    if (engine === "workbuddy") {
-      site = h("select", {}, WORKBUDDY_SITES.map(([value, name]) => h("option", { value, selected: value === (settings.environment || "workbuddy") }, name)));
-      cliPath = h("input", { value: settings.cliPath ?? "", placeholder: "留空自动找（如 /opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy）" });
-      const cliField = field("WorkBuddy CLI 路径", cliPath, "WorkBuddy 桌面版里自带的 CLI，装在常见位置时不用填");
-      const syncSite = () => { cliField.hidden = site.value !== "workbuddy"; };
-      site.addEventListener("change", syncSite);
-      syncSite();
-      config.append(
-        h("p", { class: "muted" }, "腾讯 WorkBuddy：调用这台服务器上 WorkBuddy 桌面版自带的 CLI；也可以改用 CodeBuddy 的账号（用 agent-loft 自带的 CLI）。启用并保存后，到上面「运行环境」里登录——桌面版里登录过也要在这里再登一次，同一个账号就行。暂不支持自定义专家和分叉。"),
-        field("账号站点", site, "登录和对话都走这个站点。换了站点要重新登录"),
-        cliField,
-      );
-    }
-    if (engine === "pi") {
-      config.append(
-        h("p", { class: "muted" }, "pi（pi.dev）：开源的编程 agent，用官方 SDK 在 agent-loft 进程里运行。不用登录账号，按模型服务商填 API Key（DeepSeek、智谱、Kimi、通义、MiniMax、OpenRouter……），整台服务器共用。凭据和会话记录都存在 agent-loft 的 data/pi/ 下，不读机器上的 ~/.pi。pi 本身没有权限系统，授权卡、计划模式、提问卡是 agent-loft 补上的；跑命令（bash）没有沙箱。暂不支持自定义专家。"),
-        piProvidersSection(),
-        piCustomSection(),
-      );
-    }
-    let dsh = null;
-    if (engine === "dsh") {
-      const path = h("input", { value: settings.path ?? "dsh", placeholder: "dsh" });
-      const home = h("input", { value: settings.home ?? "", placeholder: "留空用 ~/.dsh" });
-      const patch = h("input", { value: settings.patch ?? "", placeholder: "留空不加（如 ~/.dsh/loft.patch.yml）" });
-      dsh = { path, home, patch };
-      config.append(
-        h("p", { class: "muted" }, "dsh（DeepSeek Harness）：DeepSeek 官方的编程 agent，通过标准 ACP 协议接入，每个会话一个 dsh 进程（第一条消息要等 4~5 秒拉起）。用 dsh 自己的凭据（~/.dsh/.credentials.yaml 里的 DeepSeek API Key）和会话记录，dsh 网页里建的会话这里也能接着聊。权限用 dsh 的沙箱：逐次询问 = 只读、自动改文件 = 工作区可写、完全允许 = 不设沙箱；越界时弹授权卡。不支持自定义专家、分叉 / 回退、提问卡和图片直传（附件给路径）；设成「调用前询问」的 MCP 不会挂上。"),
-        field("dsh 可执行文件", path, "npm install -g @deepseek-ai/dsh 装的；以系统服务运行时 PATH 很短，建议写绝对路径"),
-        field("DSH_HOME", home),
-        field("额外的 patch 文件", patch, "每个 dsh 进程都加 --patch 这个文件。dsh 的 ACP 模式默认只有官方 DeepSeek 模型，要接别家模型（llm-pi-ai）就写在这里"),
-      );
-    }
-    config.append(h("small", { class: "muted" }, "默认模型、思考程度、权限和默认加载的技能 / MCP，在「设置 → 专家」里这个 Agent 的「设置」中修改。"));
-    config.append(h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
-    if (titles) {
-      config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, titles.on, "自动生成会话名称"), titles.model));
-      if (engine === "pi") config.append(h("small", { class: "muted" }, "第一轮回复后在后台生成一次，会额外调用模型；留空跟随会话模型，可另选低成本模型。手动改名不会被覆盖。"));
-    }
-    config.append(h("div", { class: "row" }, saveButton(() => {
-      const selected = models.value();
-      if (!selected) {
-        toast(`${label} 至少勾选一个模型`);
-        return false;
-      }
-      return saveConfig(cfg, { agents: { [engine]: {
-        enabled: on.checked, models: selected,
-        ...(site ? { environment: site.value, cliPath: cliPath.value.trim() } : {}),
-        ...(dsh ? { path: dsh.path.value.trim() || "dsh", home: dsh.home.value.trim(), patch: dsh.patch.value.trim() } : {}),
-        ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value } : {}),
-        ...(titles ? { autoTitle: titles.on.checked, titleModel: titles.pick.model() } : {}),
-      } } });
-    }, `保存 ${label} 设置`)));
-    page.append(h("div", { class: "section", "data-agent": engine }, config));
+/** 设置 → Agent（管理员）：运行环境、启用、引擎自己的配置、输入框可选模型。默认权限和工具在内置专家的个人设置 */
+export function agentsTab(cfg, page, section) {
+  const engines = ENGINES.filter(id => cfg.agents?.[id]);
+  const requested = section?.split("-")[0];
+  const selected = engines.includes(requested) || requested === "quota" ? requested : engines[0] || "quota";
+  const picker = h("select", { "aria-label": "选择引擎或额度" },
+    engines.map(id => h("option", { value: id }, ENGINE_LABEL[id])), h("option", { value: "quota" }, "账号额度"));
+  picker.value = selected;
+  picker.onchange = () => {
+    const target = picker.value;
+    picker.value = selected;
+    void ui.settings.selectTab("engines/" + target);
+  };
+  page.append(field("配置对象", picker));
+  if (selected === "quota") {
+    const quota = quotaSection(cfg);
+    quota.dataset.section = "quota";
+    page.append(quota);
+    return;
   }
-  page.append(quotaSection(cfg));
+  const engine = selected;
+  const label = ENGINE_LABEL[engine];
+  const settings = cfg.agents[engine];
+  page.append(agentHealthSection(engine));
+  const modelList = api(`/api/agents/${engine}/models`);
+  const defaults = modelPicker(engine, settings.defaultModel ?? "", settings.defaultEffort ?? "", "跟随引擎默认", modelList);
+  page.append(h("div", { class: "section", "data-form": "", "data-section": engine },
+    h("h4", {}, "实例默认模型"),
+    h("p", { class: "muted" }, "适用于本实例的所有成员。专家或对话单独选择的模型优先。"),
+    h("div", { class: "engine-model-fields" }, field("模型", defaults.modelEl), engine === "workbuddy" ? null : field("思考程度", defaults.effortEl)),
+    h("div", { class: "row" }, saveButton(() => saveConfig(cfg, { agents: { [engine]: {
+      defaultModel: defaults.model(), defaultEffort: defaults.effort(),
+    } } }), "保存默认模型"))));
+  const on = h("input", { type: "checkbox", checked: settings.enabled });
+  const models = modelChecklist(modelList, settings.models ?? []);
+  const config = h("div", { class: "agent-config", "data-form": "" },
+    h("h4", {}, label, h("span", { class: "grow" }), h("label", { class: "check" }, on, "启用")));
+  let codex = null;
+  if (engine === "codex") {
+    const path = h("input", { "data-section": "codex-path", value: settings.path });
+    const home = h("input", { value: settings.home, placeholder: "留空用 ~/.codex" });
+    const sandbox = h("select", { "data-section": "codex-sandbox" }, ["read-only", "workspace-write", "danger-full-access"].map((mode) => h("option", { value: mode, selected: mode === settings.sandbox }, mode)));
+    codex = { path, home, sandbox };
+    config.append(h("details", { class: "engine-advanced" }, h("summary", {}, "运行路径与沙箱"),
+      field("codex 可执行文件", path, "以系统服务运行时 PATH 很短，建议写绝对路径"),
+      field("CODEX_HOME", home), field("沙箱", sandbox, "workspace-write：目录内可读写，越界才弹授权。danger-full-access 等于关掉沙箱")));
+  }
+  let titles = null;
+  if (engine === "codex" || engine === "pi") {
+    const on = h("input", { type: "checkbox", checked: settings.autoTitle ?? engine === "pi" });
+    const pick = modelPicker(engine, settings.titleModel ?? "", "", engine === "pi" ? "跟随会话模型" : "跟随 config.toml", modelList);
+    const model = h("div", { class: "grow field" }, pick.modelEl);
+    const sync = () => { model.hidden = !on.checked; };
+    on.addEventListener("change", sync);
+    sync();
+    titles = { on, pick, model };
+  }
+  let site = null;
+  let cliPath = null;
+  if (engine === "workbuddy") {
+    site = h("select", { "data-section": "workbuddy-site" }, WORKBUDDY_SITES.map(([value, name]) => h("option", { value, selected: value === (settings.environment || "workbuddy") }, name)));
+    cliPath = h("input", { value: settings.cliPath ?? "", placeholder: "留空自动找（如 /opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy）" });
+    const cliField = field("WorkBuddy CLI 路径", cliPath, "WorkBuddy 桌面版里自带的 CLI，装在常见位置时不用填");
+    const syncSite = () => { cliField.hidden = site.value !== "workbuddy"; };
+    site.addEventListener("change", syncSite);
+    syncSite();
+    config.append(
+      h("p", { class: "muted" }, "腾讯 WorkBuddy：调用这台服务器上 WorkBuddy 桌面版自带的 CLI；也可以改用 CodeBuddy 的账号（用 agent-loft 自带的 CLI）。启用并保存后，到上面「运行环境」里登录——桌面版里登录过也要在这里再登一次，同一个账号就行。暂不支持自定义专家和分叉。"),
+      field("账号站点", site, "登录和对话都走这个站点。换了站点要重新登录"),
+      cliField,
+    );
+  }
+  if (engine === "pi") {
+    config.append(
+      h("p", { class: "muted" }, "pi（pi.dev）：开源的编程 agent，用官方 SDK 在 agent-loft 进程里运行。不用登录账号，按模型服务商填 API Key（DeepSeek、智谱、Kimi、通义、MiniMax、OpenRouter……），整台服务器共用。凭据和会话记录都存在 agent-loft 的 data/pi/ 下，不读机器上的 ~/.pi。pi 本身没有权限系统，授权卡、计划模式、提问卡是 agent-loft 补上的；跑命令（bash）没有沙箱。暂不支持自定义专家。"),
+      piProvidersSection(),
+      piCustomSection(),
+    );
+  }
+  let dsh = null;
+  if (engine === "dsh") {
+    const path = h("input", { value: settings.path ?? "dsh", placeholder: "dsh" });
+    const home = h("input", { value: settings.home ?? "", placeholder: "留空用 ~/.dsh" });
+    const patch = h("input", { "data-section": "dsh-patch", value: settings.patch ?? "", placeholder: "留空不加（如 ~/.dsh/loft.patch.yml）" });
+    dsh = { path, home, patch };
+    config.append(
+      h("p", { class: "muted" }, "dsh（DeepSeek Harness）：DeepSeek 官方的编程 agent，通过标准 ACP 协议接入，每个会话一个 dsh 进程（第一条消息要等 4~5 秒拉起）。用 dsh 自己的凭据（~/.dsh/.credentials.yaml 里的 DeepSeek API Key）和会话记录，dsh 网页里建的会话这里也能接着聊。权限用 dsh 的沙箱：逐次询问 = 只读、自动改文件 = 工作区可写、完全允许 = 不设沙箱；越界时弹授权卡。不支持自定义专家、分叉 / 回退、提问卡和图片直传（附件给路径）；设成「调用前询问」的 MCP 不会挂上。"),
+      field("dsh 可执行文件", path, "npm install -g @deepseek-ai/dsh 装的；以系统服务运行时 PATH 很短，建议写绝对路径"),
+      field("DSH_HOME", home),
+      field("额外的 patch 文件", patch, "每个 dsh 进程都加 --patch 这个文件。dsh 的 ACP 模式默认只有官方 DeepSeek 模型，要接别家模型（llm-pi-ai）就写在这里"),
+    );
+  }
+
+  config.append(h("div", { class: "field" }, h("span", {}, "输入框可选模型"), models.el));
+  if (titles) {
+    config.append(h("div", { class: "row title-row" }, h("label", { class: "check" }, titles.on, "自动生成会话名称"), titles.model));
+    if (engine === "pi") config.append(h("small", { class: "muted" }, "第一轮回复后在后台生成一次，会额外调用模型；留空跟随会话模型，可另选低成本模型。手动改名不会被覆盖。"));
+  }
+  config.append(h("div", { class: "row" }, saveButton(() => {
+    const selected = models.value();
+    if (!selected) {
+      toast(`${label} 至少勾选一个模型`);
+      return false;
+    }
+    return saveConfig(cfg, { agents: { [engine]: {
+      enabled: on.checked, models: selected,
+      ...(site ? { environment: site.value, cliPath: cliPath.value.trim() } : {}),
+      ...(dsh ? { path: dsh.path.value.trim() || "dsh", home: dsh.home.value.trim(), patch: dsh.patch.value.trim() } : {}),
+      ...(codex ? { path: codex.path.value.trim() || "codex", home: codex.home.value.trim(), sandbox: codex.sandbox.value } : {}),
+      ...(titles ? { autoTitle: titles.on.checked, titleModel: titles.pick.model() } : {}),
+    } } });
+  }, `保存 ${label} 设置`)));
+  page.append(h("div", { class: "section", "data-agent": engine }, config));
 }
 
 /** 常用的排前面：国内能直接用的几家、再是 OpenRouter 和海外几家 */
@@ -318,7 +342,7 @@ const PI_PROVIDER_ORDER = ["deepseek", "zai-coding-cn", "kimi-coding", "moonshot
  * Key 只往服务端写，不回显；存在 data/pi/auth.json（0600）
  */
 function piProvidersSection() {
-  const box = h("div", { class: "field pi-providers", "data-nodirty": "" }, h("span", {}, "模型服务商"), h("small", {}, "正在读取…"));
+  const box = h("div", { class: "field pi-providers", "data-section": "pi-providers", "data-nodirty": "" }, h("span", {}, "模型服务商"), h("small", {}, "正在读取…"));
   const load = async () => {
     let data;
     try {
@@ -602,7 +626,7 @@ function quotaSection(cfg) {
     h(
       "div",
       { class: "row" },
-      saveButton(() => saveConfig(cfg, { web: { quotaRefreshMin: Number(quotaMin.value), quotaEnabled: quotaOn.checked } })),
+      saveButton(() => saveConfig(cfg, { web: { quotaRefreshMin: Number(quotaMin.value), quotaEnabled: quotaOn.checked } }), "保存额度设置"),
     ),
   );
 }

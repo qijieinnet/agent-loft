@@ -22,7 +22,7 @@ export async function memoAccessSettings(source) {
   const save = h("button", { class: "btn primary", type: "submit" }, "保存权限");
   const form = h("form", { class: "modal-body memo-fields" },
     h("label", {}, "默认权限", select),
-    h("small", {}, "专家默认沿用此权限。可在「设置 → 专家」中为指定专家单独设置。"),
+    h("small", {}, "专家默认沿用此权限。可在「助手中心 → 专家」中为指定专家单独设置。"),
     h("small", {}, "授权后会建立全文索引。在专家对话里直接说「帮我搜笔记」或「把这段记到笔记里」即可。"),
     status, refresh, save);
   let timer, sequence = 0;

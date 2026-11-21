@@ -2,7 +2,7 @@
 import type { Diagnosis } from "../../core/types.js";
 import { NO_PROVIDER } from "./constants.js";
 
-const KEY_HINT = "到 设置 → Agent → pi 的「模型服务商」里填 API Key（凭据存在 agent-loft 的 data/pi/auth.json）。";
+const KEY_HINT = "到 设置 → 模型与运行环境 → pi 的「模型服务商」里填 API Key（凭据存在 agent-loft 的 data/pi/auth.json）。";
 
 export function diagnose(err: unknown): Diagnosis {
   const raw = err instanceof Error ? err.message : String(err);
@@ -13,7 +13,7 @@ export function diagnose(err: unknown): Diagnosis {
   if (text.includes("401") || text.includes("unauthorized") || text.includes("invalid api key") || text.includes("invalid_api_key") || text.includes("authentication") || text.includes("incorrect api key")) {
     return {
       kind: "auth_missing",
-      chatMessage: "pi 用的这家模型服务商不认这个 API Key（填错了或已失效）。\n请机器主人到 设置 → Agent → pi 重新填。",
+      chatMessage: "pi 用的这家模型服务商不认这个 API Key（填错了或已失效）。\n请机器主人到 设置 → 模型与运行环境 → pi 重新填。",
       consoleHint: `pi 服务商鉴权失败：${raw}。${KEY_HINT}`,
     };
   }

@@ -124,14 +124,14 @@ function listSection(cfg) {
     h("div", { class: "muted" }, HINT),
     field("这台", h("div", { class: "srv-edit-fields self" }, selfIcon, selfName), "左上角列表里这台的图标（一个 emoji）和名字"),
     h("div", { class: "field" }, h("span", {}, "其他服务器"), rows),
-    h("div", { class: "row" }, add, saveButton(save)),
+    h("div", { class: "row" }, add, saveButton(save, "保存服务器列表")),
   );
   return box;
 }
 
 /** 允许哪些地址把这台嵌进去 */
 function embeddersSection(cfg) {
-  const box = h("div", { class: "section", "data-form": "" });
+  const box = h("div", { class: "section", "data-section": "embed", "data-form": "" });
   let list = [...cfg.servers.embedders];
   const rows = h("div", {});
   const input = h("input", { class: "input grow", placeholder: "https://loft.example.com", autocapitalize: "off", spellcheck: "false" });
@@ -201,7 +201,7 @@ function embeddersSection(cfg) {
       `别的 agent-loft 要在左上角切到这台，得先允许它嵌入这台的页面。一般不用手填：在那边加上这台（${location.origin}）后点「授权」，在打开的页面里确认就行。切过来时照样要登录这台的账号。`,
     ),
     rows,
-    h("div", { class: "row" }, input, h("button", { class: "btn", onclick: addOne }, "添加"), saveButton(save)),
+    h("div", { class: "row" }, input, h("button", { class: "btn", onclick: addOne }, "添加"), saveButton(save, "保存嵌入授权")),
   );
   return box;
 }

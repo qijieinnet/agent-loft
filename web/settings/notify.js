@@ -17,7 +17,7 @@ export async function notifyTab(panel) {
       fill(box, h("h4", {}, "系统通知"), h("div", { class: "error-text" }, err.message));
       return;
     }
-    const mine = await currentPushSub();
+    const mine = data.subscriptions.length ? await currentPushSub() : null;
     const here = mine && data.subscriptions.some((d) => d.endpoint === mine.endpoint);
     const busy = (btn, fn) => async () => {
       btn.disabled = true;

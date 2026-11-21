@@ -1797,7 +1797,7 @@ class Hub extends EventEmitter<{
       "- `/permission edit`：自动改文件",
       ...(engineSupports(conv.agent, "auto") ? ["- `/permission auto`：自动判断（Claude 逐个判断安不安全，拿不准再问你）"] : []),
       "- `/permission full`：完全允许",
-      "- `/permission default`：恢复默认（设置 → 专家 → 内置 Agent 的「设置」里定的默认权限）",
+      "- `/permission default`：恢复默认（助手中心 → 专家 → 内置 Agent 的「设置」里定的默认权限）",
       "- `/planmode on` / `/planmode off`：开关计划模式（先出方案，你批准了再动手）",
       "",
       `这条对话最高能到「${PERMISSION_LABEL[this.permissionMax(conv)]}」。`,

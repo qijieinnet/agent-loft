@@ -1,5 +1,6 @@
 import { showMemorySync } from "./memory-sync.js";
 import { fill, h, toast } from "../lib/dom.js";
+import { ui } from "../state.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { agentCatalog } from "../views/topbar.js";
@@ -26,7 +27,7 @@ const openSections = new Set();
 /** 一个点开才读的区块 */
 function lazySection(key, title, load) {
   const body = h("div", { class: "memory-more-body" });
-  const details = h("details", { open: openSections.has(key) }, h("summary", { class: "memory-more" }, title), body);
+  const details = h("details", { "data-section": key, open: openSections.has(key) }, h("summary", { class: "memory-more" }, title), body);
   let loaded = false;
   details.ontoggle = () => {
     if (details.open) openSections.add(key);
@@ -227,7 +228,7 @@ function dataSection(mem, reload) {
   }
   return h(
     "div",
-    { class: "section" },
+    { class: "section", "data-section": "data" },
     h("h4", {}, "导出和备份"),
     h(
       "div",
@@ -243,7 +244,10 @@ function dataSection(mem, reload) {
   );
 }
 
-export async function memoryTab(panel, refresh = false) {
+export const memoryTab = panel => loadMemory(panel, false, renderItems);
+export const memoryPrefsTab = panel => loadMemory(panel, false, renderPreferences);
+
+async function loadMemory(panel, refresh, render) {
   const box = h("div", { class: "section" }, h("h4", {}, "记忆"), h("span", { class: "spinner" }));
   // 更新时保留旧内容，避免加载占位让页面变短、滚动位置被浏览器压回顶部。
   if (!refresh) fill(panel, box);
@@ -255,7 +259,7 @@ export async function memoryTab(panel, refresh = false) {
     else fill(box, h("h4", {}, "记忆"), h("div", { class: "error-text" }, err.message));
     return;
   }
-  const reload = () => memoryTab(panel, true);
+  const reload = () => loadMemory(panel, true, render);
   const run = (btn, fn) => async () => {
     btn.disabled = true;
     try {
@@ -267,6 +271,10 @@ export async function memoryTab(panel, refresh = false) {
     }
   };
 
+  await render(panel, mem, reload, run);
+}
+
+async function renderPreferences(panel, mem, reload, run) {
   const enabled = h("input", { type: "checkbox", checked: mem.enabled });
   enabled.onchange = async () => {
     try {
@@ -311,8 +319,43 @@ export async function memoryTab(panel, refresh = false) {
   const saveAbout = saveButton(async () => {
     await api("/api/account/memory", { method: "PUT", body: { about: about.value } });
     toast("已保存，之后的对话会用上");
-  });
+  }, "保存自我介绍");
 
+  fill(
+    panel,
+    h(
+      "div",
+      { class: "section" },
+      h("h4", {}, "使用记忆", h("span", { class: "grow" }), h("label", { class: "check" }, enabled, "开启")),
+      h(
+        "div",
+        { class: "muted" },
+        "像 ChatGPT 的记忆：对话时 agent 会参考你的「关于我」和记住的事，聊天里遇到长期有用的信息也会主动记一条（会在回复里告诉你）。Claude 和 Codex、Web 和飞书共用这一份。",
+      ),
+      h(
+        "div",
+        { class: "muted" },
+        "用在哪些对话：你在 Web 上的对话；在「账号」里绑定了飞书后，和机器人的私聊也会用。飞书群聊不用。别人（包括管理员）看不到你的记忆，管理员只能清空它。",
+      ),
+    ),
+    h(
+      "div",
+      { class: "section", "data-section": "automatic" },
+      h("h4", {}, "自动整理与聊天历史"),
+      curateSection(mem, reload),
+      toggle("chatHistory", "参考以前的聊天", "已开启：agent 能搜你以前的聊天了", "已关闭：agent 不再搜以前的聊天"),
+      h(
+        "div",
+        { class: "muted" },
+        `agent 遇到「上次说的那个……」时，可以搜你以前的聊天（只有你自己的对话，被删掉的对话不算）。侧栏的「搜索」也用这份聊天记录索引，不开记忆也会记。${history ? `现在收录了 ${history.conversations} 段对话、${history.count} 句话。` : ""}`,
+      ),
+      h("div", { class: "row" }, clearHistory),
+    ),
+    h("div", { class: "section", "data-section": "about", "data-form": "" }, h("h4", {}, "关于我"), field("写给 agent 看的自我介绍：你是谁、在做什么、希望它怎么回答", about, `每次对话都会带上，最多 ${mem.limits.about} 字`), h("div", { class: "row" }, saveAbout)),
+  );
+}
+
+function renderItems(panel, mem, reload, run) {
   const newItem = h("input", { class: "input", maxlength: mem.limits.item, style: { flex: "1", minWidth: "0" }, placeholder: "手动加一条，比如：我的软路由是 iStoreOS，地址 192.168.8.2" });
   const addBtn = h("button", { class: "btn" }, "添加");
   addBtn.onclick = run(addBtn, async () => {
@@ -399,36 +442,8 @@ export async function memoryTab(panel, refresh = false) {
     h(
       "div",
       { class: "section" },
-      h("h4", {}, "记忆", h("span", { class: "grow" }), h("label", { class: "check" }, enabled, "开启")),
-      h(
-        "div",
-        { class: "muted" },
-        "像 ChatGPT 的记忆：对话时 agent 会参考你的「关于我」和记住的事，聊天里遇到长期有用的信息也会主动记一条（会在回复里告诉你）。Claude 和 Codex、Web 和飞书共用这一份。",
-      ),
-      h(
-        "div",
-        { class: "muted" },
-        "用在哪些对话：你在 Web 上的对话；在「账号」里绑定了飞书后，和机器人的私聊也会用。飞书群聊不用。别人（包括管理员）看不到你的记忆，管理员只能清空它。",
-      ),
-    ),
-    h(
-      "div",
-      { class: "section" },
-      h("h4", {}, "自动"),
-      curateSection(mem, reload),
-      toggle("chatHistory", "参考以前的聊天", "已开启：agent 能搜你以前的聊天了", "已关闭：agent 不再搜以前的聊天"),
-      h(
-        "div",
-        { class: "muted" },
-        `agent 遇到「上次说的那个……」时，可以搜你以前的聊天（只有你自己的对话，被删掉的对话不算）。侧栏的「搜索」也用这份聊天记录索引，不开记忆也会记。${history ? `现在收录了 ${history.conversations} 段对话、${history.count} 句话。` : ""}`,
-      ),
-      h("div", { class: "row" }, clearHistory),
-    ),
-    h("div", { class: "section", "data-form": "" }, h("h4", {}, "关于我"), field("写给 agent 看的自我介绍：你是谁、在做什么、希望它怎么回答", about, `每次对话都会带上，最多 ${mem.limits.about} 字`), h("div", { class: "row" }, saveAbout)),
-    h(
-      "div",
-      { class: "section" },
-      h("h4", {}, `记住的事（${items.length}）`),
+      h("div", { class: "row" }, h("h4", {}, `记住的事（${items.length}）`), h("span", { class: "grow" }),
+        h("button", { class: "btn small", onclick: () => ui.settings.selectTab("memory-prefs") }, "记忆偏好")),
       h("div", { class: "muted" }, "「长期」和置顶的一直放在系统提示里；其余的按最近动过的时间放，放不下的 agent 需要时能搜到。满了会把最久没动过的挪到归档，不会删掉。你加的、你让记的、置顶的，自动整理都不会动。"),
       h("div", { class: "row" }, newItem, addBtn),
       items.length > 8 ? h("div", { class: "row" }, filter) : null,

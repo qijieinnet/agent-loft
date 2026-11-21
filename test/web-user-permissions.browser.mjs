@@ -13,7 +13,7 @@ const vendor = {
 };
 
 for (const width of [390, 1280]) {
-  for (const tab of ["users", "account"]) {
+  for (const tab of ["users", "account", "bindings"]) {
     test(`${width}px ${tab}：成员授权新增、编辑与回显；用户自助修改名称`, async (t) => {
       const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}), args: ["--no-sandbox"] });
       t.after(() => browser.close());
@@ -75,13 +75,13 @@ for (const width of [390, 1280]) {
         if (p === "/api/account/weixin") return route.fulfill({ json: { linked: true, status: { state: "connected" }, wechatShort: "test…", boundAt: Date.now(), expert: "claude", experts: [{ id: "claude", label: "Claude Code" }, { id: "codex", label: "Codex" }] } });
         if (p === "/") return route.fulfill({ contentType: "text/html", body: `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${styles}
           <div id="app" style="height:100vh;overflow:auto;padding:16px"><div id="panel"></div></div><script type="module">
-            import { S } from '/state.js'; import { usersTab } from '/settings/users.js'; import { accountTab } from '/settings/security.js';
+            import { S } from '/state.js'; import { usersTab } from '/settings/users.js'; import { accountTab, bindingsTab } from '/settings/security.js';
             import { markDirty } from '/settings/common.js';
             S.user = { id: '${tab === "users" ? "u_admin" : "u_member"}', name: '${tab === "users" ? "admin" : "家人"}', role: '${tab === "users" ? "admin" : "member"}' };
             window.testState = S;
             const page = document.querySelector('#panel');
             for (const event of ['input', 'change']) page.addEventListener(event, (e) => markDirty(e.target.closest('[data-form]')));
-            await ${tab === "users" ? "usersTab" : "accountTab"}(page);
+            await ${tab === "users" ? "usersTab" : tab === "bindings" ? "bindingsTab" : "accountTab"}(page);
           </script>` });
         try { return route.fulfill({ contentType: p.endsWith(".css") ? "text/css" : "text/javascript", body: await fs.readFile(new URL(vendor[p] ?? `web${p}`, root), "utf8") }); }
         catch { return route.fulfill({ status: 404, body: "" }); }
@@ -127,7 +127,7 @@ for (const width of [390, 1280]) {
         assert.equal(await memberRow.getByRole("combobox", { name: "内置 Agent范围", exact: true }).inputValue(), "all");
         assert.equal(await memberRow.getByRole("checkbox", { name: "家庭助手", exact: true }).isChecked(), false);
         assert.equal(await memberRow.getByRole("checkbox", { name: "NAS", exact: true }).isChecked(), true);
-      } else {
+      } else if (tab === "bindings") {
         await page.getByRole('button', { name: '重新扫码', exact: true }).waitFor();
         const wxRow = page.locator('.weixin-expert-row');
         const sizes = await wxRow.evaluate(el => [...el.children].map(child => child.getBoundingClientRect().height));
@@ -136,7 +136,8 @@ for (const width of [390, 1280]) {
           const action = page.getByRole('button', { name, exact: true });
           assert.equal(await action.evaluate(el => el.parentElement.tagName), 'H4', '账号绑定操作位于卡片标题最右侧');
         }
-        await page.screenshot({ path: `/tmp/agent-loft-account-${width}.png` });
+        await page.screenshot({ path: `/tmp/agent-loft-bindings-${width}.png` });
+      } else {
         assert.equal(await page.getByRole("textbox", { name: /^账号名称/ }).isVisible(), false);
         await page.getByRole("button", { name: "修改名称", exact: true }).click();
         await page.getByRole("textbox", { name: /^账号名称/ }).fill(" 新的名字 ");

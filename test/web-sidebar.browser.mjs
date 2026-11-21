@@ -16,7 +16,7 @@ const vendor = {
   "/vendor/xterm-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.mjs",
   "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
 };
-const defaults = ["search", "tasks", "library", "memos", "remote", "settings"].map((id) => ({ id, visible: id !== "settings" }));
+const defaults = ["search", "tasks", "library", "memos", "remote", "assistants", "settings"].map((id) => ({ id, visible: id !== "settings" }));
 
 async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null, recentConvs = null, bootstrap = {} } = {}) {
   const browser = await chromium.launch({
@@ -611,6 +611,7 @@ test("目录选择器：空文件夹可确认删除，根目录没有删除入�
   await picker.getByRole("button", { name: "删除文件夹…", exact: true }).click();
   assert.equal(getDeletes(), 0);
   await page.locator(".confirm-dialog").getByRole("button", { name: "删除项目", exact: true }).click();
+  await picker.getByRole("button", { name: "删除文件夹…", exact: true }).waitFor({ state: "hidden" });
   await page.waitForFunction(() => document.querySelectorAll(".dir-picker .dir-item").length === 0);
   assert.equal(getDeletes(), 1);
   assert.equal(await picker.getByRole("button", { name: "删除文件夹…", exact: true }).isVisible(), false);
@@ -827,7 +828,7 @@ test("较早的会话在设置页重连和刷新，返回仍是原会话", async
     const { WS } = await import("/lib/ws.js");
     WS.sock.onmessage({ data: JSON.stringify({ t: "replay", reset: true, key: S.current }) });
   });
-  assert.equal(new URL(page.url()).hash, "#settings");
+  assert.equal(new URL(page.url()).hash, "#settings/account");
   await page.locator('.conv-item.recent[data-key="web:1"]').click();
   await page.locator(".confirm-dialog").getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(await name.inputValue(), "未保存的名称");
@@ -842,19 +843,20 @@ test("较早的会话在设置页重连和刷新，返回仍是原会话", async
   assert.equal(await page.evaluate(() => S.current), "web:1");
 });
 
-test("触屏首次加载设置分类期间可以离开，加载完成后仍在所选页面", async (t) => {
+test("触屏首次加载账号表单期间可以离开，加载完成后仍在所选页面", async (t) => {
   const { page } = await fixture(t, { mobile: true });
   let release;
   const delay = new Promise((resolve) => { release = resolve; });
-  await page.route("**/settings/tabs.js", async (route) => {
+  await page.route("**/settings/security.js", async (route) => {
     await delay;
     await route.fallback();
   });
-  const loaded = page.waitForResponse("**/settings/tabs.js");
+  const loaded = page.waitForResponse("**/settings/security.js");
   await page.locator("#sidebar-more").click();
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   try {
-    await page.getByRole("status", { name: "加载设置" }).waitFor();
+    await page.getByRole("button", { name: "账号与安全", exact: true }).tap();
+    await page.locator('.settings-page[aria-busy="true"]').waitFor();
     const settings = page.getByRole("main", { name: "设置" });
     assert.equal(await settings.getByRole("button", { name: "返回", exact: true, includeHidden: true }).count(), 0);
     await settings.getByRole("button", { name: "会话列表" }).tap();
@@ -902,6 +904,7 @@ for (const mobile of [false, true]) {
       const dialog = page.getByRole("dialog", { name: "编辑侧边栏", exact: true });
       await dialog.getByRole("checkbox", { name: "定时任务", exact: true }).uncheck();
       await dialog.getByRole("checkbox", { name: "远程控制", exact: true }).uncheck();
+      await dialog.getByRole("checkbox", { name: "助手中心", exact: true }).uncheck();
       const grip = dialog.getByRole("button", { name: "调整资料库顺序", exact: true });
       const from = await grip.boundingBox();
       const target = await dialog.locator('[data-nav="search"]').boundingBox();
@@ -930,7 +933,7 @@ for (const mobile of [false, true]) {
       assert.equal(await page.locator("#sidebar-more").evaluate((el) => el.classList.contains("active") && el.classList.contains("live")), true);
       if (mobile) await page.locator("#sidebar-more").tap();
       else { await page.locator("#sidebar-more").focus(); await page.keyboard.press("ArrowDown"); }
-      assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "remote", "settings"]);
+      assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "remote", "assistants", "settings"]);
       assert.equal(await page.locator('.side-more-menu [data-nav="remote"]').evaluate((el) => el.classList.contains("active") && el.classList.contains("live")), true);
       const rect = await page.locator(".side-more-menu").boundingBox();
       const viewport = page.viewportSize();
@@ -971,7 +974,7 @@ test("编辑：取消不保存；保存失败保留编辑；支持键盘排序�
   assert.equal(await page.locator(".side-top .new-chat").isVisible(), true);
   await page.locator("#sidebar-more").focus();
   await page.keyboard.press("ArrowDown");
-  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "library", "memos", "remote", "settings"]);
+  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "library", "memos", "remote", "assistants", "settings"]);
 });
 
 for (const mobile of [false, true]) {
@@ -1011,7 +1014,7 @@ for (const mobile of [false, true]) {
       await page.locator('.memo-tree [data-path="旅行/今天.md"]').click();
     };
     await openNote();
-    await page.locator(".memo-reading h1").waitFor();
+    await page.locator(".memo-reading").getByRole("heading", { name: "日记", exact: true }).waitFor();
     await page.getByRole("button", { name: "编辑", exact: true }).click();
     const doc = page.locator(".memo-editor .cm-content");
     await doc.click();
@@ -1033,7 +1036,7 @@ for (const mobile of [false, true]) {
     assert.equal(attachments, 1);
     assert.equal(text, "# 日记\n![图片](assets/test.png)");
     await page.reload();
-    await openNote();
+    // 自动恢复上次打开的笔记，手机上目录此时已收起。
     await page.waitForFunction(() => document.querySelector(".memo-reading img")?.naturalWidth === 1);
     assert.ok(await page.locator(".memo-reading img").isVisible());
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -1154,4 +1157,23 @@ test("备忘录在自动保存期间继续输入，切换文件写回最新正�
   await page.getByText("保存失败", {exact:true}).waitFor();
   await page.getByText("已保存", {exact:true}).waitFor();
   assert.equal(files.get("a.md"), "断线恢复");
+});
+
+test("助手中心入口、旧技能链接和设置字段直达在刷新后均可恢复", async t => {
+  const { page } = await fixture(t);
+  await page.route("**/api/experts", r => r.fulfill({ json: { builtin: [], experts: [], engines: [], skills: [], mcp: [] } }));
+  await page.route("**/api/config", r => r.fulfill({ json: { web: { host: "127.0.0.1", port: 8800 } } }));
+  await page.locator('.sidebar-nav [data-nav="assistants"]').click();
+  await page.locator(".experts-page").waitFor();
+  assert.equal(new URL(page.url()).hash, "#assistants/experts");
+  await page.reload();
+  await page.locator(".experts-page").waitFor();
+  await page.getByRole("button", { name: "返回原页面" }).click();
+  assert.equal(new URL(page.url()).hash, "#web%3A1");
+  for (const [hash, expected] of [["skills", "#assistants/skills"], ["settings/network/port", "#settings/network/port"]]) {
+    await page.goto("about:blank");
+    await page.goto("https://sidebar.example.test/#" + hash);
+    await page.waitForFunction(expected => location.hash === expected && !!document.querySelector(".settings-page"), expected);
+  }
+  await page.waitForFunction(() => document.activeElement?.dataset.section === "port");
 });

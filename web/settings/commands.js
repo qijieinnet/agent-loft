@@ -11,7 +11,7 @@ import { field, hasDirty, markClean, markDirty, saveButton, saveConfig } from ".
  * 拿不到就退回文本框手填，不挡住保存。思考程度的选项跟着所选模型变。
  * 已保存但不在列表里的值（比如手填过的完整模型名）会作为「当前值」保留，不会被悄悄清掉。
  */
-export function modelPicker(agent, model, effort, defaultLabel) {
+export function modelPicker(agent, model, effort, defaultLabel, modelList = api(`/api/agents/${agent}/models`)) {
   const modelSlot = h("div", { class: "picker" });
   const effortSlot = h("div", { class: "picker" });
   let getModel = () => model;
@@ -67,8 +67,7 @@ export function modelPicker(agent, model, effort, defaultLabel) {
   };
 
   loading(model ? `${model}（正在读取模型列表…）` : "正在读取模型列表…");
-  api(`/api/agents/${agent}/models`)
-    .then((data) => (data?.models?.length ? asSelect(data.models) : asText("没读到模型列表，请手填")))
+  modelList.then((data) => (data?.models?.length ? asSelect(data.models) : asText("没读到模型列表，请手填")))
     .catch((err) => asText(err.status === 409 ? err.message : `读取模型列表失败，请手填：${err.message ?? err}`));
 
   return { modelEl: modelSlot, effortEl: effortSlot, model: () => getModel(), effort: () => getEffort() };
@@ -323,7 +322,7 @@ export function commandsTab(cfg, page) {
     h(
       "div",
       { class: "row" },
-      saveButton(() => save(prefsOf(list))),
+      saveButton(() => save(prefsOf(list)), "保存快捷命令"),
       h(
         "button",
         {

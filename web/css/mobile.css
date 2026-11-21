@@ -185,37 +185,14 @@
     padding-bottom: env(safe-area-inset-bottom);
   }
 
-  .settings {
-    flex-direction: column;
-  }
-
-  .settings-nav {
-    width: auto;
-    flex-direction: row;
-    overflow-x: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .settings-nav button {
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  /* 横排时分组标题换成一道竖线 */
-  .settings-group {
-    flex-shrink: 0;
-    width: 1px;
-    margin: 6px 4px;
-    padding: 0;
-    font-size: 0;
-    background: var(--border);
-  }
-
-  .settings-group:first-child {
-    display: none;
-  }
-
+  .settings { flex-direction: column; }
+  .settings-nav { display: none; flex: 1; border: 0; padding: 12px 16px; }
+  .settings-view.at-directory .settings-nav { display: block; }
+  .settings-view.at-directory .settings-body { display: none; }
+  .settings-view:not(.at-directory) .settings-directory-back { display: inline-flex; }
+  .settings-header .icon-btn, .settings-directory-back { min-height: 44px; min-width: 44px; }
+  .settings-nav-link { min-height: 44px; padding-inline: 12px; }
+  .settings-search input[type="search"] { min-height: 44px; font-size: 16px; }
   .settings-body {
     padding: 12px;
   }

@@ -11,8 +11,8 @@ const K = { data: null, tab: "mine", query: "", token: 0, reloadTimer: 0, box: n
 
 const SHARED = { private: "仅自己可见", users: "共享给指定用户", all: "所有人可见" };
 
-export async function skillsTab(panel) {
-  K.tab = "mine";
+export async function skillsTab(panel, section) {
+  K.tab = section === "shared" ? "shared" : "mine";
   K.query = "";
   K.box = h("div", { class: "skills-page" }, h("div", { class: "section" }, h("h4", {}, "技能"), h("span", { class: "spinner" })));
   fill(panel, K.box);
@@ -73,12 +73,12 @@ function render() {
       h(
         "p",
         { class: "skill-note" },
-        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。自己建的技能可共享给指定用户或所有人；别人共享的技能安装后可用，变量由每个人自己填写。内置专家默认使用你启用的技能，自定义专家只用它选中的（设置 → 专家）。",
+        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。自己建的技能可共享给指定用户或所有人；别人共享的技能安装后可用，变量由每个人自己填写。内置专家默认使用你启用的技能，自定义专家只用它选中的（助手中心 → 专家）。",
       ),
       h(
         "div",
         { class: "skill-head-btns" },
-        h("button", { class: "btn", onclick: () => pickUpload() }, "上传"),
+        h("button", { class: "btn", "data-section": "upload", onclick: () => pickUpload() }, "上传"),
         h("button", { class: "btn primary", onclick: () => openEditor() }, icon("plus"), "新建"),
       ),
     ),
@@ -93,6 +93,8 @@ function render() {
               h(
                 "button",
                 {
+                  "data-section": K.tab === id ? id : null,
+                  "aria-pressed": String(K.tab === id),
                   class: K.tab === id ? "on" : "",
                   onclick: () => {
                     K.tab = id;

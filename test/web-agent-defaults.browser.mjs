@@ -28,6 +28,7 @@ for (const width of [390, 1280]) {
       const cfg = { agents: { claude: { enabled: true, models: [], defaultModel: "", defaultEffort: "" }, codex: { enabled: true, models: [], path: "codex", home: "", sandbox: "workspace-write" } }, web: {} };
       let saves = 0;
       const configPuts = [];
+      const catalogReads = [];
       await page.route("**/*", async (route) => {
         const url = new URL(route.request().url());
         const method = route.request().method();
@@ -46,6 +47,7 @@ for (const width of [390, 1280]) {
         if (url.pathname === "/api/bootstrap") return route.fulfill({ json: { agents: [], bots: [], servers: [] } });
         if (url.pathname === "/api/experts") return route.fulfill({ json: { expertOrder: [], experts: [], builtin: [{ id: "claude", name: "Claude Code", engine: "claude" }, { id: "codex", name: "Codex", engine: "codex" }], engines: ["claude", "codex"], templates: [], access: [], skills: [], mcp: [], limits: {} } });
         if (url.pathname === "/api/agents/health") return route.fulfill({ json: { agents: [] } });
+        if (/\/api\/agents\/\w+\/models/.test(url.pathname)) catalogReads.push(url.pathname);
         if (/\/api\/agents\/\w+\/models/.test(url.pathname)) return route.fulfill({ json: { models: [{ id: "default", label: "默认", isDefault: true, efforts: ["low", "high"] }, { id: "opus", label: "Opus", efforts: ["low", "high"] }] } });
         if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${styles}<div id="app"><div class="layout"></div></div><script type="module">
           import { S, ui } from '/state.js'; import { openSettings } from '/settings/index.js';
@@ -59,11 +61,17 @@ for (const width of [390, 1280]) {
       await page.goto("https://agent-settings.example.test/");
       const nav = page.locator(".settings-nav");
       if (role === "admin") {
-        // 管理员的 Agent 页：没有默认模型 / 默认权限 / 默认加载了
-        await page.locator('.settings-page [data-agent="claude"]').waitFor();
-        assert.equal(await page.locator(".settings-page").getByText("默认思考程度").count(), 0);
-        assert.equal(await page.locator(".settings-page .builtin-agent-defaults").count(), 0);
-        await nav.getByRole("button", { name: "专家", exact: true }).click();
+        const defaults = page.locator('[data-section="claude"]');
+        await defaults.locator(".picker select").first().selectOption("opus");
+        await defaults.locator(".picker select").nth(1).selectOption("high");
+        await defaults.getByRole("button", { name: "保存默认模型" }).click();
+        await defaults.locator(".save-btn").waitFor();
+        await page.waitForFunction(() => !document.querySelector("[data-form][data-dirty]"));
+        assert.deepEqual(catalogReads, ["/api/agents/claude/models"]);
+        await page.evaluate(async () => (await import("/settings/index.js")).openSettings("engines/codex-sandbox"));
+        await page.waitForFunction(() => document.activeElement?.dataset.section === "codex-sandbox");
+        assert.equal(await page.locator(".engine-advanced").evaluate(el => el.open), true);
+        await page.evaluate(async () => (await import("/settings/index.js")).openAssistants());
       } else {
         // 成员没有 Agent 页，「Agent」打开的是专家页
         await page.locator(".experts-page .expert-sort-card").first().waitFor();
@@ -79,15 +87,11 @@ for (const width of [390, 1280]) {
       let dlg = await openDefaults("Claude Code");
       const save = dlg.getByRole("button", { name: "保存 Claude Code 默认设置", exact: true });
       assert.equal(await save.isEnabled(), false);
-      assert.equal(await dlg.getByText("默认模型", { exact: true }).count(), role === "admin" ? 1 : 0);
+      assert.equal(await dlg.getByText("默认模型", { exact: true }).count(), 0);
       await dlg.getByRole("combobox", { name: "Claude Code 技能", exact: true }).selectOption("pick");
       await dlg.getByRole("checkbox", { name: "nas-portainer", exact: true }).check();
       await dlg.getByRole("combobox", { name: "Claude Code MCP", exact: true }).selectOption("pick");
       await dlg.getByRole("checkbox", { name: "nas", exact: true }).check();
-      if (role === "admin") {
-        await dlg.locator(".picker select").first().selectOption("opus");
-        await dlg.locator(".picker select").nth(1).selectOption("high");
-      }
       const overflow = await dlg.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
       assert.equal(overflow, false, "手机与桌面布局不应横向溢出");
       await save.click();

@@ -3,9 +3,7 @@ import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 import { field, markDirty, saveButton } from "./common.js";
-import { networkSection } from "./general.js";
 import { deviceList } from "./security.js";
-import { notifyTab } from "./notify.js";
 
 /** null 沿用全部；指定列表可以全部取消，新增资源不会自动加入。 */
 function permissionFields(resources, permissions = {}) {
@@ -276,7 +274,7 @@ export async function usersTab(page) {
     fill(
       addBox,
       field("用户名", name),
-      field("密码", pw, "告诉对方，让他登录后在 设置 →「账号」里自己改掉"),
+      field("密码", pw, "告诉对方，让他登录后在 设置 →「账号与安全」里自己改掉"),
       field("角色", role, "成员只能用自己的对话；管理员能改所有设置、管理用户"),
       memberOptions,
       h(
@@ -324,11 +322,9 @@ export async function usersTab(page) {
 }
 
 /** 设置 → 系统：服务端运行状态、版本和升级、重启，网络访问 */
-export async function systemTab(cfg, page) {
-  if (!cfg) return notifyTab(page);
+export async function systemTab(page) {
   const sysBox = h("div", { class: "section" }, h("h4", {}, "服务端", h("span", { class: "grow" }), h("span", { class: "spinner" })));
-  page.append(sysBox, networkSection(cfg));
-  void notifyTab(page);
+  page.append(sysBox);
 
   const restart = async () => {
     if (!(await confirmDialog({ title: "重启 agent-loft？", message: "进行中的对话会被中断。", confirmText: "重启", danger: true }))) return;

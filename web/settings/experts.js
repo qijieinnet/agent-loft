@@ -2,7 +2,7 @@ import { agentIcon, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { expertMemoField } from "../lib/memo-access.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
-import { isAdmin, S } from "../state.js";
+import { isAdmin, S, ui } from "../state.js";
 import { openAgentDefaults } from "./agent-defaults.js";
 import { expertIcon, reloadExperts, sortExperts } from "../views/experts.js";
 import { baseName } from "../views/topbar.js";
@@ -92,7 +92,8 @@ function render(box, data, reload) {
         h("span", { class: "badge" }, "内置"),
         h("button", { class: "btn", "aria-label": `${e.name} 默认设置`, onclick: () => openAgentDefaults(e.engine, e.name) }, "设置"),
       ),
-      h("div", { class: "task-prompt" }, `${e.name} 原装的样子：原装提示词、所有工具。默认${isAdmin() ? "模型、" : ""}权限和加载的技能、MCP 在「设置」里配置。`),
+      h("div", { class: "task-prompt" }, "使用引擎自带的提示词。默认权限和加载的工具按你的账号保存。"),
+      isAdmin() ? h("button", { class: "btn small", onclick: () => ui.settings.selectTab("engines/" + e.engine) }, "配置实例模型") : null,
     ) : expertCard(data, e, reload);
     row.dataset.expert = e.id;
     row.setAttribute("role", "listitem");
@@ -148,7 +149,7 @@ function render(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "拖动卡片左侧手柄调整顺序，自动保存并用于选择智能体。专家决定引擎、提示词和能力。共享给所有账号后，设定由创建者维护，每个人的记忆、技能和 MCP 仍各自独立；点「我的工具」选择自己要用的工具。内置的 Claude Code、Codex 在「设置 → Agent」各自卡片的「默认加载」中选择技能和 MCP。",
+        "拖动卡片左侧手柄调整顺序，自动保存并用于选择智能体。专家决定引擎、提示词和能力。共享给所有账号后，设定由创建者维护，每个人的记忆、技能和 MCP 仍各自独立；点「我的工具」选择自己要用的工具。内置的 Claude Code、Codex 在内置专家卡片的「设置」中选择技能和 MCP。",
       ),
       h("div", { class: "skill-head-btns" }, add),
     ),
@@ -207,9 +208,9 @@ function viewSharedExpert(e) {
 
 function openTools(data, e, reload) {
   const memos = expertMemoField(data.memoLibraries, e.id);
-  const skills = checkList(data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })), e.skills, "还没有启用的技能（设置 → 技能）");
+  const skills = checkList(data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })), e.skills, "还没有启用的技能（助手中心 → 技能）");
   const machine = (data.machineMcp?.[e.engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, label: `${name}（本机）` }));
-  const mcp = checkList([...data.mcp.map((s) => ({ id: s.id, label: s.name, hint: s.description })), ...machine], e.mcp, "还没有 MCP（设置 → MCP）");
+  const mcp = checkList([...data.mcp.map((s) => ({ id: s.id, label: s.name, hint: s.description })), ...machine], e.mcp, "还没有 MCP（助手中心 → MCP）");
   const save = h("button", { class: "btn primary" }, "保存我的工具");
   const close = modal({ title: `${e.name} · 我的工具`, body: h("div", { class: "modal-body" },
     h("p", { class: "muted" }, "只影响你使用这个专家时加载的工具，网页和绑定账号后的飞书私聊共用。未选择时不加载技能或 MCP；记忆使用你自己的设置。子智能体的工具需在对应专家中单独配置。"),
@@ -347,7 +348,7 @@ function openEditor(data, e, reload, preset) {
   const skills = checkList(
     data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })),
     src.skills ?? [],
-    "还没有启用的技能（设置 → 技能）",
+    "还没有启用的技能（助手中心 → 技能）",
   );
   const mcpBox = h("div");
   const subBox = h("div");
@@ -360,7 +361,7 @@ function openEditor(data, e, reload, preset) {
     mcp = checkList(
       [...data.mcp.map((m) => ({ id: m.id, label: m.name, hint: m.description || (m.type === "http" ? "HTTP" : "本机进程") })), ...machine],
       keep,
-      "还没有 MCP（设置 → MCP 里添加）",
+      "还没有 MCP（助手中心 → MCP 里添加）",
     );
     fill(mcpBox, mcp.el);
     const keepSubs = subs.value();
@@ -421,7 +422,7 @@ function openEditor(data, e, reload, preset) {
       field("我的技能", skills.el, "只影响你的工具选择；共享后其他账号单独选择自己的技能"),
       field("我的 MCP", mcpBox, "只使用你的 MCP；共享后不会把你的 MCP 或凭据交给其他账号"),
       subField,
-      field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "使用聊天者自己的个人记忆（需在设置 → 记忆开启）"))),
+      field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "使用聊天者自己的个人记忆（需在设置 → 记忆偏好开启）"))),
     ),
     section("新对话页", field("欢迎语", welcome), field("快捷提问", quick)),
   );
@@ -623,7 +624,7 @@ function renderMcp(box, data, reload) {
       h(
         "p",
         { class: "skill-note" },
-        "MCP 服务提供查数据、调接口等工具。这里加好后，自定义专家在「专家」里勾选；内置的 Claude Code / Codex 在「Agent」各自卡片的「默认加载」中选择。可以把自己的 MCP 共享给所有账号：别人拿到的是地址、命令这些设置，标成密钥的项各自填自己的值，你的密钥不会给出去；别人用共享的 MCP 时，调用工具前都会先询问。" +
+        "MCP 服务提供查数据、调接口等工具。这里加好后，自定义专家在「专家」里勾选；内置的 Claude Code / Codex 在「专家」页内置卡片的「设置」中选择。可以把自己的 MCP 共享给所有账号：别人拿到的是地址、命令这些设置，标成密钥的项各自填自己的值，你的密钥不会给出去；别人用共享的 MCP 时，调用工具前都会先询问。" +
           (canStdio ? "" : "本机进程（stdio）会在服务器上直接执行命令，只有管理员能添加。"),
       ),
       h("div", { class: "skill-head-btns" }, h("button", { class: "btn primary", onclick: () => openMcpEditor(null, reload) }, icon("plus"), "添加")),

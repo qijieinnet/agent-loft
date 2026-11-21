@@ -5,8 +5,7 @@ import { modal, confirmDialog } from "../lib/overlay.js";
 import { isAdmin, S } from "../state.js";
 import { renderContext } from "../views/topbar.js";
 import { DEFAULT_LEVELS, engineSupports, PERMISSIONS } from "../lib/permission.js";
-import { field, hasDirty, markDirty, saveButton, saveConfig } from "./common.js";
-import { modelPicker } from "./commands.js";
+import { field, hasDirty, markDirty, saveButton } from "./common.js";
 
 // ---------- 内置 Agent 的默认设置（设置 → 专家 → 内置卡片上的「设置」） ----------
 // 默认模型 / 思考程度：整台服务器的（config），只有管理员能改；
@@ -14,7 +13,6 @@ import { modelPicker } from "./commands.js";
 
 /** 设置里的默认权限「跟随」时实际是什么 */
 const FOLLOW_LABEL = { claude: "跟随 Claude Code（逐次询问）", codex: "跟随沙箱设置", workbuddy: "跟随 WorkBuddy（逐次询问）", dsh: "跟随 dsh（工作区可写，越界才问）", pi: "跟随 pi（逐次询问）" };
-const DEFAULT_MODEL_LABEL = { claude: "跟随 Claude Code 默认", codex: "跟随 config.toml", workbuddy: "跟随 WorkBuddy 默认", dsh: "跟随 dsh 默认", pi: "pi 自动挑一个能用的" };
 
 /** 技能 / MCP：「跟随」或者「指定加载」+ 勾选 */
 function loadPicker(label, items, selected, inheritLabel) {
@@ -68,9 +66,8 @@ export function openAgentDefaults(engine, label) {
 
   const load = async () => {
     let data;
-    let cfg = null;
     try {
-      [data, cfg] = await Promise.all([api("/api/agents/defaults"), isAdmin() ? api("/api/config") : null]);
+      data = await api("/api/agents/defaults");
     } catch (err) {
       fill(form, h("div", { class: "error-text" }, err.message), h("button", { class: "btn small", onclick: load }, "重试"));
       return;
@@ -80,8 +77,6 @@ export function openAgentDefaults(engine, label) {
       fill(form, h("p", { class: "muted" }, `没有 ${label} 的使用权限，请联系管理员。`));
       return;
     }
-    const server = cfg?.agents?.[engine];
-    const pick = server ? modelPicker(engine, server.defaultModel ?? "", server.defaultEffort ?? "", DEFAULT_MODEL_LABEL[engine] ?? "跟随默认") : null;
 
     const skills = loadPicker(`${label} 技能`, data.skills, prefs.skills, "全部已启用的个人技能（含以后新增）");
     const memos = expertMemoField(data.memoLibraries, engine);
@@ -99,13 +94,6 @@ export function openAgentDefaults(engine, label) {
 
     fill(
       form,
-      pick
-        ? [
-            h("h4", {}, "默认模型"),
-            h("p", { class: "skill-note" }, "整台服务器的默认值，对所有成员生效；对话里可以随时换。自定义专家自己选了模型的按专家的来。"),
-            h("div", { class: "row-fields" }, field("模型", pick.modelEl), engine === "workbuddy" ? null : field("思考程度", pick.effortEl)),
-          ]
-        : null,
       h("h4", {}, "默认权限"),
       field(
         "新对话的权限",
@@ -128,8 +116,6 @@ export function openAgentDefaults(engine, label) {
           body: { agents: { [engine]: { permission: permission.value || null, skills: skills.value(), machineSkills: machineSkills.checked, mcp: mcp.value(), memoAccess: memos.changes() } } },
         });
         S.defaultPermission = { ...S.defaultPermission, [engine]: res.agents?.[engine]?.permission ?? null };
-        const changed = pick && (pick.model() !== (server.defaultModel ?? "") || pick.effort() !== (server.defaultEffort ?? ""));
-        if (changed && !(await saveConfig(cfg, { agents: { [engine]: { defaultModel: pick.model(), defaultEffort: pick.effort() } } }))) return false;
         renderContext();
         toast("已保存，下次发消息生效");
         close();

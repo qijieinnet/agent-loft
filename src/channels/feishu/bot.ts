@@ -669,7 +669,7 @@ export class FeishuBot {
 
     const allowed = this.allowedAgents();
     if (allowed.length === 0 && feishuCommandOf(text)?.kind !== "bind") {
-      await this.client.sendText(chatId, "这个机器人没有可用的专家。所选专家可能已取消共享、删除，或引擎已停用；请在设置 → 飞书中重新选择。");
+      await this.client.sendText(chatId, "这个机器人没有可用的专家。所选专家可能已取消共享、删除，或引擎已停用；请在设置 → 飞书机器人中重新选择。");
       return;
     }
 
@@ -741,7 +741,7 @@ export class FeishuBot {
     }
 
     if (noExpert) {
-      await this.client.sendText(chatId, p2p ? "这个机器人使用共享专家。请先在网页「设置 → 账号 → 飞书账号」生成绑定码，再私聊发送 /bind 绑定码，即可使用你自己的记忆和工具。" : "这个机器人只选择了共享专家，请在私聊中绑定你自己的账号后使用。");
+      await this.client.sendText(chatId, p2p ? "这个机器人使用共享专家。请先在网页「设置 → 账号绑定 → 飞书账号」生成绑定码，再私聊发送 /bind 绑定码，即可使用你自己的记忆和工具。" : "这个机器人只选择了共享专家，请在私聊中绑定你自己的账号后使用。");
       return;
     }
 
@@ -833,7 +833,7 @@ export class FeishuBot {
       "",
       "从现在起这个私聊是你的个人会话：用你的记忆，`/sessions` 只列你的会话，`/web` 只能接上你自己的 Web 会话。群聊不受影响。",
       "",
-      "在 Web 的「设置 → 账号」里可以随时解除绑定。",
+      "在 Web 的「设置 → 账号绑定」里可以随时解除绑定。",
     ].join("\n");
   }
 

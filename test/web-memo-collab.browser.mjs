@@ -355,8 +355,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await insert(a,"同步");
   await b.locator(".memo-reading p").filter({hasText:"同步"}).waitFor();
   const settings = await a.context().newPage();
-  await settings.goto(base + "/#settings");
-  await settings.getByRole("button", {name:"专家", exact:true}).click();
+  await settings.goto(base + "/#assistants/experts");
   await settings.getByRole("button", {name:"笔记专家", exact:true}).click();
   await settings.getByRole("combobox", {name:"alice", exact:true}).selectOption("write");
   await settings.getByRole("button", {name:"保存", exact:true}).click();

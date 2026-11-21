@@ -32,7 +32,7 @@ import { clearCommandCache, preloadCommands } from "./slash.js";
 import { releaseForeignPushSub } from "../lib/push.js";
 import { createSidebarNav } from "./sidebar-nav.js";
 import { bindSidebarGestures } from "./sidebar-gestures.js";
-import { openSettings } from "../settings/index.js";
+import { openAssistants, openSettings } from "../settings/index.js";
 import "../lib/keyboard.js";
 
 export { openSettings };
@@ -162,11 +162,11 @@ export async function boot() {
   if (desktopQuota) desktop.onQuota(applyDesktopQuota);
   else void loadQuota();
   if (srv && srv !== HOME) routeToServer(srv, decodeURIComponent(landing.hash.slice(1)));
-  const restoreSettings = location.hash === "#settings";
+  const restoreSettings = /^#(settings|assistants)(?:\/(.*))?$/.exec(location.hash);
   const fromHash = decodeURIComponent(contentHash().slice(1));
   // 地址里带了会话就打开它；否则打开最近活跃的 Web 对话，没有才进新对话页
   const latest = latestConversation("web");
-  if (restoreSettings) void openSettings();
+  if (restoreSettings) void openSettings(restoreSettings[2], restoreSettings[1]);
   if (fromHash === "tasks") openTasksView();
   else if (fromHash === "memos") await openMemosView();
   else if (fromHash === "library") openLibraryView();
@@ -272,7 +272,7 @@ function renderLayout() {
       { class: "side-top" },
       h("button", { class: "btn new-chat", onclick: () => navigate(() => (newDraft({ inheritLatest: true }), closeSide())) }, icon("plus"), "新建"),
     ),
-    createSidebarNav({ search: () => navigate(openSearch), tasks: () => navigate(openTasksView), library: () => navigate(openLibraryView), memos: () => navigate(openMemosView), remote: () => navigate(openRemoteView), settings: openSettings }),
+    createSidebarNav({ search: () => navigate(openSearch), tasks: () => navigate(openTasksView), library: () => navigate(openLibraryView), memos: () => navigate(openMemosView), remote: () => navigate(openRemoteView), assistants: openAssistants, settings: openSettings }),
     ui.convList,
     // 底部只有额度：没有额度可显示（关了查询、还没查到）时整块藏起来，连分隔线一起
     (ui.sideBottom = h(

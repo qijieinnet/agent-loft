@@ -107,7 +107,7 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
     // 跟随页面实际加载的版本目录，避免另建一套 state 和事件监听器。
     await page.evaluate(async () => {
       const entry = document.querySelector('script[type="module"][src]').src;
-      await (await import(new URL("views/layout.js", entry).href)).openSettings("账号");
+      await (await import(new URL("views/layout.js", entry).href)).openSettings("账号绑定");
     });
     await page.locator(".settings-page").waitFor({ timeout: 8000 }).catch(async (err) => {
       throw new Error(`${err.message}\n页面：${await page.locator("#app").innerText()}`);

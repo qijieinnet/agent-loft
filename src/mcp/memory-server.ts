@@ -275,7 +275,7 @@ function guard(id: string, args: Record<string, unknown>): string | undefined {
   const all = [...readMemory(userId).items, ...listMemoryItems(userId, "archive")];
   const item = all.find((i) => i.id === id);
   if (item && isProtected(item) && args.user_requested !== true) {
-    return `这条是用户自己加的或者明确要求记的，受保护（${item.text}）。只有用户在当前对话里明确要求时才能改，那样要带 user_requested: true；否则告诉用户可以到设置 → 记忆里改。`;
+    return `这条是用户自己加的或者明确要求记的，受保护（${item.text}）。只有用户在当前对话里明确要求时才能改，那样要带 user_requested: true；否则告诉用户可以到助手中心 → 记忆里改。`;
   }
   return undefined;
 }

@@ -56,12 +56,12 @@ export const ui = {};
 
 /** 设置页保留底下的会话或工具页，刷新和后台重连都用同一条返回地址。 */
 export function contentHash() {
-  return location.hash === "#settings" ? (history.state?.settingsReturnHash ?? "") : location.hash;
+  return /^#(?:settings|assistants)(?:\/|$)/.test(location.hash) ? (history.state?.settingsReturnHash ?? "") : location.hash;
 }
 
 export function setContentHash(hash) {
   if (ui.settings) {
-    history.replaceState({ ...history.state, settingsReturnHash: hash }, "", "#settings");
+    history.replaceState({ ...history.state, settingsReturnHash: hash }, "", location.hash);
   } else {
     history.replaceState(history.state, "", hash || location.pathname + location.search);
   }

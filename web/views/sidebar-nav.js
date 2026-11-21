@@ -9,6 +9,7 @@ const ITEMS = [
   { id: "library", label: "资料库", icon: "library" },
   { id: "memos", label: "备忘录", icon: "clipboard" },
   { id: "remote", label: "远程控制", icon: "monitor" },
+  { id: "assistants", label: "助手中心", icon: "spark" },
   { id: "settings", label: "设置", icon: "gear" },
 ];
 let actions = {};
@@ -29,7 +30,7 @@ function configuredItems() {
 }
 
 const available = (item) => item.id !== "remote" || remoteTabs().length > 0;
-const isActive = (item) => (ui.settings ? "settings" : S.view) === item.id;
+const isActive = (item) => (ui.settings?.area ?? S.view) === item.id;
 const remoteLive = () => S.remoteLive.desktop || S.remoteLive.terminals > 0;
 
 function navButton(item, inMenu = false) {

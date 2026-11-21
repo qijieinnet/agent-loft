@@ -133,7 +133,7 @@ async function gitAction(res: ServerResponse, op: () => Promise<unknown>): Promi
 
 export async function handleWorkspaceApi(req: IncomingMessage, res: ServerResponse, url: URL, sub: string, conv: Conversation, user: User): Promise<boolean> {
   if (ROUTES[sub] !== req.method) return false;
-  if (!canUseFiles(user)) throw new HttpError(403, "你没有使用工作区面板的权限，找管理员在 设置 → 用户 里开通");
+  if (!canUseFiles(user)) throw new HttpError(403, "你没有使用工作区面板的权限，找管理员在 设置 → 用户与权限 里开通");
   const cwd = workspaceDir(conv.cwd);
   if (!cwd) throw new HttpError(404, "工作目录不存在，或不在工作区之内");
   const requested = url.searchParams.get("path") ?? "";
@@ -213,7 +213,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
   }
   if (req.method === "POST") {
     if ((sub === "git-fetch" || sub === "git-pull" || sub === "git-push") && !canUseGitRemote(user)) {
-      throw new HttpError(403, "你没有连接 Git 远程的权限，找管理员在 设置 → 用户 里开通");
+      throw new HttpError(403, "你没有连接 Git 远程的权限，找管理员在 设置 → 用户与权限 里开通");
     }
     const body = await readJsonBody<{ paths?: unknown; message?: unknown; hooks?: unknown; branch?: unknown; name?: unknown; id?: unknown; direction?: unknown; force?: unknown }>(req);
     const root = repo.root;

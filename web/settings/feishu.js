@@ -26,8 +26,8 @@ export async function feishuTab(cfg, page) {
   const forms = new Map();
   const statusTags = new Map();
   const botsBox = h("div", { class: "settings-stack" });
-  const pairBox = h("div", { class: "settings-stack" });
-  const slashBox = h("div");
+  const pairBox = h("div", { "data-section": "pair", class: "settings-stack" });
+  const slashBox = h("div", { "data-section": "slash" });
 
   const refresh = () => {
     saved = structuredClone(cfg.feishu.bots);
@@ -51,7 +51,7 @@ export async function feishuTab(cfg, page) {
       h(
         "div",
         { class: "section" },
-        h("h4", {}, "飞书机器人"),
+        h("h4", {}, "机器人列表"),
         h("div", { class: "muted" }, "勾选这个机器人可用的内置或共享专家，并选择默认专家。共享专家在每个人绑定账号后的私聊中使用各自的记忆和工具。扫码创建会自动建好飞书应用；Lark 国际版请用「手动添加」。"),
         h(
           "div",

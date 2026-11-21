@@ -5,10 +5,10 @@ import { field, saveButton, saveConfig } from "./common.js";
 
 /** 设置 → 对话：所有会话共用的规矩——在哪个目录、多久算新会话、授权卡等多久、Claude 的「总是允许」 */
 export async function conversationTab(cfg, page) {
-  const root = h("input", { value: cfg.workspaceRoot });
+  const root = h("input", { "data-section": "workspace", value: cfg.workspaceRoot });
   const ttl = h("input", { type: "number", min: 0, value: Math.round(cfg.sessionTtlMs / 3600000) });
-  const approval = h("input", { type: "number", min: 1, value: Math.round(cfg.approvalTimeoutMs / 60000) });
-  const allowBox = h("div", { class: "section", "data-form": "" }, h("h4", {}, "Claude「总是允许」名单"), h("span", { class: "spinner" }));
+  const approval = h("input", { type: "number", "data-section": "approval", min: 1, value: Math.round(cfg.approvalTimeoutMs / 60000) });
+  const allowBox = h("div", { class: "section", "data-section": "allowlist", "data-form": "" }, h("h4", {}, "Claude「总是允许」名单"), h("span", { class: "spinner" }));
   page.append(
     h(
       "div",
@@ -25,7 +25,7 @@ export async function conversationTab(cfg, page) {
             workspaceRoot: root.value,
             sessionTtlMs: Number(ttl.value) * 3600000,
             approvalTimeoutMs: Number(approval.value) * 60000,
-          }),
+          }), "保存会话设置",
         ),
       ),
     ),
@@ -45,7 +45,7 @@ export async function conversationTab(cfg, page) {
       saveButton(async () => {
         await api("/api/claude/allowlist", { method: "PUT", body: { list: allowText.value.split("\n") } });
         toast("已保存");
-      }),
+      }, "保存允许名单"),
     ),
   );
 }
@@ -117,11 +117,11 @@ export function remoteTab(cfg, page) {
     h(
       "div",
       { class: "section", "data-form": "" },
-      h("h4", {}, "远程控制"),
+      h("h4", {}, "终端与桌面"),
       h(
         "div",
         { class: "muted" },
-        "侧栏「远程控制」里直接操作这台机器的桌面和终端，切回对话时连接留在后台。以运行 agent-loft 的系统用户执行，没有授权卡。管理员能用；成员要在 管理 →「用户」里单独开通。",
+        "侧栏「远程控制」里直接操作这台机器的桌面和终端，切回对话时连接留在后台。以运行 agent-loft 的系统用户执行，没有授权卡。管理员能用；成员要在 实例管理 →「用户与权限」里单独开通。",
       ),
       status,
       h("label", { class: "check" }, termOn, "网页终端"),
@@ -147,7 +147,7 @@ export function remoteTab(cfg, page) {
           });
           if (ok) void loadStatus();
           return ok;
-        }),
+        }, "保存远程控制设置"),
       ),
     ),
   );
@@ -163,11 +163,15 @@ function loopbackHost(host) {
  * 网络访问：要不要让局域网里的其他设备打开、监听哪个端口。保存后服务端当场换过去，不用重启；
  * 端口被占用之类的失败会直接报出来，原来的照常工作。
  */
-export function networkSection(cfg) {
+export function networkTab(cfg, page) {
+  page.append(networkSection(cfg));
+}
+
+function networkSection(cfg) {
   const net = cfg.network ?? { lan: [], local: true, listening: null };
   const box = h("div", { class: "section", "data-form": "" });
-  const lanOn = h("input", { type: "checkbox", checked: !loopbackHost(cfg.web.host) });
-  const port = h("input", { type: "number", min: 1, max: 65535, value: cfg.web.port });
+  const lanOn = h("input", { "data-section": "lan", type: "checkbox", checked: !loopbackHost(cfg.web.host) });
+  const port = h("input", { type: "number", min: 1, max: 65535, "data-section": "port", value: cfg.web.port });
   const hint = h("small", {});
   // 现在这个页面是不是直接连的这个端口（不是经由反代 / 隧道）
   const pagePort = Number(location.port || (location.protocol === "https:" ? 443 : 80));
@@ -231,11 +235,10 @@ export function networkSection(cfg) {
 
   fill(
     box,
-    h("h4", {}, "网络访问"),
     h("label", { class: "check" }, lanOn, "允许局域网内的其他设备访问"),
     hint,
-    field("端口", port, "改了立即生效，不用重启"),
-    h("div", { class: "row" }, saveButton(save)),
+    field("监听端口", port, "保存后立即生效"),
+    h("div", { class: "row" }, saveButton(save, "保存网络设置")),
   );
   return box;
 }

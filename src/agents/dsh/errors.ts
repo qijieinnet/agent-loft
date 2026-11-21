@@ -10,13 +10,13 @@ export function diagnose(err: unknown): Diagnosis {
     return {
       kind: "cli_missing",
       chatMessage: "这台服务器上没找到 dsh，我暂时无法工作。请机器主人安装：npm install -g @deepseek-ai/dsh",
-      consoleHint: "找不到 dsh：npm install -g @deepseek-ai/dsh；以系统服务运行时 PATH 很短，在 设置 → Agent → dsh 里填绝对路径。",
+      consoleHint: "找不到 dsh：npm install -g @deepseek-ai/dsh；以系统服务运行时 PATH 很短，在 设置 → 模型与运行环境 → dsh 里填绝对路径。",
     };
   }
   if (text.includes("api key") || text.includes("api_key") || text.includes("401") || text.includes("unauthorized") || text.includes("authentication") || text.includes("credential")) {
     return {
       kind: "auth_missing",
-      chatMessage: "dsh 还没配 DeepSeek 的 API Key（或 Key 失效了），我暂时无法工作。\n请机器主人到 设置 → Agent → dsh 查看怎么配。",
+      chatMessage: "dsh 还没配 DeepSeek 的 API Key（或 Key 失效了），我暂时无法工作。\n请机器主人到 设置 → 模型与运行环境 → dsh 查看怎么配。",
       consoleHint: `dsh 凭据有问题：${KEY_HINT}`,
     };
   }
