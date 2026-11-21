@@ -47,6 +47,7 @@ export function patchMarkdown(div, text, { live = false, enhance, prepare, sanit
       n.remove();
     }
   }
+  let offset = blocks.at(-1)?.end ?? 0;
   for (; i <= last; i++) {
     const final = !(live && i === last);
     const chunk = chunks[i];
@@ -58,14 +59,15 @@ export function patchMarkdown(div, text, { live = false, enhance, prepare, sanit
       // Resolve vault links while the document is inert, before the browser fetches images.
       const template = document.createElement("template");
       template.innerHTML = html;
-      prepare(template.content);
+      prepare(template.content, { raw: raws[i], offset, chunk });
       box.append(template.content);
     } else box.innerHTML = html;
     decorate(box, final);
     enhance?.(box, { final });
     const nodes = [...box.childNodes];
     div.append(...nodes);
-    blocks.push({ raw: raws[i], final, nodes });
+    offset += raws[i].length;
+    blocks.push({ raw: raws[i], final, nodes, end: offset });
   }
 }
 

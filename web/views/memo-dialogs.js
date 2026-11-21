@@ -129,6 +129,24 @@ export function connectSource(onConnect) {
   name.focus();
 }
 
+export function confirmDisconnect(source) {
+  return new Promise(resolve => {
+    const input = h("input", { class: "input", autocomplete: "off", spellcheck: "false" });
+    const submit = h("button", { type: "submit", class: "btn danger-fill", disabled: true }, "断开连接");
+    const cancel = h("button", { type: "button", class: "btn ghost", onclick: () => finish(false) }, "取消");
+    const form = h("form", { class: "modal-body memo-fields" },
+      h("p", {}, "断开会移除连接配置，并撤回此库的成员共享和智能体访问权限。远端文件和本地版本历史会保留。"),
+      h("label", {}, "输入库名「" + source.name + "」确认", input),
+      h("div", { class: "memo-dialog-actions" }, cancel, submit));
+    const close = modal({ title: "断开笔记库", body: form, beforeClose: () => resolve(false) });
+    function finish(result) { close(); resolve(result); }
+    input.oninput = () => { submit.disabled = input.value !== source.name; };
+    form.onsubmit = e => { e.preventDefault(); if (input.value === source.name) finish(true); };
+    form.onkeydown = e => { if (e.key === "Escape") finish(false); };
+    input.focus();
+  });
+}
+
 export function askMemoName(title, initial, directory) {
   return new Promise(resolve => {
     const input = h("input", { class: "input", required: true, value: initial, "aria-label": "名称" });

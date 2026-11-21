@@ -1,12 +1,12 @@
 import { memoFile } from "./memo-file.js";
-import { clearMemoIndex, memoIndexStatus, refreshMemoIndex, syncMemoIndexAccess } from "../../core/memo-index.js";
+import { clearMemoIndex, memoIndexStatus, refreshMemoIndex, searchMemos, syncMemoIndexAccess } from "../../core/memo-index.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { invalidateMemo, joinMemo, pullMemo, pushMemo, withMemoLock } from "./memo-collab.js";
 import { posix } from "node:path";
 import { addMemoSource, canReadMemo, parseMemoAccess, setMemoAccess, memberAccess, memoHistoryKey, memoSources, parseMemoSource, sourceSettings, removeMemoSource, setMemoSharing, validMemoPath, visibleMemoSources, type MemoAccess } from "../../core/memo-sources.js";
 import { canUseExpert } from "../../core/experts.js";
-import { memoVersions, memoVersionText } from "../../core/memo-versions.js";
+import { moveMemoVersions, memoVersions, memoVersionText } from "../../core/memo-versions.js";
 import { sniff } from "../../core/uploads.js";
 import { getUser, isAdmin, listUsers, type User } from "../../core/users.js";
 import { HttpError, readBody, readJsonBody, SECURITY_HEADERS, sendJson } from "./http.js";
@@ -50,7 +50,7 @@ export async function handleMemosApi(req: IncomingMessage, res: ServerResponse, 
     if (!mine) {
       const permission = memberAccess(source, user.id);
       if (!permission) throw new HttpError(404, "笔记库不存在或共享已撤回");
-      if (!["tree", "file", "changes", "history", "image", "folder", "attachment"].includes(action)) throw new HttpError(403, "只有库主可以管理笔记库");
+      if (!["tree", "file", "changes", "history", "image", "folder", "attachment", "organize", "search"].includes(action)) throw new HttpError(403, "只有库主可以管理笔记库");
       if (writing && permission !== "write") throw new HttpError(403, "此笔记库共享为只读");
     }
     return source;
@@ -100,8 +100,39 @@ export async function handleMemosApi(req: IncomingMessage, res: ServerResponse, 
   }
   const storage = new MemoStorage(source, isAdmin(owner));
   const path = url.searchParams.get("path") ?? "";
+  if (action === "search" && method === "GET") {
+    const ready = canReadMemo(source) && !!memoIndexStatus(owner.id, source.id).success;
+    const hits = ready ? searchMemos(owner.id, [source], url.searchParams.get("q") ?? "", "").hits : [];
+    return sendJson(res, 200, {ready, hits});
+  }
   const listing = action === "tree" && method === "GET";
   if (!(listing && path === "") && !validMemoPath(path)) throw new HttpError(400, "笔记路径无效");
+  if (action === "organize" && method === "POST") {
+    const body = await readJsonBody(req, 16_384);
+    const bin = ".agent-loft-trash/";
+    const trashed = path.startsWith(bin);
+    let dest: string;
+    if (body?.op === "restore" && trashed && /^\.agent-loft-trash\/[0-9a-f-]{36}\/.+/.test(path)) dest = path.split("/").slice(2).join("/");
+    else if (body?.op === "trash" && !trashed) dest = bin + randomUUID() + "/" + path;
+    else if (body?.op === "move" && !trashed && typeof body.to === "string" && !body.to.startsWith(bin)) dest = body.to;
+    else throw new HttpError(400, "文件操作无效");
+    if (!validMemoPath(dest) || dest === path || dest === ".agent-loft-trash") throw new HttpError(400, "目标路径无效");
+    const keys = [storage.objectURL(path).href, storage.objectURL(dest).href].sort();
+    await withMemoLock(keys[0]!, () => withMemoLock(keys[1]!, async () => {
+      checkAccess();
+      if (body.op !== "move") {
+        const parts = dest.split("/");
+        for (let n = 1; n < parts.length; n++) { checkAccess(); await storage.mkdir(parts.slice(0,n).join("/"), true); }
+      }
+      await storage.moveFile(path, dest, checkAccess);
+      moveMemoVersions(owner.id, memoHistoryKey(source), path, dest);
+      for (const file of [path, dest]) {
+        if (editable(file)) invalidateMemo(memoFile(user,source,file,checkAccess,owner).key);
+      }
+    }));
+    if (canReadMemo(source)) void refreshMemoIndex(owner.id, source);
+    return sendJson(res, 200, { path: dest });
+  }
   if (listing) {
     const page = await storage.list(path, url.searchParams.get("cursor") ?? "");
     checkAccess();

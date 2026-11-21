@@ -65,6 +65,16 @@ test("备忘录按账号接入 WebDAV 和 S3，目录、条件保存及图片直
     } else {
       const old = objects.get(p);
       const tag = (bytes: Buffer) => '"' + createHash("md5").update(bytes).digest("hex") + '"';
+      if (req.method === "MOVE") {
+        assert.equal(req.headers.overwrite, "F");
+        const destination = decodeURIComponent(new URL(req.headers.destination as string).pathname);
+        if (!old || objects.has(destination)) return void res.writeHead(old ? 412 : 404).end();
+        objects.set(destination, old); objects.delete(p); return void res.writeHead(201).end();
+      }
+      if (req.method === "DELETE") {
+        if (!old || req.headers["if-match"] !== tag(old)) return void res.writeHead(412).end();
+        objects.delete(p); return void res.writeHead(204).end();
+      }
       if (req.method === "PUT") {
         if ((old && req.headers["if-none-match"] === "*") || (req.headers["if-match"] && (!old || tag(old) !== req.headers["if-match"]))) return void res.writeHead(412).end();
         const chunks = [];
@@ -146,6 +156,18 @@ test("备忘录按账号接入 WebDAV 和 S3，目录、条件保存及图片直
     for (const [action, method] of [["file","PUT"], ["changes","POST"], ["folder","POST"], ["attachment","POST"]] as const) {
       assert.equal((await sharedRequest(route(action, file), method, {})).status, 403);
     }
+    const scratch = "整理测试.md", moved = "日 记/新名字.md";
+    assert.equal((await request(route("file",scratch),"PUT",{version:null,text:"保留正文"})).status,200);
+    const change = (from:string, body:unknown) => request(route("organize",from),"POST",body);
+    assert.equal((await sharedRequest(route("organize",scratch),"POST",{op:"trash"})).status,403);
+    assert.equal((await change(scratch,{op:"move",to:file})).status,409);
+    assert.equal((await change(scratch,{op:"move",to:moved})).status,200);
+    assert.equal((await request(route("file",scratch))).status,404);
+    const removed = await change(moved,{op:"trash"});
+    assert.equal(removed.status,200);
+    const binPath = (await removed.json() as {path:string}).path;
+    assert.equal((await change(binPath,{op:"restore"})).status,200);
+    assert.equal((await (await request(route("file",moved))).json() as {text:string}).text,"保留正文");
     assert.equal((await share("write")).status, 200);
     for (const [action, method] of [["sharing","PUT"], ["sharing","GET"], ["access","PUT"], ["index","GET"], ["sources","DELETE"]] as const) {
       assert.equal((await sharedRequest(route(action), method)).status, 403);
@@ -244,6 +266,9 @@ test("备忘录按账号接入 WebDAV 和 S3，目录、条件保存及图片直
     const library = memoSources(owner).find(s => s.id === again.id)!;
     await refreshMemoIndex(owner, library);
     assert.ok(memoIndexStatus(owner, again.id).success);
+    const webHits = await (await request("search?source="+again.id+"&q="+encodeURIComponent("正文"))).json() as {ready:boolean;hits:unknown[]};
+    assert.ok(webHits.ready && webHits.hits.length);
+    assert.equal((await request("search?source="+again.id+"&q=test","GET",undefined,bob)).status,404);
     assert.ok((await lookup()).hits.some(hit => hit.path === file));
     assert.ok((await invoke("search_memos", { query: "笔记", folder: "日 记" }) as { hits: unknown[] }).hits.length);
     await assert.rejects(invoke("create_memo", { ...active, text: "禁止" }), /仅允许读取/);

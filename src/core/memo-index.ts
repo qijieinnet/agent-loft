@@ -56,7 +56,7 @@ async function* listTextFiles(storage: MemoStorage, current: () => boolean) {
       const page = await storage.list(folder, cursor);
       for (const entry of page.entries) {
         const path = folder ? folder + "/" + entry.name : entry.name;
-        if (!validMemoPath(path)) continue;
+        if (path === ".agent-loft-trash" || !validMemoPath(path)) continue;
         if (entry.directory) folders.add(path);
         else if (editable(path)) yield { path, etag: entry.etag };
       }

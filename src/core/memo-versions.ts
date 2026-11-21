@@ -24,3 +24,7 @@ export function memoVersionText(owner: string, source: string, path: string, id:
   const row = sql(`SELECT content FROM memo_versions WHERE ${scope} AND id = ?`).get(owner, source, path, id);
   return row ? gunzipSync(row.content as Uint8Array).toString("utf8") : null;
 }
+
+export function moveMemoVersions(owner: string, source: string, from: string, to: string) {
+  sql("UPDATE memo_versions SET path = ? WHERE " + scope).run(to, owner, source, from);
+}

@@ -16,7 +16,7 @@ export const TEXT_LIMIT = 2 * 1024 * 1024;
 export const IMAGE_LIMIT = 12 * 1024 * 1024;
 export const editable = (path: string) => /\.(?:md|markdown|txt|json|ya?ml|toml|ini|csv|tsv|log|css|js|ts|xml|html)$/i.test(path);
 const encode = (path: string) => path.split("/").map(s => encodeURIComponent(s).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase())).join("/");
-type Reply = { status: number; body: Buffer; etag?: string };
+type Reply = { status: number; body: Buffer; etag?: string; contentType?: string };
 const conflict = () => new HttpError(409, "文件已存在或已被其他设备修改。请保留草稿并重新打开远端版本。");
 function checked(r: Reply) {
   if (r.status === 412 || r.status === 409) throw conflict();
@@ -79,7 +79,7 @@ export class MemoStorage {
               if (size > limit) throw new HttpError(413, "文件或目录超出预览大小限制");
               chunks.push(chunk);
             }
-            resolve({ body: Buffer.concat(chunks), status: res.statusCode ?? 502, etag: res.headers.etag });
+            resolve({ body: Buffer.concat(chunks), status: res.statusCode ?? 502, etag: res.headers.etag, contentType: res.headers["content-type"] });
           } catch (err) { res.destroy(); reject(err); }
         });
         req.on("error", reject);
@@ -157,6 +157,33 @@ export class MemoStorage {
     }
     const result = checked(await this.request("PUT", this.objectURL(path), headers, bytes));
     return revision({ ...result, body: bytes });
+  }
+
+  async moveFile(from: string, to: string, check: () => unknown) {
+    const original = this.objectURL(from), target = this.objectURL(to);
+    const parent = from.split("/").slice(0, -1).join("/");
+    const name = from.split("/").pop();
+    let cursor = "", found = false;
+    const seen = new Set<string>();
+    do {
+      if (seen.has(cursor)) throw new HttpError(502, "目录分页重复");
+      seen.add(cursor);
+      const page = await this.list(parent, cursor);
+      found = page.entries.some(entry => entry.name === name && !entry.directory);
+      cursor = page.next;
+    } while (!found && cursor);
+    if (!found) throw new HttpError(404, "文件已移动或不存在");
+    check();
+    if (this.source.kind === "webdav") {
+      checked(await this.request("MOVE", original, { destination: target.href, overwrite: "F" }));
+      return;
+    }
+    const file = checked(await this.request("GET", original, {}, undefined, IMAGE_LIMIT));
+    if (!file.etag || !/^"[^"\r\n]*"$/.test(file.etag)) throw new HttpError(409, "存储未提供可校验的版本，无法移动文件");
+    check();
+    checked(await this.request("PUT", target, { "if-none-match": "*", "content-type": file.contentType ?? "application/octet-stream" }, file.body));
+    try { check(); checked(await this.request("DELETE", original, { "if-match": file.etag })); }
+    catch { throw new HttpError(409, "目标副本已建立，原文件移除未确认，请刷新目录核对两处文件"); }
   }
 
   async mkdir(path: string, existingOK = false) {

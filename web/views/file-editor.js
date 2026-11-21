@@ -167,6 +167,22 @@ export async function createEditor({ parent, text, name, onChange, onSave, colla
       }
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: editorText(next) } });
     },
+    toggleTask(offset, expected) {
+      const doc = view.state.doc;
+      // Marked counts normalized LF offsets. Mixed-ending editors retain literal CR characters.
+      if (eol === "mixed") {
+        const source = doc.toString();
+        let raw = 0, normalized = 0;
+        while (raw < source.length && normalized < offset) {
+          if (source[raw] === "\r" && source[raw+1] === "\n") raw++;
+          raw++; normalized++;
+        }
+        offset = raw;
+      }
+      if (offset < 1 || offset + 2 > doc.length || doc.sliceString(offset - 1, offset + 2) !== "[" + expected + "]") return false;
+      view.dispatch({ changes: { from: offset, to: offset + 1, insert: expected === " " ? "x" : " " } });
+      return true;
+    },
     insertAtSelection: (text) => view.dispatch(view.state.replaceSelection(text)),
     focus: () => view.focus(),
     /** 编辑器被藏起来再放回来之后要重新量尺寸 */
