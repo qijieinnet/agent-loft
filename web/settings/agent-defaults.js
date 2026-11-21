@@ -1,5 +1,6 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
+import { expertMemoField } from "../lib/memo-access.js";
 import { modal, confirmDialog } from "../lib/overlay.js";
 import { isAdmin, S } from "../state.js";
 import { renderContext } from "../views/topbar.js";
@@ -83,6 +84,7 @@ export function openAgentDefaults(engine, label) {
     const pick = server ? modelPicker(engine, server.defaultModel ?? "", server.defaultEffort ?? "", DEFAULT_MODEL_LABEL[engine] ?? "跟随默认") : null;
 
     const skills = loadPicker(`${label} 技能`, data.skills, prefs.skills, "全部已启用的个人技能（含以后新增）");
+    const memos = expertMemoField(data.memoLibraries, engine);
     const machine = (data.machineMcp?.[engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, name: `${name}（本机）` }));
     const mcp = loadPicker(`${label} MCP`, [...data.mcp, ...machine], prefs.mcp, data.machineMcp ? "沿用机器上的 MCP 配置" : null);
     const machineSkills = h("input", { type: "checkbox", checked: prefs.machineSkills });
@@ -115,6 +117,7 @@ export function openAgentDefaults(engine, label) {
       skills.el,
       data.machineMcp ? h("label", { class: "check-item" }, machineSkills, "同时加载机器上的技能") : null,
       mcp.el,
+      memos.el,
       h("small", {}, "技能和 MCP 可分别全部取消。记忆、定时任务、技能管理等系统工具仍按功能设置提供。"),
     );
     fill(
@@ -122,7 +125,7 @@ export function openAgentDefaults(engine, label) {
       saveButton(async () => {
         const res = await api("/api/agents/defaults", {
           method: "PUT",
-          body: { agents: { [engine]: { permission: permission.value || null, skills: skills.value(), machineSkills: machineSkills.checked, mcp: mcp.value() } } },
+          body: { agents: { [engine]: { permission: permission.value || null, skills: skills.value(), machineSkills: machineSkills.checked, mcp: mcp.value(), memoAccess: memos.changes() } } },
         });
         S.defaultPermission = { ...S.defaultPermission, [engine]: res.agents?.[engine]?.permission ?? null };
         const changed = pick && (pick.model() !== (server.defaultModel ?? "") || pick.effort() !== (server.defaultEffort ?? ""));

@@ -374,7 +374,16 @@ class Hub extends EventEmitter<{
       }
     });
     // 技能装了、改了、停用了、变量改了：受影响的人空闲的会话换上新的
-    memoAccessEvents.on("changed", owner => this.personalChanged(new Set([owner])));
+    memoAccessEvents.on("changed", (owner, previous, next) => {
+      for (const [key, live] of this.live) {
+        const conv = getConversation(key);
+        if (!conv || conv.plan || memoryOwnerOf(conv) !== owner) continue;
+        const expert = expertIdOf(conv);
+        if (hasWritableMemo(previous, expert) === hasWritableMemo(next, expert)) continue;
+        this.staleLive.add(live.id);
+        this.dropIfStale(key);
+      }
+    });
     skillEvents.on("changed", (users) => this.personalChanged(new Set(users)));
     // 专家修改只影响自定义专家；MCP 和内置默认配置修改也更新该账号的内置会话。
     expertEvents.on("changed", (_owner, id) => {
@@ -838,7 +847,7 @@ class Hub extends EventEmitter<{
         ...(taskOwner && getUser(taskOwner)?.role !== "admin" ? { noSessionGrant: true } : {}),
         ...(expert ? { expert } : {}),
         ...(memory ? { memory } : {}),
-        ...(taskOwner && hasWritableMemo(memoSources(taskOwner)) ? { memoPrompt: MEMO_WRITING_GUIDE } : {}),
+        ...(taskOwner && !conv.plan && hasWritableMemo(memoSources(taskOwner), expertIdOf(conv)) ? { memoPrompt: MEMO_WRITING_GUIDE } : {}),
         ...(taskOwner ? { tasks: { userId: taskOwner, convKey: key } } : {}),
         ...(skills ? { skills } : {}),
         ...(builtin.builtinMcp ? { builtinMcp: builtin.builtinMcp } : {}),

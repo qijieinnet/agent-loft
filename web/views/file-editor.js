@@ -88,7 +88,7 @@ function languageFor(name, CM) {
  * 在 parent 里建一个编辑器。onChange：内容变了；onSave：按了 Ctrl / ⌘ + S。
  * 返回 { text, setText, focus, measure, destroy }；text() 给的是还原了换行符、可以直接存的内容
  */
-export async function createEditor({ parent, text, name, onChange, onSave, collaboration }) {
+export async function createEditor({ parent, text, name, onChange, onSave, collaboration, readOnly = false }) {
   const CM = await loadCodeMirror();
   const dark = matchMedia("(prefers-color-scheme: dark)");
   const theme = new CM.Compartment();
@@ -117,6 +117,7 @@ export async function createEditor({ parent, text, name, onChange, onSave, colla
           CM.indentWithTab,
         ]),
         ...(collaboration ? [CM.collab(collaboration)] : []),
+        ...(readOnly ? [CM.EditorState.readOnly.of(true), CM.EditorView.editable.of(false)] : []),
         CM.basicSetup,
         CM.EditorView.lineWrapping,
         theme.of(themeOf()),

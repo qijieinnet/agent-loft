@@ -5,7 +5,7 @@ import { confirmDialog } from "../lib/overlay.js";
 import { WS } from "../lib/ws.js";
 import { S, setContentHash, ui } from "../state.js";
 import { createEditor } from "./file-editor.js";
-import { askMemoName, chooseMemoVersion, connectSource, memoAccessSettings } from "./memo-dialogs.js";
+import { askMemoName, chooseMemoVersion, connectSource, memoAccessSettings, shareMemoSource } from "./memo-dialogs.js";
 import { closeSide, renderSidebar } from "./sidebar.js";
 import { renderTopbar } from "./topbar.js";
 
@@ -78,8 +78,15 @@ function notebook() {
   const side = h("aside", { class: "memo-side" });
   const pathLabel = h("strong", { class: "memo-path" });
   const entryButton = button("连接笔记库", () => addSource());
+  const accessButton = h("button", { class: "btn", onclick: () => run(() => memoAccessSettings(source)) }, icon("gear"), "智能体访问");
+  const shareButton = button("共享给成员", () => run(() => shareMemoSource(source)));
+  const disconnectButton = button("断开笔记库", () => run(disconnect), "unplug");
+  const newNote = button("新建笔记", () => run(() => create(false)));
+  const newFolder = button("新建文件夹", () => run(() => create(true)), "folder");
+  const readOnly = () => source?.permission === "read";
   function endpoint(action, file = "", cursor = "") {
-    return "/api/memos/" + action + "?" + new URLSearchParams({ source: source.id, path: file, ...(action === "file" ? { collab: "1" } : {}), ...(cursor ? { cursor } : {}) });
+    return "/api/memos/" + action + "?" + new URLSearchParams({ source: source.id, path: file,
+      ...(source.sharedBy ? { owner: source.sharedBy.id } : {}), ...(action === "file" ? { collab: "1" } : {}), ...(cursor ? { cursor } : {}) });
   }
   function sync() {
     retryButton.hidden = !saveError || conflict;
@@ -87,9 +94,10 @@ function notebook() {
     status.title = saveError;
     toggle.disabled = busy;
     choose.disabled = busy;
-    copyButton.hidden = !conflict;
+    shareButton.disabled = accessButton.disabled = busy;
+    copyButton.hidden = !conflict || readOnly();
     status.textContent = conflict ? "远端已更改" : saving ? "正在保存…" : saveError ? "保存失败" :
-      busy ? "处理中…" : dirty ? "待自动保存" : editor ? "已保存" : "";
+      busy ? "处理中…" : dirty ? "待自动保存" : readOnly() ? "只读" : editor ? "已保存" : "";
   }
   async function run(fn) {
     if (busy) return;
@@ -147,16 +155,34 @@ function notebook() {
     expanded = new Set();
     root.classList.add("show-tree");
     if (s) localStorage.setItem(chooseKey, s.id);
-    fill(choose, ...sources.map(item => h("option", { value: item.id }, item.name)));
+    fillChoices();
     if (s) choose.value = s.id;
+    accessButton.hidden = shareButton.hidden = disconnectButton.hidden = !!s?.sharedBy;
+    toggle.hidden = newNote.hidden = newFolder.hidden = readOnly();
     side.hidden = !s;
     root.classList.toggle("no-source", !s);
     if (!s) {
       fill(pane, h("div", { class: "memo-empty" }, icon("clipboard"), h("h2", {}, "连接你的笔记库"), h("p", {}, "从 WebDAV 目录或 S3 存储桶打开笔记。"), entryButton));
       return;
     }
-    fill(pane, h("div", { class: "memo-blankbar" }, toggleTree), h("div", { class: "memo-empty" }, icon("file"), h("p", {}, "选择文件，或在当前目录新建笔记。")));
+    fill(pane, h("div", { class: "memo-blankbar" }, toggleTree), h("div", { class: "memo-empty" }, icon("file"), h("p", {}, readOnly() ? "选择文件查看。" : "选择文件，或在当前目录新建笔记。")));
     refreshTree();
+  }
+  function fillChoices() {
+    fill(choose, sources.map(item => h("option", { value: item.id }, item.sharedBy
+      ? item.name + " · " + item.sharedBy.name + "共享（" + (item.permission === "read" ? "只读" : "读写") + "）" : item.name)));
+  }
+  async function reloadSources() {
+    const list = await api("/api/memos/sources");
+    if (busy || dirty || saving) return;
+    sources = list;
+    const latest = sources.find(s => s.id === source?.id);
+    if (!latest || latest.permission !== source.permission) select(latest ?? sources[0]);
+    else {
+      Object.assign(source, latest);
+      fillChoices();
+      choose.value = latest.id;
+    }
   }
   function addSource() {
     void run(async () => {
@@ -166,9 +192,9 @@ function notebook() {
   }
   async function disconnect() {
     if (!(await discardable())) return;
-    if (!(await confirmDialog({ title: "断开笔记库？", message: `将移除「${source.name}」在此账号的连接。远端文件和本地版本历史会保留。${dirty ? "当前草稿尚未保存。" : ""}`, confirmText: "断开连接" }))) return;
+    if (!(await confirmDialog({ title: "断开笔记库？", message: `将移除「${source.name}」的连接，并撤回这个库的所有共享。远端文件和本地版本历史会保留。${dirty ? "当前草稿尚未保存。" : ""}`, confirmText: "断开连接" }))) return;
     await api(endpoint("sources"), { method: "DELETE" });
-    sources = sources.filter(s => s !== source);
+    sources = sources.filter(s => s.id !== source.id);
     select(sources[0]);
   }
 
@@ -279,7 +305,7 @@ function notebook() {
     fill(toolbar, toggleTree, pathLabel, status, toggle, historyButton, copyButton, retryButton);
     fill(pane, toolbar, editorHost, reading);
     session = conflict ? null : data.collab;
-    editor = await createEditor({ parent: editorHost, collaboration: session, text: session ? original : draft?.text ?? original, name: file, onSave: () => void saveNow().catch(err => toast(err.message)), onChange: () => {
+    editor = await createEditor({ parent: editorHost, readOnly: readOnly(), collaboration: session, text: session ? original : draft?.text ?? original, name: file, onSave: () => void saveNow().catch(err => toast(err.message)), onChange: () => {
       if (receiving) return;
       dirty = editor.collaboration ? !!editor.collaboration.pending() : editor.text() !== original;
       if (!conflict) { saveError = ""; retryMs = 0; }
@@ -341,10 +367,18 @@ function notebook() {
           const packet = await api(changesURL(current.collaboration.revision()), { headers, signal: controller.signal });
           if (controller.signal.aborted) break;
           applyPacket(current, packet);
+          if (source.sharedBy && packet.permission !== source.permission && !dirty && !saving && !busy) {
+            await reloadSources();
+            if (current !== editor) break;
+          }
           retry = 1000;
         } catch (err) {
           if (controller.signal.aborted) break;
           if ([401, 403, 404, 409].includes(err.status)) {
+            if (source.sharedBy && (err.status === 403 || err.status === 404) && !dirty && !saving && !busy) {
+              await reloadSources().catch(error => toast(error.message));
+              if (current !== editor) break;
+            }
             if (!dirty && !saving && !busy && err.status === 409) {
               await run(async () => {
                 const fresh = await api(endpoint("file", path));
@@ -431,7 +465,7 @@ function notebook() {
   async function openHistory() {
     if (saving) await saving.catch(() => {});
     if (dirty && !conflict) await saveNow();
-    const text = await chooseMemoVersion(endpoint("history", path));
+    const text = await chooseMemoVersion(endpoint("history", path), readOnly());
     if (text === null) return;
     if (conflict) throw new Error("请先另存草稿并重新打开文件，再恢复旧版");
     editor.setText(text);
@@ -478,8 +512,8 @@ function notebook() {
       refreshTree();
     });
   }, true);
-  fill(side, h("div", { class: "memo-sources" }, choose, button("智能体访问", () => memoAccessSettings(source), "gear"), button("连接其他笔记库", addSource, "plus"), button("断开笔记库", () => run(disconnect), "unplug")),
-    h("div", { class: "memo-tree-tools" }, button("新建笔记", () => run(() => create(false))), button("新建文件夹", () => run(() => create(true)), "folder"), button("刷新目录", refreshTree, "refresh"), h("button", { class: "btn memo-return", onclick: () => root.classList.remove("show-tree") }, "返回文件")), tree);
+  fill(side, h("div", { class: "memo-sources" }, choose, accessButton, shareButton, button("连接其他笔记库", addSource, "plus"), disconnectButton),
+    h("div", { class: "memo-tree-tools" }, newNote, newFolder, button("刷新目录", refreshTree, "refresh"), h("button", { class: "btn memo-return", onclick: () => root.classList.remove("show-tree") }, "返回文件")), tree);
   fill(root, side, pane);
   async function init() {
     fill(pane, h("div", { class: "memo-empty" }, "正在读取笔记库…"));
@@ -487,11 +521,11 @@ function notebook() {
       sources = await api("/api/memos/sources");
       const draft = savedDraft();
       select(sources.find(s => s.id === (draft?.source ?? localStorage.getItem(chooseKey))) ?? sources[0]);
-      if (source && draft?.source === source.id && typeof draft.text === "string") {
+      if (source && !readOnly() && draft?.source === source.id && typeof draft.text === "string") {
         await run(async () => {
           let data;
           try { data = await api(endpoint("file", draft.path)); }
-          catch { data = { text: null, version: null }; }
+          catch (err) { if (source.sharedBy) throw err; data = { text: null, version: null }; }
           for (let p = parent(draft.path); p; p = parent(p)) expanded.add(p);
           await showText(draft.path, data, true, draft);
           refreshTree();
@@ -502,7 +536,7 @@ function notebook() {
   }
   side.hidden = true;
   void init();
-  return { owner, root, persistDraft, pausePoll, resumePoll, flush: () => {
+  return { owner, root, reloadSources, persistDraft, pausePoll, resumePoll, flush: () => {
     if (!busy && !conflict) void saveNow().catch(() => {});
   }, pending: () => dirty || busy || !!saving, destroy: resetDocument, measure: () => editor?.measure() };
 }
@@ -531,6 +565,7 @@ export function openMemos() {
   renderTopbar();
   renderSidebar();
   if (page?.owner !== S.user.id) { page?.destroy(); page = notebook(); }
+  else void page.reloadSources().catch(err => toast(err.message));
   fill(ui.msgInner, page.root);
   page.measure();
   page.resumePoll();

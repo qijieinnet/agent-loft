@@ -4,7 +4,8 @@
 .memo-side, .memo-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .memo-side { background: var(--bg-side); border-right: 1px solid var(--border); }
 .memo-sources, .memo-tree-tools, .memo-bar, .memo-blankbar { display: flex; align-items: center; gap: 6px; padding: 8px; }
-.memo-sources .input { flex: 1; min-width: 0; }
+.memo-sources { flex-wrap: wrap; }
+.memo-sources .input { width: 100%; min-width: 0; }
 .memo-side .icon-btn { width: 30px; height: 30px; flex-shrink: 0; }
 .memo-tree { overflow: auto; flex: 1; padding: 0 6px 12px; }
 .memo-tree .memo-branch { margin-left: 10px; padding-left: 3px; border-left: 1px solid var(--border); }
@@ -35,6 +36,7 @@
 .memo-fields { gap: 12px; }
 .memo-fields label { font-size: 13px; }
 .memo-fields .input { width: 100%; }
+.memo-fields .memo-expert-access { display: grid; grid-template-columns: minmax(0, 1fr) minmax(8em, 40%); align-items: center; overflow-wrap: anywhere; }
 .memo-fields .btn { align-self: flex-end; }
 .memo-error { color: var(--danger); }
 .memo-page [hidden], .memo-fields[hidden], .memo-blankbar, .memo-bar > button:first-child, .memo-return { display: none; }

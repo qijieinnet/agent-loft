@@ -16,6 +16,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   process.env.AGENT_LOFT_HOME = home;
   const { config, loadConfig, saveConfig } = await import("../src/core/config.ts");
   const { createUser } = await import("../src/core/users.ts");
+  const { createExpert } = await import("../src/core/experts.ts");
   const { createSession } = await import("../src/channels/web/auth.ts");
   const { startWeb, stopWeb } = await import("../src/channels/web/server.ts");
   const cleanup = [];
@@ -50,7 +51,10 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await new Promise(resolve => probe.close(resolve));
   const base = "http://127.0.0.1:" + port;
   saveConfig({...config(), workspaceRoot:home, web:{...config().web, host:"127.0.0.1",port,quotaEnabled:false}});
-  const users = ["alice","bob"].map(name => createUser({ name, password:"test-password", role:"admin" }));
+  const users = ["alice","bob"].map(name => createUser({ name, password:"test-password", role:name === "alice" ? "admin" : "member" }));
+  const { hub } = await import("../src/core/hub.ts");
+  hub.registerDriver({ id: "claude", label: "Claude", capabilities: {}, defaults: async () => ({}), catalog: async () => [] });
+  const expert = createExpert(users[0].id, { name: "笔记专家", engine: "claude", access: "web" });
   await startWeb();
   cleanup.push(stopWeb);
   const browser = await chromium.launch({headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, args:["--no-sandbox"]});
@@ -59,20 +63,36 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   async function open(user) {
     const ctx = await browser.newContext({serviceWorkers:"block"});
     await ctx.addCookies([{name:"aim_session",value:createSession(user.id,"127.0.0.1","test"),url:base}]);
-    const response = await ctx.request.post(base+"/api/memos/sources", {data:{
-      kind:"webdav",name:user.name,username:"shared",secret:"secret",endpoint:`http://127.0.0.1:${davPort}/notes/`,
-    }});
-    assert.equal(response.status(),201);
+    if (user.id === users[0].id) {
+      const response = await ctx.request.post(base+"/api/memos/sources", {data:{
+        kind:"webdav",name:user.name,username:"shared",secret:"secret",endpoint:`http://127.0.0.1:${davPort}/notes/`,
+      }});
+      assert.equal(response.status(),201);
+    }
     const page = await ctx.newPage();
     page.on("pageerror", e => errors.push(e.message));
     page.on("response", r => { if (r.status() >= 400) httpErrors.push(r.status() + " " + new URL(r.url()).pathname); });
     await page.goto(base+"/#memos", {waitUntil:"domcontentloaded"});
     try { await page.locator('.memo-tree [data-path="team.md"]').click({timeout: 10000}); }
     catch (err) { throw new Error([err.message, ...errors, ...httpErrors, await page.locator("body").innerText()].join("\n")); }
-    await page.getByRole("button",{name:"编辑",exact:true}).click();
     return page;
   }
-  const [a,b] = await Promise.all(users.map(open));
+  const a = await open(users[0]);
+  async function share(access) {
+    await a.getByRole("button", {name:"共享给成员"}).click();
+    try { await a.getByRole("combobox", {name:"bob",exact:true}).selectOption(access, {timeout:5000}); }
+    catch (err) { throw new Error([err.message, ...errors, ...httpErrors, await a.locator("body").innerText()].join("\n")); }
+    await a.getByRole("button", {name:"保存共享"}).click();
+    await a.getByRole("button", {name:"保存共享"}).waitFor({state:"hidden"});
+  }
+  await share("read");
+  const b = await open(users[1]);
+  await b.locator(".memo-reading p").filter({hasText:"共同编辑"}).waitFor();
+  for (const name of ["编辑","共享给成员","智能体访问","新建笔记"]) assert.equal(await b.getByRole("button",{name,exact:true}).count(),0);
+  await share("write");
+  await b.reload();
+  await b.locator('.memo-tree [data-path="team.md"]').click();
+  for (const page of [a,b]) await page.getByRole("button",{name:"编辑",exact:true}).click();
   // Hold both outgoing requests until both editors have made a local insertion at offset zero.
   let arrived = 0, release;
   const gate = new Promise(resolve => { release = resolve; });
@@ -100,16 +120,23 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await b.getByRole("button",{name:"预览",exact:true}).click();
   await insert(a,"同步");
   await b.locator(".memo-reading p").filter({hasText:"同步"}).waitFor();
+  const settings = await a.context().newPage();
+  await settings.goto(base + "/#settings");
+  await settings.getByRole("button", {name:"专家", exact:true}).click();
+  await settings.getByRole("button", {name:"笔记专家", exact:true}).click();
+  await settings.getByRole("combobox", {name:"alice", exact:true}).selectOption("write");
+  await settings.getByRole("button", {name:"保存", exact:true}).click();
+  await settings.locator(".expert-form").waitFor({state:"detached"});
+  await settings.close();
   await a.getByRole("button", {name:"智能体访问"}).click();
-  await a.getByRole("combobox", {name:"智能体访问", exact:true}).selectOption("write");
-  await a.getByRole("button", {name:"保存权限"}).click();
+  assert.equal(await a.getByRole("combobox", {name:"笔记专家", exact:true}).count(), 0);
   await a.getByText(/最近成功：/).waitFor();
   await a.getByRole("button", {name:"关闭", exact:true}).last().click();
 
   const { startTasksBridge, stopTasksBridge } = await import("../src/core/tasks-bridge.ts");
   const { memosMcpSpawn } = await import("../src/core/tasks-mcp.ts");
   const { ensureConversation } = await import("../src/core/store.ts");
-  const conv = ensureConversation({key:"web:memo-browser",channel:"web",channelId:"web",agent:"codex",owner:users[0].id});
+  const conv = ensureConversation({key:"web:memo-browser",channel:"web",channelId:"web",agent:"claude",expert:expert.id,owner:users[0].id});
   startTasksBridge();
   cleanup.push(stopTasksBridge);
   const spec = memosMcpSpawn(users[0].id, conv.key, "test");

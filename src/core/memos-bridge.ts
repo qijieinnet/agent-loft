@@ -4,9 +4,10 @@ import { memoFile } from "../channels/web/memo-file.js";
 import { MemoStorage } from "../channels/web/memo-storage.js";
 import { MEMO_TOOLS } from "../mcp/memo-tools.js";
 import { searchMemos } from "./memo-index.js";
-import { canReadMemo, memoSources, publicSource, validMemoPath } from "./memo-sources.js";
+import { canUseExpert } from "./experts.js";
+import { memoAccessFor, memoSources, publicSource, validMemoPath } from "./memo-sources.js";
 import { memoryOwnerOf } from "./personal.js";
-import { getConversation } from "./store.js";
+import { expertIdOf, getConversation } from "./store.js";
 import { getUser, isAdmin } from "./users.js";
 
 export async function memoToolCall(owner: string, convKey: string, name: string, args: Record<string, unknown>) {
@@ -20,10 +21,15 @@ export async function memoToolCall(owner: string, convKey: string, name: string,
   const authorize = () => {
     const conv = getConversation(convKey), user = getUser(owner);
     if (!conv || !user || user.disabled || memoryOwnerOf(conv) !== owner) throw new HttpError(403, "当前对话无权访问备忘录");
-    const sources = memoSources(owner).filter(canReadMemo);
+    const expert = expertIdOf(conv);
+    if (!canUseExpert(owner, expert)) throw new HttpError(403, "当前对话无权使用此专家");
+    const sources = memoSources(owner).map(s => {
+      const access = memoAccessFor(s, expert);
+      return { ...s, access: conv.plan && access === "write" ? "read" as const : access };
+    }).filter(s => s.access !== "off");
     const source = sources.find(s => s.id === id);
     if (id !== undefined && !source) throw new HttpError(404, "未找到已授权的笔记库");
-    if (!tool.annotations.readOnlyHint && (source?.access !== "write" || conv.plan)) throw new HttpError(403, "当前笔记库或对话仅允许读取");
+    if (!tool.annotations.readOnlyHint && source?.access !== "write") throw new HttpError(403, "当前笔记库或对话仅允许读取");
     return { user, sources, source };
   };
   const { user, sources, source } = authorize();

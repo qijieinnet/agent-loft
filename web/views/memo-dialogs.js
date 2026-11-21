@@ -1,11 +1,11 @@
-import { h } from "../lib/dom.js";
+import { h, toast } from "../lib/dom.js";
 import { modal } from "../lib/overlay.js";
 import { api } from "../lib/api.js";
+import { memoAccessSelect } from "../lib/memo-access.js";
 
-function memoAccessField(value = "off") {
-  const select = h("select", { class: "input", name: "access", "aria-label": "智能体访问" },
-    h("option", { value: "off" }, "关闭"), h("option", { value: "read" }, "只读"), h("option", { value: "write" }, "读写"));
-  select.value = value;
+function memoAccessField() {
+  const select = memoAccessSelect("智能体访问", "off");
+  select.name = "access";
   const hint = h("small", {}, "授权后，Agent Loft 会在服务器建立本库的全文索引。");
   const update = () => { hint.hidden = select.value === "off"; };
   select.addEventListener("change", update);
@@ -13,18 +13,23 @@ function memoAccessField(value = "off") {
   return { select, field: h("label", {}, "智能体访问", select, hint) };
 }
 
-export function memoAccessSettings(source) {
-  const { field, select } = memoAccessField(source.access);
+export async function memoAccessSettings(source) {
+  const url = action => "/api/memos/" + action + "?" + new URLSearchParams({ source: source.id });
+  Object.assign(source, await api(url("access")));
+  const select = memoAccessSelect("默认权限", source.access ?? "off");
   const status = h("p", { role: "status" });
   const refresh = h("button", { class: "btn", type: "button" }, "立即刷新索引");
   const save = h("button", { class: "btn primary", type: "submit" }, "保存权限");
-  const form = h("form", { class: "modal-body memo-fields" }, field, status, refresh, save);
+  const form = h("form", { class: "modal-body memo-fields" },
+    h("label", {}, "默认权限", select),
+    h("small", {}, "专家默认沿用此权限。可在「设置 → 专家」中为指定专家单独设置。"),
+    h("small", {}, "授权后会建立全文索引。在专家对话里直接说「帮我搜笔记」或「把这段记到笔记里」即可。"),
+    status, refresh, save);
   let timer, sequence = 0;
-  const url = action => "/api/memos/" + action + "?" + new URLSearchParams({ source: source.id });
   async function load(method = "GET") {
     clearTimeout(timer);
     const request = ++sequence;
-    refresh.hidden = source.access === "off" || !source.access;
+    refresh.hidden = ![source.access, ...Object.values(source.expertAccess ?? {})].some(a => a === "read" || a === "write");
     if (refresh.hidden) { status.textContent = ""; return; }
     try {
       const index = await api(url("index"), { method });
@@ -39,14 +44,46 @@ export function memoAccessSettings(source) {
   refresh.onclick = () => void load("POST");
   form.onsubmit = async e => {
     e.preventDefault();
+    if (save.disabled) return;
     save.disabled = true;
     try {
-      Object.assign(source, await api(url("access"), { method: "PUT", body: { access: select.value } }));
+      Object.assign(source, await api(url("access"), { method: "PUT", body: { access: select.value, defaultOnly: true } }));
       await load();
     } catch (err) { status.textContent = err.message; }
     finally { save.disabled = false; }
   };
   void load();
+}
+
+export async function shareMemoSource(source) {
+  const url = "/api/memos/sharing?" + new URLSearchParams({ source: source.id });
+  const members = await api(url);
+  const fields = members.map(member => {
+    const select = memoAccessSelect(member.name, member.access);
+    if (member.disabled) for (const option of select.options) option.disabled = option.value !== "off" && option.value !== member.access;
+    return { member, select };
+  });
+  const error = h("div", { class: "memo-error", role: "alert" });
+  const save = h("button", { class: "btn primary", type: "submit", disabled: !fields.length }, "保存共享");
+  const form = h("form", { class: "modal-body memo-fields" },
+    h("small", {}, "成员可在自己的备忘录里打开整个笔记库，包括文件和版本历史。共享给成员不会同时授权给对方的专家。"),
+    fields.length ? fields.map(({ member, select }) => h("label", { class: "memo-expert-access" },
+      member.name + (member.disabled ? "（已停用）" : ""), select)) : h("p", {}, "还没有其他可共享的账号。"), error, save);
+  let saving = false;
+  const close = modal({ title: source.name + " · 共享给成员", body: form, beforeClose: () => !saving });
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (saving) return;
+    saving = save.disabled = true;
+    try {
+      const changes = Object.fromEntries(fields.filter(({ member, select }) => member.access !== select.value)
+        .map(({ member, select }) => [member.id, select.value]));
+      await api(url, { method: "PUT", body: { changes } });
+      close();
+      toast("共享设置已保存");
+    } catch (err) { error.textContent = err.message; }
+    finally { saving = save.disabled = false; }
+  };
 }
 
 export function connectSource(onConnect) {
@@ -117,7 +154,7 @@ export function askMemoName(title, initial, directory) {
 }
 
 /** Only fetch the selected snapshot. Restoring returns its text to the normal conditional save path. */
-export async function chooseMemoVersion(url) {
+export async function chooseMemoVersion(url, readOnly = false) {
   const versions = await api(url);
   return new Promise(resolve => {
     let request = 0, selected = null;
@@ -126,7 +163,7 @@ export async function chooseMemoVersion(url) {
     const preview = h("pre", { class: "memo-snapshot", "aria-label": "版本正文" });
     const apply = h("button", { class: "btn primary", disabled: true, onclick: () => { close(); resolve(selected); } }, "恢复此版本");
     const body = h("div", { class: "modal-body memo-fields" },
-      versions.length ? [select, preview, apply] : h("p", {}, "还没有历史版本。下次保存修改时，会保留修改前的正文。"));
+      versions.length ? [select, preview, readOnly ? null : apply] : h("p", {}, "还没有历史版本。下次保存修改时，会保留修改前的正文。"));
     const close = modal({ title: "版本历史", body, beforeClose: () => { resolve(null); } });
     async function load() {
       const seq = ++request;

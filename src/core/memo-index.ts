@@ -3,7 +3,7 @@ import { withMemoLock } from "../channels/web/memo-collab.js";
 import { HttpError } from "../channels/web/http.js";
 import { sql, transaction } from "./db.js";
 import { ftsIndexText, ftsMatch, terms } from "./fts.js";
-import { memoSources, canReadMemo, validMemoPath, type MemoSource } from "./memo-sources.js";
+import { memoSources, canReadMemo, setExpertMemoAccess, validMemoPath, type MemoSource } from "./memo-sources.js";
 import { getUser, isAdmin, listUsers } from "./users.js";
 
 const scope = "owner = ? AND source = ?";
@@ -64,6 +64,19 @@ async function* listTextFiles(storage: MemoStorage, current: () => boolean) {
       if (cursor && cursors.has(cursor)) throw new HttpError(502, "存储服务返回了重复的分页标记");
       cursors.add(cursor);
     } while (cursor);
+  }
+}
+
+export function syncMemoIndexAccess(owner: string, before: MemoSource, after: MemoSource) {
+  if (!canReadMemo(after)) clearMemoIndex(owner, after.id);
+  else if (!canReadMemo(before)) void refreshMemoIndex(owner, after);
+}
+
+export function purgeExpertMemoAccess(expert: string) {
+  for (const user of listUsers()) {
+    const grants = memoSources(user.id).filter(s => Object.hasOwn(s.expertAccess ?? {}, expert));
+    const changes = new Map(grants.map(s => [s.id, null]));
+    for (const { before, after } of setExpertMemoAccess(user.id, expert, changes)) syncMemoIndexAccess(user.id, before, after);
   }
 }
 

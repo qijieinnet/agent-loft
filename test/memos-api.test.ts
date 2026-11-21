@@ -13,6 +13,7 @@ after(() => fs.rmSync(home, { recursive: true, force: true }));
 const { handleApi } = await import("../src/channels/web/api.js");
 const { HttpError, sendJson } = await import("../src/channels/web/http.js");
 const { createUser } = await import("../src/core/users.js");
+const { createExpert } = await import("../src/core/experts.js");
 const { memoToolCall } = await import("../src/core/memos-bridge.js");
 const { memoSources } = await import("../src/core/memo-sources.js");
 const { memoIndexStatus, refreshMemoIndex } = await import("../src/core/memo-index.js");
@@ -91,6 +92,9 @@ test("备忘录按账号接入 WebDAV 和 S3，目录、条件保存及图片直
   };
   const alice = cookie("admin"), bob = cookie("member"), other = cookie("admin", "editor");
   const owner = owners.get("admin")!;
+  const expert = createExpert(owner, { name: "笔记专家", engine: "codex", access: "web" });
+  const expertConv = ensureConversation({ key: "memo-expert", channel: "web", channelId: "web", agent: "codex", expert: expert.id, owner });
+  const asExpert = (name: string, args: Record<string, unknown>) => memoToolCall(owner, expertConv.key, name, args);
   const conv = ensureConversation({ key: "memo-test", channel: "web", channelId: "web", agent: "codex", owner });
   const group = ensureConversation({ key: "memo-group", channel: "feishu", channelId: "group", agent: "codex" });
   const invoke = (name: string, args: Record<string, unknown>) => memoToolCall(owner, conv.key, name, args);
@@ -102,7 +106,7 @@ test("备忘录按账号接入 WebDAV 和 S3，目录、条件保存及图片直
     const config = { name: kind, kind, endpoint: endpoint + (kind === "webdav" ? "/dav/" : ""), username: "key", secret: "secret", region: "us-east-1", bucket: "notes", prefix: "private" };
     assert.equal((await request("sources", "POST", config, bob)).status, 403);
     const source = await (await request("sources", "POST", config)).json() as { id: string };
-    assert.deepEqual(Object.keys(source).sort(), ["access", "id", "kind", "name"]);
+    assert.deepEqual(Object.keys(source).sort(), ["access", "expertAccess", "id", "kind", "name"]);
     const route = (action: string, path = "") => action + "?" + new URLSearchParams({ source: source.id, path });
     assert.equal((await request(route("tree"), "GET", undefined, bob)).status, 404);
     assert.equal((await request(route("file", "../x.md"))).status, 400);
@@ -128,6 +132,38 @@ test("备忘录按账号接入 WebDAV 和 S3，目录、条件保存及图片直
     assert.deepEqual(await (await request(snapshot)).json(), { text: original.text });
     assert.equal((await request(snapshot, "GET", undefined, bob)).status, 404);
     assert.equal((await request(route("history", "另一个.md") + "&id=" + versions[0]!.id)).status, 404);
+    const member = owners.get("member")!;
+    const share = (access: string) => request(route("sharing"), "PUT", { changes: { [member]: access } });
+    const sharedRequest = (op: string, method = "GET", body?: unknown) => request(op + "&owner=" + owner, method, body, bob);
+    assert.equal((await sharedRequest(fileRoute)).status, 404);
+    assert.equal((await share("read")).status, 200);
+    assert.deepEqual(await (await request("sources", "GET", undefined, bob)).json(), [
+      { id: source.id, name: kind, kind, permission: "read", sharedBy: { id: owner, name: "admin" } },
+    ]);
+    assert.equal((await sharedRequest(route("tree"))).status, 200);
+    assert.deepEqual(await (await sharedRequest(snapshot)).json(), { text: original.text });
+    assert.equal((await sharedRequest(route("image", "日 记/" + image.relative))).status, 200);
+    for (const [action, method] of [["file","PUT"], ["changes","POST"], ["folder","POST"], ["attachment","POST"]] as const) {
+      assert.equal((await sharedRequest(route(action, file), method, {})).status, 403);
+    }
+    assert.equal((await share("write")).status, 200);
+    for (const [action, method] of [["sharing","PUT"], ["sharing","GET"], ["access","PUT"], ["index","GET"], ["sources","DELETE"]] as const) {
+      assert.equal((await sharedRequest(route(action), method)).status, 403);
+    }
+    const memberConv = ensureConversation({ key: "member-notes", agent: "codex", owner: member, channel: "web", channelId: "web" });
+    assert.deepEqual(await memoToolCall(member, memberConv.key, "list_memo_sources", {}), []);
+    assert.equal((await sharedRequest(route("file", "共享笔记.md"), "PUT", initial)).status, 200);
+    let reading!: () => void, finishRead!: () => void;
+    const readingStarted = new Promise<void>(r => { reading = r; });
+    gate = { path: (kind === "s3" ? "/notes/private/" : "/dav/") + file, started: reading, wait: new Promise<void>(r => { finishRead = r; }) };
+    const inFlight = sharedRequest(fileRoute);
+    await readingStarted;
+    try { assert.equal((await share("off")).status, 200); }
+    finally { finishRead(); gate = undefined; }
+    assert.equal((await inFlight).status, 404);
+    assert.deepEqual(await (await request("sources", "GET", undefined, bob)).json(), []);
+    assert.equal((await sharedRequest(snapshot)).status, 404);
+    assert.equal((await sharedRequest(fileRoute, "PUT", initial)).status, 404);
     const latest = await (await request(fileRoute)).json() as { version: string };
     assert.equal((await request(fileRoute, "PUT", { version: latest.version, text: original.text })).status, 200);
     const restored = await (await request(fileRoute)).json() as { text: string; version: string };
@@ -169,9 +205,40 @@ test("备忘录按账号接入 WebDAV 和 S3，目录、条件保存及图片直
     assert.deepEqual(edits.map(r => r.status), [200,200]);
     assert.equal((await open(peer.id, other)).text, "中" + original.text);
     const active = { source: again.id, path: file };
-    const access = (value: string) => request(route("access").replace(source.id, again.id), "PUT", { access: value });
+    const access = (value: string, expertAccess?: Record<string, string>) =>
+      request(route("access").replace(source.id, again.id), "PUT", { access: value, expertAccess });
+    const settings = (url: string, method: string, body: unknown, who = alice) =>
+      fetch(base + "/api/" + url, { method, headers: { Cookie: who }, body: JSON.stringify(body) });
     assert.deepEqual(await invoke("list_memo_sources", {}), []);
-    assert.equal((await access("read")).status, 200);
+    const createdExpert = await settings("experts", "POST", { name: "共享专家", engine: "codex", access: "web", shared: true, memoAccess: { [again.id]: "off" } });
+    assert.equal(createdExpert.status, 200);
+    const { id: sharedId } = await createdExpert.json() as { id: string };
+    const toolsRoute = "experts/" + sharedId + "/tools";
+    const sharedTools = { skills: [], mcp: [], memoAccess: { [peer.id]: "read" } };
+    assert.equal((await settings(toolsRoute, "PUT", sharedTools, other)).status, 200);
+    assert.equal((await settings(toolsRoute, "PUT", sharedTools)).status, 400);
+    assert.equal(memoSources(owners.get("editor")!).find(s => s.id === peer.id)?.expertAccess?.[sharedId], "read");
+    assert.equal((await settings("agents/defaults", "PUT", { agents: { codex: { memoAccess: { [again.id]: "off" } } } })).status, 200);
+    assert.equal((await settings("experts/" + expert.id, "PATCH", { memoAccess: { [again.id]: "write" } })).status, 200);
+    assert.equal((await request(route("access").replace(source.id, again.id), "PUT", { access: "off", defaultOnly: true })).status, 200);
+    assert.deepEqual(memoSources(owner).find(s => s.id === again.id)?.expertAccess, { [sharedId]: "off", codex: "off", [expert.id]: "write" });
+    assert.equal((await settings("agents/defaults", "PUT", { agents: { codex: { memoAccess: { [again.id]: null } } } })).status, 200);
+    assert.equal(memoSources(owner).find(s => s.id === again.id)?.expertAccess?.codex, undefined);
+    assert.equal((await settings("experts/" + sharedId, "DELETE", undefined)).status, 200);
+    assert.equal(memoSources(owners.get("editor")!).find(s => s.id === peer.id)?.expertAccess?.[sharedId], undefined);
+    await refreshMemoIndex(owner, memoSources(owner).find(s => s.id === again.id)!);
+    assert.deepEqual(await invoke("search_memos", { query: "正文" }), { libraries: [], hits: [] });
+    await assert.rejects(invoke("read_memo", active), /未找到/);
+    assert.deepEqual(await asExpert("list_memo_sources", {}), [{ id: again.id, name: "重新连接", kind, access: "write" }]);
+    assert.ok((await asExpert("search_memos", { query: "正文" }) as { hits: unknown[] }).hits.length);
+    await asExpert("create_memo", { source: again.id, path: "仅专家.md", text: "专家记录" });
+    assert.equal((await access("write", { [expert.id]: "read", codex: "off" })).status, 200);
+    await assert.rejects(asExpert("create_memo", { ...active, text: "禁止" }), /仅允许读取/);
+    await assert.rejects(invoke("read_memo", active), /未找到/);
+    assert.equal((await access("read", { [expert.id]: "off" })).status, 200);
+    assert.deepEqual(await asExpert("list_memo_sources", {}), []);
+    await assert.rejects(asExpert("read_memo", active), /未找到/);
+    assert.equal((await access("read", { [expert.id]: "invalid" })).status, 400);
     const lookup = () => invoke("search_memos", { query: "正文", source: again.id }) as Promise<{ hits: {path:string}[] }>;
     // Wait until the first crawl has actually reached the subfolder.
     const library = memoSources(owner).find(s => s.id === again.id)!;

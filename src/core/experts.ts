@@ -15,6 +15,7 @@ import { resolveWorkspacePath } from "./config.js";
 import { canUseMcp, claudeMachineMcp, getMcp, isMachineId, machineName, specOf, type McpSpec } from "./mcp.js";
 import { activeSkills, canSee, getSkill } from "./skills.js";
 import { canUseResource, getUser } from "./users.js";
+import { purgeExpertMemoAccess } from "./memo-index.js";
 
 export type Engine = "claude" | "codex" | "workbuddy" | "pi" | "dsh";
 export const ENGINES: readonly Engine[] = ["claude", "codex", "workbuddy", "pi", "dsh"];
@@ -424,6 +425,7 @@ export function deleteExpert(owner: string, id: string): void {
   const idx = list.findIndex((e) => e.id === id && e.owner === owner);
   if (idx < 0) throw new Error("这个专家不存在");
   list.splice(idx, 1);
+  purgeExpertMemoAccess(id);
   purgeExpertTools(undefined, id);
   // 别的专家把它当子智能体的，一并去掉
   for (const e of list) {

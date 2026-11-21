@@ -1,5 +1,6 @@
 import { agentIcon, fill, h, icon, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
+import { expertMemoField } from "../lib/memo-access.js";
 import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 import { isAdmin, S } from "../state.js";
 import { openAgentDefaults } from "./agent-defaults.js";
@@ -205,18 +206,19 @@ function viewSharedExpert(e) {
 }
 
 function openTools(data, e, reload) {
+  const memos = expertMemoField(data.memoLibraries, e.id);
   const skills = checkList(data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })), e.skills, "还没有启用的技能（设置 → 技能）");
   const machine = (data.machineMcp?.[e.engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, label: `${name}（本机）` }));
   const mcp = checkList([...data.mcp.map((s) => ({ id: s.id, label: s.name, hint: s.description })), ...machine], e.mcp, "还没有 MCP（设置 → MCP）");
   const save = h("button", { class: "btn primary" }, "保存我的工具");
   const close = modal({ title: `${e.name} · 我的工具`, body: h("div", { class: "modal-body" },
     h("p", { class: "muted" }, "只影响你使用这个专家时加载的工具，网页和绑定账号后的飞书私聊共用。未选择时不加载技能或 MCP；记忆使用你自己的设置。子智能体的工具需在对应专家中单独配置。"),
-    field("我的技能", skills.el), field("我的 MCP", mcp.el),
+    field("我的技能", skills.el), field("我的 MCP", mcp.el), memos.el,
   ), foot: h("div", { class: "modal-foot" }, save) });
   save.onclick = async () => {
     save.disabled = true;
     try {
-      await api(`/api/experts/${e.id}/tools`, { method: "PUT", body: { skills: skills.value(), mcp: mcp.value() } });
+      await api(`/api/experts/${e.id}/tools`, { method: "PUT", body: { skills: skills.value(), mcp: mcp.value(), memoAccess: memos.changes() } });
       close();
       toast("已保存，你的对话下一条消息起使用新的工具");
       void reload();
@@ -296,6 +298,7 @@ function checkList(items, picked, empty) {
 /** e：编辑这个；preset：新建时预填（模板、复制） */
 function openEditor(data, e, reload, preset) {
   const src = e ?? preset ?? {};
+  const memos = expertMemoField(data.memoLibraries, e?.id);
   const name = h("input", { value: src.name ?? "", maxlength: "40", placeholder: "比如：证券观察员" });
   const avatar = avatarPicker(src, !e);
   const desc = h("input", { value: src.description ?? "", maxlength: "500", placeholder: "一句话说它是干什么的（选专家时、当子智能体时都看这句）" });
@@ -409,6 +412,7 @@ function openEditor(data, e, reload, preset) {
     section(
       "权限和能力",
       field("权限", perms.el, "改文件包含读文件，跑命令包含改文件。什么都不勾就是只能聊天"),
+      memos.el,
       cwdField,
       codexField,
     ),
@@ -454,6 +458,7 @@ function openEditor(data, e, reload, preset) {
       subagents: engine.value === "claude" ? subs.value() : [],
       codexTools: engine.value === "codex" ? codexTools.value() : [],
       memory: memory.checked,
+      memoAccess: memos.changes(),
       welcome: welcome.value,
       quickPrompts,
     };

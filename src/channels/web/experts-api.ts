@@ -26,11 +26,20 @@ import { config } from "../../core/config.js";
 import { shellInfo } from "../../core/servers.js";
 import { canUseMcp, claudeMachineMcp, createMcp, deleteMcp, getMcp, listUsableMcp, MACHINE_PREFIX, MCP_LIMITS, mcpView, setMcpUserValues, updateMcp, type McpInput, type McpServer } from "../../core/mcp.js";
 import { activeSkills } from "../../core/skills.js";
+import { memoSources, parseExpertMemoChanges, setExpertMemoAccess, sourceSettings } from "../../core/memo-sources.js";
+import { syncMemoIndexAccess } from "../../core/memo-index.js";
 import { getUser, isAdmin, type User } from "../../core/users.js";
 import { getExpertOrder, setExpertOrder } from "../../core/ui-prefs.js";
 import { HttpError, readJsonBody, sendJson } from "./http.js";
 
 const bad = (err: unknown) => (err instanceof HttpError ? err : new HttpError(400, err instanceof Error ? err.message : String(err)));
+
+function prepareMemoAccess(owner: string, raw: unknown) {
+  const changes = parseExpertMemoChanges(owner, raw);
+  return (expert: string) => {
+    for (const { before, after } of setExpertMemoAccess(owner, expert, changes)) syncMemoIndexAccess(owner, before, after);
+  };
+}
 
 function expertView(e: Expert, viewer: string) {
   const tools = expertTools(viewer, e);
@@ -112,6 +121,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   if (p === "/api/agents/defaults" && method === "GET") {
     sendJson(res, 200, {
       agents: Object.fromEntries(Object.entries(builtinAgentDefaults(user.id)).filter(([id]) => canUseExpert(user.id, id))),
+      memoLibraries: memoSources(user.id).map(sourceSettings),
       skills: activeSkills(user.id).map((s) => ({ id: s.id, name: s.name, description: s.description })),
       mcp: mcpChoices(user),
       ...(await machineMcp(user).then((m) => m ? { machineMcp: m, machinePrefix: MACHINE_PREFIX } : {})),
@@ -119,10 +129,13 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     return true;
   }
   if (p === "/api/agents/defaults" && method === "PUT") {
-    const body = await readJsonBody<{ agents?: unknown }>(req);
+    const body = await readJsonBody<{ agents?: Record<string, { memoAccess?: unknown }> }>(req);
     if (body.agents && typeof body.agents === "object" && Object.keys(body.agents).some((id) => !canUseExpert(user.id, id))) throw new HttpError(403, "没有使用这个内置 Agent 的权限");
     try {
-      sendJson(res, 200, { agents: Object.fromEntries(Object.entries(setBuiltinAgentDefaults(user.id, body.agents)).filter(([id]) => canUseExpert(user.id, id))) });
+      const saves = Object.entries(body.agents ?? {}).map(([id, prefs]) => ({ id, apply: prepareMemoAccess(user.id, prefs?.memoAccess) }));
+      const agents = setBuiltinAgentDefaults(user.id, body.agents);
+      for (const { id, apply } of saves) apply(id);
+      sendJson(res, 200, { agents: Object.fromEntries(Object.entries(agents).filter(([id]) => canUseExpert(user.id, id))) });
     } catch (err) {
       throw bad(err);
     }
@@ -133,6 +146,7 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     const enabled = hub.enabledAgents().map((d) => d.id);
     sendJson(res, 200, {
       expertOrder: getExpertOrder(user.id),
+      memoLibraries: memoSources(user.id).map(sourceSettings),
       experts: availableExperts(user.id).map((e) => expertView(e, user.id)),
       builtin: enabled.filter((id) => canUseExpert(user.id, id)).map((id) => ({ id, name: hub.label(id), engine: id })),
       // 能建自定义专家的引擎（WorkBuddy、pi 只有内置专家）
@@ -169,9 +183,13 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   }
 
   if (p === "/api/experts" && method === "POST") {
-    const body = await readJsonBody<ExpertInput>(req, 1024 * 1024);
+    const body = await readJsonBody<ExpertInput & { memoAccess?: unknown }>(req, 1024 * 1024);
     try {
-      sendJson(res, 200, expertView(createExpert(user.id, body), user.id));
+      const apply = prepareMemoAccess(user.id, body.memoAccess);
+      const expert = createExpert(user.id, body);
+      try { apply(expert.id); }
+      catch (err) { deleteExpert(user.id, expert.id); throw err; }
+      sendJson(res, 200, expertView(expert, user.id));
     } catch (err) {
       throw bad(err);
     }
@@ -192,9 +210,12 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
   const tm = /^\/api\/experts\/(e_[a-f0-9]+)\/tools$/.exec(p);
   if (tm && method === "PUT") {
     if (!canUseExpert(user.id, tm[1]!)) throw new HttpError(404, "这个专家不存在");
-    const body = await readJsonBody<unknown>(req);
+    const body = await readJsonBody(req);
     try {
-      sendJson(res, 200, setExpertTools(user.id, tm[1]!, body));
+      const apply = prepareMemoAccess(user.id, body.memoAccess);
+      const tools = setExpertTools(user.id, tm[1]!, body);
+      apply(tm[1]!);
+      sendJson(res, 200, tools);
     } catch (err) {
       throw bad(err);
     }
@@ -211,9 +232,12 @@ export async function handleExpertsApi(req: IncomingMessage, res: ServerResponse
     }
     if (expert.owner !== user.id) throw new HttpError(403, "只有创建者能修改或删除共享专家；你的工具可单独配置");
     if (method === "PATCH") {
-      const body = await readJsonBody<ExpertInput>(req, 1024 * 1024);
+      const body = await readJsonBody<ExpertInput & { memoAccess?: unknown }>(req, 1024 * 1024);
       try {
-        sendJson(res, 200, expertView(updateExpert(user.id, expert.id, body), user.id));
+        const apply = prepareMemoAccess(user.id, body.memoAccess);
+        const updated = updateExpert(user.id, expert.id, body);
+        apply(updated.id);
+        sendJson(res, 200, expertView(updated, user.id));
       } catch (err) {
         throw bad(err);
       }
