@@ -71,6 +71,7 @@ export function latestConversation(channel) {
 
 export function newDraft({ inheritLatest = false } = {}) {
   historyLoadedKey = null;
+  S.draftFastModel = null;
   if (inheritLatest) {
     const latest = latestConversation();
     if (latest) {

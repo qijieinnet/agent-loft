@@ -6,7 +6,7 @@ import { agentLabel, convTitle, forgetProject, renderSidebar } from "./sidebar.j
 import { agentCatalog, baseName, catalogDefaults, draftPick, modelName, renderContext, renderTopbar, saveDraftPick, visibleModels } from "./topbar.js";
 import { closeMenu, confirmDialog, modal, placePopover, showPopover } from "../lib/overlay.js";
 import { newDraft, openConversation, renderEmpty } from "./messages.js";
-import { setDraftExpert } from "./experts.js";
+import { findExpert, setDraftExpert } from "./experts.js";
 import { preloadCommands } from "./slash.js";
 import { FULL_WARNING, PERMISSIONS, permissionsUpTo, PLAN_INFO } from "../lib/permission.js";
 
@@ -92,6 +92,7 @@ export async function openModelPicker(anchor = ui.modelSlot) {
   let models;
   let current;
   let currentEffort;
+  let fastModel;
   let effortSupported = true;
   try {
     if (conv) {
@@ -100,11 +101,12 @@ export async function openModelPicker(anchor = ui.modelSlot) {
         api(`/api/conversations/${encodeURIComponent(S.current)}/models`),
         agentCatalog(conv.agent).catch(() => []),
       ]);
-      ({ models, current, currentEffort, effortSupported } = data);
+      ({ models, current, currentEffort, effortSupported, fastModel } = data);
     } else {
       models = await agentCatalog(S.draftAgent);
       const pick = draftPick();
-      current = pick.model ?? (models.find((m) => m.isDefault) ?? models.find((m) => m.id === "default"))?.id;
+      current = pick.model || findExpert(S.draftExpert)?.model || catalogDefaults.get(S.draftAgent)?.model;
+      fastModel = S.draftFastModel;
       currentEffort = pick.effort;
     }
   } catch (err) {
@@ -112,17 +114,28 @@ export async function openModelPicker(anchor = ui.modelSlot) {
     return;
   }
   if (ui.menu !== pop) return;
+  current ||= (models.find((m) => m.isDefault) ?? models.find((m) => m.id === "default"))?.id;
 
   const choose = async (kind, value) => {
-    if (kind === "model") current = value;
-    else currentEffort = value;
     if (conv) {
-      await doAction(kind, value);
+      pop.inert = true;
+      const res = await doAction(kind, value);
+      pop.inert = false;
+      if (!res || ui.menu !== pop) return;
+      fastModel = res.info.fastModel;
     } else {
-      draftPick()[kind] = value;
-      saveDraftPick();
+      if (kind === "fastModel") {
+        S.draftFastModel = value || null;
+      } else {
+        if (kind === "model" && value !== S.draftFastModel) S.draftFastModel = null;
+        draftPick()[kind] = value;
+        saveDraftPick();
+      }
+      fastModel = S.draftFastModel;
       renderContext();
     }
+    if (kind === "model") current = value;
+    if (kind === "effort") currentEffort = value;
     if (kind === "effort") closeMenu();
     else if (ui.menu === pop) render();
   };
@@ -139,7 +152,11 @@ export async function openModelPicker(anchor = ui.modelSlot) {
   function render() {
     const shown = visibleModels(agent, models);
     const on = currentItem(shown);
-    const efforts = (on ?? currentItem(models))?.efforts ?? models.find((m) => m.efforts?.length)?.efforts ?? [];
+    const selected = on ?? currentItem(models);
+    const fast = selected?.fastMode;
+    const fastOn = !!fast && fastModel === selected.id;
+    const speed = fast?.description?.match(/(\d+(?:\.\d+)?)\s*[x×]/i)?.[1];
+    const efforts = selected?.efforts ?? models.find((m) => m.efforts?.length)?.efforts ?? [];
     if (!currentEffort) currentEffort = catalogDefaults.get(agent)?.effort;
     fill(
       pop,
@@ -163,6 +180,19 @@ export async function openModelPicker(anchor = ui.modelSlot) {
             ),
           ]
         : null,
+      fast ? [
+        h("div", { class: "sep" }),
+        h("button", {
+          class: "pop-item", role: "switch", "aria-checked": String(fastOn),
+          onclick: () => void choose("fastModel", fastOn ? "" : selected.id),
+        },
+          h("span", { class: "grow" },
+            h("span", { class: "t" }, "⚡ 快速模式"),
+            h("span", { class: "s", title: fast.description }, speed ? `${speed} 倍生成速度，用量更多` : "用量更多"),
+          ),
+          h("span", { class: "switch", "aria-hidden": "true" }, h("span", { class: "slider" })),
+        ),
+      ] : null,
     );
     placePopover(pop, anchor);
   }

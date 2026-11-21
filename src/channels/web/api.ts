@@ -1265,6 +1265,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
         case "model":
           text = await hub.setModel(key, value);
           break;
+        case "fastModel":
+          text = await hub.setFastModel(key, value || undefined).catch((err: Error) => {
+            throw new HttpError(400, err.message);
+          });
+          break;
         case "effort":
           text = await hub.setEffort(key, value);
           break;

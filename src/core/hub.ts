@@ -175,6 +175,7 @@ export type CommandReply =
       models: ModelInfo[];
       current?: string;
       currentEffort?: string;
+      fastModel?: string;
       effortSupported: boolean;
     }
   /** 能换成哪些专家（飞书：换专家 = 开新会话） */
@@ -193,6 +194,7 @@ export type ConversationInfo = {
   sessionId?: string;
   model?: string;
   effort?: string;
+  fastModel?: string;
   /** 实际在用的模型 / 思考程度（尽力而为，可能不全）。model/effort 只是显式选过的 */
   runtimeModel?: string;
   runtimeEffort?: string;
@@ -713,6 +715,7 @@ class Hub extends EventEmitter<{
       ...(binding.sessionId ? { sessionId: binding.sessionId } : {}),
       ...(binding.model ? { model: binding.model } : {}),
       ...(binding.effort ? { effort: binding.effort } : {}),
+      ...(binding.fastModel ? { fastModel: binding.fastModel } : {}),
       ...(() => {
         const rt = this.displayRuntime(conv, binding);
         return { ...(rt.model ? { runtimeModel: rt.model } : {}), ...(rt.effort ? { runtimeEffort: rt.effort } : {}) };
@@ -840,6 +843,7 @@ class Hub extends EventEmitter<{
         uploadsDir: ensureUploadsDir(key),
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
+        ...(binding.fastModel ? { fastModel: binding.fastModel } : {}),
         ...(resumeId ? { resumeId } : {}),
         ...(fork ? { fork: true } : {}),
         ...(permission ? { permission } : {}),
@@ -1589,7 +1593,7 @@ class Hub extends EventEmitter<{
     this.markSwitched(key, op.seq);
     const next = this.nextWeixinConversation(conv);
     this.clearFullPermission(next.key);
-    updateAgentBinding(next.key, next.agent, { sessionId: undefined, forkFrom: undefined, pastSessions: undefined, taskResults: undefined, model: model || undefined, effort: undefined });
+    updateAgentBinding(next.key, next.agent, { sessionId: undefined, forkFrom: undefined, pastSessions: undefined, taskResults: undefined, model: model || undefined, effort: undefined, fastModel: undefined });
     this.emitEvent(next.key, { type: "meta" });
     const runtime = await this.runtimeNow(next.key);
     return `已开新会话（${this.label(conv.agent)}，模型 ${runtime.model ?? "默认"}${
@@ -1674,14 +1678,18 @@ class Hub extends EventEmitter<{
       models,
       ...(runtime.model ? { current: runtime.model } : {}),
       ...(runtime.effort ? { currentEffort: runtime.effort } : {}),
+      fastModel: agentBinding(conv).fastModel,
       effortSupported: driver.capabilities.effort,
     };
   }
 
   private async setModelNow(key: string, model: string): Promise<string> {
     const conv = getConversation(key)!;
-    await withTimeout(this.session(key).setModel(model), "切换模型");
-    updateAgentBinding(key, conv.agent, { model });
+    const session = this.session(key);
+    await withTimeout(session.setModel(model), "切换模型");
+    const fastModel = agentBinding(conv).fastModel === model ? model : undefined;
+    session.setFastModel?.(fastModel);
+    updateAgentBinding(key, conv.agent, { model, fastModel });
     this.emitEvent(key, { type: "meta" });
     return `模型已切换为 ${model}。`;
   }
@@ -1767,7 +1775,7 @@ class Hub extends EventEmitter<{
     if (!conv) return false;
     const binding = agentBinding(conv);
     if ((binding.model || undefined) === rt.model && (binding.effort || undefined) === rt.effort) return false;
-    updateAgentBinding(key, conv.agent, { model: rt.model, effort: rt.effort });
+    updateAgentBinding(key, conv.agent, { model: rt.model, effort: rt.effort, fastModel: binding.model === rt.model ? binding.fastModel : undefined });
     if (this.live.has(key)) await this.drop(key, "定时任务换了模型");
     this.emitEvent(key, { type: "meta" });
     return true;
@@ -2408,6 +2416,24 @@ class Hub extends EventEmitter<{
 
   setModel(key: string, model: string): Promise<string> {
     return this.serial(key, () => this.setModelNow(key, model));
+  }
+
+  /** 传入用户看到的模型，防止旧页面把加速开在刚换的新模型上。 */
+  setFastModel(key: string, model: string | undefined): Promise<string> {
+    return this.serial(key, async () => {
+      const conv = getConversation(key)!;
+      const session = this.session(key);
+      if (!session.setFastModel) throw new Error("这个引擎不支持快速模式");
+      if (model) {
+        const { models, current } = await this.modelsNow(key);
+        const selected = current ? models.find((m) => m.id === current) : models.find((m) => m.isDefault);
+        if (selected?.id !== model || !selected.fastMode) throw new Error("当前模型不支持这个快速档位，请重新选择");
+      }
+      session.setFastModel(model);
+      updateAgentBinding(key, conv.agent, { fastModel: model });
+      this.emitEvent(key, { type: "meta" });
+      return model ? "已开启快速模式，下一轮生效。" : "已关闭快速模式，下一轮生效。";
+    });
   }
 
   setEffort(key: string, effort: string): Promise<string> {

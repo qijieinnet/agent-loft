@@ -11,6 +11,7 @@ export const S = {
   defaultPermission: null,
   /** 新对话里打开的计划模式（和 draftPermission 一样，建好对话后带过去） */
   draftPlan: false,
+  draftFastModel: null,
   current: null,
   /** 新对话的引擎（claude / codex），跟着选的专家走 */
   draftAgent: localStorage.getItem("aim.agent") || null,

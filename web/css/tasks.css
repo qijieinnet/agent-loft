@@ -253,10 +253,12 @@ button.task-run:hover {
   transition: transform 0.15s;
 }
 
+[role="switch"][aria-checked="true"] > .switch .slider,
 .switch input:checked + .slider {
   background: var(--accent);
 }
 
+[role="switch"][aria-checked="true"] > .switch .slider::before,
 .switch input:checked + .slider::before {
   transform: translateX(16px);
 }

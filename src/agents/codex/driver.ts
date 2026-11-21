@@ -256,15 +256,19 @@ export class CodexDriver implements AgentDriver {
     const res = await appServer.call<ModelListResponse>("model/list", {});
     return (res.data ?? [])
       .filter((m) => !m.hidden)
-      .map((m) => ({
-        id: m.model,
-        label: m.displayName || m.model,
-        ...(m.description ? { description: m.description } : {}),
-        ...(m.supportedReasoningEfforts?.length
-          ? { efforts: m.supportedReasoningEfforts.map((e) => e.reasoningEffort) }
-          : {}),
-        ...(m.isDefault ? { isDefault: true } : {}),
-      }));
+      .map((m) => {
+        const fast = m.serviceTiers?.find((tier) => tier.id === "priority");
+        return {
+          id: m.model,
+          label: m.displayName || m.model,
+          ...(m.description ? { description: m.description } : {}),
+          ...(m.supportedReasoningEfforts?.length
+            ? { efforts: m.supportedReasoningEfforts.map((e) => e.reasoningEffort) }
+            : {}),
+          ...(fast ? { fastMode: { description: fast.description } } : {}),
+          ...(m.isDefault ? { isDefault: true } : {}),
+        };
+      });
   }
 
   catalog(): Promise<ModelInfo[]> {

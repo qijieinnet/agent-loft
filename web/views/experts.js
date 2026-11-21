@@ -47,6 +47,7 @@ export function syncDraftExpert() {
 }
 
 export function setDraftExpert(id) {
+  if (S.draftExpert !== id) S.draftFastModel = null;
   S.draftExpert = id;
   localStorage.setItem("aim.expert", id);
   const e = syncDraftExpert();

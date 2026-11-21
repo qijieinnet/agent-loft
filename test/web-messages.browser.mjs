@@ -659,3 +659,74 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     assert.equal(await page.evaluate(() => window.ui.messages.scrollTop), 0, "手动翻阅时，排队和开始回复都不抢滚动位置");
   });
 }
+
+test("Codex 对话按模型显示快速开关和倍率，开关状态来自服务端", async (t) => {
+  const page = await fixture(t, { width: 390, height: 850 });
+  const info = { ...conv, agent: "codex", model: "sol", effort: "high" };
+  const models = [
+    { id: "sol", label: "Sol", fastMode: { description: "1.5x speed, increased usage" }, efforts: ["low", "high"] },
+    { id: "basic", label: "Basic" },
+  ];
+  await page.route("**/api/agents/codex/models", (route) => route.fulfill({ json: { models } }));
+  await page.route("**/api/conversations/*/models", (route) => route.fulfill({ json: {
+    models, current: info.model, currentEffort: info.effort, effortSupported: true, fastModel: info.fastModel,
+  } }));
+  await page.route("**/api/conversations/*/action", (route) => {
+    const { action, value } = route.request().postDataJSON();
+    if (action === "model") info.model = value;
+    info.fastModel = action === "fastModel" && value ? value : undefined;
+    return route.fulfill({ json: { info, text: "已保存" } });
+  });
+  await page.evaluate(async (info) => {
+    window.S.convs.set(info.key, info);
+    (await import("/views/topbar.js")).renderContext();
+  }, info);
+  const pill = page.locator(".model-pill");
+  await pill.click();
+  const toggle = page.getByRole("switch", { name: /快速模式.*1.5 倍生成速度/ });
+  assert.equal(await toggle.getAttribute("aria-checked"), "false");
+  await toggle.click();
+  await page.locator('.model-pill [aria-label="快速模式已开启"]').waitFor();
+  assert.equal(await toggle.getAttribute("aria-checked"), "true");
+  assert.match(await pill.textContent(), /high/);
+  await pill.click();
+  await pill.click();
+  assert.equal(await toggle.getAttribute("aria-checked"), "true");
+  await toggle.click();
+  await page.locator('.model-pill [aria-label="快速模式已开启"]').waitFor({ state: "detached" });
+  assert.equal(await toggle.getAttribute("aria-checked"), "false");
+  await page.getByRole("button", { name: "Basic" }).click();
+  await toggle.waitFor({ state: "detached" });
+});
+
+test("草稿的快速模式应用于第一轮，下一条新对话默认关闭", async (t) => {
+  const page = await fixture(t, { width: 1280, height: 850 });
+  const model = { id: "sol", label: "Sol", isDefault: true, fastMode: { description: "2x speed" } };
+  await page.route("**/api/agents/codex/models", (route) => route.fulfill({ json: { models: [model] } }));
+  const info = { ...conv, key: "web:new", agent: "codex" };
+  const actions = [];
+  await page.route("**/api/conversations", (route) => route.fulfill({ json: info }));
+  await page.route("**/api/conversations/*/action", (route) => {
+    const action = route.request().postDataJSON();
+    actions.push(action);
+    return route.fulfill({ json: { info: { ...info, fastModel: action.value } } });
+  });
+  await page.evaluate(async () => {
+    const { setDraftExpert } = await import("/views/experts.js");
+    window.S.agents = [{ id: "codex", enabled: true }];
+    setDraftExpert("codex");
+    window.messages.newDraft();
+  });
+  const pill = page.locator(".model-pill");
+  await pill.click();
+  const toggle = page.getByRole("switch", { name: /快速模式.*2 倍生成速度/ });
+  assert.equal(await toggle.getAttribute("aria-checked"), "false");
+  await toggle.click();
+  assert.equal(await toggle.getAttribute("aria-checked"), "true");
+  await pill.click();
+  await page.evaluate(async () => (await import("/views/composer.js")).ensureConversation());
+  assert.deepEqual(actions, [{ action: "fastModel", value: "sol" }]);
+  await page.evaluate(() => window.messages.newDraft());
+  await pill.click();
+  assert.equal(await toggle.getAttribute("aria-checked"), "false");
+});

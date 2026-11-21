@@ -831,3 +831,55 @@ test("语音对话：开通话时出错（对端报错）就失败，并让 app-
   await assert.rejects(answer, /audio media section/);
   take("thread/realtime/stop").resolve({});
 });
+
+test("快速模式按对话保存，支持的模型才可开启，切换模型后清除", async (t) => {
+  const { hub } = await import("../src/core/hub.js");
+  const { agentBinding } = await import("../src/core/store.js");
+  hub.registerDriver(new CodexDriver());
+  t.mock.method(appServer, "call", async (method: string) => {
+    if (method === "config/read") return { config: { model: "sol" } };
+    assert.equal(method, "model/list");
+    return { data: [
+      { model: "sol", isDefault: true, serviceTiers: [{ id: "priority", description: "2x speed, increased usage" }] },
+      { model: "basic" },
+    ] };
+  });
+  const conv = hub.ensure({ key: "web:fast", channel: "web", channelId: "web", defaultAgent: "codex" });
+  const other = hub.ensure({ key: "web:normal", channel: "web", channelId: "web", defaultAgent: "codex" });
+  const { models } = await hub.models(conv.key);
+  assert.equal(models[0]?.fastMode?.description, "2x speed, increased usage");
+  assert.equal(models[1]?.fastMode, undefined);
+  await hub.setFastModel(conv.key, "sol");
+  assert.equal(agentBinding(conv).fastModel, "sol");
+  assert.equal(hub.info(other.key)?.fastModel, undefined);
+  await hub.setEffort(conv.key, "high");
+  assert.equal((await hub.models(conv.key)).fastModel, "sol");
+  await hub.setModel(conv.key, "basic");
+  assert.equal(hub.info(conv.key)?.fastModel, undefined);
+  await assert.rejects(hub.setFastModel(conv.key, "sol"), /当前模型/);
+  await assert.rejects(hub.setFastModel(conv.key, "basic"), /当前模型/);
+});
+
+test("恢复 Codex 会话后按当前模型加速，关闭后下一轮恢复标准速度", async () => {
+  calls.length = 0;
+  const { session } = makeSession({ resumeId: "fast-thread", fastModel: "sol", effort: "high" });
+  session.send({ text: "第一轮", attachments: [] });
+  await tick();
+  take("thread/resume").resolve({ thread: { id: "fast-thread" }, model: "sol" });
+  await tick();
+  const first = take("turn/start");
+  assert.equal(first.params.serviceTierForTurn, "priority");
+  assert.equal(first.params.effort, "high");
+  first.resolve({ turn: { id: "fast-turn" } });
+  await tick();
+  notify("turn/completed", { threadId: "fast-thread", turn: { id: "fast-turn", status: "completed" } });
+  session.setFastModel(undefined);
+  session.send({ text: "第二轮", attachments: [] });
+  await tick();
+  const next = take("turn/start");
+  assert.equal(next.params.serviceTierForTurn, "default");
+  assert.equal(next.params.effort, "high");
+  next.resolve({ turn: { id: "standard-turn" } });
+  await tick();
+  await disposeRunning(session);
+});

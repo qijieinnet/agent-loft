@@ -572,7 +572,7 @@ export class CodexSession implements AgentSession {
       }
       throw new DisposedError();
     }
-    this.adopt(res.thread);
+    this.adopt({ ...res.thread, model: res.model ?? res.thread.model });
     this.planOnThread = res.collaborationMode?.mode === "plan";
     // 到这里分叉才算完成；之前任何一步失败，下次重试都还会走 thread/fork，绝不会续写原会话
     if (fork) this.forked = true;
@@ -674,6 +674,8 @@ export class CodexSession implements AgentSession {
           sandboxPolicy: sandboxPolicyFor(this.sandboxMode, this.opts.cwd),
           ...(this.opts.model ? { model: this.opts.model } : {}),
           ...(this.opts.effort ? { effort: this.opts.effort } : {}),
+          // 只覆盖正在启动的轮次，恢复外部 thread 时也按这条对话的选择走。
+          serviceTierForTurn: this.fastEnabled ? "priority" : "default",
           ...(collaborationMode ? { collaborationMode } : {}),
         });
       })
@@ -762,6 +764,14 @@ export class CodexSession implements AgentSession {
     this.runtime = { ...(nextModel ? { model: nextModel } : {}), ...(nextEffort ? { effort: nextEffort } : {}) };
   }
 
+  setFastModel(model: string | undefined): void {
+    this.opts.fastModel = model;
+  }
+
+  private get fastEnabled(): boolean {
+    return !!this.opts.fastModel && this.opts.fastModel === (this.opts.model || this.runtime.model);
+  }
+
   /** 已知的模型 / 思考程度，不拉起进程、不发请求（顶栏显示用） */
   peekRuntime(): RuntimeInfo {
     return this.runtime;
@@ -830,6 +840,7 @@ export class CodexSession implements AgentSession {
     // 转交出来的轮次不经过 turn/start：先把这条对话现在的工作目录、沙箱、模型写到 thread 上，权限才对得上
     await appServer.call("thread/settings/update", {
       threadId,
+      serviceTier: this.fastEnabled ? "priority" : null,
       cwd: this.opts.cwd,
       approvalPolicy: "on-request",
       sandboxPolicy: sandboxPolicyFor(this.sandboxMode, this.opts.cwd),

@@ -14,6 +14,8 @@ export type AgentBinding = {
   /** 用户显式选的模型，开新会话清掉 */
   model?: string;
   effort?: string;
+  /** 用户在这条对话中开启快速模式的模型。 */
+  fastModel?: string;
   /**
    * 待分叉：/fork 之后、新会话真正建立之前，记着要从哪个会话分叉。
    * 必须落盘：期间切了 agent、或者 agent-loft 重启了，下一条消息仍要分叉，而不是续写原会话。

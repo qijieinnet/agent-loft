@@ -196,6 +196,7 @@ export type ModelInfo = {
   label: string;
   description?: string;
   efforts?: string[];
+  fastMode?: { description: string };
   isDefault?: boolean;
 };
 
@@ -245,6 +246,7 @@ export type SessionOptions = {
   cwd: string;
   model?: string;
   effort?: string;
+  fastModel?: string;
   resumeId?: string;
   fork?: boolean;
   /** 附件所在目录，agent 需要能直接读 */
@@ -311,6 +313,7 @@ export interface AgentSession {
   cancelQueued?(input: UserInput): boolean;
   interrupt(opts?: InterruptOptions): Promise<void>;
   setModel(model?: string, effort?: string): Promise<void>;
+  setFastModel?(model: string | undefined): void;
   describeRuntime(): Promise<RuntimeInfo>;
   /** 手上已知的模型 / 思考程度，同步返回：不拉起进程、不发请求 */
   peekRuntime?(): RuntimeInfo;

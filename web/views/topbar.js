@@ -402,6 +402,7 @@ export function renderContext() {
   // 直接显示实际的模型名和思考程度（和选择列表里一样的写法），不显示「默认模型」
   let model;
   let effort;
+  let fastOn = false;
   const modelAgent = c ? c.agent : S.draftAgent;
   if (modelAgent) {
     ensureCatalog(modelAgent);
@@ -410,6 +411,9 @@ export function renderContext() {
     // 新对话：没选过就是专家配的默认模型
     const draft = c ? null : findExpert(S.draftExpert);
     const id = c ? (c.runtimeModel ?? c.model) : (pick.model ?? (draft?.model || undefined));
+    const effectiveId = id || defaults.model || catalogLoaded.get(modelAgent)?.find((m) => m.isDefault)?.id;
+    const fastModel = c ? c.fastModel : S.draftFastModel;
+    fastOn = !!fastModel && fastModel === effectiveId;
     model = modelName(modelAgent, id) ?? (catalogLoaded.has(modelAgent) ? "选择模型" : "…");
     effort = (c ? (c.runtimeEffort ?? c.effort) : (pick.effort ?? (draft?.effort || undefined))) ?? defaults.effort;
   }
@@ -422,6 +426,7 @@ export function renderContext() {
           "button",
           { class: "model-pill", title: "切换模型和思考程度", onclick: () => void openModelPicker() },
           h("span", { class: "model-name" }, model),
+          fastOn ? h("span", { title: "快速模式已开启", "aria-label": "快速模式已开启" }, "⚡") : null,
           effort ? h("span", { class: "sub" }, effort) : null,
           icon("down"),
         )
