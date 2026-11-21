@@ -532,7 +532,7 @@ export function openTaskForm(task, preset) {
   const context = h("select", { class: "task-context" }, keepOption, h("option", { value: "fresh", selected: !!src.freshContext }, "不携带（每次都从头开始）"));
   const contextHint = h("small", {});
   const contextField = h("div", { class: "field" }, h("span", {}, "上下文"), context, contextHint);
-  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（助手中心 → 专家）。"), modelRow, cwdField, permissionField);
+  const dedicatedBox = h("div", { class: "task-dedicated" }, field("专家", expert, "到点由这个专家来做。要联网、读文件还是跑命令，看专家的权限（设置 → 助手 → 专家）。"), modelRow, cwdField, permissionField);
   // 发到已有对话：专家、目录属于对话，中途换不了，只显示；权限可以改，改的是对话自己的
   const convBox = h("div", { class: "task-dedicated task-conv" });
   let convPermission = null;

@@ -48,6 +48,7 @@ export function openAgentDefaults(engine, label) {
   const foot = h("div", { class: "modal-foot" });
   // 改了没保存就关：问一句（和设置页切标签一样）
   const close = modal({
+    editor: true,
     title: `${label} 默认设置`,
     body: form,
     foot,

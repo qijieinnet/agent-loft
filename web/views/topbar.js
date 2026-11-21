@@ -147,7 +147,7 @@ function openExpertCard(anchor, key, pinned) {
   placePopover(pop, anchor);
 }
 
-/** 右上角「更多」只放当前对话的操作；设置在侧边栏的「更多」里。 */
+/** 右上角「更多」只放当前对话的操作；设置从侧边栏进入。 */
 function topMenuItems() {
   const items = [];
   if (!S.view) {

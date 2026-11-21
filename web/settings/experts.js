@@ -208,11 +208,11 @@ function viewSharedExpert(e) {
 
 function openTools(data, e, reload) {
   const memos = expertMemoField(data.memoLibraries, e.id);
-  const skills = checkList(data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })), e.skills, "还没有启用的技能（助手中心 → 技能）");
+  const skills = checkList(data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })), e.skills, "还没有启用的技能（设置 → 助手 → 技能）");
   const machine = (data.machineMcp?.[e.engine] ?? []).map((name) => ({ id: `${data.machinePrefix}${name}`, label: `${name}（本机）` }));
-  const mcp = checkList([...data.mcp.map((s) => ({ id: s.id, label: s.name, hint: s.description })), ...machine], e.mcp, "还没有 MCP（助手中心 → MCP）");
+  const mcp = checkList([...data.mcp.map((s) => ({ id: s.id, label: s.name, hint: s.description })), ...machine], e.mcp, "还没有 MCP（设置 → 助手 → MCP）");
   const save = h("button", { class: "btn primary" }, "保存我的工具");
-  const close = modal({ title: `${e.name} · 我的工具`, body: h("div", { class: "modal-body" },
+  const close = modal({ editor: true, title: `${e.name} · 我的工具`, body: h("div", { class: "modal-body" },
     h("p", { class: "muted" }, "只影响你使用这个专家时加载的工具，网页和绑定账号后的飞书私聊共用。未选择时不加载技能或 MCP；记忆使用你自己的设置。子智能体的工具需在对应专家中单独配置。"),
     field("我的技能", skills.el), field("我的 MCP", mcp.el), memos.el,
   ), foot: h("div", { class: "modal-foot" }, save) });
@@ -348,7 +348,7 @@ function openEditor(data, e, reload, preset) {
   const skills = checkList(
     data.skills.map((s) => ({ id: s.id, label: s.name, hint: s.description })),
     src.skills ?? [],
-    "还没有启用的技能（助手中心 → 技能）",
+    "还没有启用的技能（设置 → 助手 → 技能）",
   );
   const mcpBox = h("div");
   const subBox = h("div");
@@ -361,7 +361,7 @@ function openEditor(data, e, reload, preset) {
     mcp = checkList(
       [...data.mcp.map((m) => ({ id: m.id, label: m.name, hint: m.description || (m.type === "http" ? "HTTP" : "本机进程") })), ...machine],
       keep,
-      "还没有 MCP（助手中心 → MCP 里添加）",
+      "还没有 MCP（设置 → 助手 → MCP 里添加）",
     );
     fill(mcpBox, mcp.el);
     const keepSubs = subs.value();
@@ -422,14 +422,14 @@ function openEditor(data, e, reload, preset) {
       field("我的技能", skills.el, "只影响你的工具选择；共享后其他账号单独选择自己的技能"),
       field("我的 MCP", mcpBox, "只使用你的 MCP；共享后不会把你的 MCP 或凭据交给其他账号"),
       subField,
-      field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "使用聊天者自己的个人记忆（需在设置 → 记忆偏好开启）"))),
+      field("记忆", h("label", { class: "check-item" }, memory, h("span", {}, "使用聊天者自己的个人记忆（需在设置 → 个人 → 记忆 → 记忆偏好开启）"))),
     ),
     section("新对话页", field("欢迎语", welcome), field("快捷提问", quick)),
   );
   renderEngineParts();
   sync();
   const save = h("button", { class: "btn primary" }, e ? "保存" : "创建");
-  const close = modal({ title: e ? `编辑 ${e.name}` : "新建专家", wide: true, tall: true, body, foot: h("div", { class: "modal-foot" }, save) });
+  const close = modal({ editor: true, title: e ? `编辑 ${e.name}` : "新建专家", wide: true, tall: true, body, foot: h("div", { class: "modal-foot" }, save) });
   name.focus();
   save.onclick = async () => {
     const quickPrompts = quick.value
@@ -677,6 +677,7 @@ function openMcpValues(s, secrets, reload) {
   });
   const save = h("button", { class: "btn primary" }, "保存");
   const close = modal({
+    editor: true,
     title: `${s.name} 的密钥`,
     body: h("div", { class: "modal-body task-form" }, h("p", { class: "skill-note" }, `${s.ownerName} 共享的 MCP。这些值只给你自己的会话用，作者看不到；不填就不带这一项。`), rows.map((r) => r.el)),
     foot: h("div", { class: "modal-foot" }, save),
@@ -781,7 +782,7 @@ function openMcpEditor(s, reload) {
     ),
   );
   const save = h("button", { class: "btn primary" }, s ? "保存" : "添加");
-  const close = modal({ title: s ? `编辑 ${s.name}` : "添加 MCP", wide: true, body, foot: h("div", { class: "modal-foot" }, save) });
+  const close = modal({ editor: true, title: s ? `编辑 ${s.name}` : "添加 MCP", wide: true, body, foot: h("div", { class: "modal-foot" }, save) });
   (s ? desc : name).focus();
   save.onclick = async () => {
     const payload = {

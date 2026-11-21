@@ -43,7 +43,7 @@ export async function notifyTab(panel) {
       await mine.unsubscribe().catch(() => {});
       toast("已关闭");
     });
-    const testBtn = h("button", { class: "btn" }, "发送测试通知");
+    const testBtn = h("button", { class: "btn" }, "向已订阅设备发送测试");
     testBtn.onclick = busy(testBtn, async () => {
       const r = await api("/api/push/test", { method: "POST" });
       toast(`已发送到 ${r.sent} 台设备`);

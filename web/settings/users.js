@@ -301,7 +301,7 @@ export async function usersTab(page) {
       ),
     );
 
-    const close = modal({ title: "添加用户", body: addBox, wide: true });
+    const close = modal({ editor: true, title: "添加用户", body: addBox, wide: true });
     name.focus();
   };
 
@@ -428,6 +428,7 @@ export async function systemTab(page) {
   const versionDone = checkVersion(false);
   try {
     sys = await api("/api/system");
+    if (sys.backup) page.append(backupSection(sys.backup));
   } catch (err) {
     fill(sysBox, h("h4", {}, "服务端"), h("div", { class: "error-text" }, err.message));
     return;
@@ -443,4 +444,24 @@ function uptime(ms) {
   if (min < 60) return `${min} 分钟`;
   if (min < 1440) return `${Math.floor(min / 60)} 小时 ${min % 60} 分钟`;
   return `${Math.floor(min / 1440)} 天 ${Math.floor((min % 1440) / 60)} 小时`;
+}
+
+function backupSection(status) {
+  const box = h("div", { class: "section", "data-section": "backup" });
+  const button = h("button", { class: "btn", onclick: async () => {
+    button.disabled = true;
+    try {
+      render(await api("/api/system/backup", { method: "POST" }));
+      toast("整个实例数据库已备份");
+    } catch (err) { toast(err.message); }
+    finally { button.disabled = false; }
+  } }, "现在备份");
+  function render(b) {
+    fill(box, h("h4", {}, "数据库备份"),
+      h("p", { class: "muted" }, "整个实例数据库每天自动备份到 " + b.dir + "，保留最近 7 天、4 周、12 个月。可用 AGENT_LOFT_BACKUP_DIR 指定其他磁盘。"),
+      h("div", { class: "row" }, button, b.last ? "上次备份：" + relTime(b.last.at) + "，共 " + b.count + " 份" : "还没有备份"),
+      b.error ? h("p", { class: "error-text" }, b.error.message) : null);
+  }
+  render(status);
+  return box;
 }

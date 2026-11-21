@@ -71,7 +71,7 @@ export function weixinLinkSection() {
       const expert = h("select", { disabled: !choices.length, "aria-label": "微信专家", style: { flex: "1", minWidth: "0" } },
         !currentAvailable ? h("option", { value: "", selected: true, disabled: true }, choices.length ? "当前专家已不可用，请重新选择" : "没有可用的专家") : null,
         choices.map((e) => h("option", { value: e.id, selected: e.id === data.expert }, e.label)));
-      const change = h("button", { class: "btn", disabled: true }, "切换专家");
+      const change = h("button", { class: "btn", disabled: true }, "切换并开启新会话");
       expert.onchange = () => { change.disabled = !expert.value || expert.value === data.expert; };
       change.onclick = async () => {
         change.disabled = true;

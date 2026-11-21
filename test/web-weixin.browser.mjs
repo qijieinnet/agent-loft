@@ -107,7 +107,7 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
     // 跟随页面实际加载的版本目录，避免另建一套 state 和事件监听器。
     await page.evaluate(async () => {
       const entry = document.querySelector('script[type="module"][src]').src;
-      await (await import(new URL("views/layout.js", entry).href)).openSettings("账号绑定");
+      await (await import(new URL("views/layout.js", entry).href)).openSettings("bindings/weixin");
     });
     await page.locator(".settings-page").waitFor({ timeout: 8000 }).catch(async (err) => {
       throw new Error(`${err.message}\n页面：${await page.locator("#app").innerText()}`);
@@ -136,9 +136,9 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
 
   const expertPicker = page.getByRole("combobox", { name: "微信专家", exact: true });
   assert.equal(await expertPicker.inputValue(), "claude");
-  assert.equal(await page.getByRole("button", { name: "切换专家", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "切换并开启新会话", exact: true }).isDisabled(), true);
   await expertPicker.selectOption(helper.id);
-  await page.getByRole("button", { name: "切换专家", exact: true }).click();
+  await page.getByRole("button", { name: "切换并开启新会话", exact: true }).click();
   await wait(async () => (await account()).expert === helper.id, "设置页选择专家");
   await openSettings();
   assert.equal(await expertPicker.inputValue(), helper.id, "刷新后保留专家选择");
@@ -166,7 +166,7 @@ test("扫码连接微信、在设置里切换专家、收发消息、断开", as
   // 旧页面选到刚删除的专家时应显示失败，允许重新选择。
   await expertPicker.selectOption(helper.id);
   assert.ok((await ctx.request.delete(`${base}/api/experts/${helper.id}`)).ok());
-  await page.getByRole("button", { name: "切换专家", exact: true }).click();
+  await page.getByRole("button", { name: "切换并开启新会话", exact: true }).click();
   await page.getByText("请选择一个可用的专家", { exact: true }).waitFor();
   assert.equal((await account()).expert, "claude");
   assert.equal(await expertPicker.isEnabled(), true);

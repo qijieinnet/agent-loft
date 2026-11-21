@@ -1,6 +1,6 @@
 import { fill, h } from "../lib/dom.js";
 import { api } from "../lib/api.js";
-import { S } from "../state.js";
+import { isAdmin, S, ui } from "../state.js";
 
 // ---------- 用量：按日 / 月 / 年统计 token 和费用（数据见 src/core/usage.ts 按天的账） ----------
 
@@ -80,7 +80,7 @@ export async function usageTab(panel) {
   let unit = "month";
   let anchor = new Date();
   const box = h("div", { class: "section usage-stats" });
-  fill(panel, box);
+  fill(panel, box, isAdmin() ? h("button", { class: "btn", onclick: () => ui.settings.selectTab("quota") }, "订阅额度查询") : null);
 
   const render = async () => {
     const period = periodOf(unit, anchor);
@@ -116,7 +116,7 @@ export async function usageTab(panel) {
       ),
       isCurrent ? null : h("button", { class: "btn small", onclick: () => ((anchor = new Date()), void render()) }, unit === "day" ? "今天" : unit === "month" ? "本月" : "今年"),
     );
-    const head = h("div", { class: "us-head" }, h("h4", {}, "Token 与费用"), seg, nav);
+    const head = h("div", { class: "us-head" }, h("h4", {}, isAdmin() ? "实例用量与参考费用" : "我的用量与参考费用"), seg, nav);
     fill(box, head, h("span", { class: "spinner" }));
 
     let data;

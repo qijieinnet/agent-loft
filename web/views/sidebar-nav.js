@@ -9,7 +9,6 @@ const ITEMS = [
   { id: "library", label: "资料库", icon: "library" },
   { id: "memos", label: "备忘录", icon: "clipboard" },
   { id: "remote", label: "远程控制", icon: "monitor" },
-  { id: "assistants", label: "助手中心", icon: "spark" },
   { id: "settings", label: "设置", icon: "gear" },
 ];
 let actions = {};
@@ -26,7 +25,7 @@ function configuredItems() {
     seen.add(item.id);
     items.push({ ...item, visible: saved.visible !== false });
   }
-  return [...items, ...ITEMS.filter((it) => !seen.has(it.id)).map((it) => ({ ...it, visible: it.id !== "settings" }))];
+  return [...items, ...ITEMS.filter((it) => !seen.has(it.id)).map((it) => ({ ...it, visible: true }))];
 }
 
 const available = (item) => item.id !== "remote" || remoteTabs().length > 0;

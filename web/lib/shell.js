@@ -669,7 +669,7 @@ export async function handleAllowEmbed(confirmDialog, toast) {
   if (!embedders.includes(origin)) {
     const ok = await confirmDialog({
       title: "允许在别的服务器上切换到这台？",
-      message: `${origin} 的页面左上角会多出这台，切过来时这台的页面嵌在那边显示（照样要登录这台的账号，聊天内容不经过那台）。以后不想要了，在 设置 → 多服务器 里移除。`,
+      message: `${origin} 的页面左上角会多出这台，切过来时这台的页面嵌在那边显示（照样要登录这台的账号，聊天内容不经过那台）。以后不想要了，在 设置 → 连接 → 服务器切换 里移除。`,
       confirmText: "允许",
     });
     if (!ok) return;

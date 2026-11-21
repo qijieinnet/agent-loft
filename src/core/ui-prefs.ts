@@ -4,7 +4,7 @@ import path from "node:path";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 
 export type SidebarNavItem = { id: string; visible: boolean };
-const NAV_IDS = ["search", "tasks", "library", "memos", "remote", "assistants", "settings"];
+const NAV_IDS = ["search", "tasks", "library", "memos", "remote", "settings"];
 type Prefs = { dirOrder?: string[]; sidebarNav?: SidebarNavItem[]; expertOrder?: string[] };
 
 const prefsPath = path.join(dataDir, "ui-prefs.json");
@@ -56,16 +56,22 @@ export function appendDirOrder(userId: string, dirs: unknown): string[] {
   return dirOrder;
 }
 
-/** 新菜单接在最后；未配置过的菜单沿用默认显示方式（设置默认收进「更多」）。 */
+/** 新菜单接在最后；未配置过的菜单沿用默认显示方式。 */
 function cleanSidebarNav(value: unknown): SidebarNavItem[] {
   const items: SidebarNavItem[] = [];
   const seen = new Set<string>();
-  for (const item of Array.isArray(value) ? value : []) {
+  const saved = Array.isArray(value) ? value : [];
+  const oldHub = saved.find(it => it?.id === "assistants");
+  const oldSettings = saved.find(it => it?.id === "settings");
+  const useHub = oldHub && (!oldSettings || (oldSettings.visible === false && oldHub.visible !== false));
+  for (const entry of saved) {
+    if (useHub && entry?.id === "settings") continue;
+    const item = useHub && entry === oldHub ? { ...entry, id: "settings" } : entry;
     if (!item || typeof item !== "object" || !NAV_IDS.includes(item.id) || seen.has(item.id)) continue;
     seen.add(item.id);
-    items.push({ id: item.id, visible: typeof item.visible === "boolean" ? item.visible : item.id !== "settings" });
+    items.push({ id: item.id, visible: item.visible !== false });
   }
-  for (const id of NAV_IDS) if (!seen.has(id)) items.push({ id, visible: id !== "settings" });
+  for (const id of NAV_IDS) if (!seen.has(id)) items.push({ id, visible: true });
   return items;
 }
 

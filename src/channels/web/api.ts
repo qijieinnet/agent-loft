@@ -1546,6 +1546,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       const cwd = conv?.cwd ?? (draftCwd ? resolveWorkspacePath(draftCwd) : undefined);
       if (draftCwd && !cwd) throw new HttpError(404, "工作目录不存在，或不在工作区之内");
       const commands = await hub.commandCatalog(m[1]!, {
+        defaultOrder: admin && url.searchParams.get("defaults") === "1",
         ...(cwd ? { cwd } : {}),
         allowedAgents: hub.enabledAgents().map((d) => d.id),
         // 输入框（包括尚未创建的新对话）只列 Web 能用的；设置页仍列全部
@@ -1599,7 +1600,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     });
     return;
   }
-  if (p === "/api/account/memory/backup" && method === "POST") {
+  if ((p === "/api/account/memory/backup" || p === "/api/system/backup") && method === "POST") {
     if (!isAdmin(user)) throw new HttpError(403, "只有管理员能备份");
     try {
       await backupNow();
@@ -2037,6 +2038,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       uptimeMs: Date.now() - startedAt,
       pid: process.pid,
       underSystemd: !!process.env.INVOCATION_ID,
+      backup: backupStatus(),
     });
     return;
   }

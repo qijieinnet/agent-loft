@@ -56,8 +56,9 @@ function listSection(cfg) {
               render();
             };
             return h(
-              "div",
-              { class: "srv-edit" },
+              "details",
+              { class: "srv-edit", open: !s.id },
+              h("summary", {}, s.name || s.url || "新服务器"),
               h("div", { class: "srv-edit-fields" }, em, name, url),
               h(
                 "div",

@@ -257,7 +257,7 @@ export function commandListCard(params: {
   const elements: unknown[] = [
     {
       tag: "markdown",
-      content: `当前 agent：**${params.agentLabel}**。点「执行」直接运行；带 \`<参数>\` 的请手动输入。\n顺序和显示哪些可以在 Web 设置 → 快捷命令里调整。`,
+      content: `当前 agent：**${params.agentLabel}**。点「执行」直接运行；带 \`<参数>\` 的请手动输入。\n顺序和显示哪些可以在 Web 设置 → 对话 → 斜杠命令里调整。`,
     },
     { tag: "hr" },
   ];
@@ -297,7 +297,7 @@ export function agentPickerCard(params: {
 }) {
   return card(
     [
-      { tag: "markdown", content: "换专家会开一条新会话，之前的对话不接着聊。自己的专家在网页「助手中心 → 专家」里建。" },
+      { tag: "markdown", content: "换专家会开一条新会话，之前的对话不接着聊。自己的专家在网页「设置 → 助手 → 专家」里建。" },
       buttonRow(
         params.agents.map((a) =>
           button(

@@ -73,7 +73,7 @@ function render() {
       h(
         "p",
         { class: "skill-note" },
-        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。自己建的技能可共享给指定用户或所有人；别人共享的技能安装后可用，变量由每个人自己填写。内置专家默认使用你启用的技能，自定义专家只用它选中的（助手中心 → 专家）。",
+        "技能是一份写给 agent 的做事方法（SKILL.md），可以带脚本和资料，Claude 和 Codex 都能用。自己建的技能可共享给指定用户或所有人；别人共享的技能安装后可用，变量由每个人自己填写。内置专家默认使用你启用的技能，自定义专家只用它选中的（设置 → 助手 → 专家）。",
       ),
       h(
         "div",
@@ -444,6 +444,7 @@ function openVars(s) {
   });
   const save = h("button", { class: "btn primary" }, "保存");
   const close = modal({
+    editor: true,
     title: `${s.name} 的变量`,
     body: h(
       "div",
@@ -525,6 +526,7 @@ async function openSharing(s) {
   const visibility = visibilityEditor(d);
   const save = h("button", { class: "btn primary" }, "保存");
   const close = modal({
+    editor: true,
     title: `共享 ${d.name}`,
     body: h("div", { class: "modal-body task-form" },
       field("共享范围", visibility.el),
@@ -634,6 +636,7 @@ async function openEditor(s) {
   const visibility = visibilityEditor(d ?? {});
   const save = h("button", { class: "btn primary" }, d ? "保存" : "创建");
   const close = modal({
+    editor: true,
     title: d ? `编辑 ${d.name}` : "新建技能",
     wide: true,
     tall: true,

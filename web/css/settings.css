@@ -126,7 +126,6 @@ body:has(.settings) > :is(.overlay, .menu) {
 .engine-advanced > .field { margin-top: 12px; }
 .settings-page-title { max-width: 1100px; margin: 0 auto 16px; font-size: 21px; line-height: 1.4; }
 .settings-header .grow { flex: 1; }
-.settings-directory-back { display: none; }
 .settings-sr { position: absolute; inline-size: 1px; block-size: 1px; clip-path: inset(50%); overflow: hidden; }
 .settings-header button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 @media (forced-colors: active) {
@@ -770,12 +769,8 @@ body:has(.settings) > :is(.overlay, .menu) {
   gap: 8px;
   margin-top: 8px;
 }
-/* 一条记忆的按钮多，窄屏上文字占一整行，按钮换到下面 */
-.memory-item {
-  flex-wrap: wrap;
-}
 .memory-item > .grow {
-  flex: 1 1 280px;
+  flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -784,3 +779,16 @@ a.memory-link {
   color: inherit;
   text-decoration: none;
 }
+
+.settings-primary, .settings-secondary, .settings-find { display: none; }
+.memory-text { text-align: start; white-space: pre-wrap; overflow-wrap: anywhere; min-height: 44px; width: 100%; }
+.memory-item .icon-btn { min-width: 44px; min-height: 44px; }
+
+.settings-record > summary, .srv-edit > summary {
+  min-height: 44px;
+  padding: 12px 8px;
+  cursor: pointer;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.settings-record .status-tag { margin-inline-start: 8px; }

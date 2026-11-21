@@ -1,7 +1,8 @@
-import { fill, h, icon } from "../lib/dom.js";
+import { fill, h, icon, toast } from "../lib/dom.js";
+import { ui } from "../state.js";
 import { api } from "../lib/api.js";
 import { agentLabel } from "../views/sidebar.js";
-import { confirmDialog, modal } from "../lib/overlay.js";
+import { confirmDialog, modal, showMenu } from "../lib/overlay.js";
 import { clearCommandCache, commandUsage, currentAgentId, oneLine, preloadCommands } from "../views/slash.js";
 import { field, hasDirty, markClean, markDirty, saveButton, saveConfig } from "./common.js";
 
@@ -105,6 +106,7 @@ function customDialog({ agent, entry, taken }, onSave) {
   };
   ok.onclick = () => void submit();
   const close = modal({
+    editor: true,
     title: entry ? `编辑 /${entry.name}` : `添加命令 · ${agentLabel(agent)}`,
     body: h(
       "div",
@@ -127,7 +129,7 @@ function customDialog({ agent, entry, taken }, onSave) {
  * 设置 → 命令：每个 agent 一张表，拖动或用箭头排序，取消勾选就不在「/」列表里出现。
  * 默认 agent-loft 内置命令按常用程度排在最前，agent 自己的命令排在后面且默认不勾（服务端 buildCatalog 决定）。
  * 保存时把整张表的顺序存下来；以后新装的 skill 不在表里，会自动接在最后、默认不勾。
- * 用户可以自己添加命令（一段预设的提示词），自己加的可以编辑、删除，增删改后立即保存。
+ * 管理员可以增删改自定义提示词，与排序统一保存。
  * 保存后服务端会同步到飞书机器人的指令面板，同步状态在「飞书」页里看。
  */
 export function commandsTab(cfg, page) {
@@ -221,15 +223,12 @@ export function commandsTab(cfg, page) {
             ),
             h("div", { class: "s" }, oneLine(c.description || c.prompt || "", 100) || "（无说明）"),
           ),
-          c.source === "custom"
-            ? [
-                h("button", { class: "icon-btn", title: "编辑", onclick: () => editCustom(c) }, icon("edit")),
-                h("button", { class: "icon-btn danger", title: "删除", onclick: () => deleteCustom(c) }, icon("trash")),
-              ]
-            : null,
-          h("button", { class: "icon-btn", title: "置顶", onclick: () => move(i, 0) }, "⤒"),
-          h("button", { class: "icon-btn", title: "上移", onclick: () => move(i, i - 1) }, "↑"),
-          h("button", { class: "icon-btn", title: "下移", onclick: () => move(i, i + 1) }, "↓"),
+          h("button", { class: "icon-btn", "aria-label": "/" + c.name + " 更多操作", onclick: e => showMenu(e.currentTarget, [
+            ...(c.source === "custom" ? [{ label: "编辑", onclick: () => editCustom(c) }, { label: "删除", danger: true, onclick: () => deleteCustom(c) }] : []),
+            { label: "置顶", onclick: () => move(i, 0) },
+            { label: "上移", onclick: () => move(i, i - 1) },
+            { label: "下移", onclick: () => move(i, i + 1) },
+          ]) }, icon("more")),
         );
         return row;
       }),
@@ -250,13 +249,10 @@ export function commandsTab(cfg, page) {
     custom: rows.filter((c) => c.source === "custom").map(({ name, description, prompt }) => ({ name, description, prompt })),
   });
 
-  // ---- 自定义命令：增删改都立即保存（连同当前的排序和显示），保存失败就不动列表 ----
-  const commit = async (rows) => {
-    if (!(await save(prefsOf(rows)))) return false;
+  const stage = rows => {
     list = rows;
     renderList();
-    // 连同排序和显示一起存了
-    markClean(form);
+    markDirty(form);
     return true;
   };
   const addCustom = () =>
@@ -266,20 +262,20 @@ export function commandsTab(cfg, page) {
       const lastCustom = rows.findLastIndex((c) => c.source === "custom");
       const at = lastCustom >= 0 ? lastCustom + 1 : rows.findLastIndex((c) => c.source === "agent-loft") + 1;
       rows.splice(at, 0, { ...entry, source: "custom", runnable: true, hidden: false });
-      return commit(rows);
+      return stage(rows);
     });
   const editCustom = (c) =>
     customDialog({ agent, entry: c, taken: list.filter((x) => x !== c).map((x) => x.name) }, (entry) =>
-      commit(list.map((x) => (x === c ? { ...x, ...entry } : x))),
+      stage(list.map((x) => (x === c ? { ...x, ...entry } : x))),
     );
   const deleteCustom = async (c) => {
     const sure = await confirmDialog({
       title: `删除 /${c.name}？`,
-      message: "删除后在「/」列表和飞书指令面板里都不再出现。",
+      message: "保存命令后在「/」列表和飞书指令面板里都不再出现。",
       confirmText: "删除",
       danger: true,
     });
-    if (sure) await commit(list.filter((x) => x !== c));
+    if (sure) stage(list.filter((x) => x !== c));
   };
 
   /** 换一个 agent 的表：这张表还有没保存的改动就先问 */
@@ -287,7 +283,7 @@ export function commandsTab(cfg, page) {
     if (id === agent) return;
     if (
       hasDirty(page) &&
-      !(await confirmDialog({ title: "排序还没保存", message: `${agentLabel(agent)} 的命令顺序和显示改了还没保存，切过去就不保存了。`, confirmText: "不保存", danger: true }))
+      !(await confirmDialog({ title: "命令还没保存", message: `${agentLabel(agent)} 的命令改动还没保存，切过去就不保存了。`, confirmText: "不保存", danger: true }))
     )
       return;
     markClean(form);
@@ -300,6 +296,7 @@ export function commandsTab(cfg, page) {
     fill(listBox, h("span", { class: "spinner" }));
     try {
       const data = await api(`/api/agents/${id}/commands`);
+      if (id !== agent) return;
       list = data.commands;
       renderList();
     } catch (err) {
@@ -316,6 +313,7 @@ export function commandsTab(cfg, page) {
       { class: "muted" },
       "在输入框里打「/」时弹出的命令，按这里的顺序排列；保存后会自动同步到飞书机器人的指令面板（同步状态在「飞书」里看）。取消勾选的不会出现在列表里，但照样可以手动输入。带 agent 名标记的是 agent 自己的命令（skills 等），默认不勾选，需要的话勾上并保存；它们会原样转给 agent。",
     ),
+    h("button", { class: "btn small", onclick: () => ui.settings.selectTab("feishu/slash") }, "查看飞书同步状态"),
     tabs,
     h("div", { class: "row cmd-tools" }, search, h("button", { class: "btn", onclick: () => addCustom() }, icon("plus"), "添加命令")),
     listBox,
@@ -329,9 +327,15 @@ export function commandsTab(cfg, page) {
           class: "btn",
           onclick: async () => {
             if (!(await confirmDialog({ title: "恢复默认？", message: `把 ${agentLabel(agent)} 的命令顺序和显示恢复成默认（自定义命令保留）。`, confirmText: "恢复默认" }))) return;
-            if (!(await save({ order: [], hidden: [] }))) return;
-            markClean(form);
-            await load(agent);
+            const selected = agent;
+            try {
+              const { commands } = await api("/api/agents/" + agent + "/commands?defaults=1");
+              if (agent !== selected || !form.isConnected) return;
+              const custom = list.filter(c => c.source === "custom").map(c => ({ ...c, hidden: false }));
+              const names = new Set(custom.map(c => c.name));
+              stage([...commands.filter(c => c.source === "agent-loft"), ...custom,
+                ...commands.filter(c => c.source === "agent" && !names.has(c.name))]);
+            } catch (err) { toast(err.message); }
           },
         },
         "恢复默认",

@@ -2,7 +2,7 @@ import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { copyText } from "../lib/markdown.js";
-import { isAdmin, S } from "../state.js";
+import { isAdmin, S, ui } from "../state.js";
 import { dropPushSub } from "../lib/push.js";
 import { field, markClean, saveButton } from "./common.js";
 import { weixinLinkSection } from "./weixin.js";
@@ -93,10 +93,13 @@ export async function accountTab(page) {
 
 export function bindingsTab(page) {
   const feishu = feishuLinkSection();
-  const weixin = weixinLinkSection();
   feishu.dataset.section = "feishu";
-  weixin.dataset.section = "weixin";
-  page.append(feishu, weixin);
+  if (isAdmin()) page.append(h("button", { class: "btn", onclick: () => ui.settings.selectTab("feishu") }, "机器人管理"));
+  page.append(feishu);
+}
+
+export function weixinTab(page) {
+  page.append(weixinLinkSection());
 }
 
 /** 登录设备列表，每台一个「下线」。showOwner：标上是谁的（管理员看所有人时） */
@@ -144,8 +147,7 @@ function feishuLinkSection() {
       return;
     }
     // 没有飞书机器人、也没绑过：整节不显示
-    box.hidden = !data.bots.length && !data.links.length;
-    if (box.hidden) return fill(box);
+    if (!data.bots.length && !data.links.length) return fill(box, h("p", { class: "muted" }, "当前实例还没有可绑定的飞书机器人。"));
     const codeBox = h("div");
     const gen = h("button", { class: "btn" }, data.links.length ? "再绑一个" : "生成绑定码");
     gen.onclick = async () => {

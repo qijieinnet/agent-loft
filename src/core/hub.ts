@@ -1797,7 +1797,7 @@ class Hub extends EventEmitter<{
       "- `/permission edit`：自动改文件",
       ...(engineSupports(conv.agent, "auto") ? ["- `/permission auto`：自动判断（Claude 逐个判断安不安全，拿不准再问你）"] : []),
       "- `/permission full`：完全允许",
-      "- `/permission default`：恢复默认（助手中心 → 专家 → 内置 Agent 的「设置」里定的默认权限）",
+      "- `/permission default`：恢复默认（设置 → 助手 → 专家 → 内置 Agent 的「设置」里定的默认权限）",
       "- `/planmode on` / `/planmode off`：开关计划模式（先出方案，你批准了再动手）",
       "",
       `这条对话最高能到「${PERMISSION_LABEL[this.permissionMax(conv)]}」。`,
@@ -2562,7 +2562,7 @@ class Hub extends EventEmitter<{
    */
   async commandCatalog(
     agent: string,
-    opts: { cwd?: string; allowedAgents: string[]; channel?: string; member?: boolean },
+    opts: { cwd?: string; allowedAgents: string[]; channel?: string; member?: boolean; defaultOrder?: boolean },
   ): Promise<CommandEntry[]> {
     const driver = this.enabledAgents().find((d) => d.id === agent);
     let native: AgentCommand[] = [];
@@ -2575,7 +2575,7 @@ class Hub extends EventEmitter<{
     // 成员：机器上装的技能不列（用了也会被 blockedSlash 拦下）
     if (opts.member) native = native.filter((c) => !isMachineCommand(c.name, native, opts.cwd ?? config().workspaceRoot));
     const prefs = (config().commands as Record<string, CommandPrefs | undefined>)[agent];
-    return buildCatalog({ allowedAgents: opts.allowedAgents, native, prefs, ...(opts.channel ? { channel: opts.channel } : {}) });
+    return buildCatalog({ allowedAgents: opts.allowedAgents, native, prefs: opts.defaultOrder ? undefined : prefs, ...(opts.channel ? { channel: opts.channel } : {}) });
   }
 
   async shutdown(): Promise<void> {

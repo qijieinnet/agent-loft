@@ -223,9 +223,10 @@ function workbuddyLoginButton(after) {
 export function agentsTab(cfg, page, section) {
   const engines = ENGINES.filter(id => cfg.agents?.[id]);
   const requested = section?.split("-")[0];
-  const selected = engines.includes(requested) || requested === "quota" ? requested : engines[0] || "quota";
-  const picker = h("select", { "aria-label": "选择引擎或额度" },
-    engines.map(id => h("option", { value: id }, ENGINE_LABEL[id])), h("option", { value: "quota" }, "账号额度"));
+  const selected = engines.includes(requested) ? requested : engines[0];
+  if (!selected) { page.append(h("p", { class: "muted" }, "没有可配置的引擎")); return; }
+  const picker = h("select", { "aria-label": "选择引擎" },
+    engines.map(id => h("option", { value: id }, ENGINE_LABEL[id])));
   picker.value = selected;
   picker.onchange = () => {
     const target = picker.value;
@@ -233,12 +234,6 @@ export function agentsTab(cfg, page, section) {
     void ui.settings.selectTab("engines/" + target);
   };
   page.append(field("配置对象", picker));
-  if (selected === "quota") {
-    const quota = quotaSection(cfg);
-    quota.dataset.section = "quota";
-    page.append(quota);
-    return;
-  }
   const engine = selected;
   const label = ENGINE_LABEL[engine];
   const settings = cfg.agents[engine];
@@ -629,4 +624,8 @@ function quotaSection(cfg) {
       saveButton(() => saveConfig(cfg, { web: { quotaRefreshMin: Number(quotaMin.value), quotaEnabled: quotaOn.checked } }), "保存额度设置"),
     ),
   );
+}
+
+export function quotaTab(cfg, page) {
+  page.append(quotaSection(cfg));
 }

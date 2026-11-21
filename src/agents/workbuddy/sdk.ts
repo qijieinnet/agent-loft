@@ -70,7 +70,7 @@ export function desktopCli(): string | undefined {
 export function cliPath(): string | undefined {
   if (environment() !== "workbuddy") return undefined;
   const found = desktopCli();
-  if (!found) throw new Error("找不到 WorkBuddy 桌面版的 CLI：先装好 WorkBuddy 桌面版，或者在 设置 → 模型与运行环境 → WorkBuddy 里填 CLI 路径");
+  if (!found) throw new Error("找不到 WorkBuddy 桌面版的 CLI：先装好 WorkBuddy 桌面版，或者在 设置 → 对话 → 引擎与模型 → WorkBuddy 里填 CLI 路径");
   return found;
 }
 

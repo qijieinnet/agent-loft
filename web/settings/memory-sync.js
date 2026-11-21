@@ -104,7 +104,7 @@ export async function showMemorySync(body, inviteCode = "") {
             }),
           ),
         ),
-        draft,
+        h("div", { "data-form": "" }, draft),
         button("保存合并结果", async () => {
           await post("resolve", { gid: conflict.gid, choices: conflict.choices, text: draft.value });
           await showMemorySync(body);

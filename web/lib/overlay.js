@@ -156,10 +156,13 @@ export function closeMenu() {
 }
 
 /** 弹窗只通过按钮关闭，点击遮罩不关闭。beforeClose：点 × 前先问它，false 就不关。返回的 close 直接关 */
-export function modal({ title, body, foot, wide, tall, className = "", beforeClose }) {
+export function modal({ title, body, foot, wide, tall, className = "", beforeClose, editor = false }) {
+  let dirty = false;
   const close = () => overlay.remove();
   const tryClose = async () => {
-    if (!beforeClose || (await beforeClose()) !== false) close();
+    if (beforeClose && (await beforeClose()) === false) return;
+    if (!beforeClose && dirty && !(await confirmDialog({ title: "有修改还没保存", message: "离开后将丢弃当前表单的修改。", confirmText: "不保存", danger: true }))) return;
+    close();
   };
   const overlay = h(
     "div",
@@ -172,6 +175,16 @@ export function modal({ title, body, foot, wide, tall, className = "", beforeClo
       foot ?? null,
     ),
   );
+  if (ui.settings) overlay.addEventListener("settings-back", tryClose);
+  if (ui.settings && editor) {
+    overlay.classList.add("settings-editor");
+    if (!beforeClose) {
+      for (const type of ["input", "change"]) body.addEventListener(type, () => {
+        dirty = true;
+        overlay.dataset.edited = "";
+      });
+    }
+  }
   document.body.append(overlay);
   return close;
 }

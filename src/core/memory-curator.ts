@@ -518,7 +518,7 @@ export function describeResult(r: CurateResult): string | undefined {
     ...r.updated.map((t) => `更新为「${clip(t)}」`),
     ...(r.removed.length ? [`移走了 ${r.removed.length} 条过时的`] : []),
   ];
-  return parts.length ? `🧠 记忆已更新：${parts.join("；")}。（助手中心 → 记忆 里可以查看、修改和撤销）` : undefined;
+  return parts.length ? `🧠 记忆已更新：${parts.join("；")}。（设置 → 个人 → 记忆 里可以查看、修改和撤销）` : undefined;
 }
 
 /** 按用户的设置挑 agent。指定的那个用不了就是 undefined（不悄悄换成另一个，免得用到他没想用的额度） */

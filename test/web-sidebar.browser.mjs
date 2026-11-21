@@ -16,7 +16,7 @@ const vendor = {
   "/vendor/xterm-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.mjs",
   "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
 };
-const defaults = ["search", "tasks", "library", "memos", "remote", "assistants", "settings"].map((id) => ({ id, visible: id !== "settings" }));
+const defaults = ["search", "tasks", "library", "memos", "remote", "settings"].map((id) => ({ id, visible: true }));
 
 async function fixture(t, { mobile = false, colorScheme = "light", feishu = false, projects = false, order = null, recentConvs = null, bootstrap = {} } = {}) {
   const browser = await chromium.launch({
@@ -794,15 +794,14 @@ test("侧栏设置占用主区域，返回原会话保留草稿和阅读位置",
     ui.follow = false;
     ui.messages.scrollTop = 450;
   });
-  await page.locator("#sidebar-more").click();
-  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  await page.locator('.sidebar-nav [data-nav="settings"]').click();
   const settings = page.getByRole("main", { name: "设置" });
   await settings.waitFor();
   assert.equal(await settings.getByRole("button", { name: "返回", exact: true, includeHidden: true }).count(), 0);
   assert.equal(await settings.getByRole("button", { name: "会话列表", includeHidden: true }).isVisible(), false);
   assert.equal(await page.locator(".overlay").count(), 0);
   assert.equal(await input.isVisible(), false);
-  assert.equal(await page.locator("#sidebar-more.active").count(), 1);
+  assert.equal(await page.locator('.sidebar-nav [data-nav="settings"].active').count(), 1);
   await page.locator('.conv-item.recent[data-key="web:1"]').click();
   await settings.waitFor({ state: "detached" });
   assert.equal(await input.inputValue(), "未发送的草稿");
@@ -813,8 +812,7 @@ test("侧栏设置占用主区域，返回原会话保留草稿和阅读位置",
 test("较早的会话在设置页重连和刷新，返回仍是原会话", async (t) => {
   const { page } = await fixture(t, { projects: true });
   const settings = page.getByRole("main", { name: "设置" });
-  await page.locator("#sidebar-more").click();
-  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  await page.locator('.sidebar-nav [data-nav="settings"]').click();
   await settings.getByRole("button", { name: "修改名称" }).click();
   const name = settings.locator('input[autocomplete="username"]');
   await name.fill("未保存的名称");
@@ -852,15 +850,12 @@ test("触屏首次加载账号表单期间可以离开，加载完成后仍在�
     await route.fallback();
   });
   const loaded = page.waitForResponse("**/settings/security.js");
-  await page.locator("#sidebar-more").click();
-  await page.getByRole("menuitem", { name: "设置", exact: true }).click();
+  await page.locator('.sidebar-nav [data-nav="settings"]').click();
   try {
-    await page.getByRole("button", { name: "账号与安全", exact: true }).tap();
     await page.locator('.settings-page[aria-busy="true"]').waitFor();
     const settings = page.getByRole("main", { name: "设置" });
     assert.equal(await settings.getByRole("button", { name: "返回", exact: true, includeHidden: true }).count(), 0);
-    await settings.getByRole("button", { name: "会话列表" }).tap();
-    await page.locator('.conv-item.recent[data-key="web:1"]').tap();
+    await settings.getByRole("button", { name: "返回原页面" }).tap();
     await settings.waitFor({ state: "detached" });
   } finally {
     release();
@@ -876,7 +871,7 @@ test("更多：悬停跨过间隙可操作，离开关闭；点击固定，键�
   await more.hover();
   const menu = page.getByRole("menu", { name: "更多菜单" });
   await menu.waitFor();
-  assert.equal(await page.getByRole("menuitem", { name: "设置", exact: true }).isVisible(), true);
+  assert.equal(await page.getByRole("menuitem", { name: "设置", exact: true }).count(), 0);
   await page.getByRole("menuitem", { name: "编辑侧边栏", exact: true }).hover();
   await page.waitForTimeout(300);
   assert.equal(await menu.isVisible(), true);
@@ -904,7 +899,7 @@ for (const mobile of [false, true]) {
       const dialog = page.getByRole("dialog", { name: "编辑侧边栏", exact: true });
       await dialog.getByRole("checkbox", { name: "定时任务", exact: true }).uncheck();
       await dialog.getByRole("checkbox", { name: "远程控制", exact: true }).uncheck();
-      await dialog.getByRole("checkbox", { name: "助手中心", exact: true }).uncheck();
+      await dialog.getByRole("checkbox", { name: "设置", exact: true }).uncheck();
       const grip = dialog.getByRole("button", { name: "调整资料库顺序", exact: true });
       const from = await grip.boundingBox();
       const target = await dialog.locator('[data-nav="search"]').boundingBox();
@@ -933,7 +928,7 @@ for (const mobile of [false, true]) {
       assert.equal(await page.locator("#sidebar-more").evaluate((el) => el.classList.contains("active") && el.classList.contains("live")), true);
       if (mobile) await page.locator("#sidebar-more").tap();
       else { await page.locator("#sidebar-more").focus(); await page.keyboard.press("ArrowDown"); }
-      assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "remote", "assistants", "settings"]);
+      assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "remote", "settings"]);
       assert.equal(await page.locator('.side-more-menu [data-nav="remote"]').evaluate((el) => el.classList.contains("active") && el.classList.contains("live")), true);
       const rect = await page.locator(".side-more-menu").boundingBox();
       const viewport = page.viewportSize();
@@ -974,7 +969,7 @@ test("编辑：取消不保存；保存失败保留编辑；支持键盘排序�
   assert.equal(await page.locator(".side-top .new-chat").isVisible(), true);
   await page.locator("#sidebar-more").focus();
   await page.keyboard.press("ArrowDown");
-  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "library", "memos", "remote", "assistants", "settings"]);
+  assert.deepEqual(await page.locator(".side-more-menu [data-nav]").evaluateAll((els) => els.map((el) => el.dataset.nav)), ["tasks", "search", "library", "memos", "remote", "settings"]);
 });
 
 for (const mobile of [false, true]) {
@@ -1163,14 +1158,15 @@ test("助手中心入口、旧技能链接和设置字段直达在刷新后均�
   const { page } = await fixture(t);
   await page.route("**/api/experts", r => r.fulfill({ json: { builtin: [], experts: [], engines: [], skills: [], mcp: [] } }));
   await page.route("**/api/config", r => r.fulfill({ json: { web: { host: "127.0.0.1", port: 8800 } } }));
-  await page.locator('.sidebar-nav [data-nav="assistants"]').click();
+  await page.locator('.sidebar-nav [data-nav="settings"]').click();
+  await page.locator('.settings-nav [data-page="experts"]').click();
   await page.locator(".experts-page").waitFor();
-  assert.equal(new URL(page.url()).hash, "#assistants/experts");
+  assert.equal(new URL(page.url()).hash, "#settings/experts");
   await page.reload();
   await page.locator(".experts-page").waitFor();
   await page.getByRole("button", { name: "返回原页面" }).click();
   assert.equal(new URL(page.url()).hash, "#web%3A1");
-  for (const [hash, expected] of [["skills", "#assistants/skills"], ["settings/network/port", "#settings/network/port"]]) {
+  for (const [hash, expected] of [["skills", "#settings/skills"], ["settings/network/port", "#settings/network/port"]]) {
     await page.goto("about:blank");
     await page.goto("https://sidebar.example.test/#" + hash);
     await page.waitForFunction(expected => location.hash === expected && !!document.querySelector(".settings-page"), expected);

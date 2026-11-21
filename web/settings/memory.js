@@ -1,11 +1,11 @@
 import { showMemorySync } from "./memory-sync.js";
-import { fill, h, toast } from "../lib/dom.js";
+import { fill, h, icon, toast } from "../lib/dom.js";
 import { ui } from "../state.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
 import { agentCatalog } from "../views/topbar.js";
 import { expertChoices } from "../views/experts.js";
-import { confirmDialog } from "../lib/overlay.js";
+import { confirmDialog, showMenu } from "../lib/overlay.js";
 import { field, saveButton } from "./common.js";
 
 // ---------- 记忆（每个人自己的） ----------
@@ -202,34 +202,10 @@ function dataSection(mem, reload) {
     }
   };
   const stats = mem.searchStats;
-  const b = mem.backup;
-  let backupRow = null;
-  if (b) {
-    const btn = h("button", { class: "btn small" }, "现在备份");
-    btn.onclick = async () => {
-      btn.disabled = true;
-      btn.textContent = "备份中…";
-      try {
-        await api("/api/account/memory/backup", { method: "POST" });
-        toast("已备份");
-        await reload();
-      } catch (err) {
-        toast(err.message);
-        btn.disabled = false;
-        btn.textContent = "现在备份";
-      }
-    };
-    const size = b.last ? `，${(b.last.size / 1048576).toFixed(1)} MB` : "";
-    backupRow = [
-      h("div", { class: "row", style: { alignItems: "center", gap: "10px" } }, btn, h("span", { class: "muted" }, b.last ? `上次备份：${relTime(b.last.at)}${size}，共 ${b.count} 份` : "还没有备份")),
-      h("div", { class: "muted" }, `整个数据库每天自动备份一份到 ${b.dir}（留最近 7 天、4 周、12 个月）。这个目录和数据在同一块盘上，防不了硬盘损坏；可以设环境变量 AGENT_LOFT_BACKUP_DIR 放到别的盘。`),
-      b.error ? h("div", { class: "error-text" }, `上次备份失败（${relTime(b.error.at)}）：${b.error.message}`) : null,
-    ];
-  }
   return h(
     "div",
     { class: "section", "data-section": "data" },
-    h("h4", {}, "导出和备份"),
+    h("h4", {}, "个人数据导入导出"),
     h(
       "div",
       { class: "row" },
@@ -239,7 +215,6 @@ function dataSection(mem, reload) {
       file,
     ),
     h("div", { class: "muted" }, "记忆导出成 JSON（条目、摘要和改动记录），可以导入到别的账号或服务器，内容一样的会跳过。聊天记录导出成一行一句的 JSONL。"),
-    backupRow,
     stats?.searches ? h("div", { class: "muted" }, `近 30 天 agent 搜了 ${stats.searches} 次聊天记录，${stats.empty} 次没搜到。`) : null,
   );
 }
@@ -321,6 +296,7 @@ async function renderPreferences(panel, mem, reload, run) {
     toast("已保存，之后的对话会用上");
   }, "保存自我介绍");
 
+  const draft = panel.querySelector('[data-section="about"][data-dirty]');
   fill(
     panel,
     h(
@@ -351,7 +327,7 @@ async function renderPreferences(panel, mem, reload, run) {
       ),
       h("div", { class: "row" }, clearHistory),
     ),
-    h("div", { class: "section", "data-section": "about", "data-form": "" }, h("h4", {}, "关于我"), field("写给 agent 看的自我介绍：你是谁、在做什么、希望它怎么回答", about, `每次对话都会带上，最多 ${mem.limits.about} 字`), h("div", { class: "row" }, saveAbout)),
+    draft || h("div", { class: "section", "data-section": "about", "data-form": "" }, h("h4", {}, "关于我"), field("写给 agent 看的自我介绍：你是谁、在做什么、希望它怎么回答", about, `每次对话都会带上，最多 ${mem.limits.about} 字`), h("div", { class: "row" }, saveAbout)),
   );
 }
 
@@ -381,13 +357,15 @@ function renderItems(panel, mem, reload, run) {
       .join(" · ");
   };
   const itemRow = (it) => {
-    const body = h("div", { class: "grow" }, h("div", { class: "t", style: { whiteSpace: "pre-wrap" } }, it.text), h("div", { class: "s" }, itemMeta(it)));
-    const edit = h("button", { class: "btn small" }, "编辑");
-    const pin = h("button", { class: "btn small", title: "置顶的一直放在系统提示里，自动整理也不会动它" }, it.tier === "core" ? "取消置顶" : "置顶");
-    const archive = h("button", { class: "btn small", title: "归档：不再放进系统提示，agent 需要时还能搜到" }, "归档");
-    const del = h("button", { class: "btn small danger" }, "删除");
+    const edit = h("button", { class: "memory-text", "aria-label": "编辑：" + it.text }, it.text);
+    const body = h("div", { class: "grow", "data-form": "" }, edit, h("div", { class: "s" }, itemMeta(it)));
+    const more = h("button", { class: "icon-btn", "aria-label": "更多操作", onclick: () => showMenu(more, [
+      { label: it.tier === "core" ? "取消置顶" : "置顶", onclick: run(more, () => patchItem(it, { tier: it.tier === "core" ? "active" : "core" })) },
+      { label: "归档", onclick: run(more, () => patchItem(it, { tier: "archive" })) },
+      { label: "删除", danger: true, onclick: run(more, () => api("/api/account/memory/items/" + it.id, { method: "DELETE" })) },
+    ]) }, icon("more"));
     edit.onclick = () => {
-      edit.hidden = del.hidden = pin.hidden = archive.hidden = true;
+      more.hidden = true;
       const input = h("textarea", { class: "input", rows: 2, maxlength: mem.limits.item });
       input.value = it.text;
       const ok = h("button", { class: "btn small primary" }, "保存");
@@ -395,10 +373,7 @@ function renderItems(panel, mem, reload, run) {
       fill(body, input, h("div", { class: "row" }, ok, h("button", { class: "btn small", onclick: reload }, "取消")));
       input.focus();
     };
-    pin.onclick = run(pin, () => patchItem(it, { tier: it.tier === "core" ? "active" : "core" }));
-    archive.onclick = run(archive, () => patchItem(it, { tier: "archive" }));
-    del.onclick = run(del, () => api(`/api/account/memory/items/${it.id}`, { method: "DELETE" }));
-    return h("div", { class: "list-item memory-item" }, body, edit, pin, archive, del);
+    return h("div", { class: "list-item memory-item" }, body, more);
   };
 
   // 条目多了要能找：输入就筛，一次先显示前 PAGE 条

@@ -143,7 +143,7 @@ export async function feishuTab(cfg, page) {
     const sec = h(
       "div",
       { class: "section", "data-form": "" },
-      h("h4", {}, b.name || "机器人", isDraft ? h("span", { class: "status-tag" }, "未保存") : status, h("span", { class: "grow" }), h("label", { class: "check" }, enabled, "启用")),
+      h("h4", {}, "连接配置", h("span", { class: "grow" }), h("label", { class: "check" }, enabled, "启用")),
       field("名称", name),
       h("div", { class: "row" }, h("div", { style: { flex: 1 } }, field("App ID", appId)), h("div", { style: { flex: 1 } }, field("App Secret", secret))),
       field("域名", domain),
@@ -191,7 +191,7 @@ export async function feishuTab(cfg, page) {
     );
     // 新加的还没存过：一开始就能点保存，离开时也会提醒
     if (isDraft) markDirty(sec);
-    return sec;
+    return h("details", { class: "settings-record", open: isDraft }, h("summary", {}, b.name || "新机器人", isDraft ? " · 未保存" : status), sec);
   };
 
   const registerBot = async () => {
@@ -383,7 +383,7 @@ export async function feishuTab(cfg, page) {
     slashTimer = data.bots.some((b) => b.status.state === "syncing") ? setTimeout(() => slashBox.isConnected && void loadSlash(), 2000) : null;
   };
 
-  page.append(botsBox, pairBox, slashBox);
+  page.append(pairBox, botsBox, slashBox);
   render();
   void loadStatus();
   void loadPairing();

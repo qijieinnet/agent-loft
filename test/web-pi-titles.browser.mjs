@@ -71,7 +71,7 @@ for (const width of [390, 1280]) {
     assert.equal(puts.at(-1).agents.pi.titleModel, "faux/title");
     assert.equal(puts.at(-1).agents.pi.autoTitle, true);
     assert.equal(await pi.evaluate((el) => el.scrollWidth > el.clientWidth + 1), false);
-    await page.getByLabel("选择引擎或额度").selectOption("codex");
+    await page.getByLabel("选择引擎").selectOption("codex");
     const codex = page.locator('.settings-page [data-agent="codex"]');
     assert.equal(await codex.getByRole("checkbox", { name: "自动生成会话名称", exact: true }).isChecked(), false);
     assert.equal(await codex.locator(".title-row select").isVisible(), false);

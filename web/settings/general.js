@@ -13,10 +13,9 @@ export async function conversationTab(cfg, page) {
     h(
       "div",
       { class: "section", "data-form": "" },
-      h("h4", {}, "会话"),
+      h("h4", {}, "工作区与期限"),
       field("工作目录（workspace）", root, "所有会话的默认目录，/cd 只能在它之内"),
       field("会话闲置多久自动开新会话（小时）", ttl, "0 表示永不过期"),
-      field("授权卡等待多久（分钟）", approval, "agent 要执行命令、改文件时弹出的授权卡，没人处理超过这么久就按拒绝处理"),
       h(
         "div",
         { class: "row" },
@@ -24,11 +23,14 @@ export async function conversationTab(cfg, page) {
           saveConfig(cfg, {
             workspaceRoot: root.value,
             sessionTtlMs: Number(ttl.value) * 3600000,
-            approvalTimeoutMs: Number(approval.value) * 60000,
           }), "保存会话设置",
         ),
       ),
     ),
+    h("div", { class: "section", "data-form": "" },
+      h("h4", {}, "操作授权"),
+      field("授权卡等待多久（分钟）", approval, "agent 要执行命令、改文件时弹出的授权卡，没人处理超过这么久就按拒绝处理"),
+      saveButton(() => saveConfig(cfg, { approvalTimeoutMs: Number(approval.value) * 60000 }), "保存授权等待时间")),
     allowBox,
   );
   const allowlist = await api("/api/claude/allowlist");
@@ -121,7 +123,7 @@ export function remoteTab(cfg, page) {
       h(
         "div",
         { class: "muted" },
-        "侧栏「远程控制」里直接操作这台机器的桌面和终端，切回对话时连接留在后台。以运行 agent-loft 的系统用户执行，没有授权卡。管理员能用；成员要在 实例管理 →「用户与权限」里单独开通。",
+        "侧栏「远程控制」里直接操作这台机器的桌面和终端，切回对话时连接留在后台。以运行 agent-loft 的系统用户执行，没有授权卡。管理员能用；成员要在 管理 →「成员」里单独开通。",
       ),
       status,
       h("label", { class: "check" }, termOn, "网页终端"),
