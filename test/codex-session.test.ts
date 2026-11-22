@@ -154,6 +154,34 @@ test("MCP 调用审批：允许、拒绝、取消和超时按协议返回；每�
   assert.deepEqual(await builtin.session.handleServerRequest("mcpServer/elicitation/request", request), { action: "decline", content: null, _meta: null });
 });
 
+test("备忘录 MCP 写入走审批，未挂载备忘录的会话直接拒绝", async () => {
+  const request = {
+    serverName: "agent_loft_memos",
+    mode: "form",
+    message: "Allow create_memo?",
+    _meta: { codex_approval_kind: "mcp_tool_call", tool_params: { path: "repro.md" } },
+  };
+  const seen: InteractionSpec[] = [];
+  const decisions: Settlement[] = ["allow-once", "deny"];
+  const host = async (spec: InteractionSpec) => {
+    seen.push(spec);
+    return { settlement: decisions.shift()!, answers: {} };
+  };
+  const method = "mcpServer/elicitation/request";
+  const { session } = makeSession({ expert: expert(), tasks: { userId: "u_test", convKey: "web:test" } }, host);
+  const { session: withoutMemos } = makeSession({ expert: expert() }, host);
+  try {
+    assert.deepEqual(await withoutMemos.handleServerRequest(method, request), { action: "decline", content: null, _meta: null });
+    assert.equal(seen.length, 0);
+    assert.deepEqual(await session.handleServerRequest(method, request), { action: "accept", content: null, _meta: null });
+    assert.deepEqual(await session.handleServerRequest(method, request), { action: "decline", content: null, _meta: null });
+    assert.equal(seen.length, 2);
+  } finally {
+    await session.dispose();
+    await withoutMemos.dispose();
+  }
+});
+
 let threadN = 0;
 async function startTurn(threadId?: string): Promise<{ threadId: string; turnId: string }> {
   await tick();

@@ -984,8 +984,12 @@ export class CodexSession implements AgentSession {
     switch (method) {
       case "mcpServer/elicitation/request": {
         const req = params as { serverName: string; mode?: string; message?: string; _meta?: Record<string, unknown> };
+        const configuredMcp = (this.opts.expert ?? this.opts.builtinMcp)?.mcp;
+        // 备忘录由会话在 modeParams 中挂载，独立于专家的 MCP 列表。
+        const hasMemos = req.serverName === MEMOS_MCP_NAME && this.opts.tasks !== undefined;
         // Codex 用 elicitation 传工具审批；普通 MCP 表单仍按未支持处理，不能把表单当授权。
-        if (req.mode !== "form" || req._meta?.codex_approval_kind !== "mcp_tool_call" || !(this.opts.expert ?? this.opts.builtinMcp)?.mcp[req.serverName]) {
+        if (req.mode !== "form" || req._meta?.codex_approval_kind !== "mcp_tool_call" ||
+            !(hasMemos || (configuredMcp && Object.hasOwn(configuredMcp, req.serverName)))) {
           return refusalFor(method);
         }
         const detail = [req.message, req._meta.tool_params === undefined ? "" : `\`\`\`json\n${JSON.stringify(req._meta.tool_params, null, 2)}\n\`\`\``].filter(Boolean).join("\n\n");
