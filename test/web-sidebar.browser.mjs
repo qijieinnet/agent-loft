@@ -1010,6 +1010,12 @@ for (const mobile of [false, true]) {
     };
     await openNote();
     await page.locator(".memo-reading").getByRole("heading", { name: "日记", exact: true }).waitFor();
+    if (mobile) {
+      assert.equal(await page.locator(".memo-side").isVisible(), false);
+      await page.getByRole("button", {name:"返回列表",exact:true}).click();
+      assert.equal(await page.locator(".memo-pane").isVisible(), false);
+      await page.locator('.memo-row[data-path="旅行/今天.md"]').click();
+    }
     await page.getByRole("button", { name: "编辑", exact: true }).click();
     const doc = page.locator(".memo-editor .cm-content");
     await doc.click();
@@ -1031,14 +1037,25 @@ for (const mobile of [false, true]) {
     assert.equal(attachments, 1);
     assert.equal(text, "# 日记\n![图片](assets/test.png)");
     await page.reload();
-    // 自动恢复上次打开的笔记，手机上目录此时已收起。
+    if (mobile) {
+      await page.getByRole("heading", {name:"最近笔记"}).waitFor();
+      const query = page.getByRole("searchbox", {name:"搜索笔记"});
+      await query.fill("今天");
+      const result = page.locator(".memo-found").filter({hasText:"今天.md"});
+      await result.click();
+      await page.getByRole("button", {name:"返回列表",exact:true}).click();
+      assert.equal(await query.inputValue(), "今天");
+      assert.equal(await result.evaluate(el => el === document.activeElement), true);
+      await page.getByRole("button", {name:"取消搜索",exact:true}).click();
+      await page.locator('.memo-row[data-path="旅行/今天.md"]').click();
+    }
     await page.waitForFunction(() => document.querySelector(".memo-reading img")?.naturalWidth === 1);
     assert.ok(await page.locator(".memo-reading img").isVisible());
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   });
 }
 
-test("备忘录从空状态连接 S3、新建目录和 JSON 文件，保存遇到冲突可另存副本", async t => {
+test("备忘录从空状态连接 S3，在子目录直接新建笔记，保存遇到冲突可另存副本", async t => {
   const { page } = await fixture(t);
   const files = new Map();
   let folder = false, connected = false;
@@ -1066,8 +1083,12 @@ test("备忘录从空状态连接 S3、新建目录和 JSON 文件，保存遇�
         json = { ok: true };
         break;
       case "file": {
+        if (route.request().method() === "GET") {
+          return files.has(p) ? route.fulfill({json:{text:files.get(p), version:'"1"'}}) :
+            route.fulfill({status:404,json:{error:"不存在"}});
+        }
         const data = route.request().postDataJSON();
-        if (data.version !== null) return route.fulfill({ status: 409, json: { error: "文件已被其他设备修改" } });
+        if (data.version !== null || files.has(p)) return route.fulfill({ status: 409, json: { error: "文件已被其他设备修改" } });
         files.set(p, data.text);
         json = { version: '"1"' };
       }
@@ -1083,20 +1104,71 @@ test("备忘录从空状态连接 S3、新建目录和 JSON 文件，保存遇�
   await form.getByLabel("Access Key ID").fill("test-id");
   await form.getByLabel("Secret Access Key").fill("test-secret");
   await form.getByRole("button", { name: "连接笔记库" }).click();
+  await page.getByRole("button", { name: "文件夹", exact: true }).click();
   await page.getByRole("button", { name: "新建文件夹", exact: true }).click();
   const name = page.getByRole("textbox", { name: "名称", exact: true });
   await name.fill("清单"); await name.press("Enter");
-  await page.locator('.memo-tree [data-path="清单"]').waitFor();
   await page.getByRole("button", { name: "新建笔记", exact: true }).click();
-  await name.fill("list.json"); await name.press("Enter");
+  await page.getByRole("button", { name: "完成", exact: true }).click();
+  assert.equal(files.size, 0, "空白笔记不写入笔记库");
+  files.set("清单/采购.md", "已有清单");
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
   const doc = page.locator(".memo-editor .cm-content");
-  await doc.fill('{"日期": 20}');
+  await doc.fill("# 采购\n苹果");
+  await page.getByText("已保存", {exact:true}).waitFor();
+  assert.equal(files.get("清单/采购.md"), "已有清单");
+  assert.equal(files.get("清单/采购 (2).md"), "# 采购\n苹果");
+  await doc.fill("# 采购\n苹果和橙子");
   await page.getByText("远端已更改", {exact:true}).waitFor();
   await page.getByRole("button", { name: "另存副本", exact: true }).click();
   await name.press("Enter");
   await page.getByText("已保存", {exact:true}).waitFor();
-  assert.equal(files.get("清单/list.json"), "");
-  assert.equal(files.get("清单/list-副本.json"), '{"日期": 20}');
+  assert.equal(files.get("清单/采购 (2).md"), "# 采购\n苹果");
+  assert.equal(files.get("清单/采购 (2)-副本.md"), "# 采购\n苹果和橙子");
+});
+
+test("备忘录新稿首次创建时继续输入，离线刷新后保留全文并按原路径保存", async t => {
+  const { page } = await fixture(t, {mobile:true});
+  const file = "旅途.md", first = "# 旅途\n第一段", final = first + "\n第二段";
+  const writes = [], files = new Map();
+  let offline = true, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route("**/api/memos/**", async route => {
+    const req = route.request(), url = new URL(req.url());
+    const op = url.pathname.split("/").pop(), path = url.searchParams.get("path");
+    if (op === "sources") return route.fulfill({json:[{id:"vault",kind:"webdav",name:"我的笔记"}]});
+    if (op === "tree") return route.fulfill({json:{entries:[...files.keys()].map(name => ({name,directory:false}))}});
+    if (op !== "file" || req.method() !== "PUT") return route.fulfill({status:404,json:{error:"不存在"}});
+    const body = req.postDataJSON();
+    writes.push({path, ...body});
+    if (writes.length === 1) await gate;
+    if (offline) return route.fulfill({status:503,json:{error:"暂时离线"}});
+    files.set(path, body.text);
+    return route.fulfill({json:{version:"1"}});
+  });
+  await page.locator('[data-nav="memos"]').click();
+  await page.getByRole("button", {name:"新建笔记"}).click();
+  const doc = page.locator(".memo-editor .cm-content");
+  const writing = page.waitForRequest(req => req.method() === "PUT" && req.url().includes("/api/memos/file?"));
+  await doc.click();
+  await page.keyboard.insertText(first);
+  await writing;
+  try {
+    await page.keyboard.insertText("\n第二段");
+    assert.equal(await doc.innerText(), final);
+  } finally { release(); }
+  await page.getByText("保存失败", {exact:true}).waitFor();
+  assert.deepEqual(writes[0], {path:file,text:first,version:null});
+  assert.equal(files.size, 0);
+  page.once("dialog", dialog => dialog.accept());
+  await page.reload();
+  await doc.waitFor();
+  assert.equal(await doc.innerText(), final);
+  offline = false;
+  await page.getByText("已保存", {exact:true}).waitFor();
+  assert.deepEqual(writes.at(-1), {path:file,text:final,version:null});
+  assert.deepEqual([...files], [[file, final]]);
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("aim.memoDraft.u1")), null);
 });
 
 test("备忘录在自动保存期间继续输入，切换文件写回最新正文，旧版本可预览并恢复", async t => {
@@ -1127,7 +1199,7 @@ test("备忘录在自动保存期间继续输入，切换文件写回最新正�
     return route.fulfill({ json: { version: String(history.length), text: files.get(path) } });
   });
   await page.locator('[data-nav="memos"]').click();
-  const open = name => page.locator('.memo-tree').getByRole("button", { name, exact:true }).click();
+  const open = name => page.locator(`.memo-row[data-path="${name}"]`).click();
   await open("a.md");
   await page.getByRole("button", { name: "编辑", exact:true }).click();
   const doc = page.locator(".memo-editor .cm-content");
@@ -1140,6 +1212,7 @@ test("备忘录在自动保存期间继续输入，切换文件写回最新正�
   assert.deepEqual(history, ["起稿", "第一稿"]);
   assert.equal(files.get("a.md"), "第二稿");
   await open("a.md");
+  await page.locator(".memo-pane").getByRole("button", {name:"更多",exact:true}).click();
   await page.getByRole("button", {name:"版本历史"}).click();
   await page.getByLabel("选择历史版本").selectOption("1");
   await page.locator(".memo-snapshot").filter({ hasText: /^起稿$/ }).waitFor();

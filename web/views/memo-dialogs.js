@@ -1,7 +1,90 @@
-import { h, toast } from "../lib/dom.js";
-import { modal } from "../lib/overlay.js";
+import { h, icon, toast } from "../lib/dom.js";
+import { closeMenu, placePopover, showPopover } from "../lib/overlay.js";
+import { memoModal as modal } from "./memo-modal.js";
+import { ui } from "../state.js";
 import { api } from "../lib/api.js";
 import { memoAccessSelect } from "../lib/memo-access.js";
+
+function actionMenu(anchor, label, align, items) {
+  if (ui.menu?.anchor === anchor) { closeMenu(); return; }
+  const menu = showPopover(anchor, { place: "below", align });
+  menu.classList.add("memo-settings");
+  menu.setAttribute("role", "group");
+  menu.setAttribute("aria-label", label);
+  anchor.setAttribute("aria-expanded", "true");
+  for (const item of items) {
+    if (item === "separator") { menu.append(h("div", { class: "sep" })); continue; }
+    if (!item.action) continue;
+    menu.append(h("button", {
+      type: "button", class: item.danger ? "danger" : "",
+      "aria-current": item.current ? "true" : null,
+      onclick: () => { closeMenu(); anchor.focus({ preventScroll: true }); item.action(); },
+    }, icon(item.symbol), h("span", { class: "grow" }, item.label), item.current ? icon("check") : null));
+  }
+  menu.onkeydown = e => {
+    const buttons = [...menu.querySelectorAll("button")];
+    const index = buttons.indexOf(e.target);
+    if (e.key === "Tab") { closeMenu(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      buttons[(index + (e.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+    }
+  };
+  menu.addEventListener("focusout", e => {
+    if (e.relatedTarget && !menu.contains(e.relatedTarget) && e.relatedTarget !== anchor) closeMenu();
+  });
+  document.addEventListener("aim:leave-view", closeMenu);
+  menu.onMenuClose = () => {
+    document.removeEventListener("aim:leave-view", closeMenu);
+    anchor.setAttribute("aria-expanded", "false");
+    if (menu.contains(document.activeElement)) anchor.focus({ preventScroll: true });
+  };
+  placePopover(menu, anchor);
+  (menu.querySelector("[aria-current]") || menu.querySelector("button"))?.focus();
+}
+
+export function openFileMenu(anchor, { favorite, onFavorite, onOutline, onHistory, onOrganize }) {
+  const items = [
+    { label: favorite ? "取消收藏" : "收藏", symbol: "bookmark", action: onFavorite },
+    { label: "文章目录", symbol: "outline", action: onOutline },
+    { label: "版本历史", symbol: "clock", action: onHistory },
+  ];
+  if (onOrganize) items.push(
+    "separator",
+    { label: "重命名", symbol: "edit", action: () => onOrganize("rename") },
+    { label: "移动", symbol: "folder", action: () => onOrganize("move") },
+    { label: "移入回收站", symbol: "trash", action: () => onOrganize("trash"), danger: true },
+  );
+  actionMenu(anchor, "笔记操作", "right", items);
+}
+
+export function openLibraryMenu(anchor, { source, sources, onSelect, onConnect, onTrash, onManage }) {
+  const items = sources.map(s => ({
+    label: s.sharedBy ? s.name + " · " + s.sharedBy.name + "共享（" + (s.permission === "read" ? "只读" : "读写") + "）" : s.name,
+    symbol: "notebook", current: s.id === source.id, action: () => onSelect(s),
+  }));
+  items.push("separator", { label: "连接笔记库", symbol: "plus", action: onConnect },
+    { label: "回收站", symbol: "trash", action: onTrash },
+    { label: "管理当前库", symbol: "gear", action: onManage });
+  actionMenu(anchor, "笔记库", "left", items);
+}
+
+export function manageMemoSource(source, { onAccess, onShare, onDisconnect }) {
+  if (source.sharedBy) return;
+  const action = (label, symbol, fn, danger = false) => h("button", {
+    type: "button", class: danger ? "memo-row danger" : "memo-row", onclick: () => { close(); fn(); },
+  }, icon(symbol), label);
+  const body = h("div", { class: "modal-body memo-fields" },
+    action("共享给成员", "handoff", onShare),
+    action("智能体访问", "spark", onAccess),
+    action("断开笔记库", "unplug", onDisconnect, true));
+  const close = modal({ title: "管理当前库 · " + source.name, body });
+  body.querySelector("button").focus();
+}
 
 function memoAccessField() {
   const select = memoAccessSelect("智能体访问", "off");
@@ -13,9 +96,21 @@ function memoAccessField() {
   return { select, field: h("label", {}, "智能体访问", select, hint) };
 }
 
+// Menu actions sometimes need data before the form can open.
+async function loadDialogData(url) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  document.addEventListener("aim:leave-view", cancel);
+  try { return await api(url, { signal: controller.signal }); }
+  catch (err) { if (!controller.signal.aborted) throw err; return null; }
+  finally { document.removeEventListener("aim:leave-view", cancel); }
+}
+
 export async function memoAccessSettings(source) {
   const url = action => "/api/memos/" + action + "?" + new URLSearchParams({ source: source.id });
-  Object.assign(source, await api(url("access")));
+  const settings = await loadDialogData(url("access"));
+  if (!settings) return;
+  Object.assign(source, settings);
   const select = memoAccessSelect("默认权限", source.access ?? "off");
   const status = h("p", { role: "status" });
   const refresh = h("button", { class: "btn", type: "button" }, "立即刷新索引");
@@ -41,6 +136,7 @@ export async function memoAccessSettings(source) {
     } catch (err) { if (sequence === request) status.textContent = err.message; }
   }
   modal({ title: source.name + " · 智能体访问", body: form, beforeClose: () => { if (save.disabled) return false; clearTimeout(timer); ++sequence; } });
+  select.focus();
   refresh.onclick = () => void load("POST");
   form.onsubmit = async e => {
     e.preventDefault();
@@ -57,7 +153,8 @@ export async function memoAccessSettings(source) {
 
 export async function shareMemoSource(source) {
   const url = "/api/memos/sharing?" + new URLSearchParams({ source: source.id });
-  const members = await api(url);
+  const members = await loadDialogData(url);
+  if (!members) return;
   const fields = members.map(member => {
     const select = memoAccessSelect(member.name, member.access);
     if (member.disabled) for (const option of select.options) option.disabled = option.value !== "off" && option.value !== member.access;
@@ -71,6 +168,7 @@ export async function shareMemoSource(source) {
       member.name + (member.disabled ? "（已停用）" : ""), select)) : h("p", {}, "还没有其他可共享的账号。"), error, save);
   let saving = false;
   const close = modal({ title: source.name + " · 共享给成员", body: form, beforeClose: () => !saving });
+  fields[0]?.select.focus();
   form.onsubmit = async e => {
     e.preventDefault();
     if (saving) return;
@@ -142,8 +240,7 @@ export function confirmDisconnect(source) {
     function finish(result) { close(); resolve(result); }
     input.oninput = () => { submit.disabled = input.value !== source.name; };
     form.onsubmit = e => { e.preventDefault(); if (input.value === source.name) finish(true); };
-    form.onkeydown = e => { if (e.key === "Escape") finish(false); };
-    input.focus();
+      input.focus();
   });
 }
 
@@ -173,7 +270,8 @@ export function askMemoName(title, initial, directory) {
 
 /** Only fetch the selected snapshot. Restoring returns its text to the normal conditional save path. */
 export async function chooseMemoVersion(url, readOnly = false) {
-  const versions = await api(url);
+  const versions = await loadDialogData(url);
+  if (!versions) return null;
   return new Promise(resolve => {
     let request = 0, selected = null;
     const select = h("select", { class: "input", "aria-label": "选择历史版本" },
@@ -197,6 +295,6 @@ export async function chooseMemoVersion(url, readOnly = false) {
       } catch (err) { if (seq === request) preview.textContent = err.message; }
     }
     select.onchange = load;
-    if (versions.length) void load();
+    if (versions.length) { select.focus(); void load(); }
   });
 }

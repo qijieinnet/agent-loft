@@ -92,6 +92,7 @@ export async function createEditor({ parent, text, name, onChange, onSave, colla
   const CM = await loadCodeMirror();
   const dark = matchMedia("(prefers-color-scheme: dark)");
   const theme = new CM.Compartment();
+  const collaborationSlot = new CM.Compartment();
   const themeOf = () => (dark.matches ? CM.oneDark : []);
   let eol = collaboration ? (collaboration.crlf ? "crlf" : "mixed") : detectEol(text);
   const editorText = value => collaboration?.crlf ? value.replace(/\r\n/g, "\n") : value;
@@ -116,7 +117,7 @@ export async function createEditor({ parent, text, name, onChange, onSave, colla
           // Tab 缩进。键盘用户按 Esc 再按 Tab 可以离开编辑器（CodeMirror 自带）
           CM.indentWithTab,
         ]),
-        ...(collaboration ? [CM.collab(collaboration)] : []),
+        collaborationSlot.of(collaboration ? CM.collab(collaboration) : []),
         ...(readOnly ? [CM.EditorState.readOnly.of(true), CM.EditorView.editable.of(false)] : []),
         CM.basicSetup,
         CM.EditorView.lineWrapping,
@@ -132,32 +133,39 @@ export async function createEditor({ parent, text, name, onChange, onSave, colla
   const onTheme = () => view.dispatch({ effects: theme.reconfigure(themeOf()) });
   dark.addEventListener("change", onTheme);
   let confirmed = view.state.doc;
+  const shared = {
+    revision: () => CM.getSyncedVersion(view.state),
+    pending: () => CM.sendableUpdates(view.state).length,
+    outgoing() {
+      const updates = [];
+      let size = 0;
+      for (const update of CM.sendableUpdates(view.state).slice(0, 128)) {
+        const json = update.changes.toJSON();
+        const length = JSON.stringify(json).length;
+        if (updates.length && size + length > 3_000_000) break;
+        size += length;
+        updates.push(json);
+      }
+      return updates;
+    },
+    receive(packet) {
+      const skip = CM.getSyncedVersion(view.state) - packet.from;
+      if (skip < 0) throw new Error("缺少协作修改记录");
+      if (skip >= packet.updates.length) return false;
+      const updates = packet.updates.slice(skip).map(u => ({ clientID: u.clientID, changes: CM.ChangeSet.fromJSON(u.changes) }));
+      for (const u of updates) confirmed = u.changes.apply(confirmed);
+      view.dispatch(CM.receiveUpdates(view.state, updates));
+      return true;
+    },
+    savedText: () => restoreEol(confirmed.toString(), eol),
+  };
   return {
-    collaboration: collaboration && {
-      revision: () => CM.getSyncedVersion(view.state),
-      pending: () => CM.sendableUpdates(view.state).length,
-      outgoing() {
-        const updates = [];
-        let size = 0;
-        for (const update of CM.sendableUpdates(view.state).slice(0, 128)) {
-          const json = update.changes.toJSON();
-          const length = JSON.stringify(json).length;
-          if (updates.length && size + length > 3_000_000) break;
-          size += length;
-          updates.push(json);
-        }
-        return updates;
-      },
-      receive(packet) {
-        const skip = CM.getSyncedVersion(view.state) - packet.from;
-        if (skip < 0) throw new Error("缺少协作修改记录");
-        if (skip >= packet.updates.length) return false;
-        const updates = packet.updates.slice(skip).map(u => ({ clientID: u.clientID, changes: CM.ChangeSet.fromJSON(u.changes) }));
-        for (const u of updates) confirmed = u.changes.apply(confirmed);
-        view.dispatch(CM.receiveUpdates(view.state, updates));
-        return true;
-      },
-      savedText: () => restoreEol(confirmed.toString(), eol),
+    get collaboration() { return collaboration && shared; },
+    joinCollaboration(config) {
+      collaboration = config;
+      eol = config.crlf ? "crlf" : "mixed";
+      confirmed = view.state.doc;
+      view.dispatch({ effects: [collaborationSlot.reconfigure(CM.collab(config)), separator.reconfigure(separatorOf())] });
     },
     text: () => restoreEol(view.state.doc.toString(), eol),
     setText(next) {

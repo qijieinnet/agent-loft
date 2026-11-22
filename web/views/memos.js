@@ -1,15 +1,16 @@
 import { api } from "../lib/api.js";
 import { h, fill, icon, toast } from "../lib/dom.js";
 import { patchMarkdown } from "../lib/markdown.js";
-import { closeMenu, confirmDialog, placePopover, showPopover } from "../lib/overlay.js";
+import { closeMenu, confirmDialog } from "../lib/overlay.js";
 import { WS } from "../lib/ws.js";
 import { S, setContentHash, ui } from "../state.js";
 import { createEditor } from "./file-editor.js";
-import { findMemo, rememberFile, relocatePreference, vaultFiles, trashDir } from "./memo-find.js";
+import { findMemo, rememberFile, relocatePreference, vaultFiles, isFavorite, toggleFavorite } from "./memo-find.js";
 import { organizeDialog } from "./memo-organize.js";
 import { createMemoOutline } from "./memo-outline.js";
-import { askMemoName, chooseMemoVersion, confirmDisconnect, connectSource, memoAccessSettings, shareMemoSource } from "./memo-dialogs.js";
-import { closeSide, renderSidebar } from "./sidebar.js";
+import { askMemoName, chooseMemoVersion, openFileMenu, openLibraryMenu, manageMemoSource, confirmDisconnect, connectSource, memoAccessSettings, shareMemoSource } from "./memo-dialogs.js";
+import { createMemoList } from "./memo-list.js";
+import { openSide, closeSide, renderSidebar } from "./sidebar.js";
 import { renderTopbar } from "./topbar.js";
 
 const markdown = path => /\.(md|markdown)$/i.test(path);
@@ -20,6 +21,11 @@ const noteMarkup = {
 };
 const parent = path => path.split("/").slice(0, -1).join("/");
 const join = (dir, name) => dir ? dir + "/" + name : name;
+function noteStem(text) {
+  const first = text.trimStart().split(/[\r\n]/, 1)[0].replace(/^#{1,6}(?:\s+|$)/, "");
+  const cleaned = first.replace(/[<>:"/\\|?*%\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim().replace(/^\.+|[. ]+$/g, "");
+  return Array.from(cleaned).slice(0, 55).join("").trimEnd() || "未命名";
+}
 const button = (name, action, symbol) => h("button", { class: symbol ? "icon-btn" : "btn", title: name, "aria-label": name, onclick: action }, symbol ? icon(symbol) : name);
 
 function relativePath(note, ref) {
@@ -77,9 +83,10 @@ function bindTreeWidth(root, handle, key) {
 }
 
 function notebook() {
-  let sources = [], source, dir = "", path = "", editor, original = "", version, dirty = false, busy = false, preview = false;
-  let expanded = new Set(), conflict = false;
+  let sources = [], source, path = "", editor, original = "", version, dirty = false, busy = false, preview = false;
+  let conflict = false;
   let session, poll, receiving = false;
+  let unborn = false, creationPath = "";
   const owner = S.user.id;
   const chooseKey = "aim.memoSource." + owner;
   const draftKey = "aim.memoDraft." + owner;
@@ -92,7 +99,9 @@ function notebook() {
     clearTimeout(draftTimer);
     if (!editor) return;
     try {
-      if (dirty || (saving && editor.text() !== savingText)) sessionStorage.setItem(draftKey, JSON.stringify({ source: source.id, path, version, text: editor.text() }));
+      if (dirty || (saving && editor.text() !== savingText)) sessionStorage.setItem(draftKey, JSON.stringify({
+        source: source.id, path, version, text: editor.text(), ...(unborn ? { unborn, creationPath } : {}),
+      }));
       else if (!readOnly()) {
         const saved = savedDraft();
         if (saved?.source === source.id && saved.path === path) sessionStorage.removeItem(draftKey);
@@ -104,7 +113,24 @@ function notebook() {
     catch { return null; }
   }
   const root = h("section", { class: "memo-page no-source", "aria-label": "备忘录" });
-  const tree = h("nav", { class: "memo-tree", id: "memo-tree", "aria-label": "文件目录" });
+  const list = createMemoList({endpoint, shelfKey: () => shelfKey(), canWrite: () => !readOnly(),
+    currentFile: () => unborn ? "" : path, onOpen: (hit, row) => run(async () => {
+      row?.setAttribute("aria-busy", "true");
+      try {
+        if (path === hit.path && !unborn && !conflict && !saveError) {
+          setTreeOpen(false);
+          if (hit.needle && !preview) switchMode(true);
+        } else await openFile(hit.path);
+        if (path !== hit.path) return;
+        if (hit.needle) highlightHit(hit.needle);
+        if (narrow.matches && preview) openTree.focus({preventScroll: true});
+      } finally { row?.removeAttribute("aria-busy"); }
+    }), onMenu: fileMenu, onNewFolder: () => run(() => create(true)) });
+  const tree = list.tree;
+  const noteDirectory = list.directory;
+  const browseFolder = list.navigate;
+  const refreshTree = list.refresh;
+  const highlight = list.highlight;
   const toolbar = h("div", { class: "memo-bar" });
   const pane = h("section", { class: "memo-pane" });
   const editorHost = h("div", { class: "memo-editor" });
@@ -128,7 +154,7 @@ function notebook() {
   }
   function savePosition() {
     clearTimeout(positionTimer);
-    if (editor && preview && !pendingPosition && reading.clientHeight) writePosition({ path, ...outline.position() });
+    if (!unborn && editor && preview && !pendingPosition && reading.clientHeight) writePosition({ path, ...outline.position() });
   }
   function restorePosition() {
     if (!pendingPosition || !preview || !reading.clientHeight) return;
@@ -145,43 +171,50 @@ function notebook() {
   const status = h("span", { class: "memo-status", role: "status" });
   const footer = h("div", { class: "memo-footer" });
   const retryButton = button("重试保存", () => void saveNow().catch(err => toast(err.message)));
-  const historyButton = button("版本历史", () => run(openHistory), "clock");
+  let feedbackTimer, lastSaveState;
   function switchMode(readingMode) {
-    if (busy || !editor || readOnly() || readingMode === preview) return;
+    if (!editor || readOnly() || readingMode === preview) return;
     savePosition();
     preview = readingMode;
     modes();
     restorePosition();
     if (!preview) editor.focus();
   }
-  const modeButton = (label, symbol, readingMode) => h("button", { type: "button", title: label,
-    "aria-label": label, onclick: () => switchMode(readingMode) }, icon(symbol), h("span", {}, label));
-  const readMode = modeButton("阅读", "eye", true);
-  const editMode = modeButton("编辑", "edit", false);
-  const modeGroup = h("div", { class: "memo-modes", role: "group", "aria-label": "笔记模式" }, readMode, editMode);
+  const modeButton = button("编辑", () => {
+    if (busy) return;
+    if (unborn && !dirty && !saving) { backToList(); return; }
+    switchMode(!preview);
+    if (preview) void saveNow().catch(() => {});
+  });
+  modeButton.className = "memo-action";
   const narrow = matchMedia("(max-width: 768px)");
   function setTreeOpen(open) {
-    root.classList.toggle("show-tree", open);
-    pane.inert = open && narrow.matches && root.classList.contains("has-file");
-    openTree.setAttribute("aria-expanded", String(open));
+    root.classList.toggle("show-list", open);
   }
-  const onScreenChange = () => setTreeOpen(!path);
-  narrow.addEventListener("change", onScreenChange);
-  const openTree = button("文件目录", () => {
-    savePosition();
-    setTreeOpen(true);
-    (tree.querySelector(".selected") || tree.querySelector("button"))?.focus();
-  }, "panel");
-  openTree.classList.add("memo-mobile", "memo-panel-button");
-  openTree.setAttribute("aria-controls", "memo-side");
-  function returnToFile() {
-    setTreeOpen(false);
+  const onScreenChange = () => {
+    closeMenu();
+    editor?.measure();
     restorePosition();
-    openTree.focus();
+  };
+  narrow.addEventListener("change", onScreenChange);
+  function backToList() {
+    if (busy) return;
+    if (dirty || saving || conflict) {
+      void run(async () => { await saveNow(); displayList(); });
+    } else displayList();
   }
-  const scrim = h("button", { class: "memo-scrim", type: "button", tabindex: -1, "aria-label": "关闭文件目录", onclick: returnToFile });
-  const backToFile = button("返回文件", returnToFile, "back");
-  backToFile.classList.add("memo-return");
+  function displayList() {
+    savePosition();
+    if (unborn && !dirty && !saving) {
+      resetDocument();
+      showEmptyPane();
+    }
+    setTreeOpen(true);
+    list.focusOrigin();
+  }
+  const openTree = button("返回列表", backToList, "back");
+  openTree.classList.add("memo-mobile");
+  openTree.setAttribute("aria-controls", "memo-side");
   const foldTree = button("收起文件树", () => {
     const collapsed = !root.classList.contains("tree-collapsed");
     setCollapsed(collapsed);
@@ -199,48 +232,33 @@ function notebook() {
   }
   setCollapsed(localStorage.getItem(collapsedKey) === "1");
   const copyButton = button("另存副本", () => run(() => create(false, true)));
-  const choose = h("select", { class: "input", "aria-label": "切换笔记库", onchange: () => {
-    const selected = sources.find(s => s.id === choose.value);
-    choose.value = source.id;
-    void run(async () => { if (await discardable()) await select(selected); });
-  } });
   const side = h("aside", { class: "memo-side", id: "memo-side", "aria-label": "笔记库文件" });
-  side.addEventListener("keydown", e => {
-    if (e.key === "Escape" && pane.inert && !ui.menu) { e.preventDefault(); returnToFile(); }
-  });
-  const pathLabel = h("div", { class: "memo-breadcrumb" });
-  const entryButton = button("连接笔记库", () => addSource());
-  const settings = button("笔记库设置", openSettings, "gear");
+  const pathLabel = h("strong", { class: "memo-breadcrumb" });
+  const entryButton = button("连接笔记库", addSource);
+  const choose = h("button", { type: "button", class: "memo-library-button", "aria-label": "切换笔记库", onclick: libraryMenu });
+  const more = button("更多", e => fileMenu(e.currentTarget, path), "more");
+  const shellMenu = button("会话列表", openSide, "menu");
+  shellMenu.classList.add("memo-mobile");
   const handle = h("div", { class: "memo-divider", role: "separator", tabindex: 0, "aria-label": "文件树宽度",
     "aria-controls": tree.id, "aria-orientation": "vertical", title: "拖动调整文件树宽度，双击恢复默认" });
   const widthObserver = bindTreeWidth(root, handle, "aim.memoTreeWidth." + owner);
-  const newNote = button("新建笔记", () => run(() => create(false)), "compose");
-  const newFolder = button("新建文件夹", () => run(() => create(true)), "folderPlus");
+  const newNote = h("button", { type: "button", class: "memo-action", "aria-label": "新建笔记",
+    onclick: () => run(() => create(false)) }, icon("compose"), "新建");
   const readOnly = () => source?.permission === "read";
   function endpoint(action, file = "", cursor = "") {
     return "/api/memos/" + action + "?" + new URLSearchParams({ source: source.id, path: file,
       ...(source.sharedBy ? { owner: source.sharedBy.id } : {}), ...(action === "file" ? { collab: "1" } : {}), ...(cursor ? { cursor } : {}) });
   }
   const shelfKey = () => readingKey(source) + ".files";
-  async function reveal(file) {
-    await openFile(file);
-    if (path !== file) return;
-    let changed = false;
-    for (let p = parent(file); p; p = parent(p)) {
-      if (!expanded.has(p)) { expanded.add(p); changed = true; }
-    }
-    if (changed) refreshTree();
-  }
-  async function quick(initial = "", trash = false) {
-    const hit = await findMemo(endpoint, shelfKey(), initial, trash);
+  async function openTrash() {
+    const hit = await findMemo(endpoint, shelfKey(), "", true);
     if (!hit) return;
-    if (trash) {
-      const result = await api(endpoint("organize",hit.path),{method:"POST",body:{op:"restore"}});
-      refreshTree(); toast("已恢复「"+result.path+"」"); return;
-    }
-    await reveal(hit.path);
-    if (path !== hit.path || !hit.needle) return;
-    const needle = hit.needle.toLowerCase();
+    const result = await api(endpoint("organize", hit.path), {method:"POST", body:{op:"restore"}});
+    refreshTree();
+    toast("已恢复「" + result.path + "」");
+  }
+  function highlightHit(term) {
+    const needle = term.toLowerCase();
     const walker = document.createTreeWalker(reading, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
       const node = walker.currentNode;
@@ -249,7 +267,7 @@ function notebook() {
       if (at < 0) continue;
       const range = document.createRange();
       range.setStart(node,at);
-      range.setEnd(node,at+hit.needle.length);
+      range.setEnd(node,at+term.length);
       reading.scrollTop += range.getBoundingClientRect().top - reading.getBoundingClientRect().top - reading.clientHeight / 3;
       if (globalThis.Highlight && globalThis.CSS?.highlights) CSS.highlights.set("memo-search",new Highlight(range));
       return;
@@ -258,37 +276,73 @@ function notebook() {
     const block = markdownBody._blocks?.find(b => b.raw.toLowerCase().includes(needle));
     block?.nodes.find(n => n.nodeType === 1)?.scrollIntoView({block:"center"});
   }
-  const findButton = button("快速打开", () => run(() => quick()), "search");
   const shortcut = e => {
-    if (S.view === "memos" && source && !document.querySelector(".overlay") && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "o") {
-      e.preventDefault(); void run(() => quick());
+    if (S.view !== "memos" || !source || busy || document.querySelector(".overlay")) return;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "o") {
+      e.preventDefault();
+      setCollapsed(false);
+      setTreeOpen(true);
+      list.query.focus();
     }
   };
+  pane.addEventListener("keydown", e => {
+    if (e.key === "Escape" && narrow.matches && !ui.menu && !e.isComposing && preview) backToList();
+  });
   document.addEventListener("keydown",shortcut);
-  async function organize(file) {
+  async function organize(file, action) {
     if (readOnly() || !(await discardable())) return;
-    const op = await organizeDialog(endpoint,file);
+    const op = await organizeDialog(endpoint,file,action);
     if (!op) return;
     const result = await api(endpoint("organize",file),{method:"POST",body:op});
     relocatePreference(shelfKey(),file,op.op === "move" ? result.path : null);
     if (path === file) {
       resetDocument(); forgetPosition(source);
-      await select(source);
-      if (op.op === "move") await reveal(result.path);
-    } else refreshTree();
-    toast(op.op === "move" ? "已移动到 "+result.path : "已移入回收站，可在笔记库设置中恢复");
+      showEmptyPane();
+      if (op.op === "move") await openFile(result.path);
+      else setTreeOpen(true);
+    }
+    refreshTree();
+    toast(op.op === "move" ? "已更新文件位置" : "已移入回收站");
+  }
+  function fileMenu(anchor, file) {
+    if (busy || !file) return;
+    const current = file === path && !unborn;
+    openFileMenu(anchor, {
+      favorite: isFavorite(shelfKey(), file),
+      onFavorite: () => {
+        const added = toggleFavorite(shelfKey(), file);
+        list.refreshFavorites();
+        toast(added ? "已收藏" : "已取消收藏");
+      },
+      onOutline: current && preview && outline.available() ? () => outline.open(anchor) : null,
+      onHistory: current && editor ? () => run(openHistory) : null,
+      onOrganize: readOnly() ? null : action => run(() => organize(file, action)),
+    });
   }
   function sync() {
     retryButton.hidden = !saveError || conflict;
     retryButton.disabled = busy || !!saving;
     status.title = saveError;
-    readMode.disabled = editMode.disabled = busy;
-    choose.disabled = busy;
-    settings.disabled = busy;
+    modeButton.disabled = busy;
+    choose.setAttribute("aria-disabled", String(busy));
+    more.setAttribute("aria-disabled", String(busy));
+    more.hidden = unborn;
     copyButton.hidden = !conflict || readOnly();
-    status.textContent = conflict ? "远端已更改" : saving ? "正在保存…" : saveError ? "保存失败" :
-      busy ? "处理中…" : dirty ? "待自动保存" : readOnly() ? "只读" : editor ? "已保存" : "";
-    status.dataset.state = conflict || saveError ? "error" : saving || busy || dirty ? "pending" : readOnly() ? "readonly" : "saved";
+    const state = conflict || saveError ? "error" : saving ? "saving" : dirty ? "pending" : unborn ? "blank" : "saved";
+    status.textContent = conflict ? "远端已更改" : saveError ? "保存失败" : saving ? "正在保存…" : dirty ? "待自动保存" : unborn ? "" : "已保存";
+    status.dataset.state = state;
+    if (state !== lastSaveState) {
+      clearTimeout(feedbackTimer);
+      footer.hidden = state === "blank" || state === "saved" && !["saving", "pending", "error"].includes(lastSaveState);
+      if (state === "saved" && !footer.hidden) feedbackTimer = setTimeout(() => { footer.hidden = true; }, 1400);
+      lastSaveState = state;
+    }
+  }
+  function showEmptyPane() {
+    const menu = button("会话列表", openSide, "menu");
+    menu.classList.add("memo-mobile", "memo-empty-menu");
+    fill(pane, menu, h("div", { class: "memo-empty" }, icon("notebook"),
+      source ? h("h2", {}, "选择一篇笔记") : entryButton));
   }
   async function run(fn) {
     if (busy) return;
@@ -307,7 +361,7 @@ function notebook() {
       editorHost.inert = false;
       scheduleSave();
       sync();
-      if (!preview && pane.isConnected && (wasEditing || previousEditor !== editor)) editor?.focus();
+      if (!preview && pane.offsetWidth && (wasEditing || previousEditor !== editor)) editor?.focus();
     }
   }
   async function discardable() {
@@ -337,6 +391,8 @@ function notebook() {
       editor.destroy();
     }
     editor = null;
+    unborn = false;
+    creationPath = "";
     dirty = conflict = preview = false;
     root.classList.remove("has-file");
     path = original = "";
@@ -348,37 +404,36 @@ function notebook() {
   async function select(s, draft) {
     resetDocument();
     source = s;
-    dir = "";
-    expanded = new Set();
     setTreeOpen(true);
     if (s) localStorage.setItem(chooseKey, s.id);
     fillChoices();
-    if (s) choose.value = s.id;
-    modeGroup.hidden = newNote.hidden = newFolder.hidden = readOnly();
+    modeButton.hidden = newNote.hidden = readOnly();
     side.hidden = !s;
     root.classList.toggle("no-source", !s);
     if (!s) {
-      fill(pane, h("div", { class: "memo-empty" }, icon("clipboard"), h("h2", {}, "连接你的笔记库"), h("p", {}, "从 WebDAV 目录或 S3 存储桶打开笔记。"), entryButton));
+      list.destroy();
+      showEmptyPane();
       return;
+    }
+    list.reset();
+    if (!readOnly() && draft?.unborn && draft.source === s.id && typeof draft.path === "string" && typeof draft.text === "string") {
+      return showText(draft.path, { text: "", version: null, unborn: true }, true, draft);
     }
     const position = savedPosition(s);
     const recoverDraft = !readOnly() && draft?.source === s.id && typeof draft.path === "string" && typeof draft.text === "string";
-    const file = recoverDraft ? draft.path : position?.path;
-    const empty = h("div", { class: "memo-empty" }, icon("notebook"), h("h2", {}, "打开一篇笔记"), h("p", {}, readOnly() ? "从文件目录中选择文件查看。" : "从文件目录中选择文件，或新建一篇笔记。"));
-    const bar = h("div", { class: "memo-bar" }, openTree, icon("notebook"), s.name);
-    fill(pane, bar, file ? h("div", { class: "memo-empty", role: "status" }, "正在打开「" + file + "」…") : empty);
-    if (file) for (let p = parent(file); p; p = parent(p)) expanded.add(p);
-    refreshTree();
+    const file = recoverDraft ? draft.path : narrow.matches ? null : position?.path;
+    showEmptyPane();
     if (!file) return;
     let data;
     try { data = await api(endpoint("file", file)); }
     catch (err) {
       if (recoverDraft && !s.sharedBy && (err.status === 404 || !err.status || err.status >= 500)) data = { text: null, version: null };
       else {
-        fill(pane, bar, empty);
+        showEmptyPane();
         if (err.status === 404 || err.status === 403) {
           if (position?.path === file) forgetPosition(s);
-          if (expanded.size) { expanded.clear(); refreshTree(); }
+          relocatePreference(shelfKey(), file, null);
+          refreshTree();
         }
         toast(err.status === 404 && !recoverDraft ? "找不到上次阅读的「" + file + "」，请从文件目录重新选择。" : err.message);
         return;
@@ -387,13 +442,13 @@ function notebook() {
     await showText(file, data, recoverDraft, recoverDraft ? draft : null, position?.path === file ? position : null);
   }
   function fillChoices() {
-    fill(choose, sources.map(item => h("option", { value: item.id }, item.sharedBy
-      ? item.name + " · " + item.sharedBy.name + "共享（" + (item.permission === "read" ? "只读" : "读写") + "）" : item.name)));
+    fill(choose, h("span", {}, source?.name || "笔记库"), icon("down"));
+    choose.title = source?.name || "切换笔记库";
   }
   async function reloadSources() {
-    const list = await api("/api/memos/sources");
+    const updated = await api("/api/memos/sources");
     if (busy || dirty || saving) return;
-    sources = list;
+    sources = updated;
     const latest = sources.find(s => s.id === source?.id);
     if (!latest || latest.permission !== source.permission) {
       const previous = source;
@@ -403,7 +458,6 @@ function notebook() {
     else {
       Object.assign(source, latest);
       fillChoices();
-      choose.value = latest.id;
     }
   }
   function addSource() {
@@ -412,29 +466,19 @@ function notebook() {
       connectSource(async s => { sources.push(s); await run(() => select(s)); });
     });
   }
-  function openSettings() {
-    if (ui.menu?.anchor === settings) { closeMenu(); return; }
-    const menu = showPopover(settings, { align: "left" });
-    const library = source;
-    const action = (label, symbol, fn, danger = false) => h("button", {
-      class: danger ? "danger" : null, onclick: () => {
-        closeMenu();
-        settings.focus();
-        if (source === library && S.view === "memos") fn();
-      },
-    }, icon(symbol), label);
-    fill(menu, path && !readOnly() ? action("整理当前文件", "folder", () => run(() => organize(path))) : null,
-      !readOnly() ? action("回收站", "trash", () => run(() => quick("",true))) : null,
-      action("连接其他笔记库", "plus", addSource),
-      library.sharedBy ? null : [
-        action("智能体访问", "spark", () => run(() => memoAccessSettings(library))),
-        action("共享给成员", "handoff", () => run(() => shareMemoSource(library))),
-        h("div", { class: "sep" }),
-        action("断开笔记库", "unplug", () => run(disconnect), true),
-      ]);
-    menu.classList.add("memo-settings");
-    placePopover(menu, settings);
-    menu.querySelector("button").focus();
+  function libraryMenu() {
+    if (busy || !source) return;
+    openLibraryMenu(choose, {source, sources,
+      onSelect: selected => run(async () => {
+        if (selected.id !== source.id && await discardable()) await select(selected);
+      }),
+      onConnect: addSource, onTrash: readOnly() ? null : () => run(openTrash),
+      onManage: source.sharedBy ? null : () => manageMemoSource(source, {
+        onAccess: () => run(() => memoAccessSettings(source)),
+        onShare: () => run(() => shareMemoSource(source)),
+        onDisconnect: () => run(disconnect),
+      }),
+    });
   }
   async function disconnect() {
     if (source.sharedBy || !(await confirmDisconnect(source))) return;
@@ -446,108 +490,11 @@ function notebook() {
     forgetPosition(disconnected);
   }
 
-  function highlight() {
-    for (const el of tree.querySelectorAll("[data-path]")) {
-      const active = el.dataset.path === (el.dataset.directory ? dir : path);
-      if (active && !el.dataset.directory) el.setAttribute("aria-current", "page");
-      else el.removeAttribute("aria-current");
-      el.classList.toggle("selected", active && (!path || !el.dataset.directory));
-      el.classList.toggle("current-dir", active && !!el.dataset.directory);
-    }
-  }
-  function branch(folder) {
-    const library = source;
-    const box = h("div", { class: "memo-branch" });
-    const load = async (cursor = "") => {
-      const more = h("button", { class: "btn" }, "加载中…");
-      more.disabled = true;
-      box.append(more);
-      try {
-        const { entries, next } = await api(endpoint("tree", folder, cursor));
-        if (source !== library || !tree.contains(box)) return;
-        for (const item of entries) {
-          const full = join(folder, item.name);
-          if (full === trashDir) continue;
-          const ext = !item.directory && item.name.match(/^(.+)(\.[^.]+)$/);
-          const label = ext ? h("span", {}, ext[1], h("small", { class: "memo-extension" }, ext[2])) : h("span", {}, item.name);
-          const row = h("button", { class: "memo-row", title: full, "data-path": full, "data-directory": item.directory ? "1" : null },
-            icon(item.directory ? "folder" : imageFile(full) ? "library" : "file"), label);
-          if (!item.directory && !readOnly()) row.oncontextmenu = e => {
-            e.preventDefault(); void run(() => organize(full));
-          };
-          box.append(row);
-          if (item.directory) {
-            let children;
-            const expand = () => {
-              children = branch(full);
-              row.after(children);
-              row.setAttribute("aria-expanded", "true");
-            };
-            row.setAttribute("aria-expanded", "false");
-            if (expanded.has(full)) expand();
-            row.onclick = () => {
-              if (busy) return;
-              dir = full;
-              if (children) {
-                children.remove(); children = null;
-                expanded.delete(full);
-                row.setAttribute("aria-expanded", "false");
-              } else { expanded.add(full); expand(); }
-              highlight();
-            };
-          } else row.onclick = () => {
-            if (full === path && !conflict && !saveError && root.classList.contains("show-tree")) returnToFile();
-            else void run(async () => {
-              row.setAttribute("aria-busy", "true");
-              try {
-                await openFile(full);
-                if (narrow.matches && path === full) openTree.focus({ preventScroll: true });
-              }
-              finally { row.removeAttribute("aria-busy"); }
-            });
-          };
-        }
-        more.remove();
-        if (!entries.length && !cursor) box.append(h("small", {}, "空目录"));
-        if (next) box.append(button("加载更多", e => { e.currentTarget.remove(); void load(next); }));
-        highlight();
-      } catch (err) {
-        more.disabled = false;
-        more.textContent = "重试 · " + err.message;
-        more.onclick = () => { more.remove(); void load(cursor); };
-      }
-    };
-    void load();
-    return box;
-  }
-  let holdTimer, holdRow, holdX, holdY;
-  function cancelHold() { clearTimeout(holdTimer); holdRow = null; }
-  tree.addEventListener("pointerdown", e => {
-    cancelHold();
-    if (e.pointerType !== "touch" || readOnly() || busy) return;
-    holdRow = e.target.closest(".memo-row:not([data-directory])");
-    if (!holdRow) return;
-    holdX = e.clientX; holdY = e.clientY;
-    holdTimer = setTimeout(() => {
-      const file = holdRow.dataset.path;
-      cancelHold();
-      void run(() => organize(file));
-    }, 520);
-  });
-  tree.addEventListener("pointermove", e => {
-    if (holdRow && Math.hypot(e.clientX-holdX,e.clientY-holdY)>8) cancelHold();
-  });
-  for (const event of ["pointerup","pointercancel","pointerleave","contextmenu"]) tree.addEventListener(event,cancelHold);
-  function refreshTree() {
-    if (!source) return;
-    const home = h("button", { class: "memo-row memo-root", title: source.name, "data-path": "", "data-directory": "1", onclick: () => { dir = ""; highlight(); } }, icon("folderOpen"), h("span", {}, source.name));
-    fill(tree, home, branch(""));
-    highlight();
-  }
-
   function modes() {
-    readMode.setAttribute("aria-pressed", String(preview));
-    editMode.setAttribute("aria-pressed", String(!preview));
+    const mode = preview ? "编辑" : "完成";
+    modeButton.textContent = mode;
+    modeButton.title = mode;
+    modeButton.setAttribute("aria-label", mode);
     reading.hidden = !preview;
     editorHost.hidden = preview;
     if (!preview) { outline.update(null); editor?.measure(); return; }
@@ -635,7 +582,7 @@ function notebook() {
                 if (!hit) return;
                 file = hit.path;
               }
-              await reveal(file);
+              await openFile(file);
             }
             if (path === file && fragment.length) outline.jump(fragment.join("#"));
           });
@@ -648,7 +595,7 @@ function notebook() {
   function updatePath(file) {
     const dirs = [source.name, parent(file)].filter(Boolean).join(" / ");
     pathLabel.title = dirs + " / " + file.split("/").pop();
-    fill(pathLabel, h("span", {}, dirs), h("span", { "aria-hidden": "true" }, "/"), h("strong", {}, file.split("/").pop()));
+    pathLabel.textContent = file.split("/").pop().replace(/\.(md|markdown)$/i, "");
   }
   async function showText(file, data, edit, draft, position = null) {
     if (file === path && editor) {
@@ -658,7 +605,8 @@ function notebook() {
     }
     resetDocument();
     path = file;
-    dir = parent(file);
+    unborn = !!data.unborn;
+    creationPath = unborn && typeof draft?.creationPath === "string" ? draft.creationPath : "";
     original = data.text;
     version = draft?.version ?? data.version;
     dirty = !!draft && draft.text !== data.text;
@@ -666,13 +614,13 @@ function notebook() {
     root.classList.add("has-file");
     updatePath(file);
     editorHost.classList.toggle("memo-prose", markdown(file));
-    fill(toolbar, openTree, foldTree, pathLabel, modeGroup, outline.trigger, historyButton);
+    fill(toolbar, openTree, foldTree, pathLabel, modeButton, more);
     fill(footer, status, copyButton, retryButton);
     fill(pane, toolbar, editorHost, reading, footer);
     session = conflict ? null : data.collab;
     editor = await createEditor({ parent: editorHost, readOnly: readOnly(), collaboration: session, text: session ? original : draft?.text ?? original, name: file, onSave: () => void saveNow().catch(err => toast(err.message)), onChange: () => {
       if (receiving) return;
-      dirty = editor.collaboration ? !!editor.collaboration.pending() : editor.text() !== original;
+      dirty = editor.collaboration ? !!editor.collaboration.pending() : unborn ? !!editor.text().trim() : editor.text() !== original;
       if (!conflict) { saveError = ""; retryMs = 0; }
       scheduleSave();
       clearTimeout(draftTimer);
@@ -688,8 +636,10 @@ function notebook() {
     modes();
     setTreeOpen(false);
     pendingPosition = position ?? { path: file, top: 0 };
-    writePosition(pendingPosition);
-    rememberFile(shelfKey(), file);
+    if (!unborn) {
+      writePosition(pendingPosition);
+      rememberFile(shelfKey(), file);
+    }
     restorePosition();
     if (edit) editor.focus();
     resumePoll();
@@ -697,12 +647,16 @@ function notebook() {
   }
   async function openFile(file) {
     if (!(await discardable())) return;
-    if (!imageFile(file)) return showText(file, await api(endpoint("file", file)), false);
+    if (!imageFile(file)) {
+      const data = await api(endpoint("file", file));
+      const position = savedPosition(source);
+      return showText(file, data, false, null, position?.path === file ? position : null);
+    }
     resetDocument();
-    path = file; dir = parent(file);
+    path = file;
     root.classList.add("has-file");
     updatePath(file);
-    fill(toolbar, openTree, foldTree, pathLabel);
+    fill(toolbar, openTree, foldTree, pathLabel, more);
     rememberFile(shelfKey(),file);
     fill(pane, toolbar, h("div", { class: "memo-reading" }, h("img", { alt: file, src: endpoint("image", file), onerror: () => toast("图片读取失败") })));
     setTreeOpen(false);
@@ -783,6 +737,43 @@ function notebook() {
     }, retryMs || (session ? 450 : pauseMs));
   }
 
+  async function writeFirstVersion(current, text) {
+    const folder = parent(path), stem = noteStem(text);
+    let number = 1;
+    let file = creationPath || join(folder, stem + ".md");
+    // A prior request may have committed before the connection was lost. Retrying that exact
+    // name conditionally gives a conflict instead of creating duplicates or overwriting a note.
+    const uncertain = !!creationPath;
+    while (current === editor) {
+      creationPath = file;
+      persistDraft();
+      try {
+        const result = await api(endpoint("file", file), { method: "PUT", body: { text, version: null } });
+        return { ...result, path: file };
+      } catch (err) {
+        if (err.status !== 409 || uncertain || current !== editor) throw err;
+        // Some providers also return 409 when the parent directory is missing.
+        // Only choose a new name after finding the actual occupied name in its directory.
+        const occupied = new Set();
+        const comparable = name => name.normalize("NFC").toLowerCase();
+        let cursor = "";
+        const pages = new Set();
+        do {
+          if (current !== editor || pages.has(cursor)) throw err;
+          pages.add(cursor);
+          const page = await api(endpoint("tree", folder, cursor));
+          for (const entry of page.entries) occupied.add(comparable(entry.name));
+          cursor = page.next;
+        } while (cursor);
+        if (!occupied.has(comparable(file.split("/").pop()))) throw err;
+        let name;
+        do { name = stem + " (" + ++number + ").md"; } while (occupied.has(comparable(name)));
+        file = join(folder, name);
+      }
+    }
+    throw new Error("笔记已关闭");
+  }
+
   // An automatic write owns a snapshot, not the editor. Typing can continue during the PUT.
   async function startSave() {
     if (saving) return saving;
@@ -790,7 +781,7 @@ function notebook() {
     const current = editor, text = current.text();
     savingText = text;
     const collaboration = current.collaboration;
-    const request = collaboration ?
+    const request = unborn ? writeFirstVersion(current, text) : collaboration ?
       api(changesURL(collaboration.revision()), { method: "POST", headers: { "X-Memo-Client": session.token }, body: { updates: collaboration.outgoing() } }) :
       api(endpoint("file", path), { method: "PUT", body: { text, version } });
     saving = request.then(result => {
@@ -800,6 +791,26 @@ function notebook() {
         version = result.version;
         original = text;
         dirty = current.text() !== original;
+        if (unborn) {
+          // Clear the stored draft under its temporary name before recording its final path.
+          try { sessionStorage.removeItem(draftKey); } catch { /* Storage may be disabled. */ }
+          path = result.path;
+          unborn = false;
+          creationPath = "";
+          updatePath(path);
+          pendingPosition = { path, top: 0 };
+          writePosition(pendingPosition);
+          rememberFile(shelfKey(), path);
+          if (preview) modes();
+          refreshTree();
+        }
+        // A save can finish while the user is typing. Attach the collaborative session
+        // only when its server snapshot matches this editor, retaining selection and undo.
+        if (result.collab && !dirty) {
+          current.joinCollaboration(result.collab);
+          session = result.collab;
+          resumePoll();
+        }
       }
       saveError = "";
       retryMs = 0;
@@ -843,24 +854,26 @@ function notebook() {
     if (preview) modes();
   }
   async function create(folder, copy = false) {
-    if (!folder && !copy && !(await discardable())) return;
-    const target = copy ? parent(path) : dir;
-    let name = await askMemoName(folder ? "新建文件夹" : copy ? "另存副本" : "新建笔记",
-      folder ? "" : copy ? path.split("/").pop().replace(/(\.[^.]+)$/, "-副本$1") : "未命名.md", target);
+    if (readOnly()) return;
+    const target = copy ? parent(path) : noteDirectory();
+    if (!folder && !copy) {
+      if (await discardable()) await showText(join(target, "未命名.md"), { text: "", version: null, unborn: true }, true);
+      return;
+    }
+    let name = await askMemoName(folder ? "新建文件夹" : "另存副本",
+      folder ? "" : (creationPath || path).split("/").pop().replace(/(\.[^.]+)$/, "-副本$1"), target);
     if (!name) return;
     if (!folder && !name.includes(".")) name += ".md";
     const file = join(target, name);
     if (folder) {
       await api(endpoint("folder", file), { method: "POST" });
-      expanded.add(file);
-      dir = file;
+      browseFolder(file);
     } else {
-      const text = copy ? editor.text() : "";
+      const text = editor.text();
       const data = await api(endpoint("file", file), { method: "PUT", body: { version: null, text } });
       await showText(file, { ...data, text }, true);
     }
-    for (let p = target; p; p = parent(p)) expanded.add(p);
-    refreshTree();
+    if (copy) refreshTree();
   }
 
   editorHost.addEventListener("paste", e => {
@@ -882,9 +895,9 @@ function notebook() {
       refreshTree();
     });
   }, true);
-  fill(side, h("div", { class: "memo-tree-tools" }, backToFile, h("strong", {}, "文件"), findButton, newNote, newFolder, button("刷新目录", refreshTree, "refresh")),
-    tree, h("div", { class: "memo-sources" }, icon("notebook"), choose, settings), handle);
-  fill(root, side, pane, scrim);
+  fill(side, h("div", { class: "memo-list-bar" }, shellMenu, choose, newNote),
+    list.searchBar, list.section, tree, handle);
+  fill(root, side, pane);
   async function init() {
     fill(pane, h("div", { class: "memo-empty" }, "正在读取笔记库…"));
     try {
@@ -898,9 +911,15 @@ function notebook() {
   }
   side.hidden = true;
   void init();
-  return { owner, root, reloadSources, persistDraft, savePosition, pausePoll, resumePoll, flush: () => {
+  function enter() {
+    if (source && narrow.matches && !dirty && !saving && !unborn) {
+      setTreeOpen(true);
+      list.reset();
+    }
+  }
+  return { owner, root, enter, reloadSources, persistDraft, savePosition, pausePoll, resumePoll, flush: () => {
     if (!busy && !conflict) void saveNow().catch(() => {});
-  }, pending: () => dirty || busy || !!saving, destroy: () => { document.removeEventListener("keydown",shortcut); narrow.removeEventListener("change", onScreenChange); widthObserver.disconnect(); resetDocument(); }, measure: () => { editor?.measure(); restorePosition(); } };
+  }, pending: () => dirty || busy || !!saving, destroy: () => { document.removeEventListener("keydown",shortcut); narrow.removeEventListener("change", onScreenChange); widthObserver.disconnect(); list.destroy(); clearTimeout(feedbackTimer); resetDocument(); }, measure: () => { editor?.measure(); restorePosition(); } };
 }
 
 let page;
@@ -927,7 +946,7 @@ export function openMemos() {
   renderTopbar();
   renderSidebar();
   if (page?.owner !== S.user.id) { page?.destroy(); page = notebook(); }
-  else void page.reloadSources().catch(err => toast(err.message));
+  else { page.enter(); void page.reloadSources().catch(err => toast(err.message)); }
   fill(ui.msgInner, page.root);
   page.measure();
   page.resumePoll();

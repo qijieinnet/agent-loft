@@ -1,10 +1,9 @@
-import { h, icon, toast } from "../lib/dom.js";
+import { h, toast } from "../lib/dom.js";
 import { closeMenu, placePopover, showPopover } from "../lib/overlay.js";
 
 export function createMemoOutline(reading) {
   let sections = [], pop;
-  const trigger = h("button", { class: "icon-btn", title: "章节大纲", "aria-label": "章节大纲",
-    "aria-expanded": "false", hidden: true, onclick: open }, icon("outline"));
+
 
   function update(body) {
     const used = new Set(), suffixes = new Map();
@@ -23,7 +22,7 @@ export function createMemoOutline(reading) {
     if (pop && (sections.length !== next.length || next.some((s, i) =>
       s.key !== sections[i].key || s.title !== sections[i].title || s.level !== sections[i].level))) closeMenu();
     sections = next;
-    trigger.hidden = sections.length < 2;
+
   }
 
   function jump(key) {
@@ -53,7 +52,7 @@ export function createMemoOutline(reading) {
       reading.scrollTop += section.node.getBoundingClientRect().top - reading.getBoundingClientRect().top + position.offset;
     } else reading.scrollTop = Number.isFinite(position.top) ? position.top : 0;
   }
-  function open() {
+  function open(trigger) {
     if (pop) { closeMenu(); return; }
     const current = currentSection();
     const baseLevel = sections.reduce((min, s) => Math.min(min, s.level), 6);
@@ -80,5 +79,5 @@ export function createMemoOutline(reading) {
     placePopover(pop, trigger);
     (nav.querySelector("[aria-current]") || nav.firstElementChild).focus();
   }
-  return { trigger, update, jump, position, restore };
+  return { open, available: () => sections.length > 1, update, jump, position, restore };
 }

@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 
 const { chromium } = await import(process.env.AGENT_LOFT_PLAYWRIGHT || "playwright-core");
 
-test("两个独立账号同时编辑同一行，自动合并、预览同步并保留 CRLF 和历史", {timeout: 60000}, async t => {
+test("两个独立账号同时编辑同一行，自动合并、预览同步并保留 CRLF 和历史", {timeout: 120000}, async t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "loft-memo-browser-"));
   process.env.AGENT_LOFT_HOME = home;
   const { config, loadConfig, saveConfig } = await import("../src/core/config.ts");
@@ -84,6 +84,17 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   const browser = await chromium.launch({headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, args:["--no-sandbox"]});
   cleanup.push(() => browser.close());
   const errors = [], httpErrors = [];
+  const button = (scope, name) => scope.getByRole("button", {name, exact:true});
+  const fileRow = (page, path) => page.locator(`.memo-row[data-path="${path}"]`);
+  const noteMore = page => button(page.locator(".memo-pane"), "更多").click();
+  const manageLibrary = async page => {
+    await button(page, "切换笔记库").click();
+    await button(page, "管理当前库").click();
+  };
+  const switchLibrary = async (page, name) => {
+    await button(page, "切换笔记库").click();
+    await button(page, name).click();
+  };
   async function open(user) {
     const ctx = await browser.newContext({serviceWorkers:"block"});
     await ctx.addCookies([{name:"aim_session",value:createSession(user.id,"127.0.0.1","test"),url:base}]);
@@ -94,6 +105,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
       assert.equal(response.status(),201);
     }
     const page = await ctx.newPage();
+    page.setDefaultTimeout(10000);
     page.on("pageerror", e => errors.push(e.message));
     page.on("response", r => { if (r.status() >= 400) httpErrors.push(r.status() + " " + new URL(r.url()).pathname); });
     await page.goto(base+"/#memos", {waitUntil:"domcontentloaded"});
@@ -104,7 +116,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   const a = await open(users[0]);
   await t.test("快速打开、收藏、全文搜索、阅读勾选和双链", async () => {
     const edit = a.getByRole("button",{name:"编辑",exact:true});
-    const read = a.getByRole("button",{name:"阅读",exact:true});
+    const read = button(a, "完成");
     const content = a.locator(".memo-editor .cm-content");
     await edit.click();
     await content.press("Control+End");
@@ -116,34 +128,54 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
     assert.match(note,/- \[ \] 重复待办\r\n- \[x\] 重复待办/);
     await a.getByRole("link",{name:"查阅指南"}).click();
     await a.locator(".memo-reading h2:focus").filter({hasText:"导览"}).waitFor();
-    const originalRow = a.locator('.memo-tree [data-path="guide.md"]');
-    await originalRow.click({button:"right"});
+    const originalRow = fileRow(a, "guide.md");
+    await noteMore(a);
+    await button(a, "重命名").click();
+    await a.getByText("查看引用", {exact:true}).click();
     await a.locator(".memo-refs li").filter({hasText:"team.md"}).waitFor();
-    await a.getByRole("textbox",{name:"目标路径"}).fill("guide-moved.md");
-    await a.getByRole("button",{name:"移动或重命名"}).click();
-    const moved = a.locator('.memo-tree [data-path="guide-moved.md"]');
-    await moved.click({button:"right"});
-    await a.getByRole("button",{name:"移入回收站",exact:true}).click();
-    await moved.waitFor({state:"detached"});
-    await a.getByRole("button",{name:"笔记库设置"}).click();
-    await a.getByRole("button",{name:"回收站",exact:true}).click();
-    await a.locator(".memo-found").filter({hasText:"guide-moved.md"}).click();
-    await moved.click({button:"right"});
-    await a.getByRole("textbox",{name:"目标路径"}).fill("guide.md");
-    await a.getByRole("button",{name:"移动或重命名"}).click();
+    const fileName = a.getByRole("textbox", {name:"文件名"});
+    await fileName.fill("guide-moved.md");
+    await fileName.press("Enter");
+    await fileRow(a, "guide-moved.md").click();
+    await noteMore(a);
+    await button(a, "移入回收站").click();
+    await button(a, "移入回收站").click();
+    await fileRow(a, "guide-moved.md").waitFor({state:"detached"});
+    await button(a, "切换笔记库").click();
+    await button(a, "回收站").click();
+    await button(a, "恢复").click();
+    await button(a, "文件夹").click();
+    await fileRow(a, "guide-moved.md").click();
+    await noteMore(a);
+    await button(a, "重命名").click();
+    await fileName.fill("guide.md");
+    await fileName.press("Enter");
+    await button(a, "guide.md的更多操作").click();
+    await button(a, "移动").click();
+    const destination = a.getByRole("combobox", {name:"目标文件夹"});
+    await destination.selectOption("journal");
+    await button(a, "移动").click();
+    await originalRow.waitFor({state:"detached"});
+    assert.ok(guides.has("/notes/journal/guide.md"));
+    await noteMore(a);
+    await button(a, "移动").click();
+    await destination.selectOption("");
+    await button(a, "移动").click();
     await originalRow.click();
+    await noteMore(a);
+    await button(a, "收藏").click();
     await a.keyboard.press("Control+o");
-    await a.getByRole("button",{name:"收藏 guide.md",exact:true}).click();
-    const query = a.getByRole("searchbox");
+    const query = a.getByRole("searchbox", {name:"搜索笔记"});
+    assert.equal(await query.evaluate(el => el === document.activeElement), true);
+    await a.locator(".memo-found").filter({hasText:"guide.md"}).waitFor();
     await query.fill("共同编辑");
-    await a.getByRole("button",{name:"搜正文"}).click();
+    await button(a, "搜索正文").click();
     await a.locator(".memo-found").filter({hasText:"team.md"}).click();
     await a.waitForFunction(() => CSS.highlights.has("memo-search"));
     await edit.click();
     await content.press("Control+a"); await a.keyboard.insertText("共同编辑\n第二行"); await read.click();
     await a.waitForFunction(() => document.querySelector(".memo-status")?.textContent === "已保存");
   });
-  const settingsButton = page => page.getByRole("button", {name:"笔记库设置"});
   const divider = a.getByRole("separator", {name:"文件树宽度"});
   const treeWidth = async () => (await a.locator(".memo-side").boundingBox()).width;
   const initialWidth = await treeWidth();
@@ -168,27 +200,22 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await a.setViewportSize({width:390,height:844});
   assert.equal(await divider.isVisible(), false);
   await a.locator(".memo-reading p").filter({hasText:"共同编辑"}).waitFor();
-  await a.getByRole("button", {name:"文件目录"}).click();
-  const scrim = a.getByRole("button", {name:"关闭文件目录"});
+  const side = a.locator(".memo-side");
   const canvas = a.locator(".memo-pane");
-  assert.ok(await canvas.evaluate(el => el.inert && el.clientWidth > 0));
-  const edge = await scrim.boundingBox();
-  assert.ok((await a.locator(".memo-side").boundingBox()).width < edge.width);
-  await scrim.click({position:{x:edge.width - 5,y:80}});
-  assert.equal(await canvas.evaluate(el => el.inert), false);
-  const files = a.getByRole("button", {name:"文件目录"});
-  await files.click();
+  assert.equal(await side.isVisible(), false);
+  await button(a, "返回列表").click();
+  assert.equal(await canvas.isVisible(), false);
+  assert.ok(await side.isVisible());
+  await a.setViewportSize({width:320,height:640});
+  assert.ok(await a.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await button(a, "切换笔记库").click();
   await a.keyboard.press("Escape");
-  assert.equal(await files.evaluate(el => el === document.activeElement), true);
-  await files.click();
-  await a.getByRole("button", {name:"返回文件"}).click();
+  assert.equal(await button(a, "切换笔记库").evaluate(el => el === document.activeElement), true);
+  await fileRow(a, "team.md").click();
+  assert.equal(await side.isVisible(), false);
+  await button(a, "编辑").click();
+  await button(a, "完成").click();
   await a.locator(".memo-reading").waitFor();
-  await a.getByRole("button", {name:"编辑",exact:true}).click();
-  await a.getByRole("button", {name:"文件目录"}).click();
-  await a.locator('.memo-tree [data-path="team.md"]').click();
-  await a.locator(".memo-editor").waitFor();
-  assert.equal(await a.getByRole("button", {name:"编辑",exact:true}).getAttribute("aria-pressed"), "true");
-  await a.getByRole("button", {name:"阅读",exact:true}).click();
   await a.setViewportSize({width:1280,height:720});
   await fold.click();
   const paper = await a.locator(".memo-paper").boundingBox();
@@ -196,11 +223,14 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   const line = await a.locator(".memo-editor .cm-line").first().boundingBox();
   assert.ok(Math.abs(line.x - paper.x) <= 1 && Math.abs(line.width - paper.width) <= 1,
     "Markdown 编辑与阅读应使用相同的正文宽度和左边距");
-  await a.getByRole("button", {name:"阅读",exact:true}).click();
+  await a.getByRole("button", {name:"完成",exact:true}).click();
   await unfold.click();
   await t.test("章节大纲与 Markdown 链接可定位同名章节和其他笔记", async () => {
-    const outline = a.getByRole("button", {name:"章节大纲"});
+    const outline = button(a, "文章目录");
+    await noteMore(a);
     assert.equal(await outline.isVisible(), false);
+    await a.keyboard.press("Escape");
+    await button(a, "文件夹").click();
     const guide = a.locator('.memo-tree [data-path="guide.md"]');
     const routePattern = "**/api/memos/file?*path=guide.md*";
     let release;
@@ -213,7 +243,8 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
     } finally { release(); }
     await a.locator('.memo-row[aria-current="page"][data-path="guide.md"]').waitFor();
     await a.unroute(routePattern);
-    assert.equal(await a.getByRole("button", {name:"阅读",exact:true}).getAttribute("aria-pressed"), "true");
+    await button(a, "编辑").waitFor();
+    await noteMore(a);
     await outline.click();
     const nav = a.getByRole("navigation", {name:"章节大纲"});
     await nav.getByRole("button",{name:"导览"}).press("ArrowDown");
@@ -224,6 +255,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
     const top = await a.locator(".memo-reading").evaluate(el => el.getBoundingClientRect().top);
     assert.ok(Math.abs((await a.locator(".memo-reading h3").boundingBox()).y - top - 16) <= 1);
     await a.setViewportSize({width:390,height:844});
+    await noteMore(a);
     await outline.click();
     assert.equal(await nav.locator("[aria-current]").textContent(), "摘录");
     await a.keyboard.press("Escape");
@@ -236,8 +268,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   });
   await t.test("刷新与切库恢复目录、章节位置，草稿优先，移走文件后返回目录", async () => {
     const tree = a.locator(".memo-tree");
-    const chooser = a.getByRole("combobox", {name:"切换笔记库"});
-    const first = await chooser.inputValue();
+    const first = (await (await a.request.get(base + "/api/memos/sources")).json())[0].id;
     const path = "journal/reading.md";
     await tree.locator('[data-path="journal"]').click();
     await tree.locator('[data-path="journal/reading.md"]').click();
@@ -258,17 +289,18 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
     const remote = "/notes/" + path;
     guides.set(remote, "刷新后新增的段落。\n\n".repeat(12) + guides.get(remote));
     await a.reload();
+    await fileRow(a, path).click();
     await marker.waitFor();
     assert.ok(Math.abs(await offset() - initial) <= 1);
     assert.equal(await tree.isVisible(), false);
     await a.setViewportSize({width:1280,height:720});
     const desktopOffset = await offset();
     await tree.locator('[data-path="journal/reading.md"].selected').waitFor();
-    await chooser.selectOption(second);
-    await a.getByRole("heading", {name:"打开一篇笔记"}).waitFor();
+    await switchLibrary(a, "第二个库");
+    await a.getByRole("heading", {name:"选择一篇笔记"}).waitFor();
     await tree.locator('[data-path="team.md"]').click();
     await a.locator(".memo-reading p").filter({hasText:"共同编辑"}).waitFor();
-    await chooser.selectOption(first);
+    await switchLibrary(a, "alice");
     await marker.waitFor();
     assert.ok(Math.abs(await offset() - desktopOffset) <= 1);
     const recoveryContext = await browser.newContext({storageState: await a.context().storageState()});
@@ -280,13 +312,13 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
     await recovery.getByText("远端已更改",{exact:true}).waitFor();
     await recoveryContext.close();
     assert.equal(note, "共同编辑\r\n第二行");
-    await chooser.selectOption(second);
+    await switchLibrary(a, "第二个库");
     await a.locator(".memo-reading p").filter({hasText:"共同编辑"}).waitFor();
-    await chooser.selectOption(first);
+    await switchLibrary(a, "alice");
     await marker.waitFor();
     guides.delete(remote);
     await a.reload();
-    await a.getByRole("heading", {name:"打开一篇笔记"}).waitFor();
+    await a.getByRole("heading", {name:"选择一篇笔记"}).waitFor();
     await a.getByText("找不到上次阅读的「journal/reading.md」，请从文件目录重新选择。").waitFor();
     await tree.locator('[data-path="team.md"]').click();
     await a.locator(".memo-reading p").filter({hasText:"共同编辑"}).waitFor();
@@ -294,7 +326,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   });
   const disconnectAction = a.getByRole("button", {name:"断开笔记库",exact:true});
   assert.equal(await disconnectAction.count(), 0);
-  await settingsButton(a).click();
+  await manageLibrary(a);
   await disconnectAction.click();
   const confirm = a.getByRole("button", {name:"断开连接",exact:true});
   const libraryName = a.getByLabel("输入库名", {exact:false});
@@ -307,7 +339,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await a.getByRole("button", {name:"取消",exact:true}).click();
   assert.equal((await (await a.request.get(base+"/api/memos/sources")).json()).length, 1);
   async function share(access) {
-    await settingsButton(a).click();
+    await manageLibrary(a);
     await a.getByRole("button", {name:"共享给成员"}).click();
     try { await a.getByRole("combobox", {name:"bob",exact:true}).selectOption(access, {timeout:5000}); }
     catch (err) { throw new Error([err.message, ...errors, ...httpErrors, await a.locator("body").innerText()].join("\n")); }
@@ -320,7 +352,8 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await b.reload();
   await b.locator(".memo-reading p").filter({hasText:"共同编辑"}).waitFor();
   for (const name of ["编辑","共享给成员","智能体访问","新建笔记"]) assert.equal(await b.getByRole("button",{name,exact:true}).count(),0);
-  await settingsButton(b).click();
+  await button(b, "切换笔记库").click();
+  assert.equal(await button(b, "管理当前库").count(), 0);
   for (const name of ["断开笔记库","共享给成员","智能体访问"]) assert.equal(await b.getByRole("button",{name,exact:true}).count(),0);
   await b.keyboard.press("Escape");
   await share("write");
@@ -351,7 +384,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   assert.match(await doc(a), merged);
   assert.equal(await doc(a), await doc(b));
   assert.equal(note, (await doc(a)).replaceAll("\n","\r\n"));
-  await b.getByRole("button",{name:"阅读",exact:true}).click();
+  await b.getByRole("button",{name:"完成",exact:true}).click();
   await insert(a,"同步");
   await b.locator(".memo-reading p").filter({hasText:"同步"}).waitFor();
   const settings = await a.context().newPage();
@@ -361,7 +394,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   await settings.getByRole("button", {name:"保存", exact:true}).click();
   await settings.locator(".expert-form").waitFor({state:"detached"});
   await settings.close();
-  await settingsButton(a).click();
+  await manageLibrary(a);
   await a.getByRole("button", {name:"智能体访问"}).click();
   assert.equal(await a.getByRole("combobox", {name:"笔记专家", exact:true}).count(), 0);
   await a.getByText(/最近成功：/).waitFor();
@@ -411,8 +444,10 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   assert.ok(note.includes("待提交") && note.endsWith("\r\n智能体追加"));
   await t.test("协作续写保留已渲染的标题和打开的大纲", async () => {
     await insert(a, "## 开场\n\n## 进展\n\n");
-    await b.getByRole("button", {name:"章节大纲"}).click();
+    // The second client can open its menu once it has received the new sections.
     const heading = await b.getByRole("heading", {name:"开场",exact:true}).elementHandle();
+    await noteMore(b);
+    await button(b, "文章目录").click();
     const current = await invoke("read_memo", target);
     await invoke("append_memo", {...target, version:current.version, text:"\n\n追加进展"});
     await b.locator(".memo-reading p").filter({hasText:"追加进展"}).waitFor();
@@ -420,7 +455,8 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
     await b.getByRole("navigation", {name:"章节大纲"}).getByRole("button", {name:"进展"}).click();
     assert.equal(await b.locator(".memo-reading h2:focus").textContent(), "进展");
   });
-  await a.getByRole("button",{name:"版本历史"}).click();
+  await noteMore(a);
+  await button(a, "版本历史").click();
   await a.locator(".memo-snapshot").waitFor();
   await a.getByRole("button",{name:"关闭",exact:true}).last().click();
   note = "由外部应用修改";
@@ -431,7 +467,7 @@ test("两个独立账号同时编辑同一行，自动合并、预览同步并�
   assert.ok((await doc(a)).includes("本地草稿"));
   const clean = await a.context().newPage();
   await clean.goto(base + "/#memos");
-  await settingsButton(clean).click();
+  await manageLibrary(clean);
   await clean.getByRole("button", {name:"断开笔记库",exact:true}).click();
   await clean.getByLabel("输入库名", {exact:false}).fill("alice");
   await clean.getByRole("button", {name:"断开连接",exact:true}).click();

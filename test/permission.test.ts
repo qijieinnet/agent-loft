@@ -1,6 +1,7 @@
 // 权限级别：对话上的设置、封顶规则、定时任务的专用对话、网页接口。用假 driver，不起真进程。
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { on } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -292,13 +293,21 @@ test("HTTP：完全允许只给管理员；改任务马上生效，换对话收�
   const created = await (await call("/api/tasks", "POST", { prompt: "x", schedule, expert: "claude", permission: "full" }, asAdmin)).json() as { id: string };
   const task = tasks.getTask(admin.id, created.id)!;
   assert.equal(task.permission, "full");
+  const completions = on(hub, "task", { signal: AbortSignal.timeout(5000) });
   assert.equal(runner.runTaskNow(task), undefined);
-  await tick();
+  for await (const [result] of completions) {
+    if (result.taskId === task.id) {
+      assert.equal(result.status, "notified");
+      break;
+    }
+  }
   const key = task.target.key!;
   assert.equal(conv(key).permission, "full");
 
   // 调低：不等下次运行，活着的会话也马上降下来
-  const live = lastLive();
+  const live = lives.findLast(session => session.opts.tasks?.convKey === key);
+  assert.ok(live);
+  assert.equal(live.opts.permission, "full");
   assert.equal((await call(`/api/tasks/${created.id}`, "PATCH", { permission: "ask" }, asAdmin)).status, 200);
   assert.equal(conv(key).permission, "ask");
   assert.deepEqual(live.set, ["ask"]);
