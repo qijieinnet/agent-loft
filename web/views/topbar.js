@@ -18,6 +18,7 @@ import { syncCall } from "./voice-call.js";
 export function renderTopbar() {
   const c = S.current ? S.convs.get(S.current) : null;
   const viewTitle = { tasks: "定时任务", remote: "远程控制", library: "资料库", memos: "备忘录" }[S.view];
+  ui.topbar.classList.toggle("memo-topbar", S.view === "memos");
   const showExpert = c && !viewTitle;
   // 老版本桌面端把菜单放在窗口顶栏；菜单没有内容时也不放。
   const showMore = !desktopMenu && topMenuItems().length > 0;
@@ -462,22 +463,26 @@ function renderPermission(c, expert) {
   const plan = c ? !!c.plan : !!S.draftPlan;
   if (max === "ask" && (!current || current === "ask") && !plan) return fill(ui.permSlot);
   const locked = !!c?.taskId;
-  const name = current ? PERMISSIONS[current].short : "默认权限";
-  fill(
-    ui.permSlot,
-    h(
-      "button",
-      {
-        class: `perm-pill${current === "full" ? " danger" : ""}${plan ? " plan" : ""}`,
-        title: locked ? "定时任务的专用对话：权限在任务设置里改" : `权限：${current ? PERMISSIONS[current].label : "默认"}${plan ? "，计划模式开着" : ""}，点击切换`,
-        onclick: (e) => (locked ? toast("这是定时任务的专用对话，权限在任务设置里改") : openPermissionPicker(e.currentTarget, { current, max, agent, plan })),
-      },
+  const label = `权限：${PERMISSIONS[current]?.label ?? "默认"}${plan ? "，计划模式已开启" : ""}`;
+  const focused = ui.permSlot.contains(document.activeElement);
+  const button = h(
+    "button",
+    {
+      type: "button",
+      class: `icon-btn perm-pill${plan ? " plan" : ""}`,
+      "data-permission": current,
+      "aria-label": label,
+      "aria-expanded": locked ? null : String(ui.menu?.dataset.for === "permission"),
+      title: locked ? `${label}。定时任务的权限在任务设置里改` : label,
+      onclick: () => (locked ? toast("这是定时任务的专用对话，权限在任务设置里改") : openPermissionPicker(ui.permSlot, { current, max, agent, plan })),
+    },
+    h("span", { class: "perm-mark", "aria-hidden": "true" },
       icon("shield"),
-      h("span", { class: "perm-name" }, name),
-      plan ? h("span", { class: "perm-plan-tag" }, "计划") : null,
-      locked ? null : icon("down"),
+      plan ? h("span", { class: "perm-plan-mark" }, icon("clipboard")) : null,
     ),
   );
+  fill(ui.permSlot, button);
+  if (focused) button.focus({ preventScroll: true });
 }
 
 /** 84321 → 84k，1234567 → 1.2M */

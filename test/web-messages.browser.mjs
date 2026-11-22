@@ -660,6 +660,94 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
   });
 }
 
+test("输入框权限用盾牌颜色区分，计划模式和选中项使用亮暗主题", async (t) => {
+  const page = await fixture(t, { width: 390, height: 850 });
+  const info = { ...conv, agent: "codex", permission: "edit", permissionMax: "full" };
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.route("**/api/conversations/*/action", (route) => {
+    const { action, value } = route.request().postDataJSON();
+    if (action === "permission") info.permission = value;
+    if (action === "plan") info.plan = value === "on";
+    return route.fulfill({ json: { info } });
+  });
+  await page.evaluate(async (info) => {
+    window.S.convs.set(info.key, info);
+    (await import("/views/topbar.js")).renderContext();
+  }, info);
+
+  const trigger = page.locator(".perm-pill");
+  const pop = page.locator(".perm-pop");
+  const switchPlan = pop.getByRole("switch", { name: /计划模式/ });
+  const shield = trigger.locator(".perm-mark > :first-child svg");
+  const shieldColor = () => shield.evaluate((el) => {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = getComputedStyle(el).color;
+    ctx.fillRect(0, 0, 1, 1);
+    return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  });
+  assert.equal(await trigger.textContent(), "");
+  assert.equal(await trigger.locator("svg").count(), 1);
+  assert.equal(await shield.evaluate((el) => getComputedStyle(el).width), "22px");
+  assert.equal(await trigger.getAttribute("aria-label"), "权限：自动改文件");
+  const [grayR, grayG, grayB] = await shieldColor();
+  assert.equal(grayR, grayG);
+  assert.equal(grayG, grayB);
+
+  await trigger.press("Enter");
+  const selected = pop.getByRole("button", { name: /自动改文件/, pressed: true });
+  assert.equal(await selected.evaluate((el) => el === document.activeElement), true);
+  await page.keyboard.press("Escape");
+  await pop.waitFor({ state: "detached" });
+  assert.equal(await trigger.evaluate((el) => el === document.activeElement), true);
+
+  await trigger.click();
+  await pop.getByRole("button", { name: /逐次询问/ }).click();
+  await page.getByRole("button", { name: "权限：逐次询问", exact: true }).waitFor();
+  const [askR, askG, askB] = await shieldColor();
+  assert.ok(askG > askR && askG > askB);
+
+  await trigger.click();
+  await pop.getByRole("button", { name: /完全允许/ }).click();
+  await page.locator(".confirm-dialog").getByRole("button", { name: "完全允许" }).click();
+  await page.getByRole("button", { name: "权限：完全允许", exact: true }).waitFor();
+  const [fullR, fullG, fullB] = await shieldColor();
+  assert.ok(fullR > fullG && fullR > fullB);
+
+  await trigger.click();
+  await switchPlan.click();
+  await page.getByRole("button", { name: "权限：完全允许，计划模式已开启", exact: true }).waitFor();
+  assert.equal(await trigger.textContent(), "");
+  assert.equal(await trigger.locator(".perm-plan-mark svg").isVisible(), true);
+  assert.deepEqual(await shieldColor(), [fullR, fullG, fullB]);
+  await trigger.click();
+  assert.equal(await switchPlan.getAttribute("aria-checked"), "true");
+  for (const colorScheme of ["light", "dark"]) {
+    await page.emulateMedia({ colorScheme });
+    await page.waitForFunction(() => {
+      const track = document.querySelector(".perm-pop .perm-plan .slider");
+      return getComputedStyle(track).backgroundColor === getComputedStyle(document.body).color;
+    });
+    const active = await pop.evaluate((el) => {
+      const body = getComputedStyle(document.body);
+      const track = el.querySelector(".perm-plan .slider");
+      return {
+        check: getComputedStyle(el.querySelector("[aria-pressed=true] .check svg")).color,
+        track: getComputedStyle(track).backgroundColor,
+        knob: getComputedStyle(track, "::before").backgroundColor,
+        foreground: body.color,
+        background: body.backgroundColor,
+      };
+    });
+    assert.equal(active.check, active.foreground);
+    assert.equal(active.track, active.foreground);
+    assert.equal(active.knob, active.background);
+  }
+  await switchPlan.click();
+  await page.getByRole("button", { name: "权限：完全允许", exact: true }).waitFor();
+  assert.equal(await trigger.locator(".perm-plan-mark").count(), 0);
+});
+
 test("Codex 对话按模型显示快速开关和倍率，开关状态来自服务端", async (t) => {
   const page = await fixture(t, { width: 390, height: 850 });
   const info = { ...conv, agent: "codex", model: "sol", effort: "high" };
@@ -737,8 +825,22 @@ test("Codex 对话按模型显示快速开关和倍率，开关状态来自服�
   assert.equal(await pill.locator('[aria-label="快速模式已开启"]').isVisible(), true);
   await pill.click();
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
-  await dialog.getByRole("button", { name: "选择模型" }).click();
-  assert.equal(await slider.isVisible(), false);
+  const pickModel = dialog.getByRole("button", { name: "选择模型" });
+  const selectedModel = dialog.getByRole("button", { name: "Sol", exact: true });
+  const dimensions = await page.waitForFunction(() => {
+    const button = document.querySelector(".model-pop .picker-model-link");
+    return button?.offsetWidth && [button.offsetWidth, button.offsetHeight];
+  });
+  const [width, height] = await dimensions.jsonValue();
+  assert.ok(width >= 120 && height >= 54, `模型切换区域应覆盖推理档位和留白，实际尺寸 ${width} × ${height}`);
+  for (const position of [{ x: 4, y: 4 }, { x: width - 4, y: height - 4 }]) {
+    await pickModel.click({ position });
+    await selectedModel.waitFor();
+    await selectedModel.click();
+  }
+  await pickModel.press("Enter");
+  await selectedModel.waitFor();
+  assert.equal(await selectedModel.evaluate((el) => el === document.activeElement), true);
   await dialog.getByRole("button", { name: "Model 23", exact: true }).scrollIntoViewIfNeeded();
   const bounds = await dialog.boundingBox();
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);

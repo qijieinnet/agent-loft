@@ -10,7 +10,7 @@ import { organizeDialog } from "./memo-organize.js";
 import { createMemoOutline } from "./memo-outline.js";
 import { askMemoName, chooseMemoVersion, openFileMenu, openLibraryMenu, manageMemoSource, confirmDisconnect, connectSource, memoAccessSettings, shareMemoSource } from "./memo-dialogs.js";
 import { createMemoList } from "./memo-list.js";
-import { openSide, closeSide, renderSidebar } from "./sidebar.js";
+import { closeSide, renderSidebar } from "./sidebar.js";
 import { renderTopbar } from "./topbar.js";
 
 const markdown = path => /\.(md|markdown)$/i.test(path);
@@ -186,7 +186,6 @@ function notebook() {
     switchMode(!preview);
     if (preview) void saveNow().catch(() => {});
   });
-  modeButton.className = "memo-action";
   const narrow = matchMedia("(max-width: 768px)");
   function setTreeOpen(open) {
     root.classList.toggle("show-list", open);
@@ -235,14 +234,13 @@ function notebook() {
   const side = h("aside", { class: "memo-side", id: "memo-side", "aria-label": "笔记库文件" });
   const pathLabel = h("strong", { class: "memo-breadcrumb" });
   const entryButton = button("连接笔记库", addSource);
+  entryButton.classList.add("primary");
   const choose = h("button", { type: "button", class: "memo-library-button", "aria-label": "切换笔记库", onclick: libraryMenu });
   const more = button("更多", e => fileMenu(e.currentTarget, path), "more");
-  const shellMenu = button("会话列表", openSide, "menu");
-  shellMenu.classList.add("memo-mobile");
   const handle = h("div", { class: "memo-divider", role: "separator", tabindex: 0, "aria-label": "文件树宽度",
     "aria-controls": tree.id, "aria-orientation": "vertical", title: "拖动调整文件树宽度，双击恢复默认" });
   const widthObserver = bindTreeWidth(root, handle, "aim.memoTreeWidth." + owner);
-  const newNote = h("button", { type: "button", class: "memo-action", "aria-label": "新建笔记",
+  const newNote = h("button", { type: "button", class: "btn primary", "aria-label": "新建笔记",
     onclick: () => run(() => create(false)) }, icon("compose"), "新建");
   const readOnly = () => source?.permission === "read";
   function endpoint(action, file = "", cursor = "") {
@@ -339,9 +337,7 @@ function notebook() {
     }
   }
   function showEmptyPane() {
-    const menu = button("会话列表", openSide, "menu");
-    menu.classList.add("memo-mobile", "memo-empty-menu");
-    fill(pane, menu, h("div", { class: "memo-empty" }, icon("notebook"),
+    fill(pane, h("div", { class: "memo-empty" }, icon("notebook"),
       source ? h("h2", {}, "选择一篇笔记") : entryButton));
   }
   async function run(fn) {
@@ -895,7 +891,7 @@ function notebook() {
       refreshTree();
     });
   }, true);
-  fill(side, h("div", { class: "memo-list-bar" }, shellMenu, choose, newNote),
+  fill(side, h("div", { class: "memo-list-bar" }, choose, newNote),
     list.searchBar, list.section, tree, handle);
   fill(root, side, pane);
   async function init() {

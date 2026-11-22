@@ -137,9 +137,16 @@ export async function openModelPicker(view = "effort", catalog) {
     const initial = levels.includes(currentEffort) ? currentEffort : fallback;
     const resetTo = fallback ?? initial;
     const title = h("strong", { class: "effort-value" }, initial ? effortLabel(initial) : "默认");
-    const name = h("button", {
-      class: "picker-model-link", "aria-label": "选择模型", onclick: () => { if (!busy) showModels(true); },
-    }, h("span", {}, composerModelLabel(agent, modelName(agent, current) || "选择模型")), icon("back"));
+    const modelButton = h(
+      "button",
+      {
+        type: "button", class: "picker-model-link", "aria-label": "选择模型",
+        onclick: () => { if (!busy) showModels(true); },
+      },
+      levels.length ? title : null,
+      h("span", { class: "picker-model-label" },
+        h("span", {}, composerModelLabel(agent, modelName(agent, current) || "选择模型")), icon("back")),
+    );
     const reset = h("button", {
       class: "picker-icon picker-reset", title: fallback ? "恢复默认思考程度" : "还原打开时的思考程度",
       onclick: () => slider?.select(resetTo),
@@ -179,11 +186,9 @@ export async function openModelPicker(view = "effort", catalog) {
       }, icon("bolt"), h("span", { class: "picker-tip", role: "tooltip", id: "picker-fast-tip" },
         speed ? h("strong", {}, `${speed} 倍速度`) : null, h("span", {}, "用量更多")));
     }
-    fill(pop, h("div", { class: "effort-header" }, fast,
-      h("div", { class: "effort-center" }, levels.length ? title : null, name),
-      resetTo ? reset : null), slider?.el);
+    fill(pop, h("div", { class: "effort-header" }, fast, modelButton, resetTo ? reset : null), slider?.el);
     position();
-    if (focus) (slider?.el ?? name).focus({ preventScroll: true });
+    if (focus) (slider?.el ?? modelButton).focus({ preventScroll: true });
   }
 
   const isOpen = () => ui.menu === pop && pop.matchesContext();

@@ -501,64 +501,81 @@ textarea.sending {
   margin-left: 6px;
 }
 
-/* 权限按钮：完全允许要一眼看得出来 */
 .perm-slot {
   display: inline-flex;
-  min-width: 0;
+  flex: none;
 }
 
-.perm-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 13px;
-  color: var(--fg-faint);
-  white-space: nowrap;
+.composer .perm-pill {
+  padding: 0;
 }
 
-.perm-pill:hover {
+.composer .perm-pill:is(.plan, [aria-expanded="true"]) {
   background: var(--bg-hover);
+}
+
+.perm-pill[data-permission="ask"] { color: color-mix(in srgb, var(--ok) 92%, var(--fg)); }
+.perm-pill[data-permission="auto"] { color: var(--fg); }
+.perm-pill[data-permission="full"] { color: color-mix(in srgb, var(--danger) 92%, var(--fg)); }
+
+.perm-mark {
+  position: relative;
+  display: grid;
+}
+
+.composer .perm-pill svg {
+  width: 22px;
+  height: 22px;
+}
+
+.perm-plan-mark {
+  position: absolute;
+  inset-inline-end: -4px;
+  inset-block-end: -4px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bg-input);
   color: var(--fg);
 }
 
-.perm-pill svg {
-  width: 13px;
-  height: 13px;
-  flex-shrink: 0;
-}
-
-.perm-pill.danger,
-.perm-pill.danger:hover {
-  color: var(--danger);
-  font-weight: 500;
+.composer .perm-plan-mark svg {
+  width: 10px;
+  height: 10px;
 }
 
 .popover.perm-pop {
+  --accent: var(--fg);
+  --accent-fg: var(--bg);
   min-width: 260px;
 }
 
-/* 计划模式那一行：开关只显示状态，点的是整行 */
-.perm-pop .perm-plan .switch {
-  flex-shrink: 0;
-  pointer-events: none;
+.perm-pop .check {
+  display: grid;
+  flex: none;
 }
 
-.perm-plan-tag {
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  line-height: 18px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
+.perm-pop .check svg {
+  width: 16px;
+  height: 16px;
 }
 
-@media (max-width: 480px) {
-  /* 窄屏只留盾牌，把地方让给模型按钮；完全允许仍然保留文字 */
-  .perm-pill:not(.danger) .perm-name {
-    display: none;
+.perm-pop .perm-plan[aria-checked="true"] .slider::before {
+  background: var(--accent-fg);
+}
+
+.composer .perm-pill:focus-visible,
+.perm-pop button:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: -2px;
+}
+
+@media (pointer: coarse) {
+  .composer .perm-pill {
+    min-inline-size: 44px;
+    min-block-size: 44px;
   }
 }
 

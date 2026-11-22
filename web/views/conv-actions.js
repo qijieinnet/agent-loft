@@ -87,6 +87,13 @@ export function openPermissionPicker(anchor, { current, max, agent, plan }) {
   const pop = showPopover(anchor, { align: "left" });
   pop.dataset.for = "permission";
   pop.classList.add("perm-pop");
+  const trigger = () => anchor.querySelector("button");
+  trigger()?.setAttribute("aria-expanded", "true");
+  pop.onMenuClose = () => {
+    const button = trigger();
+    button?.setAttribute("aria-expanded", "false");
+    if (pop.contains(document.activeElement)) button?.focus({ preventScroll: true });
+  };
   const choose = async (level) => {
     closeMenu();
     if (level === current) return;
@@ -113,9 +120,9 @@ export function openPermissionPicker(anchor, { current, max, agent, plan }) {
     permissionsUpTo(max, agent).map((level) =>
       h(
         "button",
-        { class: `pop-item${level === current ? " on" : ""}`, onclick: () => void choose(level) },
+        { class: `pop-item${level === current ? " on" : ""}`, "aria-pressed": String(level === current), onclick: () => void choose(level) },
         h("span", { class: "grow" }, h("span", { class: "t" }, PERMISSIONS[level].label), h("span", { class: "s" }, PERMISSIONS[level].desc)),
-        level === current ? h("span", { class: "check" }, "✓") : null,
+        level === current ? h("span", { class: "check", "aria-hidden": "true" }, icon("check")) : null,
       ),
     ),
     h("div", { class: "sep" }),
@@ -124,10 +131,11 @@ export function openPermissionPicker(anchor, { current, max, agent, plan }) {
       "button",
       { class: "pop-item perm-plan", role: "switch", "aria-checked": String(!!plan), onclick: () => void togglePlan(!plan) },
       h("span", { class: "grow" }, h("span", { class: "t" }, PLAN_INFO.label), h("span", { class: "s" }, PLAN_INFO.desc)),
-      h("span", { class: "switch", "aria-hidden": "true" }, h("input", { type: "checkbox", checked: !!plan, tabindex: -1 }), h("span", { class: "slider" })),
+      h("span", { class: "switch", "aria-hidden": "true" }, h("span", { class: "slider" })),
     ),
   );
   placePopover(pop, anchor);
+  (pop.querySelector('[aria-pressed="true"]') ?? pop.querySelector("button")).focus({ preventScroll: true });
 }
 
 export async function openSessions(all) {

@@ -6,7 +6,7 @@ const parent = path => path.split("/").slice(0, -1).join("/");
 const name = path => path.split("/").pop();
 
 export function createMemoList({ endpoint, shelfKey, canWrite, currentFile, onOpen, onMenu, onNewFolder }) {
-  const query = h("input", { type: "search", placeholder: "搜索笔记", "aria-label": "搜索笔记", maxlength: 512 });
+  const query = h("input", { type: "search", class: "input", placeholder: "搜索笔记", "aria-label": "搜索笔记", maxlength: 512 });
   const cancel = h("button", { type: "button", hidden: true, "aria-label": "取消搜索", onclick: stopSearch }, "取消");
   const searchBar = h("div", { class: "memo-search-bar" }, h("label", {}, icon("search"), query), cancel);
   const section = h("div", { class: "memo-list-heading" });
