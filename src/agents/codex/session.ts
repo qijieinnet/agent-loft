@@ -478,7 +478,7 @@ export class CodexSession implements AgentSession {
    * （见 core/expert-prompt.ts）。专家和记忆走 contextBlock，附在第一条消息后面。
    * 自定义专家：机器上的 MCP 除了它选的都关掉，再挂上它选的 agent-loft 管的 MCP。
    */
-  private async modeParams(): Promise<Record<string, unknown>> {
+  private async threadConfig(): Promise<Record<string, unknown>> {
     const memory = this.opts.memory;
     const tasks = this.opts.tasks;
     const mcp = {
@@ -496,7 +496,7 @@ export class CodexSession implements AgentSession {
     if (expert) {
       const keep = new Set([...expert.machineMcp, ...Object.keys(expert.mcp)]);
       const off = Object.fromEntries((await userMcpServers()).filter((n) => !keep.has(n)).map((n) => [`mcp_servers.${n}.enabled`, false]));
-      return { config: { ...expertConfig(expert), ...off, ...codexMcp(expert.mcp, expert.askMcp), ...mcp, ...this.skillConfig() } };
+      return { ...expertConfig(expert), ...off, ...codexMcp(expert.mcp, expert.askMcp), ...mcp, ...this.skillConfig() };
     }
     const builtin = this.opts.builtinMcp;
     const keep = new Set([...(builtin?.machineMcp ?? []), ...Object.keys(builtin?.mcp ?? {})]);
@@ -504,8 +504,7 @@ export class CodexSession implements AgentSession {
       ? Object.fromEntries((await userMcpServers()).filter((n) => !keep.has(n)).map((n) => [`mcp_servers.${n}.enabled`, false]))
       : {};
     const selected = Object.fromEntries((builtin?.machineMcp ?? []).map((n) => [`mcp_servers.${n}.enabled`, true]));
-    const work = { ...off, ...selected, ...codexMcp(builtin?.mcp ?? {}, builtin?.askMcp), ...mcp, ...this.skillConfig() };
-    return Object.keys(work).length ? { config: work } : {};
+    return { ...off, ...selected, ...codexMcp(builtin?.mcp ?? {}, builtin?.askMcp), ...mcp, ...this.skillConfig() };
   }
 
   /**
@@ -534,12 +533,14 @@ export class CodexSession implements AgentSession {
   }
 
   private async openOnce(): Promise<string> {
+    const threadConfig = await this.threadConfig();
+    if (this.opts.effort) threadConfig.model_reasoning_effort = this.opts.effort;
     const shared = {
       cwd: this.opts.cwd,
       approvalPolicy: "on-request",
       sandbox: this.sandboxMode,
       ...(this.opts.model ? { model: this.opts.model } : {}),
-      ...(await this.modeParams()),
+      ...(Object.keys(threadConfig).length ? { config: threadConfig } : {}),
     };
     if (this.disposed) throw new DisposedError();
     const resumeId = this.threadId ?? this.opts.resumeId;
@@ -572,7 +573,11 @@ export class CodexSession implements AgentSession {
       }
       throw new DisposedError();
     }
-    this.adopt({ ...res.thread, model: res.model ?? res.thread.model });
+    this.adopt({
+      ...res.thread,
+      model: res.model ?? res.thread.model,
+      reasoningEffort: res.reasoningEffort ?? res.thread.reasoningEffort,
+    });
     this.planOnThread = res.collaborationMode?.mode === "plan";
     // 到这里分叉才算完成；之前任何一步失败，下次重试都还会走 thread/fork，绝不会续写原会话
     if (fork) this.forked = true;
@@ -774,12 +779,13 @@ export class CodexSession implements AgentSession {
 
   /** 已知的模型 / 思考程度，不拉起进程、不发请求（顶栏显示用） */
   peekRuntime(): RuntimeInfo {
-    return this.runtime;
+    // 设置的思考程度会在下一轮显式发送，thread 快照可能仍是上一轮的设置。
+    return this.opts.effort ? { ...this.runtime, effort: this.opts.effort } : this.runtime;
   }
 
   /** 不额外发请求，也绝不为此新开 thread（否则历史里会留一串空会话）。 */
   async describeRuntime(): Promise<RuntimeInfo> {
-    return this.runtime;
+    return this.peekRuntime();
   }
 
   async interrupt(opts: InterruptOptions = {}): Promise<void> {
@@ -985,7 +991,7 @@ export class CodexSession implements AgentSession {
       case "mcpServer/elicitation/request": {
         const req = params as { serverName: string; mode?: string; message?: string; _meta?: Record<string, unknown> };
         const configuredMcp = (this.opts.expert ?? this.opts.builtinMcp)?.mcp;
-        // 备忘录由会话在 modeParams 中挂载，独立于专家的 MCP 列表。
+        // 会话构建 thread 配置时单独挂载备忘录。
         const hasMemos = req.serverName === MEMOS_MCP_NAME && this.opts.tasks !== undefined;
         // Codex 用 elicitation 传工具审批；普通 MCP 表单仍按未支持处理，不能把表单当授权。
         if (req.mode !== "form" || req._meta?.codex_approval_kind !== "mcp_tool_call" ||
@@ -1219,11 +1225,13 @@ export class CodexSession implements AgentSession {
       }
 
       case "thread/settings/updated": {
-        const thread = (params as { thread?: Thread }).thread;
-        if (thread) {
+        const { threadSettings, thread } = params as { threadSettings?: { model: string; effort: string | null }; thread?: Thread };
+        if (threadSettings || thread) {
+          const model = threadSettings ? threadSettings.model : thread?.model;
+          const effort = threadSettings ? threadSettings.effort : thread?.reasoningEffort;
           this.runtime = {
-            ...(thread.model ? { model: thread.model } : {}),
-            ...(thread.reasoningEffort ? { effort: thread.reasoningEffort } : {}),
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
           };
         }
         return;

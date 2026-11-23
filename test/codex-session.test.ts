@@ -194,6 +194,58 @@ async function startTurn(threadId?: string): Promise<{ threadId: string; turnId:
   return { threadId: id, turnId };
 }
 
+test("显式思考程度同时用于 Codex thread、轮次和会话显示", async () => {
+  for (const method of ["start", "resume", "fork"] as const) {
+    calls.length = 0;
+    const threadId = `effort-${method}`;
+    const { session, events } = makeSession({
+      model: "sol",
+      effort: "high",
+      ...(method !== "start" ? { resumeId: "previous-effort" } : {}),
+      ...(method === "fork" ? { fork: true } : {}),
+    });
+    let displayedEffort: string | undefined;
+    events.onSessionId = () => { displayedEffort = session.peekRuntime().effort; };
+    session.send({ text: "test", attachments: [] });
+    await tick();
+    const open = take(`thread/${method}`);
+    open.resolve({ thread: { id: threadId, reasoningEffort: "xhigh" }, model: "sol", reasoningEffort: "xhigh" });
+    await tick();
+    const turn = take("turn/start");
+    assert.equal(turn.params.effort, "high");
+    turn.resolve({});
+    assert.equal(displayedEffort, "high");
+    assert.equal(open.params.config?.model_reasoning_effort, "high");
+    notify("thread/settings/updated", { threadId, threadSettings: { model: "sol", effort: "xhigh" } });
+    assert.equal((await session.describeRuntime()).effort, "high");
+    const disposing = session.dispose();
+    await tick();
+    take("thread/unsubscribe").resolve({});
+    await disposing;
+  }
+});
+
+test("未指定思考程度时从 Codex 的 thread 响应和设置通知读取", async () => {
+  calls.length = 0;
+  const { session } = makeSession();
+  session.send({ text: "test", attachments: [] });
+  await tick();
+  const open = take("thread/start");
+  assert.equal(open.params.config?.model_reasoning_effort, undefined);
+  open.resolve({ thread: { id: "inherited-effort", reasoningEffort: null }, model: "sol", reasoningEffort: "medium" });
+  await tick();
+  const turn = take("turn/start");
+  assert.equal(turn.params.effort, undefined);
+  turn.resolve({});
+  assert.deepEqual(session.peekRuntime(), { model: "sol", effort: "medium" });
+  notify("thread/settings/updated", { threadId: "inherited-effort", threadSettings: { model: "sol", effort: "low" } });
+  assert.deepEqual(await session.describeRuntime(), { model: "sol", effort: "low" });
+  const disposing = session.dispose();
+  await tick();
+  take("thread/unsubscribe").resolve({});
+  await disposing;
+});
+
 test("本轮 Token 累计全部模型请求，重复通知不多算，上下文仍取最后一次请求", async () => {
   calls.length = 0;
   const { session, events } = makeSession();
