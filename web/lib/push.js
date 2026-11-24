@@ -48,21 +48,28 @@ export async function enablePush() {
       applicationServerKey: Uint8Array.from(raw, (c) => c.charCodeAt(0)),
     });
   }
-  await api("/api/push/subscribe", { method: "POST", body: { subscription: sub.toJSON() } });
+  await api("/api/push/subscribe", { method: "POST", body: { subscription: sub.toJSON(), purpose: "workbench" } });
 }
 
-/** 这台设备不再收通知：服务端删掉订阅，浏览器也退订 */
+/** 退出共同的登录会话，释放此设备的两个入口。 */
 export async function dropPushSub() {
   if (framed) {
     // 只撤销这台的转发订阅，不能退订外壳与其他服务器共用的浏览器订阅。
     const { dropRelayPush } = await import("./shell.js");
     await dropRelayPush();
-    return;
+    return [];
   }
-  const sub = await currentPushSub();
-  if (!sub) return;
-  await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: sub.endpoint } }).catch(() => {});
-  await sub.unsubscribe().catch(() => {});
+  const { releaseLocalPushDevices } = await import("../bot/push-session.js");
+  return releaseLocalPushDevices();
+}
+
+export async function disableWorkbenchPush(endpoint, localSubscription) {
+  const { retained } = await api("/api/push/unsubscribe", { method: "POST", body: { endpoint, purpose: "workbench" } });
+  if (localSubscription?.endpoint === endpoint) {
+    if (!retained) await localSubscription.unsubscribe().catch(() => {});
+    const { dismissLocalNotifications } = await import("../bot/push-session.js");
+    await dismissLocalNotifications({ type: "notifications-disabled" });
+  }
 }
 
 /**

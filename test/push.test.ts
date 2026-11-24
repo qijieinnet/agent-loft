@@ -69,3 +69,23 @@ test("订阅：校验格式，只收 https，重复订阅不重复记", () => {
   assert.equal(push.removeSubscription("https://web.push.apple.com/a"), true);
   assert.equal(push.hasSubscriptions(), false);
 });
+
+test("旧工作台订阅保留原用途，来源不明的试用版订阅需重新开启", async () => {
+  const { dataDir } = await import("../src/home.js");
+  const file = path.join(dataDir, "push.json");
+  const before = JSON.parse(fs.readFileSync(file,"utf8"));
+  const sample = {label:"iPhone",createdAt:1,userId:"old-owner",keys:{auth:"fake",p256dh:"fake"}};
+  try {
+    fs.writeFileSync(file,JSON.stringify({...before,subscriptions:[
+      {...sample,endpoint:"https://web.push.apple.com/stable"},
+      {...sample,endpoint:"https://web.push.apple.com/preview",sessionId:"ambiguous"},
+    ]}));
+    push.resetPushStoreForTest();
+    assert.deepEqual(push.listSubscriptions().map(s => s.endpoint),["https://web.push.apple.com/stable"]);
+    assert.deepEqual(push.listSubscriptions(undefined,undefined,"bot"),[]);
+    assert.equal(JSON.parse(fs.readFileSync(file,"utf8")).subscriptions.length,1);
+  } finally {
+    fs.writeFileSync(file,JSON.stringify(before));
+    push.resetPushStoreForTest();
+  }
+});

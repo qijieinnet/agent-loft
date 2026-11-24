@@ -159,6 +159,7 @@ function openMore(anchor, pin) {
     pop,
     ...folded.map((it) => navButton(it, true)),
     folded.length ? h("div", { class: "sep" }) : null,
+    h("button", { class: "pop-item", role: "menuitem", onclick: () => location.assign("/bot/") }, icon("chat"), "打开我的 Bot"),
     h("button", { class: "pop-item", role: "menuitem", onclick: () => (closeMenu(), editSidebar()) }, icon("edit"), "编辑侧边栏"),
   );
   syncSidebarNav();

@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 
-export async function verifyUpgradeWeb(host: string, port: number): Promise<void> {
+export async function verifyUpgradeWeb(host: string, port: number, bot = false): Promise<void> {
   if (host === "0.0.0.0") host = "127.0.0.1";
   if (host === "::") host = "::1";
   const base = `http://${isIP(host) === 6 ? "[" + host + "]" : host}:${port}`;
@@ -11,8 +11,8 @@ export async function verifyUpgradeWeb(host: string, port: number): Promise<void
     }
     return res;
   }
-  const html = await (await get("/", /text\/html/)).text();
-  for (const [file, type] of [["app.js", /javascript/], ["css/base.css", /text\/css/]] as const) {
+  const html = await (await get(bot ? "/bot/" : "/", /text\/html/)).text();
+  for (const [file, type] of [["app.js", /javascript/], [bot ? "bot/style.css" : "css/base.css", /text\/css/]] as const) {
     const asset = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)].find(([, url]) => url?.endsWith("/" + file))?.[1];
     if (!asset || !(await (await get(asset, type)).text()).trim()) throw new Error(`网页资源缺失：${file}`);
   }

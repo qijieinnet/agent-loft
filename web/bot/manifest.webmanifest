@@ -1,0 +1,16 @@
+{
+  "id": "/bot/",
+  "name": "Loft Bot",
+  "short_name": "Loft Bot",
+  "lang": "zh-CN",
+  "start_url": "/bot/",
+  "scope": "/bot/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    { "src": "/bot/icons/app-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/bot/icons/app-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/bot/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

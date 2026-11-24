@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Loft Bot</title>
+  <rect id="tile" width="64" height="64" rx="15" fill="#315de8"/>
+  <g fill="#fff">
+    <path d="M19.5 15.5h8v18q0 4 4 4h16l-6.3 7.3H32L24 49v-4.5q-4.5-2.5-4.5-9.5Z"/>
+    <circle cx="38.5" cy="24.8" r="4"/>
+  </g>
+</svg>

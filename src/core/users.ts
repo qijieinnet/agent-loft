@@ -14,6 +14,8 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { dataDir, readJson, writeJsonAtomic } from "../home.js";
 import { config } from "./config.js";
+import { transaction } from "./db.js";
+import { purgeBotAccount, recoverRemovedBotAccounts } from "./web-bot-retention.js";
 
 export type Role = "admin" | "member";
 export type ResourceKind = "experts" | "agents" | "servers";
@@ -28,6 +30,10 @@ export type User = {
   passwordHash: string;
   createdAt: number;
   disabled?: boolean;
+  /** 停用后递增；重新启用账号也要重新授权曾经等待它的 Bot 工作。 */
+  botAccessRevision?: number;
+  /** 使用 Bot 邀请注册的账号只能访问 Bot，不授予原有工作台权限。 */
+  botOnly?: boolean;
   /** 成员能不能用远程控制（终端、桌面）。管理员一直能用，不看这个 */
   remote?: boolean;
   /** 成员能不能用工作区面板（浏览文件、看 Git 改动）。管理员一直能用，不看这个 */
@@ -37,7 +43,7 @@ export type User = {
   permissions?: ResourcePermissions;
 };
 
-export type PublicUser = Omit<User, "passwordHash">;
+export type PublicUser = Omit<User, "passwordHash" | "botAccessRevision">;
 
 type StoreShape = { users: User[] };
 
@@ -75,10 +81,14 @@ function load(): User[] {
   return cache;
 }
 
-function save(list: User[], accessChanged = true): void {
-  cache = list;
+function persistUsers(list: User[]): void {
   writeJsonAtomic(usersPath, { users: list });
+  cache = list;
   loadedMtime = mtimeOf(usersPath);
+}
+
+function save(list: User[], accessChanged = true): void {
+  persistUsers(list);
   userEvents.emit("changed", accessChanged);
 }
 
@@ -106,7 +116,7 @@ function newId(): string {
 }
 
 function publicUser(u: User): PublicUser {
-  const { passwordHash: _hidden, ...rest } = u;
+  const { passwordHash: _hidden, botAccessRevision: _revision, ...rest } = u;
   return structuredClone(rest);
 }
 
@@ -249,7 +259,7 @@ function assertAdminLeft(list: User[]): void {
   if (!list.some((u) => u.role === "admin" && !u.disabled)) throw new Error("至少要保留一个能登录的管理员");
 }
 
-export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown }): PublicUser {
+export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown; botOnly?: boolean }): PublicUser {
   const list = load();
   const name = checkName(params.name);
   if (list.some((u) => u.name.toLowerCase() === name.toLowerCase())) throw new Error(`用户名「${name}」已经有人用了`);
@@ -260,6 +270,7 @@ export function createUser(params: { name: string; password: string; role?: Role
     role: params.role === "admin" ? "admin" : "member",
     passwordHash: hashPassword(params.password),
     createdAt: Date.now(),
+    ...(params.botOnly ? { botOnly: true } : {}),
     ...(params.remote === true ? { remote: true } : {}),
     ...(params.files === true ? { files: true } : {}),
     ...(params.gitRemote === true ? { gitRemote: true } : {}),
@@ -283,6 +294,7 @@ export function updateUser(
   }
   if (patch.role !== undefined) user.role = patch.role === "admin" ? "admin" : "member";
   if (patch.disabled !== undefined) {
+    if (patch.disabled && !user.disabled) user.botAccessRevision = (user.botAccessRevision ?? 0) + 1;
     if (patch.disabled) user.disabled = true;
     else delete user.disabled;
   }
@@ -309,13 +321,34 @@ export function updateUser(
 }
 
 export function removeUser(id: string): PublicUser {
-  const list = load();
-  const user = list.find((u) => u.id === id);
-  if (!user) throw new Error("用户不存在");
-  const rest = list.filter((u) => u.id !== id);
-  assertAdminLeft(rest);
-  save(rest);
-  return publicUser(user);
+  const removed = transaction(() => {
+    const list = readBotAccounts();
+    const user = list.find((u) => u.id === id);
+    if (!user) throw new Error("用户不存在");
+    const rest = list.filter((u) => u.id !== id);
+    assertAdminLeft(rest);
+    purgeBotAccount(id, rest);
+    persistUsers(rest);
+    return publicUser(user);
+  });
+  userEvents.emit("changed", true);
+  return removed;
+}
+
+/** Use the current on-disk account list, rather than an up-to-one-second-old process cache. */
+function readBotAccounts(): User[] {
+  if (!fs.existsSync(usersPath)) return [];
+  const store = JSON.parse(fs.readFileSync(usersPath, "utf8")) as StoreShape;
+  if (!Array.isArray(store?.users) || store.users.some(u =>
+    !u || typeof u.id !== "string" || !u.id || typeof u.name !== "string" || !["admin","member"].includes(u.role))) {
+    throw new Error("账号清单无效，无法核对 Bot 归属。");
+  }
+  if (store.users.length) assertAdminLeft(store.users);
+  return store.users;
+}
+
+export function recoverBotAccounts(): void {
+  recoverRemovedBotAccounts(readBotAccounts);
 }
 
 /** 测试用：换了 AGENT_LOFT_HOME 之后重新读 */

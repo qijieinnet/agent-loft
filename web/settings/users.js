@@ -200,7 +200,7 @@ export async function usersTab(page) {
         onclick: act(async () => {
           const sure = await confirmDialog({
             title: `删除用户「${u.name}」？`,
-            message: "他的设备会立刻下线，记忆和飞书绑定一起删除。他的对话不会删除，之后归管理员。",
+            message: "他的设备会退出登录。私人记忆、Bot 私聊和个人归档会删除。共用 Bot 优先交给最早加入的可用成员，只有停用成员时保留给其中最早加入者；没有其他成员的 Bot 会删除。工作台对话归管理员。",
             confirmText: "删除",
             danger: true,
           });

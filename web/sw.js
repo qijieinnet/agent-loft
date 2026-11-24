@@ -1,77 +1,104 @@
-// 最小的 Service Worker：只管系统通知和角标。
-// 不缓存任何东西 —— 这是一个实时操作本机的工具，离线时显示旧页面只会误导人。
-// 也不要加空的 fetch 监听：有的浏览器会让每个请求都先经过 Service Worker，白白变慢；
-// 从浏览器菜单「添加到主屏幕」不需要它。
+// One script, two registrations: the workbench owns / and the Bot owns /bot/.
+// Keep conversation content on the server; only system notifications are managed here.
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
-// 服务端推来的通知（回复完成、需要授权）。iOS 要求每条推送都必须弹出通知，否则会收回推送权限
-self.addEventListener("push", (event) => {
-  let data = {};
+function localUrl(value) {
   try {
-    data = event.data ? event.data.json() : {};
-  } catch {
-    data = { body: event.data ? event.data.text() : "" };
-  }
-  event.waitUntil(
-    Promise.all([
-      self.registration.showNotification(data.title || "Agent Loft", {
-        body: data.body || "",
-        tag: data.tag,
-        icon: "/apple-touch-icon.png",
-        badge: "/apple-touch-icon.png",
-        data: { url: data.url || "/" },
-      }),
-      bumpBadge(data.tag).catch(() => {}),
-    ]),
-  );
+    const url = new URL(value, self.location.origin);
+    if ("Origin" in globalThis) return Origin.from(url).isSameOrigin(Origin.from(self.location.origin)) ? url : null;
+    return url.origin !== "null" && url.origin === self.location.origin ? url : null;
+  } catch { return null; }
+}
+function isBot(url) { return url?.pathname === "/bot" || url?.pathname.startsWith("/bot/"); }
+
+// An acknowledgement and a push may arrive together. Update the native badge
+// after the matching notification changes, in the same order as the events.
+let previous = Promise.resolve();
+function update(event, action) {
+  const work = previous.then(action);
+  previous = work.catch(() => {});
+  event.waitUntil(work);
+}
+async function syncBadge() {
+  if (!self.navigator.setAppBadge) return;
+  const bot = !!isBot(localUrl(self.registration.scope));
+  const pending = await self.registration.getNotifications();
+  const count = pending.filter(n => !!isBot(localUrl(n.data?.url || "/")) === bot).length;
+  if (count) await self.navigator.setAppBadge(count).catch(() => {});
+  else await self.navigator.clearAppBadge?.().catch(() => {});
+}
+
+self.addEventListener("push", event => {
+  let data = {};
+  try { data = event.data?.json() ?? {}; }
+  catch { data = { body: event.data?.text() || "" }; }
+  const bot = !!isBot(localUrl(self.registration.scope));
+  const url = localUrl(data.url || (bot ? "/bot/" : "/"));
+  update(event, async () => {
+    // An obsolete endpoint can still have a payload in flight during migration.
+    // Never show the other app's title or preview in this registration.
+    const matched = url && !!isBot(url) === bot;
+    await self.registration.showNotification(matched && data.title || (bot ? "我的 Bot" : "Agent Loft"), {
+      body: matched ? data.body || "" : "打开应用查看通知",
+      tag: matched ? data.tag : "subscription-updated",
+      icon: bot ? "/bot/icons/app-192.png" : "/apple-touch-icon.png",
+      badge: bot ? "/bot/icons/badge.png" : "/apple-touch-icon.png",
+      data: { url: matched ? url.href : bot ? "/bot/" : "/" },
+    });
+    await syncBadge();
+  });
 });
 
-// ---------- 桌面图标角标（Badging API） ----------
-// 支持：桌面 Chrome / Edge 安装的 PWA、iOS 16.4+ 主屏 App（要有通知权限）。
-// Android Chrome 没有这个 API，桌面红点由启动器根据通知自己显示。
-// 角标数 = 还没看过的通知条数，同一 tag 的通知会互相替换，只算一条；打开页面时由页面清零。
-// Service Worker 里没有 localStorage，计数放在 Cache Storage 里（只存这一个计数，不缓存页面）。
-
-const BADGE_CACHE = "aim-badge";
-const BADGE_URL = "/__badge";
-
-async function readBadgeTags() {
-  try {
-    const res = await (await caches.open(BADGE_CACHE)).match(BADGE_URL);
-    const tags = res ? await res.json() : [];
-    return Array.isArray(tags) ? tags : [];
-  } catch {
-    return [];
+self.addEventListener("message", event => {
+  const source = event.source?.url && localUrl(event.source.url);
+  const data = event.data;
+  if (!source || !data) return;
+  if (data.type === "session-ended") {
+    update(event, async () => {
+      const notices = await self.registration.getNotifications();
+      for (const notice of notices) notice.close();
+      await syncBadge();
+    });
+    return;
   }
-}
-
-async function bumpBadge(tag) {
-  if (!("setAppBadge" in self.navigator)) return;
-  // 用户正看着页面就不加角标
-  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (windows.some((w) => w.visibilityState === "visible")) return;
-  const tags = await readBadgeTags();
-  const id = tag || `untagged:${Date.now()}:${Math.random()}`;
-  if (!tags.includes(id)) tags.push(id);
-  await (await caches.open(BADGE_CACHE)).put(BADGE_URL, new Response(JSON.stringify(tags)));
-  await self.navigator.setAppBadge(tags.length).catch(() => {});
-}
-
-// 点通知：已经开着页面就切过去并跳到那条会话，没开就新开一个
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  const url = new URL(event.notification.data?.url || "/", self.location.origin).href;
-  event.waitUntil(
-    (async () => {
-      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const existing = windows.find((w) => new URL(w.url).origin === self.location.origin);
-      if (existing) {
-        await existing.focus().catch(() => {});
-        existing.postMessage({ type: "open", url });
-        return;
+  const bot = !!isBot(source);
+  const disabled = data.type === "notifications-disabled";
+  if (!disabled && data.type !== (bot ? "bot-notices-read" : "workbench-notices-read")) return;
+  if (bot && !disabled && typeof data.threadId !== "string") return;
+  update(event, async () => {
+    const notices = await self.registration.getNotifications();
+    for (const notice of notices) {
+      const url = localUrl(notice.data?.url || "/");
+      if (!url || !!isBot(url) !== bot) continue;
+      if (bot && !disabled) {
+        if (url.searchParams.get("thread") !== data.threadId) continue;
+        const message = Number(url.searchParams.get("message"));
+        const readMessage = Number.isSafeInteger(data.through) && message > 0 && message <= data.through;
+        const readDelegation = data.delegationId && data.delegationId === url.searchParams.get("delegation");
+        if (!readMessage && !readDelegation) continue;
       }
-      await self.clients.openWindow(url);
-    })(),
-  );
+      notice.close();
+    }
+    if (bot === !!isBot(localUrl(self.registration.scope))) await syncBadge();
+  });
+});
+self.addEventListener("notificationclose", event => update(event, syncBadge));
+
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const target = localUrl(event.notification.data?.url || "/");
+  if (!target) return;
+  update(event, async () => {
+    await syncBadge();
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const existing = windows.find(w => {
+      const page = localUrl(w.url);
+      return page && !!isBot(page) === !!isBot(target);
+    });
+    if (existing) {
+      await existing.focus().catch(() => {});
+      existing.postMessage({ type: "open", url: target.href });
+    } else await self.clients.openWindow(target.href);
+  });
 });

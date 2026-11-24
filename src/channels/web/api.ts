@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { handleBotsApi } from "./bots-api.js";
 import { AGENT_IDS, config, listWorkspaceDirs, resolveWorkspacePath, saveConfig, type AppConfig } from "../../core/config.js";
 import { expandHomePath } from "../../core/paths.js";
 import { cleanCustomCommands } from "../../core/command-catalog.js";
@@ -97,6 +98,10 @@ import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clampLimit, dirsOf, inDir, pageOf, parseCursor, recentPageOf, searchConvs } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson, setServerTiming } from "./http.js";
 import { syncApi } from "./memory-sync-api.js";
+import { botApiAllowed, botDeployment, handleBotInbox, handleReminderApi, joinAsNewBotUser } from "./bot-access.js";
+import { handleBotEvent } from "./bot-followups-api.js";
+import { pushSessionId } from "./auth.js";
+import { browserPushEndpoint } from "./push.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleMemosApi } from "./memos-api.js";
 import { handleLibraryApi } from "./library-api.js";
@@ -116,6 +121,7 @@ import {
   listSubscriptions,
   pushToAll,
   removeSubscription,
+  removeSessionSubscriptions,
   removeSubscriptionsOf,
   vapidKeyPair,
   vapidPublicKey,
@@ -625,12 +631,25 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const method = req.method ?? "GET";
   const p = url.pathname;
   const ip = clientIp(req);
+  if (p.startsWith("/api/bot-events/")) return handleBotEvent(req, res, url);
+  const user = currentUser(req);
+
+  if ((botDeployment() || user?.botOnly) && !botApiAllowed(p)) throw new HttpError(403, "此入口只提供 Bot 功能");
+  if (p === "/api/bot-join" && method === "POST") {
+    if (user) throw new HttpError(409, "请用当前账号接受邀请");
+    const body = await readJsonBody(req, 4096);
+    if (takeAttempt(ip)) throw new HttpError(429, "尝试次数过多，请稍后再试");
+    const joined = joinAsNewBotUser(body?.token, body?.name, body?.password);
+    clearAttempts(ip);
+    newSession(req, res, joined.user.id);
+    sendJson(res, 201, { bot: joined.bot });
+    return;
+  }
 
   if (p.startsWith("/api/memory-sync/v1/")) return syncApi(req,res,p);
 
   // ----- 无需登录 -----
   if (p === "/api/me" && method === "GET") {
-    const user = currentUser(req);
     sendJson(res, 200, {
       authed: !!user,
       needsSetup: needsSetup(),
@@ -666,14 +685,21 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/logout" && method === "POST") {
-    destroySession(cookies(req)[COOKIE]);
+    const token = cookies(req)[COOKIE];
+    if (user && token) {
+      const body = await readJsonBody<{ localPushEndpoints?: unknown }>(req);
+      removeSessionSubscriptions(user.id, pushSessionId(token), body?.localPushEndpoints);
+    }
+    destroySession(token);
     setCookie(req, res, "", 0);
     sendJson(res, 200, { ok: true });
     return;
   }
 
-  const user = currentUser(req);
   if (!user) throw new HttpError(401, "请先登录");
+  if (p === "/api/bot-inbox" || p === "/api/bot-inbox/read" || p === "/api/bot-inbox/test-device") return handleBotInbox(req, res, url, user.id, pushSessionId(cookies(req)[COOKIE]!));
+  if (p === "/api/bot-reminders" || p.startsWith("/api/bot-reminders/")) return handleReminderApi(req, res, url, user.id);
+  if (p === "/api/bots" || p.startsWith("/api/bots/")) return handleBotsApi(req, res, url, user);
   if (adminOnly(p) && !isAdmin(user)) throw new HttpError(403, "只有管理员能做这个操作");
   if (p === "/api/account/memory/sync" || p.startsWith("/api/account/memory/sync/")) return syncApi(req,res,p,user.id);
   const admin = isAdmin(user);
@@ -797,14 +823,34 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
 
   // ----- 系统通知（Web Push） -----
+  const pushPurpose = (value: unknown) => {
+    const botOnly = user.botOnly || botDeployment();
+    const purpose = value ?? (botOnly ? "bot" : "workbench");
+    if (purpose !== "bot" && purpose !== "workbench") throw new HttpError(400, "无效的通知入口");
+    if (botOnly && purpose !== "bot") throw new HttpError(403, "此入口只提供 Bot 通知");
+    return purpose;
+  };
   if (p === "/api/push" && method === "GET") {
-    sendJson(res, 200, { publicKey: vapidPublicKey(), subscriptions: listSubscriptions(pushOwnedBy(user.id)) });
+    sendJson(res, 200, { publicKey: vapidPublicKey(), subscriptions: listSubscriptions(pushOwnedBy(user.id), pushSessionId(cookies(req)[COOKIE]!), pushPurpose(url.searchParams.get("purpose"))) });
     return;
   }
   if (p === "/api/push/subscribe" && method === "POST") {
-    const body = await readJsonBody<{ subscription?: unknown }>(req);
+    const body = await readJsonBody<{ subscription?: unknown; purpose?: unknown }>(req);
+    if (body.purpose == null && !user.botOnly && !botDeployment()) {
+      // An open pre-Bot workbench tab sends its root page as a same-origin referrer.
+      // The old Bot preview suppresses referrers, so its ambiguous registration needs a refresh.
+      const referrer = req.headers.referer;
+      const page = referrer && URL.canParse(referrer) ? new URL(referrer) : null;
+      if (page?.pathname !== "/" || (req.headers["sec-fetch-site"] !== "same-origin" && page.host !== req.headers.host)) {
+        throw new HttpError(400, "请刷新页面后重新开启通知。");
+      }
+    }
+    const purpose = pushPurpose(body.purpose);
     try {
-      const record = addSubscription(body.subscription, String(req.headers["user-agent"] ?? ""), user.id);
+      if (purpose === "bot" && !browserPushEndpoint((body.subscription as { endpoint?: string } | undefined)?.endpoint)) {
+        throw new Error("这个浏览器的推送服务暂不支持");
+      }
+      const record = addSubscription(body.subscription, String(req.headers["user-agent"] ?? ""), user.id, pushSessionId(cookies(req)[COOKIE]!), purpose);
       sendJson(res, 200, { ok: true, label: record.label });
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
@@ -829,8 +875,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     return;
   }
   if (p === "/api/push/unsubscribe" && method === "POST") {
-    const body = await readJsonBody<{ endpoint?: string }>(req);
-    sendJson(res, 200, { ok: removeSubscription(String(body.endpoint ?? ""), pushOwnedBy(user.id)) });
+    const body = await readJsonBody<{ endpoint?: string; purpose?: unknown }>(req);
+    const purpose = pushPurpose(body.purpose);
+    const mine = pushOwnedBy(user.id);
+    const endpoint = String(body.endpoint ?? "");
+    const ok = removeSubscription(endpoint, mine, purpose);
+    const retained = listSubscriptions(mine, undefined, purpose === "bot" ? "workbench" : "bot").some(s => s.endpoint === endpoint);
+    sendJson(res, 200, { ok, retained });
     return;
   }
   if (p === "/api/push/test" && method === "POST") {

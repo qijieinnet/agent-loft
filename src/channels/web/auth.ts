@@ -11,6 +11,7 @@ import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { config, saveConfig } from "../../core/config.js";
+import { sql, transaction } from "../../core/db.js";
 import { createUser, getUser, hasUsers, legacyOwnerId, updateUser, userEvents, type PublicUser, type User } from "../../core/users.js";
 import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
 
@@ -43,6 +44,15 @@ function mtimeOf(file: string): number {
   }
 }
 
+function forgetSession(store: Record<string, WebSession>, id: string): void {
+  if (!store[id]) return;
+  transaction(() => {
+    sql("DELETE FROM bot_device_reads WHERE sessionId=?").run(id);
+    sql("DELETE FROM bot_notice_devices WHERE sessionId=?").run(id);
+  });
+  delete store[id];
+}
+
 function loadSessions(): Record<string, WebSession> {
   // 终端里 agent-loft passwd 会清空登录态：文件变了就重新读，让被踢的设备立刻失效
   const mtime = mtimeOf(sessionsPath);
@@ -53,7 +63,10 @@ function loadSessions(): Record<string, WebSession> {
   const now = Date.now();
   let stamped = false;
   for (const [id, s] of Object.entries(sessions)) {
-    if (s.expiresAt < now) delete sessions[id];
+    if (s.expiresAt < now) {
+      forgetSession(sessions, id);
+      stamped = true;
+    }
     else if (!s.userId) {
       // 升级前的登录态：认给迁移出来的管理员，并且记下来，之后那个管理员被删了也不会换人
       const owner = legacyOwnerId();
@@ -76,6 +89,15 @@ function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+export function pushSessionId(token: string): string {
+  return sha256(token);
+}
+
+export function activePushSession(id: string, userId: string): boolean {
+  const session = loadSessions()[id];
+  return !!session && session.expiresAt > Date.now() && ownerOf(session) === userId;
+}
+
 function ownerOf(s: WebSession): string | undefined {
   return s.userId;
 }
@@ -93,7 +115,9 @@ export function needsSetup(): boolean {
  */
 export function setupFirstAdmin(name: string, password: string): PublicUser {
   if (hasUsers()) throw new Error("已经设置过了");
+  const old = loadSessions();
   const user = createUser({ name: name.trim() || "admin", password, role: "admin" });
+  for (const id of Object.keys(old)) forgetSession(old, id);
   sessions = {};
   saveSessions();
   fs.rmSync(setupTokenPath, { force: true });
@@ -176,7 +200,7 @@ export function sessionUser(token: string | undefined): User | undefined {
 
 export function destroySession(token: string | undefined): void {
   if (!token) return;
-  delete loadSessions()[sha256(token)];
+  forgetSession(loadSessions(), sha256(token));
   saveSessions();
   authEvents.emit("revoked");
 }
@@ -200,7 +224,7 @@ export function revokeSession(idPrefix: string, userId?: string): boolean {
   const all = loadSessions();
   const hit = Object.keys(all).find((id) => id.startsWith(idPrefix) && (!userId || ownerOf(all[id]!) === userId));
   if (!hit) return false;
-  delete all[hit];
+  forgetSession(all, hit);
   saveSessions();
   authEvents.emit("revoked");
   return true;
@@ -209,7 +233,7 @@ export function revokeSession(idPrefix: string, userId?: string): boolean {
 /** 某个用户的所有设备下线 */
 export function revokeUserSessions(userId: string): void {
   const all = loadSessions();
-  for (const [id, s] of Object.entries(all)) if (ownerOf(s) === userId) delete all[id];
+  for (const [id, s] of Object.entries(all)) if (ownerOf(s) === userId) forgetSession(all, id);
   saveSessions();
   authEvents.emit("revoked");
 }

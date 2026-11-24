@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { once } from "node:events";
+import { EventEmitter, once, on } from "node:events";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "aim-tasks-"));
 process.env.AGENT_LOFT_HOME = home;
@@ -214,6 +214,13 @@ test("发到聊天对话、不携带上下文：借临时会话跑，跑完换�
   const { createUser } = await import("../src/core/users.js");
   const runner = await import("../src/core/task-runner.js");
 
+  const driverEvents = new EventEmitter();
+  const nextDriverEvent = (event: string) => once(driverEvents, event, { signal: AbortSignal.timeout(10_000) });
+  const afterDriverEvent = async (event: string, act: () => void) => {
+    const done = nextDriverEvent(event);
+    act();
+    await done;
+  };
   const sent: { session: string; text: string }[] = [];
   const created: (string | undefined)[] = [];
   let seq = 0;
@@ -228,17 +235,20 @@ test("发到聊天对话、不携带上下文：借临时会话跑，跑完换�
     createSession: (opts, events) => {
       created.push(opts.resumeId);
       const id = opts.resumeId ?? `s${++seq}`;
-      const answer = () => {
-        events.onSessionId(id);
-        events.onResult({ text: `来自 ${id}`, durationMs: 1, anchor: `end-${id}` });
-      };
       return {
         sessionId: opts.resumeId,
         send: (input: { text: string }) => {
           sent.push({ session: id, text: input.text });
-          if (holdTask && input.text.includes("看看")) {
+          const isTask = input.text.startsWith("看看");
+          const answer = () => {
+            events.onSessionId(id);
+            events.onResult({ text: `来自 ${id}`, durationMs: 1, anchor: `end-${id}` });
+            driverEvents.emit(isTask ? "task-finished" : "chat-finished");
+          };
+          if (holdTask && isTask) {
             events.onSessionId(id);
             release = answer;
+            driverEvents.emit("task-held");
             return;
           }
           setTimeout(answer, 5);
@@ -272,7 +282,6 @@ test("发到聊天对话、不携带上下文：借临时会话跑，跑完换�
     statusLines: async () => [],
     diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
   });
-  const wait = (ms = 40) => new Promise((r) => setTimeout(r, ms));
   // 刚停止的 15 秒内不让再跑，这里不用真的等
   const clearStopped = () => (hub as unknown as { stoppedAt: Map<string, number> }).stoppedAt.delete(key);
   const owner = createUser({ name: "isolated-owner", password: "password-123", role: "admin" });
@@ -283,13 +292,12 @@ test("发到聊天对话、不携带上下文：借临时会话跑，跑完换�
   runner.startTaskRunner();
   try {
     const task = tasks.createTask(owner.id, { title: "独立", prompt: "看看", schedule: { kind: "daily", time: "02:00" }, target: { kind: "conv", key }, freshContext: true }, "user");
-    chat("聊两句");
-    await wait();
+    const runTask = () => assert.equal(runner.runTaskNow(task), undefined);
+    await afterDriverEvent("chat-finished", () => chat("聊两句"));
     assert.equal(binding().sessionId, "s1");
 
     // 跑完：聊天的会话换回来，任务的进历史，运行状态正常
-    assert.equal(runner.runTaskNow(task), undefined);
-    await wait();
+    await afterDriverEvent("task-finished", runTask);
     assert.equal(sent.at(-1)!.session, "s2", "任务在新会话里跑");
     assert.equal(binding().sessionId, "s1");
     assert.deepEqual(binding().pastSessions, ["s2"]);
@@ -307,45 +315,38 @@ test("发到聊天对话、不携带上下文：借临时会话跑，跑完换�
     ]);
 
     // 下一条聊天接着聊天的会话，结果只带一次，页面上看不到这段背景
-    chat("刚才那个结果什么意思");
-    await wait();
+    await afterDriverEvent("chat-finished", () => chat("刚才那个结果什么意思"));
     assert.equal(sent.at(-1)!.session, "s1");
     assert.match(sent.at(-1)!.text, /来自 s2/);
     assert.equal(stripContext(sent.at(-1)!.text), "刚才那个结果什么意思");
-    chat("再问一句");
-    await wait();
+    await afterDriverEvent("chat-finished", () => chat("再问一句"));
     assert.equal(sent.at(-1)!.text, "再问一句");
 
     // 运行期间发的消息：不进临时会话，跑完才发到聊天的会话
     holdTask = true;
-    assert.equal(runner.runTaskNow(task), undefined);
-    await wait();
+    await afterDriverEvent("task-held", runTask);
     assert.equal(sent.at(-1)!.session, "s3");
     assert.deepEqual(binding().parked, { sessionId: "s1" });
     assert.equal((await hub.history(key)).filter((m) => m.text === "聊两句").length, 1, "运行中聊天记录还在");
     chat("等你跑完");
-    await wait();
+    assert.ok(hub.liveTurn(key).some(({ ev }) => ev.type === "user" && ev.queued && ev.text === "等你跑完"));
     assert.ok(!sent.some((m) => m.text.startsWith("等你跑完")), "排着不发");
-    release();
-    await wait();
+    await afterDriverEvent("chat-finished", release);
     assert.equal(sent.at(-1)!.session, "s1");
     assert.ok(sent.at(-1)!.text.startsWith("等你跑完"));
     assert.equal(task.runs[0]!.status, "notified");
 
     // 停止：换回聊天的会话，任务记成中断
-    assert.equal(runner.runTaskNow(task), undefined);
-    await wait();
+    await afterDriverEvent("task-held", runTask);
     assert.equal(binding().sessionId, "s4");
     await hub.stop(key);
-    await wait();
     assert.equal(binding().sessionId, "s1");
     assert.equal(binding().parked, undefined);
     assert.equal(task.runs[0]!.status, "interrupted");
     clearStopped();
 
     // 打断并发送：排着的消息照常发到聊天的会话
-    assert.equal(runner.runTaskNow(task), undefined);
-    await wait();
+    await afterDriverEvent("task-held", runTask);
     const pending: { id?: string }[] = [];
     const listen = (env: { key: string; ev: { type: string; id?: string } }) => {
       if (env.key === key && env.ev.type === "user") pending.push(env.ev);
@@ -353,16 +354,15 @@ test("发到聊天对话、不携带上下文：借临时会话跑，跑完换�
     hub.on("event", listen);
     chat("马上看这条");
     hub.off("event", listen);
-    await wait();
+    const resumed = nextDriverEvent("chat-finished");
     assert.match(await hub.jump(key, pending[0]!.id!), /已打断定时任务/);
-    await wait();
+    await resumed;
     assert.equal(sent.at(-1)!.session, "s1");
     assert.ok(sent.at(-1)!.text.startsWith("马上看这条"));
     clearStopped();
 
     // 开新会话：打断运行，新会话不沾旧的
-    assert.equal(runner.runTaskNow(task), undefined);
-    await wait();
+    await afterDriverEvent("task-held", runTask);
     await hub.newSession(key);
     assert.equal(binding().sessionId, undefined);
     assert.equal(binding().parked, undefined);
@@ -466,16 +466,25 @@ test("运行：发到专用对话，agent 判断不用提醒时标成 silent，�
     diagnose: () => ({ kind: "x", chatMessage: "x", consoleHint: "" }),
   });
   const owner = createUser({ name: "alice", password: "password-123", role: "admin" });
-  const results: { silent?: boolean; task?: unknown }[] = [];
-  const onEvent = (env: { ev: { type: string } }) => {
-    if (env.ev.type === "result") results.push(env.ev as never);
+  const resultAfter = async (task: ReturnType<typeof tasks.createTask>, action: () => void) => {
+    const events = on(hub, "event", { signal: AbortSignal.timeout(10_000) });
+    try {
+      action();
+      for await (const [event] of events) {
+        const { key, ev } = event as import("../src/core/hub.js").EventEnvelope;
+        if (key === task.target.key && ev.type === "result") return ev;
+      }
+      throw new Error("未收到任务对话的结果");
+    } finally {
+      await events.return?.();
+    }
   };
-  hub.on("event", onEvent as never);
+  const run = (task: ReturnType<typeof tasks.createTask>) =>
+    resultAfter(task, () => assert.equal(runner.runTaskNow(task), undefined));
   runner.startTaskRunner();
   try {
     const task = tasks.createTask(owner.id, { title: "查更新", prompt: "看看有没有新版本", schedule: { kind: "daily", time: "02:00" } }, "user");
-    assert.equal(runner.runTaskNow(task), undefined);
-    await new Promise((r) => setTimeout(r, 60));
+    const first = await run(task);
 
     // 新建了专用对话，归任务的主人，提示词后面带着说明
     const key = task.target.key!;
@@ -484,29 +493,26 @@ test("运行：发到专用对话，agent 判断不用提醒时标成 silent，�
     assert.equal(conv.taskId, task.id);
     assert.equal(conv.expert, undefined, "内置专家");
     assert.match(received[0]!, /^看看有没有新版本\n\n<agent-loft-context>/);
-    assert.equal(results[0]?.silent, true);
+    assert.equal(first.silent, true);
     assert.equal(tasks.getTask(owner.id, task.id)!.runs[0]!.status, "silent");
     assert.equal(tasks.getTask(owner.id, task.id)!.runs[0]!.preview, "当前 0.2.30，没有更新");
 
     // 第二次：续用同一条专用对话，这次有事要说
-    assert.equal(runner.runTaskNow(task), undefined);
-    await new Promise((r) => setTimeout(r, 60));
+    const second = await run(task);
     assert.equal(task.target.key, key);
-    assert.equal(results[1]?.silent, undefined);
-    assert.deepEqual(results[1]?.task, { id: task.id, title: "查更新" });
+    assert.equal(second.silent, undefined);
+    assert.deepEqual(second.task, { id: task.id, title: "查更新" });
     assert.equal(tasks.getTask(owner.id, task.id)!.runs[0]!.status, "notified");
 
     // 普通消息的结果不带任务标记
-    hub.send(key, { text: "谢谢", attachments: [] }, { channel: "web", channelId: "web" });
-    await new Promise((r) => setTimeout(r, 60));
-    assert.equal(results[2]?.task, undefined);
+    const chat = await resultAfter(task, () => hub.send(key, { text: "谢谢", attachments: [] }, { channel: "web", channelId: "web" }));
+    assert.equal(chat.task, undefined);
 
     // 专家被删：已有专用对话、尚未开对话、发回原对话三条路都暂停，不能继续送进 hub。
     const experts = await import("../src/core/experts.js");
     const helper = experts.createExpert(owner.id, { name: "任务助手", engine: "claude", access: "web" });
     const dedicated = tasks.createTask(owner.id, { prompt: "专家任务", expert: helper.id, schedule: { kind: "daily", time: "08:00" } }, "user");
-    assert.equal(runner.runTaskNow(dedicated), undefined);
-    await new Promise((r) => setTimeout(r, 60));
+    await run(dedicated);
     assert.equal(getConversation(dedicated.target.key!)?.expert, helper.id);
     const unopened = tasks.createTask(owner.id, { prompt: "还没开对话", expert: helper.id, schedule: { kind: "daily", time: "08:00" } }, "user");
     const original = tasks.createTask(owner.id, { prompt: "发回原对话", target: { kind: "conv", key: dedicated.target.key! }, schedule: { kind: "daily", time: "08:00" } }, "user");
@@ -520,13 +526,11 @@ test("运行：发到专用对话，agent 判断不用提醒时标成 silent，�
       assert.match(dead.runs[0]!.note!, /专家已经删除/);
       assert.equal(runner.isTaskRunning(dead.id), false);
     }
-    await new Promise((r) => setTimeout(r, 30));
     assert.equal(received.length, before, "暂停前不能先把消息发出去");
     // 选个可用专家后恢复：丢掉原专用对话，下次正常开新对话。
     tasks.updateTask(owner.id, dedicated.id, { expert: "claude", enabled: true });
     assert.equal(dedicated.target.key, undefined);
-    assert.equal(runner.runTaskNow(dedicated), undefined);
-    await new Promise((r) => setTimeout(r, 60));
+    await run(dedicated);
     assert.equal(received.length, before + 1);
     assert.equal(dedicated.runs[0]!.status, "notified");
 
@@ -537,7 +541,6 @@ test("运行：发到专用对话，agent 判断不用提醒时标成 silent，�
     assert.equal(tasks.getTask(owner.id, task.id)!.enabled, false);
   } finally {
     runner.stopTaskRunner();
-    hub.off("event", onEvent as never);
   }
 });
 

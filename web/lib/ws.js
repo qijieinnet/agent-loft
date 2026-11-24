@@ -171,12 +171,8 @@ armIdle();
 /** 打开 / 切回页面：清掉本应用已显示的通知、桌面图标角标和计数。 */
 export function clearAppNotifications() {
   if (framed || document.visibilityState !== "visible") return;
-  navigator.clearAppBadge?.().catch(() => {});
-  if ("caches" in window) caches.delete("aim-badge").catch(() => {});
-  navigator.serviceWorker?.getRegistration().then(async (reg) => {
-    const notifications = await reg?.getNotifications();
-    // 异步读取期间可能已经切走，后台到达的新通知留着提醒。
-    if (document.visibilityState === "visible") for (const n of notifications ?? []) n.close();
+  navigator.serviceWorker?.getRegistration("/").then(reg => {
+    if (document.visibilityState === "visible") reg?.active?.postMessage({ type: "workbench-notices-read" });
   }).catch(() => {});
 }
 

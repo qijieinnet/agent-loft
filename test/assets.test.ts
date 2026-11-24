@@ -104,6 +104,33 @@ test("静态文件的缓存策略和接口耗时", { timeout: 20000 }, async (t)
   t.after(() => stopWeb());
 
   const page = await get(base, "/");
+  await t.test("Bot 地址使用自己的页面、安装入口和资源", async () => {
+    const botPage = await get(base, "/bot/");
+    assert.equal(botPage.status, 200);
+    assert.match(botPage.body.toString(), /src="\/bot\/app\.js"/);
+    const manifest = await get(base, "/bot/manifest.webmanifest");
+    const app = JSON.parse(manifest.body.toString());
+    assert.equal(app.start_url, "/bot/");
+    assert.equal((await get(base, "/bot/app.js")).status, 200);
+    // Standalone deployments have a stricter static asset allowlist.
+    const mode = process.env.AGENT_LOFT_WEB_MODE;
+    try {
+      process.env.AGENT_LOFT_WEB_MODE = "bot";
+      for (const icon of app.icons) {
+        assert.ok(icon.src.startsWith("/bot/icons/"));
+        const asset = await get(base, icon.src);
+        assert.equal(asset.status, 200, icon.src);
+        assert.equal(asset.headers["content-type"], icon.type);
+        assert.equal(asset.body.readUInt32BE(16) + "x" + asset.body.readUInt32BE(20), icon.sizes);
+      }
+      for (const asset of ["mark.svg", "apple-touch.png", "badge.png"])
+        assert.equal((await get(base, "/bot/icons/" + asset)).status, 200, asset);
+      assert.equal((await get(base, "/views/messages.js")).status, 404);
+    } finally {
+      if (mode === undefined) delete process.env.AGENT_LOFT_WEB_MODE;
+      else process.env.AGENT_LOFT_WEB_MODE = mode;
+    }
+  });
   const html = page.body.toString();
   const token = /src="\/v\/([0-9a-f]{12})\/app\.js"/.exec(html)?.[1];
   assert.ok(token, "入口带指纹");

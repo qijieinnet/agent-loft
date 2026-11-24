@@ -11,8 +11,12 @@ import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
 import { legacyOwnerId } from "../../core/users.js";
 import { config, onConfigChange } from "../../core/config.js";
 import { selfName, validServerId } from "../../core/servers.js";
+import { activePushSession } from "./auth.js";
+
+export type PushPurpose = "bot" | "workbench";
 
 export type PushSubscriptionRecord = {
+  purpose?: PushPurpose;
   endpoint: string;
   keys: { p256dh: string; auth: string };
   /** 设备描述（User-Agent 摘要），设置页里认设备用 */
@@ -21,6 +25,7 @@ export type PushSubscriptionRecord = {
   lastOkAt?: number;
   /** 哪个用户开的（core/users.ts）。升级前的没有：第一次读到时认给迁移出来的那个管理员并记下 */
   userId?: string;
+  sessionId?: string;
   /** 多服务器的外壳转来的订阅，见下面的 addRelaySubscription */
   relay?: RelayInfo;
 };
@@ -87,8 +92,13 @@ function load(): Store {
     const owner = legacyOwnerId();
     const legacy = owner ? store.subscriptions.filter((x) => !x.userId) : [];
     for (const x of legacy) x.userId = owner;
+    // Pre-Bot installations only had workbench subscriptions. The first Bot preview
+    // attached sessions without recording the surface. Those devices must opt in again.
+    const before = store.subscriptions.length;
+    store.subscriptions = store.subscriptions.filter(sub => sub.purpose || !sub.sessionId);
+    const ambiguous = store.subscriptions.length !== before;
     const revoked = dropRevokedRelays(store, config().servers.embedders);
-    if (legacy.length > 0 || revoked) writeJsonAtomic(FILE(), store);
+    if (legacy.length > 0 || ambiguous || revoked) writeJsonAtomic(FILE(), store);
   }
   return store;
 }
@@ -196,17 +206,21 @@ function describeUa(ua: string): string {
 }
 
 /** 同一个浏览器换了个账号登录再开通知：订阅归新账号 */
-export function addSubscription(sub: unknown, userAgent: string, userId?: string): PushSubscriptionRecord {
+export function addSubscription(sub: unknown, userAgent: string, userId?: string, sessionId?: string, purpose: PushPurpose = "workbench"): PushSubscriptionRecord {
   if (!validSubscription(sub)) throw new Error("订阅信息不完整");
   const s = load();
   const record: PushSubscriptionRecord = {
-    endpoint: sub.endpoint,
+    purpose, endpoint: sub.endpoint,
     keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
     label: describeUa(userAgent),
     createdAt: Date.now(),
     ...(userId ? { userId } : {}),
+    ...(sessionId ? { sessionId } : {}),
   };
-  s.subscriptions = [...s.subscriptions.filter((x) => x.endpoint !== sub.endpoint), record];
+  // The same endpoint can opt into both surfaces for the same account. A different
+  // owner must explicitly subscribe each surface again when taking over this device.
+  s.subscriptions = [...s.subscriptions.filter(x => x.endpoint !== sub.endpoint ||
+    (x.userId === userId && (x.purpose ?? "workbench") !== purpose)), record];
   persist();
   return record;
 }
@@ -247,6 +261,7 @@ export function addRelaySubscription(
   const { publicKey, privateJwk } = input.vapid;
   const s = load();
   const record: PushSubscriptionRecord = {
+    purpose: "workbench",
     endpoint: sub.endpoint,
     keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
     label: `${describeUa(userAgent)} · 经 ${new URL(origin).host}`,
@@ -260,32 +275,43 @@ export function addRelaySubscription(
       ...(typeof via.name === "string" ? { name: clip(via.name, 40) } : {}),
     },
   };
-  s.subscriptions = [...s.subscriptions.filter((x) => x.endpoint !== sub.endpoint), record];
+  s.subscriptions = [...s.subscriptions.filter(x => x.endpoint !== sub.endpoint || (x.userId === userId && x.purpose === "bot")), record];
   persist();
   return record;
 }
 
-export function removeSubscription(endpoint: string, mine?: OwnerFilter): boolean {
+export function removeSubscription(endpoint: string, mine?: OwnerFilter, purpose?: PushPurpose): boolean {
   const s = load();
   const before = s.subscriptions.length;
-  s.subscriptions = s.subscriptions.filter((x) => x.endpoint !== endpoint || (mine && !mine(x.userId)));
+  s.subscriptions = s.subscriptions.filter((x) => x.endpoint !== endpoint || (mine && !mine(x.userId)) || (purpose && (x.purpose ?? "workbench") !== purpose));
   if (s.subscriptions.length === before) return false;
   persist();
   return true;
 }
 
 /** 给设置页看的：不带密钥 */
-export function listSubscriptions(mine?: OwnerFilter): { endpoint: string; label: string; createdAt: number; lastOkAt?: number }[] {
-  return load().subscriptions.filter((x) => !mine || mine(x.userId)).map(({ endpoint, label, createdAt, lastOkAt }) => ({
+export function listSubscriptions(mine?: OwnerFilter, sessionId?: string, purpose: PushPurpose = "workbench"): { endpoint: string; label: string; createdAt: number; lastOkAt?: number; botReady?: boolean }[] {
+  return load().subscriptions.filter(x => (x.purpose ?? "workbench") === purpose && (!mine || mine(x.userId))).map(({ endpoint, label, createdAt, lastOkAt, sessionId: bound }) => ({
     endpoint,
     label,
     createdAt,
+    ...(purpose === "bot" && sessionId ? { botReady: bound === sessionId } : {}),
     ...(lastOkAt ? { lastOkAt } : {}),
   }));
 }
 
 export function hasSubscriptions(): boolean {
-  return load().subscriptions.length > 0;
+  return load().subscriptions.some(s => (s.purpose ?? "workbench") === "workbench");
+}
+
+/** One login covers both web apps. Older workbench devices have no session binding. */
+export function removeSessionSubscriptions(userId: string, sessionId: string, localEndpoints: unknown): void {
+  const legacyEndpoints = new Set(Array.isArray(localEndpoints) ? localEndpoints.slice(0, 2) : []);
+  const s = load();
+  const before = s.subscriptions.length;
+  s.subscriptions = s.subscriptions.filter(sub => sub.userId !== userId ||
+    (sub.sessionId ? sub.sessionId !== sessionId : !legacyEndpoints.has(sub.endpoint)));
+  if (before !== s.subscriptions.length) persist();
 }
 
 // ---------- 发送 ----------
@@ -327,6 +353,7 @@ async function sendOne(sub: PushSubscriptionRecord, payload: PushPayload): Promi
   const body = encryptPayload(Buffer.from(JSON.stringify(payloadFor(sub, payload))), sub.keys.p256dh, sub.keys.auth);
   const res = await fetch(sub.endpoint, {
     method: "POST",
+    redirect: "error",
     headers: {
       Authorization: vapidHeader(sub.endpoint, sub.relay?.vapid),
       "Content-Encoding": "aes128gcm",
@@ -339,7 +366,7 @@ async function sendOne(sub: PushSubscriptionRecord, payload: PushPayload): Promi
   });
   if (res.status === 404 || res.status === 410) {
     // 订阅失效了（用户关了通知、删了 PWA）：清掉，别一直推
-    removeSubscription(sub.endpoint);
+    if (load().subscriptions.includes(sub)) removeSubscription(sub.endpoint, owner => owner === sub.userId, sub.purpose ?? "workbench");
     console.warn(`[push] 订阅已失效，已移除：${sub.label}`);
     return false;
   }
@@ -359,9 +386,33 @@ export function removeSubscriptionsOf(mine: OwnerFilter): void {
   if (s.subscriptions.length !== before) persist();
 }
 
+/** Browser push services used by Bot devices. Membership invites must not grant arbitrary HTTP destinations. */
+export function browserPushEndpoint(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.port && !url.username && !url.password &&
+      (["fcm.googleapis.com", "push.apple.com", "updates.push.services.mozilla.com", "web.push.apple.com"].includes(url.hostname) ||
+        [".push.apple.com", ".push.services.mozilla.com", ".notify.windows.com"].some(suffix => url.hostname.endsWith(suffix)));
+  } catch { return false; }
+}
+
+export function botPushDevices(userId: string) {
+  return load().subscriptions.flatMap(s =>
+    s.purpose === "bot" && s.userId === userId && s.sessionId && !s.relay && browserPushEndpoint(s.endpoint) && activePushSession(s.sessionId, userId)
+      ? [{ endpoint: s.endpoint, sessionId: s.sessionId }] : []);
+}
+
+export async function sendBotPush(userId: string, endpoint: string, sessionId: string, payload: PushPayload): Promise<boolean> {
+  const sub = load().subscriptions.find(s => s.purpose === "bot" && s.userId === userId && s.endpoint === endpoint && s.sessionId === sessionId);
+  if (!sub || !activePushSession(sessionId, userId) || !browserPushEndpoint(endpoint)) return true;
+  return sendOne(sub, payload);
+}
+
 /** 按主人和设备筛选订阅，返回成功的数量。单个设备失败不影响别的。 */
 export async function pushToAll(payload: PushPayload, to?: OwnerFilter, device?: (endpoint: string, userId: string | undefined) => boolean): Promise<number> {
-  const subs = load().subscriptions.filter((x) => (!to || to(x.userId)) && (!device || device(x.endpoint, x.userId)));
+  const subs = load().subscriptions.filter((x) => (x.purpose ?? "workbench") === "workbench" && (!x.sessionId || (!!x.userId && activePushSession(x.sessionId, x.userId))) &&
+    (!to || to(x.userId)) && (!device || device(x.endpoint, x.userId)));
   if (subs.length === 0) return 0;
   const results = await Promise.all(
     subs.map((sub) =>

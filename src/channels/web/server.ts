@@ -21,7 +21,7 @@ import { enforceTerminalAccess, killAllTerminals, terminalEvents, watchTerminalA
 import { RUNNING_VERSION } from "../../core/upgrade.js";
 import { RealtimeRelay, RELAY_RATE } from "../../core/realtime-relay.js";
 import type { RealtimeEvent, Settlement } from "../../core/types.js";
-import { getUser, isAdmin, legacyOwnerId, userEvents, type User } from "../../core/users.js";
+import { getUser, isAdmin, legacyOwnerId, recoverBotAccounts, userEvents, type User } from "../../core/users.js";
 import { currentUser, handleApi, takeUploads } from "./api.js";
 import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
 import { canSeeKey, sessionVisibleTo } from "./access.js";
@@ -32,6 +32,10 @@ import { COOKIE } from "./api.js";
 import { HttpError, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 import { hasSubscriptions, pushToAll } from "./push.js";
 import { closeListener, listen, listening, rebind } from "./listen.js";
+import { botDeployment } from "./bot-access.js";
+import { startBotDelegations, stopBotDelegations } from "../../core/web-bot-delegation-worker.js";
+import { startBotDelivery, stopBotDelivery } from "./bot-delivery.js";
+import { recoverPendingBotTurns } from "../../core/web-bots.js";
 import { closeTerminalClients, pingTerminalClients, recheckTerminalClients, upgradeTerminal } from "./terminal.js";
 import { closeMemoRooms } from "./memo-collab.js";
 import { closeDesktopClients, pingDesktopClients, recheckDesktopClients, upgradeDesktop } from "./desktop.js";
@@ -187,6 +191,18 @@ function serveIndex(req: http.IncomingMessage, res: http.ServerResponse, file: s
 }
 
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  if (url.pathname === "/bot" || (url.pathname === "/" && (botDeployment() || currentUser(req)?.botOnly))) {
+    res.writeHead(302, { ...SECURITY_HEADERS, Location: "/bot/" + url.search, "Cache-Control": "no-store" });
+    res.end();
+    return;
+  }
+  if (botDeployment() && !/^\/bot\/(?:[\w-]+\.(?:js|css|html|webmanifest))?$/.test(url.pathname) &&
+    !/^\/bot\/icons\/[\w-]+\.(?:svg|png)$/.test(url.pathname) &&
+    !["/sw.js", "/icon.svg", "/icon-maskable.svg", "/apple-touch-icon.png", "/lib/dom.js", "/lib/loft-mark.js"].includes(url.pathname)) {
+    res.writeHead(404, SECURITY_HEADERS);
+    res.end();
+    return;
+  }
   const versioned = parseVersioned(url.pathname);
   if (versioned) {
     // 带指纹的只给资源。没有扩展名的地址不回退到页面：这种请求不会是用户打开页面
@@ -242,7 +258,8 @@ function servePath(req: http.IncomingMessage, res: http.ServerResponse, pathname
     res.end("bad request");
     return;
   }
-  if (rel === "/" || !path.extname(rel)) rel = "/index.html"; // 单页应用
+  if (rel === "/bot/") rel = "/bot/index.html";
+  else if (rel === "/" || !path.extname(rel)) rel = "/index.html"; // 单页应用
   const file = path.resolve(webRoot, `.${rel}`);
   if (!file.startsWith(webRoot + path.sep)) {
     res.writeHead(403);
@@ -713,12 +730,22 @@ export async function startWeb(): Promise<void> {
     });
   });
 
+  if (botDeployment()) {
+    const bindPort = Number(process.env.AGENT_LOFT_BOT_PORT ?? port);
+    if (!Number.isInteger(bindPort) || bindPort < 1 || bindPort > 65535) throw new Error("AGENT_LOFT_BOT_PORT 必须在 1 到 65535 之间");
+    const bindHost = process.env.AGENT_LOFT_BOT_HOST || host;
+    server.on("upgrade", (_req, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"));
+    await listen(server, bindHost, bindPort);
+    ready(bindHost, bindPort);
+    return;
+  }
+
   wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
     try {
       const url = new URL(req.url ?? "/", "http://local");
       const user = ["/ws", "/ws/term", "/ws/desktop"].includes(url.pathname) && sameOrigin(req) ? currentUser(req) : undefined;
-      if (!user) {
+      if (!user || user.botOnly) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
@@ -808,13 +835,21 @@ export async function startWeb(): Promise<void> {
   });
 
   await listen(server, host, port);
-  console.log(`[web] 已监听 http://${host}:${port}`);
+  ready(host, port);
   // 配置文件被手改了地址 / 端口：跟着换（设置页保存时已经先换好了，这里会直接跳过）
   stopWatchingListen = onConfigChange((next) => {
     const now = listening();
     if (!now || (now.host === next.web.host && now.port === next.web.port)) return;
     rebind(next.web.host, next.web.port).catch((err) => console.error("[web] 换监听地址失败:", err instanceof Error ? err.message : err));
   });
+}
+
+function ready(host: string, port: number): void {
+  recoverBotAccounts();
+  recoverPendingBotTurns();
+  startBotDelivery();
+  startBotDelegations();
+  console.log(`[web] 已监听 http://${host}:${port}`);
   const token = ensureSetupToken();
   if (token) {
     console.log("=".repeat(56));
@@ -830,6 +865,12 @@ function onRevoked(): void {
 }
 
 export async function stopWeb(): Promise<void> {
+  await stopBotDelegations();
+  await stopBotDelivery();
+  if (botDeployment()) {
+    await closeHttp();
+    return;
+  }
   closeMemoRooms();
   authEvents.off("revoked", onRevoked);
   hub.off("event", broadcastEvent);
@@ -858,6 +899,10 @@ export async function stopWeb(): Promise<void> {
   wss?.close();
   stopWatchingListen?.();
   stopWatchingListen = null;
+  await closeHttp();
+}
+
+async function closeHttp(): Promise<void> {
   closeListener();
   // http.Server 自己没有 listen（连接是 listen.ts 交过来的），close 只为断开还连着的
   await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));

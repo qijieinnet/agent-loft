@@ -1,7 +1,7 @@
 import { fill, h, toast } from "../lib/dom.js";
 import { api } from "../lib/api.js";
 import { relTime } from "../lib/time.js";
-import { currentPushSub, enablePush, pushSupport } from "../lib/push.js";
+import { currentPushSub, disableWorkbenchPush, enablePush, pushSupport } from "../lib/push.js";
 import { refreshShellPush } from "../lib/shell.js";
 import { WS } from "../lib/ws.js";
 
@@ -39,8 +39,7 @@ export async function notifyTab(panel) {
     });
     const offBtn = h("button", { class: "btn" }, "关闭此设备的通知");
     offBtn.onclick = busy(offBtn, async () => {
-      await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: mine.endpoint } });
-      await mine.unsubscribe().catch(() => {});
+      await disableWorkbenchPush(mine.endpoint, mine);
       toast("已关闭");
     });
     const testBtn = h("button", { class: "btn" }, "向已订阅设备发送测试");
@@ -79,8 +78,7 @@ export async function notifyTab(panel) {
         : data.subscriptions.map((d) => {
             const rm = h("button", { class: "btn small" }, "移除");
             rm.onclick = busy(rm, async () => {
-              await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: d.endpoint } });
-              if (mine && mine.endpoint === d.endpoint) await mine.unsubscribe().catch(() => {});
+              await disableWorkbenchPush(d.endpoint, mine);
             });
             return h(
               "div",

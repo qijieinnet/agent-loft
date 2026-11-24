@@ -16,6 +16,8 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { dataDir, readJson } from "../home.js";
 
 import { syncSchema } from "./memory-sync-schema.js";
+import { webBotSchema } from "./web-bots-schema.js";
+import { webBotDelegationSchema } from "./web-bot-delegation-schema.js";
 
 export const dbPath = path.join(dataDir, "agent-loft.db");
 
@@ -64,6 +66,38 @@ CREATE INDEX IF NOT EXISTS memo_versions_file ON memo_versions (owner, source, p
 CREATE TABLE IF NOT EXISTS conversations (
   key TEXT PRIMARY KEY,
   data TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bot_reminders (
+  id TEXT PRIMARY KEY, userId TEXT NOT NULL, threadId TEXT NOT NULL, accessId TEXT NOT NULL,
+  text TEXT NOT NULL, dueAt INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS bot_reminders_due ON bot_reminders(dueAt);
+CREATE INDEX IF NOT EXISTS bot_reminders_account ON bot_reminders(userId,threadId);
+CREATE TABLE IF NOT EXISTS bot_reminder_actions (
+  userId TEXT NOT NULL, threadId TEXT NOT NULL, accessId TEXT NOT NULL, requestId TEXT NOT NULL,
+  response TEXT NOT NULL, PRIMARY KEY(userId,threadId,accessId,requestId)
+);
+CREATE TABLE IF NOT EXISTS bot_notice_events (
+  id INTEGER PRIMARY KEY, userId TEXT NOT NULL, threadId TEXT NOT NULL, accessId TEXT NOT NULL,
+  eventId TEXT NOT NULL, kind TEXT NOT NULL, createdAt INTEGER NOT NULL, messageId INTEGER,
+  UNIQUE(userId,threadId,accessId,eventId,kind)
+);
+CREATE TABLE IF NOT EXISTS bot_notice_devices (
+  id INTEGER PRIMARY KEY, userId TEXT NOT NULL, threadId TEXT NOT NULL, accessId TEXT NOT NULL,
+  eventId TEXT NOT NULL, kind TEXT NOT NULL, messageId INTEGER, endpoint TEXT NOT NULL, sessionId TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, nextAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS bot_notice_due ON bot_notice_devices(nextAt);
+CREATE TABLE IF NOT EXISTS bot_inbox (
+  id INTEGER PRIMARY KEY, userId TEXT NOT NULL, threadId TEXT NOT NULL, accessId TEXT NOT NULL,
+  eventId TEXT NOT NULL, kind TEXT NOT NULL, messageId INTEGER, createdAt INTEGER NOT NULL,
+  seen INTEGER NOT NULL DEFAULT 0, UNIQUE(userId,threadId,accessId,eventId,kind)
+);
+CREATE INDEX IF NOT EXISTS bot_inbox_account ON bot_inbox(userId,id DESC);
+CREATE TABLE IF NOT EXISTS bot_device_reads (
+  sessionId TEXT NOT NULL, threadId TEXT NOT NULL, through INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+  PRIMARY KEY(sessionId,threadId)
 );
 
 -- 保留 0.2.122 创建的私人会话的历史归属。
@@ -236,6 +270,16 @@ export function database(): DatabaseSync {
   }
   opened.exec("CREATE INDEX IF NOT EXISTS history_source_order ON history(user_id,conv_key,coalesce(source_order,id))");
   opened.exec(syncSchema);
+  opened.exec(webBotSchema);
+  // Older pending decisions have no trustworthy expiry. Require a fresh request before acting on them.
+  if (!opened.prepare("PRAGMA table_info(web_bot_followups)").all().some(c => c.name === "decisionExpiresAt")) {
+    try {
+      opened.exec("ALTER TABLE web_bot_followups ADD COLUMN decisionExpiresAt INTEGER");
+    } catch (err) {
+      if (!/duplicate column/i.test(String(err))) throw err;
+    }
+  }
+  opened.exec(webBotDelegationSchema);
   // 旧库的 footers 表还没有这一列（列表里每轮改动的摘要，JSON）。老版本读写时不看它，降级也没事
   const footerColumns = opened.prepare("PRAGMA table_info(footers)").all() as { name: string }[];
   if (!footerColumns.some((c) => c.name === "changes")) {

@@ -1,0 +1,68 @@
+export const webBotSchema = `
+  CREATE TABLE IF NOT EXISTS web_bots (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL, default_bot INTEGER NOT NULL,
+    shared_thread TEXT, created INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS web_bots_default ON web_bots(owner) WHERE default_bot = 1;
+  CREATE TABLE IF NOT EXISTS web_bot_members (
+    bot TEXT NOT NULL, user TEXT NOT NULL, access_id TEXT NOT NULL, PRIMARY KEY(bot, user)
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_members_user ON web_bot_members(user);
+  CREATE TABLE IF NOT EXISTS web_bot_threads (id TEXT PRIMARY KEY, bot TEXT NOT NULL, private_user TEXT);
+  CREATE UNIQUE INDEX IF NOT EXISTS web_bot_private_thread ON web_bot_threads(bot, private_user) WHERE private_user IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS web_bot_archives (
+    thread TEXT PRIMARY KEY, owner TEXT NOT NULL, archivedAt INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_archives_owner ON web_bot_archives(owner,archivedAt);
+  CREATE TABLE IF NOT EXISTS web_bot_retired_users (user TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS web_bot_deleted_turns (user TEXT NOT NULL, at INTEGER NOT NULL);
+  CREATE INDEX IF NOT EXISTS web_bot_deleted_turns_user ON web_bot_deleted_turns(user,at);
+  CREATE TABLE IF NOT EXISTS web_bot_invites (
+    digest TEXT PRIMARY KEY, bot TEXT NOT NULL UNIQUE, expires INTEGER NOT NULL, ownerRevision INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_messages (
+    id INTEGER PRIMARY KEY, thread TEXT NOT NULL, role TEXT NOT NULL, authorId TEXT, authorName TEXT,
+    text TEXT NOT NULL, createdAt INTEGER NOT NULL, images TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL, requestId TEXT, worker INTEGER, authorAccess TEXT
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_messages_thread ON web_bot_messages(thread, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS web_bot_turn_request ON web_bot_messages(thread, authorId, requestId) WHERE role='user';
+  CREATE UNIQUE INDEX IF NOT EXISTS web_bot_turn_pending ON web_bot_messages(thread) WHERE status='pending';
+  CREATE INDEX IF NOT EXISTS web_bot_turns_by_day ON web_bot_messages(authorId,createdAt) WHERE role='user';
+  -- Before explicit ownership transfer was introduced the owner of an archived conversation never changed.
+  INSERT OR IGNORE INTO web_bot_archives(thread,owner,archivedAt)
+    SELECT t.id,b.owner,coalesce((SELECT max(createdAt) FROM web_bot_messages WHERE thread=t.id),b.created)
+    FROM web_bot_threads t JOIN web_bots b ON b.id=t.bot
+    WHERE t.private_user IS NULL AND t.id IS NOT b.shared_thread
+      AND NOT EXISTS (SELECT 1 FROM web_bot_archives a WHERE a.thread=t.id);
+  CREATE TABLE IF NOT EXISTS web_bot_images (message INTEGER PRIMARY KEY, content TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS web_bot_profiles (
+    bot TEXT PRIMARY KEY, responsibility TEXT NOT NULL, style TEXT NOT NULL, model TEXT NOT NULL,
+    capabilities TEXT NOT NULL, revision INTEGER NOT NULL, remindersResumedAt INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_memories (
+    id TEXT PRIMARY KEY, thread TEXT NOT NULL, text TEXT NOT NULL, author TEXT NOT NULL,
+    authorAccess TEXT NOT NULL, createdAt INTEGER NOT NULL, pending INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_memories_thread ON web_bot_memories(thread,createdAt,id);
+
+  CREATE TABLE IF NOT EXISTS web_bot_followups (
+    id TEXT PRIMARY KEY, thread TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL,
+    creatorId TEXT NOT NULL, creatorAccess TEXT NOT NULL, assigneeId TEXT NOT NULL, assigneeAccess TEXT NOT NULL,
+    latest TEXT NOT NULL, question TEXT, revision INTEGER NOT NULL, updatedAt INTEGER NOT NULL, decisionExpiresAt INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_followups_thread ON web_bot_followups(thread,updatedAt DESC);
+  CREATE INDEX IF NOT EXISTS web_bot_followups_assignee ON web_bot_followups(assigneeId,updatedAt DESC) WHERE status='waiting';
+  CREATE TABLE IF NOT EXISTS web_bot_followup_events (
+    followup TEXT NOT NULL, revision INTEGER NOT NULL, at INTEGER NOT NULL, actor TEXT NOT NULL, text TEXT NOT NULL,
+    PRIMARY KEY(followup,revision)
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_followup_requests (
+    user TEXT NOT NULL, access TEXT NOT NULL, thread TEXT NOT NULL, request TEXT NOT NULL, followup TEXT NOT NULL,
+    PRIMARY KEY(user,access,thread,request)
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_followup_hooks (
+    followup TEXT PRIMARY KEY, digest TEXT NOT NULL, user TEXT NOT NULL, access TEXT NOT NULL, lastState TEXT
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_followup_inputs (followup TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY(followup,event));
+`;

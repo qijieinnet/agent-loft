@@ -14,8 +14,8 @@ export async function accountTab(page) {
     logout.disabled = true;
     // 退出了就别再收这个账号的通知：换个人在这台设备上登录，不能收到上一个人的
     try {
-      await dropPushSub();
-      await api("/api/logout", { method: "POST" });
+      const localPushEndpoints = await dropPushSub().catch(() => []);
+      await api("/api/logout", { method: "POST", body: { localPushEndpoints } });
       location.reload();
     } catch (err) {
       toast(err.message);

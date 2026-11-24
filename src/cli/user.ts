@@ -94,7 +94,7 @@ switch (sub) {
     // 记忆和飞书绑定一起删（飞书私聊下次有人说话时自动交还给管理员）
     purgeUserData(user.id);
     revokeUserSessions(user.id);
-    console.log(`已删除「${user.name}」。他的会话还在，归管理员。`);
+    console.log(`已删除「${user.name}」。工作台会话归管理员，Bot 私聊和私人记忆已清除，共用 Bot 已按成员关系处理。`);
     break;
   }
   default:

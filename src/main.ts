@@ -26,6 +26,8 @@ import { listUsers } from "./core/users.js";
 import { startScheduler, stopScheduler } from "./core/scheduled.js";
 import { startTaskRunner, stopTaskRunner } from "./core/task-runner.js";
 import { startTasksBridge, stopTasksBridge } from "./core/tasks-bridge.js";
+import { botDeployment } from "./channels/web/bot-access.js";
+import { listening } from "./channels/web/listen.js";
 
 async function startDriver(id: "claude" | "codex" | "workbuddy" | "pi" | "dsh"): Promise<void> {
   const driver = hub.driver(id);
@@ -41,6 +43,16 @@ async function startDriver(id: "claude" | "codex" | "workbuddy" | "pi" | "dsh"):
 async function main(): Promise<void> {
   loadConfig();
   console.log(`[启动] agent-loft，配置目录 ${home}`);
+
+  if (botDeployment()) {
+    await startWeb();
+    startBackups();
+    const shutdown = () => { void stopWeb().finally(() => process.exit(0)); };
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+    await reportUpgradeHealth(true);
+    return;
+  }
 
   hub.registerDriver(new ClaudeDriver());
   hub.registerDriver(new CodexDriver());
@@ -143,10 +155,14 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("exit", (code) => console.log(`[退出] agent-loft 结束，退出码 ${code}`));
   process.on("unhandledRejection", (err) => console.error("[未处理的异常]", err));
+  await reportUpgradeHealth(false);
+}
+
+async function reportUpgradeHealth(bot: boolean): Promise<void> {
   if (process.env.AGENT_LOFT_UPGRADE_TRIAL && process.send) {
-    const { host, port } = config().web;
+    const { host, port } = listening() ?? config().web;
     try {
-      await verifyUpgradeWeb(host, port);
+      await verifyUpgradeWeb(host, port, bot);
       process.send({ type: "upgrade-health", version: RUNNING_VERSION });
     } catch (err) {
       process.send({ type: "upgrade-health", error: String(err) });
