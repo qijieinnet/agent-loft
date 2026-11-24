@@ -244,10 +244,10 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await owner.getByLabel("记住的内容").waitFor();
   assert.equal(await owner.getByLabel("记住的内容").inputValue(), "清单按购买地点分组");
   await open(owner, "保存私人记忆");
-  await owner.getByText(/已记住，可以在/).waitFor();
+  await owner.locator("#status").filter({hasText:/已记住，可以在/}).waitFor();
   await open(owner, "对话设置");
   await open(owner, "记住的事");
-  await owner.getByText("清单按购买地点分组", { exact: true }).waitFor();
+  await owner.getByRole("dialog").getByText("清单按购买地点分组", { exact: true }).waitFor();
   await open(owner, "关闭");
   await open(owner, "对话设置");
   await open(owner, "请其他 Bot 帮忙");
@@ -297,11 +297,13 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     const panel = page.getByRole("dialog", {name:"新提醒"});
     await panel.waitFor();
     assert.equal(await page.evaluate(() => document.activeElement.matches("input,textarea")), false);
+    await panel.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
     const bounds = await panel.boundingBox(), {width,height} = page.viewportSize();
+    const geometry = JSON.stringify({bounds, width, height});
     if (size === "mobile") {
-      assert.ok(bounds.x <= 1 && Math.abs(bounds.width - width) <= 2 && Math.abs(bounds.y + bounds.height - height) <= 2, "手机提醒面板应贴底并与屏幕同宽");
+      assert.ok(bounds.x <= 1 && Math.abs(bounds.width - width) <= 2 && Math.abs(bounds.y + bounds.height - height) <= 2, "手机提醒面板应贴底并与屏幕同宽 " + geometry);
     } else {
-      assert.ok(Math.abs(bounds.x + bounds.width/2 - width/2) <= 2 && Math.abs(bounds.y + bounds.height/2 - height/2) <= 2, "PC 提醒弹窗应位于窗口中央");
+      assert.ok(Math.abs(bounds.x + bounds.width/2 - width/2) <= 2 && Math.abs(bounds.y + bounds.height/2 - height/2) <= 2, "PC 提醒弹窗应位于窗口中央 " + geometry);
     }
     const add = panel.getByRole("button", {name:"添加",exact:true});
     assert.equal(await add.isDisabled(), true);
@@ -316,7 +318,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
       await panel.waitFor({state:"hidden"});
       await page.reload();
       await open(page, "1 个待提醒");
-      await page.getByRole("button", {name:/周末带上水壶/}).click();
+      await page.getByRole("dialog").getByRole("button", {name:/周末带上水壶/}).click();
       await open(page, "取消这个提醒");
       await page.locator("#reminders").waitFor({state:"hidden"});
     }
@@ -340,36 +342,47 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await write(owner, "看这张通知，提醒我带水壶");
   assert.equal(seen.at(-1).hasPhoto, true);
   await open(owner, "1 个待提醒");
-  await owner.getByRole("button", { name: /带水壶/ }).click();
+  await owner.getByRole("dialog").getByRole("button", { name: /带水壶/ }).click();
   await owner.getByLabel("提醒时间").fill(new Date(Date.now() + 86400_000).toISOString().slice(0, 16));
   await open(owner, "保存时间");
-  await owner.locator("#messages")
-    .getByText(/已更新提醒/)
-    .first()
-    .waitFor();
+  await owner.locator("#messages").getByText("已更新提醒：带水壶",{exact:true}).waitFor();
   await open(owner, "1 个待提醒");
-  await owner.getByRole("button", { name: /带水壶/ }).click();
+  await owner.getByRole("dialog").getByRole("button", { name: /带水壶/ }).click();
   await open(owner, "取消这个提醒");
-  await owner.locator("#messages")
-    .getByText(/已取消提醒/)
-    .first()
-    .waitFor();
+  await owner.locator("#messages").getByText("已取消提醒：带水壶",{exact:true}).waitFor();
   // A notification can open a different thread while text and a photo are still being composed.
   const composer = owner.getByRole("textbox", {name:"消息", exact:true});
   const preview = owner.getByRole("img", {name:"待发送的照片"});
+  const transitions = [];
+  async function draftState() {
+    return owner.evaluate(() => ({
+      url:location.href, thread:document.querySelector("#rail-list [aria-current=true]")?.dataset.thread,
+      name:document.querySelector("#bot-name").textContent, text:document.querySelector("#message").value,
+      photo:!!document.querySelector("#preview img"), timeOrigin:performance.timeOrigin,
+      pane:document.querySelector("#chat").dataset.pane,
+    }));
+  }
   async function followDeviceLink(url) {
+    const before = await draftState();
     await owner.evaluate(link => navigator.serviceWorker.dispatchEvent(new MessageEvent("message", {data:{type:"open",url:link}})), url);
     await owner.waitForURL(url);
+    const after = await draftState();
+    transitions.push({before, after, target:url});
+    const diagnostic = JSON.stringify({privateURL, secondURL, transitions});
+    assert.equal(after.thread, new URL(url).searchParams.get("thread"), diagnostic);
+    assert.equal(after.timeOrigin, before.timeOrigin, "通知跳转意外刷新整个页面 " + diagnostic);
+    return diagnostic;
   }
   await composer.fill(retryText);
   await owner.locator("#photo").setInputFiles({name:"draft.png",mimeType:"image/png",buffer:png});
   await preview.waitFor();
+  assert.equal(await composer.inputValue(),retryText, "离开原对话前草稿应已就绪 " + JSON.stringify(await draftState()));
   await followDeviceLink(secondURL);
   assert.equal(await composer.inputValue(), "");
   assert.equal(await preview.count(), 0);
   await composer.fill("另一段对话的草稿");
-  await followDeviceLink(privateURL);
-  assert.equal(await composer.inputValue(), retryText);
+  const restored = await followDeviceLink(privateURL);
+  assert.equal(await composer.inputValue(), retryText, restored);
   await preview.waitFor();
   await open(owner, "发送消息");
   await owner.getByRole("button", {name:"重新发送",exact:true}).waitFor();
@@ -390,14 +403,14 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await owner.locator("#delegation-cards").getByText("未完成", {exact:true}).waitFor();
   await open(owner, "对话设置");
   await open(owner, "最近通知");
-  await owner.getByRole("button", {name:/未读，.*协作未完成/}).click();
+  await owner.getByRole("dialog").getByRole("button", {name:/未读，.*协作未完成/}).click();
   await owner.getByRole("dialog").getByText(unavailableTask, {exact:true}).waitFor();
   await owner.getByRole("button", {name:"确认重新发送"}).waitFor();
   await shot(owner, "bot-mobile-delegation-retry");
   await open(owner, "关闭");
   await open(owner, "对话设置");
   await open(owner, "最近通知");
-  await owner.getByRole("button", {name:/已读，.*协作未完成/}).waitFor();
+  await owner.getByRole("dialog").getByRole("button", {name:/已读，.*协作未完成/}).waitFor();
   await open(owner, "关闭");
   await open(owner, "对话设置");
   await open(owner, "邀请成员");
@@ -455,7 +468,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await owner.waitForURL(privateURL);
   await open(owner, "对话设置");
   await open(owner, "共享归档");
-  await owner.getByRole("button", { name: /条消息/ }).click();
+  await owner.getByRole("dialog").getByRole("button", { name: /条消息/ }).click();
   const dialog = owner.getByRole("dialog");
   await dialog.getByText("一起整理购物清单", { exact: true }).waitFor();
   await shot(owner, "bot-mobile-archive");
