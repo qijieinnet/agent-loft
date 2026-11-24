@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   approveBotMemory,
+  botEngineChoices,
   botMemoryPage,
   botModelChoices,
   getBotProfile,
@@ -26,9 +27,9 @@ export async function handleBotProfileApi(
   if (profileRoute) {
     const id = profileRoute[1]!;
     if (req.method === "GET" && profileRoute[2] === "models")
-      return sendJson(res, 200, { models: await botModelChoices(userId, id) });
+      return sendJson(res, 200, { models: await botModelChoices(userId, id, url.searchParams.get("engine")) });
     if (profileRoute[2] === "profile") {
-      if (req.method === "GET") return sendJson(res, 200, { profile: getBotProfile(userId, id) });
+      if (req.method === "GET") return sendJson(res, 200, { profile: getBotProfile(userId, id), engines: botEngineChoices(userId) });
       if (req.method === "PATCH")
         return sendJson(res, 200, { profile: await updateBotProfile(userId, id, await fields(req)) });
     }

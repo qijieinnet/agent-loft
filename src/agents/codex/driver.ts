@@ -4,7 +4,7 @@
 import { appServer } from "./app-server.js";
 import { describeRateLimits, readAccountKey, readRateLimits, toQuota } from "./account.js";
 import { diagnose } from "./errors.js";
-import { CHAT_CONFIG, CodexSession, summarize, userMcpServers } from "./session.js";
+import { CHAT_CONFIG, CodexSession, summarize, codexTokenUsage } from "./session.js";
 import os from "node:os";
 import { config, onConfigChange } from "../../core/config.js";
 import { splitAttachmentNote } from "../../core/uploads.js";
@@ -14,6 +14,7 @@ import type {
   AgentEvents,
   AgentSession,
   CompleteRequest,
+  EngineReplyRequest,
   HistoryMessage,
   InteractionHost,
   ModelInfo,
@@ -308,47 +309,75 @@ export class CodexDriver implements AgentDriver {
    * 只读沙箱，思考程度 low，用 outputSchema 拿 JSON。
    */
   async complete(req: CompleteRequest): Promise<unknown> {
-    const off = Object.fromEntries((await userMcpServers()).map((n) => [`mcp_servers.${n}.enabled`, false]));
-    const res = await appServer.call<{ thread: Thread }>("thread/start", {
+    const text = await this.reply({
+      ...req, signal: AbortSignal.timeout(req.timeoutMs ?? 120_000),
+    }, req.schema);
+    return JSON.parse(text);
+  }
+
+  async reply(req: EngineReplyRequest, schema?: Record<string, unknown>): Promise<string> {
+    req.signal.throwIfAborted();
+    const settings = await appServer.call<{ config: { mcp_servers?: Record<string, unknown> } }>("config/read", {});
+    const off = Object.fromEntries(Object.keys(settings.config.mcp_servers ?? {}).map(name => [`mcp_servers.${name}.enabled`, false]));
+    req.signal.throwIfAborted();
+    const res = await appServer.call<{ thread: Thread; model: string }>("thread/start", {
       cwd: os.tmpdir(),
       ephemeral: true,
       ...(req.model ? { model: req.model } : {}),
       approvalPolicy: "never",
       sandbox: "read-only",
       baseInstructions: req.system,
-      config: { ...CHAT_CONFIG, ...off, web_search: "disabled" },
+      config: { ...CHAT_CONFIG, ...off, web_search: "disabled", project_doc_max_bytes: 0 },
     });
     const threadId = res.thread.id;
     let text = "";
-    let off2: (() => void) | undefined;
-    let timer: NodeJS.Timeout | undefined;
+    let turnId: string | undefined;
+    let total: Parameters<typeof codexTokenUsage>[0] | undefined;
+    let unsubscribe = () => {};
+    let onExit = () => {};
+    const cancel = () => {
+      if (turnId) void appServer.call("turn/interrupt", { threadId, turnId }).catch(() => {});
+    };
+    let onAbort = () => {};
     const done = new Promise<void>((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error("后台调用超时")), req.timeoutMs ?? 120_000);
-      off2 = appServer.onNotification((method, params) => {
-        const p = params as { threadId?: string; item?: { type?: string; text?: string; phase?: string | null }; turn?: { status?: string; error?: { message?: string } } };
-        if (p?.threadId !== threadId) return;
+      onAbort = () => {
+        cancel();
+        reject(req.signal.reason);
+      };
+      onExit = appServer.onExit(reason => reject(new Error(reason)));
+      unsubscribe = appServer.onNotification((method, params) => {
+        const p = params as { threadId?: string; item?: { type?: string; text?: string; phase?: string | null };
+          tokenUsage?: { total?: typeof total }; turn?: { status?: string; error?: { message?: string } } };
+        if (p.threadId !== threadId) return;
+        if (method === "thread/tokenUsage/updated" && p.tokenUsage?.total) total = p.tokenUsage.total;
         if (method === "item/completed" && p.item?.type === "agentMessage" && p.item.phase !== "commentary") text = p.item.text ?? text;
         if (method === "turn/completed") {
-          if (p.turn?.status === "failed") reject(new Error(p.turn.error?.message ?? "后台调用失败"));
-          else resolve();
+          if (p.turn?.status === "completed") resolve();
+          else reject(new Error(p.turn?.error?.message ?? "后台调用已中断"));
         }
       });
     });
-    // turn/start 自己就失败了的话没人等 done：别让它的超时变成未处理的拒绝
     done.catch(() => {});
+    req.signal.addEventListener("abort", onAbort, { once: true });
     try {
-      await appServer.call("turn/start", {
+      req.signal.throwIfAborted();
+      const started = await appServer.call<{ turn: { id: string } }>("turn/start", {
         threadId,
-        input: [{ type: "text", text: req.prompt, text_elements: [] }],
+        input: [{ type: "text", text: req.prompt, text_elements: [] },
+          ...(req.image ? [{ type: "image", url: `data:${req.image.mimeType};base64,${req.image.data}` }] : [])],
         effort: "low",
-        outputSchema: req.schema,
+        ...(schema ? { outputSchema: schema } : {}),
       });
+      turnId = started.turn.id;
+      if (req.signal.aborted) cancel();
       await done;
-      return JSON.parse(text);
+      return text;
     } finally {
-      clearTimeout(timer);
-      off2?.();
+      unsubscribe();
+      onExit();
+      req.signal.removeEventListener("abort", onAbort);
       void appServer.call("thread/unsubscribe", { threadId }).catch(() => {});
+      if (total) req.onUsage?.(codexTokenUsage(total), res.model);
     }
   }
 

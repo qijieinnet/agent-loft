@@ -271,6 +271,13 @@ export function database(): DatabaseSync {
   opened.exec("CREATE INDEX IF NOT EXISTS history_source_order ON history(user_id,conv_key,coalesce(source_order,id))");
   opened.exec(syncSchema);
   opened.exec(webBotSchema);
+  if (!opened.prepare("PRAGMA table_info(web_bot_profiles)").all().some(c => c.name === "engine")) {
+    try {
+      opened.exec("ALTER TABLE web_bot_profiles ADD COLUMN engine TEXT NOT NULL DEFAULT 'pi'");
+    } catch (err) {
+      if (!/duplicate column/i.test(String(err))) throw err;
+    }
+  }
   // Older pending decisions have no trustworthy expiry. Require a fresh request before acting on them.
   if (!opened.prepare("PRAGMA table_info(web_bot_followups)").all().some(c => c.name === "decisionExpiresAt")) {
     try {

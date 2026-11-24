@@ -235,6 +235,15 @@ type TokenBreakdown = {
   reasoningOutputTokens?: number;
 };
 
+export function codexTokenUsage(tokens: TokenBreakdown) {
+  const cacheRead = tokens.cachedInputTokens ?? 0;
+  const cacheWrite = tokens.cacheWriteInputTokens ?? 0;
+  return {
+    input: Math.max(0, (tokens.inputTokens ?? 0) - cacheRead - cacheWrite), cacheRead, cacheWrite,
+    output: tokens.outputTokens ?? 0, reasoning: tokens.reasoningOutputTokens ?? 0,
+  };
+}
+
 /** request_user_input_async 的问题：只有标题和选项文字，且没有 id */
 function parseAsyncQuestions(raw: unknown): QuestionSpec[] | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;
@@ -1157,15 +1166,7 @@ export class CodexSession implements AgentSession {
         if (this.turnSeen && usage?.last && typeof total === "number" && total !== this.seenTotal) {
           const l = usage.last;
           // OpenAI 的 inputTokens 含命中缓存的部分，拆出来
-          const cached = l.cachedInputTokens ?? 0;
-          const written = l.cacheWriteInputTokens ?? 0;
-          const delta = {
-            input: Math.max(0, (l.inputTokens ?? 0) - cached - written),
-            cacheRead: cached,
-            cacheWrite: written,
-            output: l.outputTokens ?? 0,
-            reasoning: l.reasoningOutputTokens ?? 0,
-          };
+          const delta = codexTokenUsage(l);
           this.turnTokens = (this.turnTokens ?? 0) + delta.input + delta.cacheRead + delta.cacheWrite + delta.output;
           this.events.onUsage?.(delta);
         }

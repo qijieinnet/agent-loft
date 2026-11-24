@@ -11,7 +11,7 @@ const capabilityNames = { memory: "记住偏好", reminders: "设置提醒", fol
 export async function openProfile({ bot, owner, onChange, back }) {
   const path = "/api/bots/" + encodeURIComponent(bot.id);
   const active = currentPanel();
-  const { profile } = await api(path + "/profile");
+  const { profile, engines } = await api(path + "/profile");
   if (!active()) return;
   if (!owner) {
     panel("Bot 资料", h("h3", {}, bot.name), note(profile.responsibility || "日常对话助手"),
@@ -26,41 +26,56 @@ export async function openProfile({ bot, owner, onChange, back }) {
     style.value = voice;
     duty.focus();
   }, "chip"));
-  const model = h("select", { id: "bot-model" }, h("option", { value: "" }, "跟随默认模型"));
-  if (profile.model) model.append(h("option", { value: profile.model }, profile.model));
-  model.value = profile.model || "";
+  const engineNames = { pi: "pi", codex: "Codex", claude: "Claude Code" };
+  const engine = h("select", { id: "bot-engine", name: "engine" },
+    engines.map(e => h("option", { value: e.id }, e.label)));
+  if (!engines.some(e => e.id === profile.engine)) engine.append(h("option", { value: profile.engine }, engineNames[profile.engine] + " · 暂不可用"));
+  engine.value = profile.engine;
+  const model = h("select", { id: "bot-model", name: "model" });
+  function resetModels() {
+    model.replaceChildren(h("option", { value: "" }, "跟随引擎默认模型"));
+    if (engine.value === profile.engine && profile.model) {
+      model.append(h("option", { value: profile.model }, profile.model));
+      model.value = profile.model;
+    }
+  }
+  resetModels();
   const checks = Object.entries(capabilityNames).map(([key, label]) => {
     const check = h("input", { type: "checkbox", value: key, checked: profile.capabilities.includes(key) });
     return h("label", { class: "check-row" }, label, check);
   });
   const modelStatus = note("");
-  let loaded = false, loading = false;
+  let modelRequest = 0, requestedEngine;
   async function loadModels() {
-    if (loaded || loading) return;
-    loading = true;
+    const selected = engine.value;
+    if (requestedEngine === selected) return;
+    requestedEngine = selected;
+    const request = ++modelRequest;
+    modelStatus.hidden = true;
     try {
-      const { models } = await api(path + "/models");
-      if (!model.isConnected) return;
-      const missing = profile.model && !models.some((m) => m.id === profile.model);
+      const { models } = await api(path + "/models?engine=" + encodeURIComponent(selected));
+      if (!model.isConnected || request !== modelRequest) return;
+      const missing = selected === profile.engine && profile.model && !models.some((m) => m.id === profile.model);
       if (missing) model.querySelectorAll("option")[1].textContent = profile.model + " · 暂不可用";
       for (const m of models) {
         const current = Array.from(model.options).find((option) => option.value === m.id);
-        const label = m.label + (m.vision ? " · 可读图" : " · 仅文字");
+        const label = m.label + (m.vision == null ? "" : m.vision ? " · 可读图" : " · 仅文字");
         if (current) current.textContent = label;
         else model.append(h("option", { value: m.id }, label));
       }
-      loaded = true;
       modelStatus.textContent = models.length ? "" : "暂时没有可用模型，请联系管理员连接。";
-      modelStatus.hidden = !!models.length;
+      modelStatus.hidden = selected !== "pi" || !!models.length;
     } catch (err) {
-      if (model.isConnected) {
+      if (model.isConnected && request === modelRequest) {
+        requestedEngine = undefined;
         modelStatus.hidden = false;
         modelStatus.replaceChildren(err.message, button("重试", loadModels, "text-action"));
       }
-    } finally { loading = false; }
+    }
   }
-  const advanced = h("details", { class: "advanced" }, h("summary", {}, "模型与能力"),
-    field("使用的模型", model), modelStatus, h("fieldset", { class: "checks" }, h("legend", {}, "允许这个 Bot"), ...checks));
+  engine.addEventListener("change", () => { resetModels(); loadModels(); });
+  const advanced = h("details", { class: "advanced" }, h("summary", {}, "引擎、模型与能力"),
+    field("使用的引擎", engine), field("使用的模型", model), modelStatus, h("fieldset", { class: "checks" }, h("legend", {}, "允许这个 Bot"), ...checks));
   modelStatus.hidden = true;
   advanced.addEventListener("toggle", () => { if (advanced.open) loadModels(); });
   const save = h("button", { type: "submit", class: "primary" }, "保存资料");
@@ -72,7 +87,7 @@ export async function openProfile({ bot, owner, onChange, back }) {
     run(save, async () => {
       try {
         const { profile: updated } = await api(path + "/profile", "PATCH", {
-          revision: profile.revision, responsibility: duty.value.trim(), style: style.value.trim(), model: model.value,
+          revision: profile.revision, responsibility: duty.value.trim(), style: style.value.trim(), engine: engine.value, model: model.value,
           capabilities: checks.map((label) => label.querySelector("input")).filter((el) => el.checked).map((el) => el.value),
         });
         onChange(updated);

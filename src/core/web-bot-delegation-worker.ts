@@ -1,10 +1,8 @@
-import { modelKey, modelRuntime } from "../agents/pi/sdk.js";
+import { checkBotEngineAccess, generateBotText } from "./web-bot-engine.js";
 import { sql, transaction } from "./db.js";
 import { assertDelegationAccess, type DelegationJob } from "./web-bot-delegation.js";
-import { pickBotModel } from "./web-bot-profile.js";
 import { enqueueBotNotice } from "./web-bot-reminders.js";
 import { appendBotNotice, getBotThread, WebBotError } from "./web-bots.js";
-import { recordUsage } from "./usage.js";
 
 const DEADLINE = 90_000;
 const controllers = new Map<string, AbortController>();
@@ -73,13 +71,12 @@ function assertRunning(job: DelegationJob) {
     )
   )
     throw new WebBotError(409, "这次协作已停止。");
-  return assertDelegationAccess(job);
+  const profile = assertDelegationAccess(job);
+  checkBotEngineAccess(job.actor, job.target, profile);
+  return profile;
 }
 
 async function answer(job: DelegationJob, signal: AbortSignal) {
-  assertRunning(job);
-  const model = await pickBotModel(job.actor, job.target, false);
-  const rt = await modelRuntime();
   const profile = assertRunning(job);
   signal.throwIfAborted();
   const instructions = [
@@ -90,33 +87,9 @@ async function answer(job: DelegationJob, signal: AbortSignal) {
   ]
     .filter(Boolean)
     .join("\n");
-  const result = await rt.completeSimple(
-    model,
-    {
-      systemPrompt: instructions,
-      messages: [{ role: "user", content: job.task, timestamp: Date.now() }],
-    },
-    { signal, maxTokens: Math.min(model.maxTokens, 2000) },
-  );
-  const usage = result.usage;
-  recordUsage(
-    "bot:" + job.thread,
-    {
-      input: usage.input,
-      output: usage.output,
-      cacheRead: usage.cacheRead,
-      cacheWrite: usage.cacheWrite,
-      costUsd: usage.cost.total,
-    },
-    false,
-    { owner: job.actor, agent: "pi", model: modelKey(model) },
-  );
-  const text = result.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("")
-    .trim();
-  if (!text || result.stopReason !== "stop") throw new Error("incomplete");
+  const text = (await generateBotText({ userId: job.actor, botId: job.target, threadId: job.thread,
+    profile, system: instructions, content: job.task, maxTokens: 2000, signal, checkAccess: () => assertRunning(job) })).trim();
+  if (!text) throw new Error("incomplete");
   return text.slice(0, 14000);
 }
 

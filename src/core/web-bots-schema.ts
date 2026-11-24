@@ -37,7 +37,7 @@ export const webBotSchema = `
       AND NOT EXISTS (SELECT 1 FROM web_bot_archives a WHERE a.thread=t.id);
   CREATE TABLE IF NOT EXISTS web_bot_images (message INTEGER PRIMARY KEY, content TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS web_bot_profiles (
-    bot TEXT PRIMARY KEY, responsibility TEXT NOT NULL, style TEXT NOT NULL, model TEXT NOT NULL,
+    bot TEXT PRIMARY KEY, responsibility TEXT NOT NULL, style TEXT NOT NULL, model TEXT NOT NULL, engine TEXT NOT NULL DEFAULT 'pi',
     capabilities TEXT NOT NULL, revision INTEGER NOT NULL, remindersResumedAt INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS web_bot_memories (

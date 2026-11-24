@@ -3,10 +3,33 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { modelKey, modelRuntime, pickModel } from "../agents/pi/sdk.js";
 import { config } from "./config.js";
 import { sql, transaction } from "./db.js";
-import { getUser } from "./users.js";
+import { canUseResource, getUser } from "./users.js";
 import { BOT_CAPABILITIES, getBot, getBotThread, WebBotError, type BotCapability } from "./web-bots.js";
 export { BOT_CAPABILITIES, type BotCapability } from "./web-bots.js";
+const botEngines = ["pi", "codex", "claude"] as const;
+export type BotEngine = typeof botEngines[number];
+const engineLabels = { pi: "pi", codex: "Codex", claude: "Claude Code" };
+
+function enabledFor(user: string, engine: BotEngine) {
+  if (engine === "pi") return !!process.env.AGENT_LOFT_BOT_MODEL?.trim() || config().agents.pi.enabled;
+  return config().agents[engine].enabled && canUseResource(getUser(user), "agents", engine);
+}
+
+export function botEngineChoices(owner: string) {
+  return botEngines.filter(engine => enabledFor(owner, engine)).map(id => ({ id, label: engineLabels[id] }));
+}
+
+export function requireBotEngine(user: string, engine: BotEngine) {
+  if (!enabledFor(user, engine)) throw new WebBotError(403, "这个 Bot 的引擎已停用或没有使用权限。");
+}
+
+function checkedEngine(value: unknown): BotEngine {
+  if (value === "pi" || value === "codex" || value === "claude") return value;
+  throw new WebBotError(400, "请选择支持的 Bot 引擎。");
+}
+
 export type BotProfile = {
+  engine: BotEngine;
   responsibility: string;
   style: string;
   model: string;
@@ -16,9 +39,10 @@ export type BotProfile = {
 const labels: Record<BotCapability, string> = { reminders: "提醒", followups: "跟进", delegation: "协作", memory: "记忆" };
 
 function readProfile(botId: string): BotProfile {
-  const row = sql("SELECT responsibility,style,model,capabilities,revision FROM web_bot_profiles WHERE bot=?").get(botId);
-  if (!row) return { responsibility: "", style: "", model: "", capabilities: [...BOT_CAPABILITIES], revision: 0 };
+  const row = sql("SELECT engine,responsibility,style,model,capabilities,revision FROM web_bot_profiles WHERE bot=?").get(botId);
+  if (!row) return { engine: "pi", responsibility: "", style: "", model: "", capabilities: [...BOT_CAPABILITIES], revision: 0 };
   return {
+    engine: checkedEngine(row.engine),
     responsibility: String(row.responsibility),
     style: String(row.style),
     model: String(row.model),
@@ -62,8 +86,18 @@ async function modelChoices() {
   }
 }
 
-export async function botModelChoices(userId: string, botId: string) {
+export function engineModels(engine: Exclude<BotEngine, "pi">) {
+  const { defaultModel, models } = config().agents[engine];
+  return [...new Set([defaultModel, ...models].filter(Boolean))];
+}
+
+export async function botModelChoices(userId: string, botId: string, requested?: unknown) {
   if (getBot(userId, botId).ownerId !== userId) throw new WebBotError(403, "只有 Bot 的所有者可以选择模型。");
+  const engine = requested == null ? readProfile(botId).engine : checkedEngine(requested);
+  if (engine !== "pi") {
+    requireBotEngine(userId, engine);
+    return engineModels(engine).map(id => ({ id, label: id, vision: null }));
+  }
   const { models } = await modelChoices();
   getBot(userId, botId);
   return models.map((model) => ({
@@ -103,42 +137,49 @@ export async function updateBotProfile(userId: string, botId: string, input: Rec
   };
   owner();
   if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new WebBotError(400, "请先刷新 Bot 设置。");
-  if (Object.keys(input).some((key) => !["responsibility", "style", "model", "capabilities", "revision"].includes(key)))
+  if (Object.keys(input).some((key) => !["responsibility", "style", "engine", "model", "capabilities", "revision"].includes(key)))
     throw new WebBotError(400, "设置中有无法识别的选项。");
   const before = readProfile(botId);
   if (before.revision !== input.revision) throw new WebBotError(409, "设置已在别处更改，请重新打开后再保存。");
   const responsibility =
     input.responsibility === undefined ? before.responsibility : checkedText(input.responsibility, 1400, "职责");
   const style = input.style === undefined ? before.style : checkedText(input.style, 600, "回复风格");
-  const model = input.model === undefined ? before.model : checkedText(input.model, 300, "模型名称");
+  const engine = input.engine === undefined ? before.engine : checkedEngine(input.engine);
+  if (engine !== before.engine) requireBotEngine(userId, engine);
+  const model = input.model === undefined
+    ? (engine === before.engine ? before.model : "")
+    : checkedText(input.model, 300, "模型名称");
   let capabilities = before.capabilities;
   if (input.capabilities !== undefined) {
     if (!Array.isArray(input.capabilities) || input.capabilities.some((c) => !BOT_CAPABILITIES.includes(c)))
       throw new WebBotError(400, "请选择支持的 Bot 能力。");
     capabilities = BOT_CAPABILITIES.filter((c) => (input.capabilities as unknown[]).includes(c));
   }
-  if (model && model !== before.model && !(await modelChoices()).models.some((m) => modelKey(m) === model))
+  if (model && (model !== before.model || engine !== before.engine) && !(await botModelChoices(userId, botId, engine)).some(m => m.id === model))
     throw new WebBotError(400, "请选择管理员已启用的模型。");
   return transaction(() => {
     owner();
+    if (engine !== before.engine) requireBotEngine(userId, engine);
     const current = readProfile(botId);
     if (current.revision !== input.revision) throw new WebBotError(409, "设置已在别处更改，请重新打开后再保存。");
     if (
       current.responsibility === responsibility &&
       current.style === style &&
+      current.engine === engine &&
       current.model === model &&
       JSON.stringify(current.capabilities) === JSON.stringify(capabilities)
     )
       return current;
     const revision = current.revision + 1;
     const resumed = !before.capabilities.includes("reminders") && capabilities.includes("reminders") ? Date.now() : 0;
-    sql(`INSERT INTO web_bot_profiles(bot,responsibility,style,model,capabilities,revision,remindersResumedAt)
-      VALUES(?,?,?,?,?,?,?) ON CONFLICT(bot) DO UPDATE SET responsibility=excluded.responsibility,
-        style=excluded.style,model=excluded.model,capabilities=excluded.capabilities,revision=excluded.revision,
+    sql(`INSERT INTO web_bot_profiles(bot,responsibility,style,engine,model,capabilities,revision,remindersResumedAt)
+      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(bot) DO UPDATE SET responsibility=excluded.responsibility,
+        style=excluded.style,engine=excluded.engine,model=excluded.model,capabilities=excluded.capabilities,revision=excluded.revision,
         remindersResumedAt=max(web_bot_profiles.remindersResumedAt,excluded.remindersResumedAt)`).run(
       botId,
       responsibility,
       style,
+      engine,
       model,
       JSON.stringify(capabilities),
       revision,
@@ -163,7 +204,7 @@ export async function updateBotProfile(userId: string, botId: string, input: Rec
         );
       }
     }
-    return { responsibility, style, model, capabilities, revision };
+    return { responsibility, style, engine, model, capabilities, revision };
   });
 }
 

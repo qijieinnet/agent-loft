@@ -1,12 +1,10 @@
 // Web Bot 只调用聊天模型。它不创建工作台 agent 会话，也不加载文件、命令、MCP 或个人记忆。
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { modelKey, modelRuntime } from "../agents/pi/sdk.js";
-import { getBotProfile, selectBotChatMemories, pickBotModel, requireBotCapability } from "./web-bot-profile.js";
+import { checkBotEngineAccess, generateBotText } from "./web-bot-engine.js";
+import { getBotProfile, selectBotChatMemories, requireBotCapability } from "./web-bot-profile.js";
 import { createBotDelegation, listDelegationTargets } from "./web-bot-delegation.js";
 import { transaction } from "./db.js";
 import { refersToPreviousPhoto, sanitizeBotImage } from "./web-bot-photo.js";
-import { recordUsage } from "./usage.js";
-import { getUser } from "./users.js";
 import { finishTurn, getBot, getBotMessage, getBotThread, listMessages, WebBotError, type BotMessage } from "./web-bots.js";
 import { applyBotReminder, enqueueBotNotice, listBotReminders } from "./web-bot-reminders.js";
 import { asksForRecurringReminder, isReminderListRequest, recurrenceNotice, reminderIntentFeedback, reminderListAnswer } from "./web-bot-reminder-chat.js";
@@ -125,6 +123,7 @@ async function answer(userId: string, threadId: string, message: BotMessage, tim
   const profile = getBotProfile(userId, bot.id);
   const checkAccess = () => {
     if (getBotThread(userId, threadId).accessId !== thread.accessId) throw new ReplyError("这条对话的权限刚有变更，请重新打开后再发送。");
+    checkBotEngineAccess(userId, bot.id, profile);
     if (getBotProfile(userId, bot.id).revision !== profile.revision) throw new ReplyError("Bot 设置刚刚更新，请重新发送，以便按新设置回答。");
   };
   if (profile.capabilities.includes("reminders")) {
@@ -137,7 +136,6 @@ async function answer(userId: string, threadId: string, message: BotMessage, tim
   const messages = listMessages(userId, threadId, 24, message.id);
   const withImage = message.images.length ? message : refersToPreviousPhoto(message.text)
     ? messages.findLast(m => m.images.length && m.status === "done") : undefined;
-  const model = await pickBotModel(userId, bot.id, !!withImage);
   // 最近轮数和文字均有界。只取当前话题最后一张照片，既支持追问，也避免多次发送整本相册。
   const history: { role: string; author?: string; text: string; photo?: boolean }[] = [];
   let budget = 18000;
@@ -170,22 +168,8 @@ async function answer(userId: string, threadId: string, message: BotMessage, tim
       content.push({ type: "image", mimeType: safe.mediaType, data: safe.data });
     }
   }
-  const rt = await modelRuntime();
-  checkAccess();
-  const result = await rt.completeSimple(model, { systemPrompt: SYSTEM, messages: [{ role: "user", content, timestamp: now.getTime() }] }, {
-    signal: AbortSignal.timeout(90_000), maxTokens: Math.min(model.maxTokens, 3200),
-  });
-  const usage = result.usage;
-  recordUsage(`bot:${threadId}`, { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, costUsd: usage.cost.total },
-    false, { owner: userId, agent: "pi", model: modelKey(model) });
-  if (result.stopReason !== "stop") {
-    const reason = result.errorMessage ?? "";
-    if (/api.?key|unauthori[sz]ed|credentials?|\b401\b/i.test(reason)) throw new ReplyError(getUser(userId)?.role === "admin" ? "模型连接失败，请检查 pi 的服务商授权后重新发送。" : "模型连接失败，请联系管理这个 Bot 的人。");
-    if (/rate.limit|quota|\b429\b/i.test(reason)) throw new ReplyError("模型暂时繁忙或额度不足。消息已保留，请稍后重试。");
-    if (result.stopReason === "length") throw new ReplyError("这次回复太长了，可以把问题分成两部分再问。");
-    throw new Error("incomplete answer");
-  }
-  const raw = result.content.filter(block => block.type === "text").map(block => block.text).join("");
+  const raw = await generateBotText({ userId, threadId, botId: bot.id, profile, system: SYSTEM, content,
+    checkAccess, signal: AbortSignal.timeout(90_000), maxTokens: 3200 });
   return { ...parseBotReply(raw, message.text), checkAccess };
 }
 

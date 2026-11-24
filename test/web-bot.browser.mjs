@@ -234,6 +234,14 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     assert.match(await page.getByLabel("主要职责").inputValue(), /日常/);
     await shot(page, "bot-" + size + "-profile");
     if (size === "mobile") {
+      await page.getByText("引擎、模型与能力", { exact: true }).click();
+      await page.getByLabel("使用的引擎").selectOption("codex");
+      await open(page, "保存资料");
+      await page.getByRole("heading", { name: "对话设置" }).waitFor();
+      await open(page, "Bot 资料");
+      await page.getByText("引擎、模型与能力", { exact: true }).click();
+      assert.equal(await page.getByLabel("使用的引擎").inputValue(), "codex");
+      await page.getByLabel("使用的引擎").selectOption("pi");
       await open(page, "保存资料");
       await page.getByRole("heading", { name: "对话设置" }).waitFor();
     }

@@ -44,18 +44,18 @@ async function main(): Promise<void> {
   loadConfig();
   console.log(`[启动] agent-loft，配置目录 ${home}`);
 
+  hub.registerDriver(new ClaudeDriver());
+  hub.registerDriver(new CodexDriver());
   if (botDeployment()) {
     await startWeb();
     startBackups();
-    const shutdown = () => { void stopWeb().finally(() => process.exit(0)); };
+    const shutdown = () => { void stopWeb().finally(() => hub.shutdown()).finally(() => process.exit(0)); };
     process.once("SIGTERM", shutdown);
     process.once("SIGINT", shutdown);
     await reportUpgradeHealth(true);
     return;
   }
 
-  hub.registerDriver(new ClaudeDriver());
-  hub.registerDriver(new CodexDriver());
   hub.registerDriver(new WorkBuddyDriver());
   hub.registerDriver(new PiDriver());
   hub.registerDriver(new DshDriver());

@@ -963,3 +963,32 @@ test("恢复 Codex 会话后按当前模型加速，关闭后下一轮恢复标�
   await tick();
   await disposeRunning(session);
 });
+
+test("Bot 通过临时 Codex thread 发送文字和图片，隔离工具并记录引擎用量", async (t) => {
+  calls.length = 0;
+  t.mock.method(appServer, "call", (method: string, params: unknown) =>
+    new Promise((resolve, reject) => calls.push({ method, params, resolve, reject })));
+  const used: TokenUsage[] = [];
+  const answer = new CodexDriver().reply({ system: "按职责回复", prompt: "这是什么？", image: { mimeType: "image/png", data: "abc" },
+    signal: AbortSignal.timeout(5000), onUsage: usage => used.push(usage) });
+  take("config/read").resolve({ config: { mcp_servers: { machine: {}, agent_loft_memory: {} } } });
+  await tick();
+  const start = take("thread/start");
+  assert.equal(start.params.ephemeral, true);
+  assert.equal(start.params.config["mcp_servers.agent_loft_memory.enabled"], false);
+  assert.equal(start.params.config["features.shell_tool"], false);
+  assert.equal(start.params.config.web_search, "disabled");
+  const threadId = "bot-turn";
+  start.resolve({ thread: { id: threadId }, model: "fixture" });
+  await tick();
+  const turn = take("turn/start");
+  assert.deepEqual(turn.params.input[1], { type: "image", url: "data:image/png;base64,abc" });
+  turn.resolve({ turn: { id: "turn" } });
+  notify("thread/tokenUsage/updated", { threadId, tokenUsage: { total: { inputTokens: 12, cachedInputTokens: 5, outputTokens: 3 } } });
+  notify("item/completed", { threadId, item: { type: "agentMessage", text: "测试回复" } });
+  notify("turn/completed", { threadId, turn: { status: "completed" } });
+  assert.equal(await answer, "测试回复");
+  assert.equal(used[0]?.input, 7);
+  assert.equal(used[0]?.cacheRead, 5);
+  take("thread/unsubscribe").resolve({});
+});

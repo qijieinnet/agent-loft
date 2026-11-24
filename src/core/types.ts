@@ -378,6 +378,8 @@ export interface AgentDriver {
    * 用最便宜的模型。不支持的 agent 不实现。
    */
   complete?(req: CompleteRequest): Promise<unknown>;
+  /** 按 Bot 提供的上下文独立回复，不加载工作台工具。 */
+  reply?(req: EngineReplyRequest): Promise<string>;
 }
 
 export type CompleteRequest = {
@@ -389,4 +391,13 @@ export type CompleteRequest = {
   model?: string;
   /** 超时，毫秒 */
   timeoutMs?: number;
+};
+
+export type EngineReplyRequest = {
+  system: string;
+  prompt: string;
+  model?: string;
+  image?: { mimeType: string; data: string };
+  signal: AbortSignal;
+  onUsage?: (usage: TokenUsage, model: string) => void;
 };

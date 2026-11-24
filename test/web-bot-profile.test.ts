@@ -234,3 +234,57 @@ test("每个 Bot 只能选管理员允许且已连接的模型，模型下线和
   await updateBotProfile(owner.id, bot.id, { revision: 1, model: "" });
   assert.equal((await pickBotModel(ada.id, bot.id, false)).id, "standard");
 });
+
+test("Bot 直接绑定引擎，旧资料迁移、逐 Bot 路由、共享授权和跨引擎交办", async (t) => {
+  const { hub } = await import("../src/core/hub.js");
+  const { CodexDriver } = await import("../src/agents/codex/driver.js");
+  const { ClaudeDriver } = await import("../src/agents/claude/driver.js");
+  const { updateUser } = await import("../src/core/users.js");
+  const { startTurn } = await import("../src/core/web-bots.js");
+  const { runBotTurn } = await import("../src/core/web-bot-reply.js");
+  const { createBotDelegation, changeBotDelegation } = await import("../src/core/web-bot-delegation.js");
+  const { runQueuedBotDelegations } = await import("../src/core/web-bot-delegation-worker.js");
+  const bot = createBot(owner.id, "问答"), writer = createBot(owner.id, "撰稿");
+  const shared = acceptInvite(ada.id, createInvite(owner.id, bot.id).token).sharedThreadId!;
+  const path = "/api/bots/" + bot.id;
+  await updateBotProfile(owner.id, bot.id, { revision: 0, responsibility: "写短句" });
+  sql("UPDATE web_bot_profiles SET model=? WHERE bot=?").run("faux/standard", bot.id);
+  sql("ALTER TABLE web_bot_profiles DROP COLUMN engine").run();
+  closeDatabaseForTest();
+  const { profile: migrated, engines } = await request(owner, "GET", path + "/profile");
+  assert.equal(migrated.engine, "pi");
+  assert.equal(migrated.model, "faux/standard");
+  assert.equal(migrated.responsibility, "写短句");
+  assert.ok(engines.some((e: { id: string }) => e.id === "codex"));
+  await assert.rejects(request(owner, "PATCH", path + "/profile", { revision: 1, engine: "expert1" }), { status: 400 });
+  await assert.rejects(request(owner, "PATCH", path + "/profile", { revision: 1, engine: "codex", model: "faux/photo" }), { status: 400 });
+  const switched = await request(owner, "PATCH", path + "/profile", { revision: 1, engine: "codex" });
+  assert.equal(switched.profile.model, "");
+  assert.equal(getBotProfile(owner.id, writer.id).engine, "pi");
+  await updateBotProfile(owner.id, writer.id, { revision: 0, engine: "claude" });
+  const codex = new CodexDriver(), claude = new ClaudeDriver();
+  hub.registerDriver(codex);
+  hub.registerDriver(claude);
+  const direct = t.mock.method(codex, "reply", async (req: import("../src/core/types.js").EngineReplyRequest) => {
+    assert.equal(JSON.parse(req.prompt).profile.responsibility, "写短句");
+    return '{"text":"来自 Codex"}';
+  });
+  const delegated = t.mock.method(claude, "reply", async (req: import("../src/core/types.js").EngineReplyRequest) => {
+    assert.equal(req.prompt, "写一首诗");
+    return "来自 Claude";
+  });
+  async function chat(id: string) {
+    const turn = startTurn(ada.id, shared, id, "你好");
+    await runBotTurn(ada.id, shared, turn.message, id, "Asia/Hong_Kong");
+    return listMessages(ada.id, shared).at(-1)!.text;
+  }
+  assert.equal(await chat("allowed"), "来自 Codex");
+  updateUser(ada.id, { permissions: { agents: [] } });
+  assert.match(await chat("revoked"), /引擎.*权限/);
+  assert.equal(direct.mock.callCount(), 1);
+  const job = createBotDelegation(owner.id, shared, "write", { targetId: writer.id, task: "写一首诗" });
+  changeBotDelegation(owner.id, shared, job.id, "confirm", 0);
+  await runQueuedBotDelegations();
+  assert.match(listMessages(owner.id, shared).at(-1)!.text, /来自 Claude/);
+  assert.equal(delegated.mock.callCount(), 1);
+});
