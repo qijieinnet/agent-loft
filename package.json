@@ -1,6 +1,6 @@
 {
   "name": "agent-loft",
-  "version": "0.2.141",
+  "version": "0.2.142",
   "type": "module",
   "description": "多个 agent 的工作台：把本机 Claude Code / Codex 放到一处统一管理，用飞书和 Web 页面随时驱动——会话、审批、模型切换都共用",
   "keywords": [
@@ -53,6 +53,7 @@
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@highlightjs/cdn-assets": "^11.12.0",
     "@larksuiteoapi/node-sdk": "^1.73.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@novnc/novnc": "^1.7.0",
     "@smithy/core": "^3.39.0",
     "@smithy/signature-v4": "^5.7.5",
@@ -69,6 +70,7 @@
     "qrcode": "^1.5.4",
     "sharp": "^0.35.5",
     "tsx": "^4.20.6",
+    "undici": "^8.12.3",
     "werift": "^0.27.0",
     "ws": "^8.18.0"
   },

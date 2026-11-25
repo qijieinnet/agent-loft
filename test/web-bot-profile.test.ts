@@ -265,12 +265,16 @@ test("Bot 直接绑定引擎，旧资料迁移、逐 Bot 路由、共享授权�
   const codex = new CodexDriver(), claude = new ClaudeDriver();
   hub.registerDriver(codex);
   hub.registerDriver(claude);
+  await request(owner, "PATCH", path + "/codex-tools", { revision: 0, webSearch: "members", terminal: false, edit: false });
   const direct = t.mock.method(codex, "reply", async (req: import("../src/core/types.js").EngineReplyRequest) => {
     assert.equal(JSON.parse(req.prompt).profile.responsibility, "写短句");
+    assert.equal(req.codexTools?.webSearch, true);
+    assert.equal(req.codexTools?.directory, undefined);
     return '{"text":"来自 Codex"}';
   });
   const delegated = t.mock.method(claude, "reply", async (req: import("../src/core/types.js").EngineReplyRequest) => {
     assert.equal(req.prompt, "写一首诗");
+    assert.equal(req.codexTools, undefined);
     return "来自 Claude";
   });
   async function chat(id: string) {
@@ -287,4 +291,70 @@ test("Bot 直接绑定引擎，旧资料迁移、逐 Bot 路由、共享授权�
   await runQueuedBotDelegations();
   assert.match(listMessages(owner.id, shared).at(-1)!.text, /来自 Claude/);
   assert.equal(delegated.mock.callCount(), 1);
+});
+
+test("Codex 自带工具按 Bot 和对话授权，切换引擎、撤销与移交后生效", async () => {
+  const { botCodexTurn } = await import("../src/core/web-bot-codex-tools.js");
+  const bot = createBot(owner.id, "本机工具"), other = createBot(owner.id, "另一个 Codex");
+  const settings = "/api/bots/" + bot.id + "/codex-tools";
+  const payload = { revision: 0, webSearch: "members", terminal: true, edit: false, directory: home };
+  const extensions = "/api/bots/" + bot.id + "/extensions";
+  assert.equal((await request(owner, "GET", extensions)).codex, null);
+  await assert.rejects(request(owner, "PATCH", settings, payload), { status: 409 });
+  await updateBotProfile(owner.id, bot.id, { revision: 0, engine: "codex" });
+  assert.equal((await request(owner, "GET", extensions)).codex.webSearch, "off");
+  acceptInvite(lin.id, createInvite(owner.id, bot.id).token);
+  await assert.rejects(request(lin, "PATCH", settings, payload), { status: 404 });
+  await assert.rejects(request(owner, "PATCH", settings, { ...payload, directory: "/" }), { status: 400 });
+  await request(owner, "PATCH", settings, payload);
+  const active = botCodexTurn(owner.id, bot.id, false);
+  assert.deepEqual(active.tools, { webSearch: true, terminal: true, edit: false, directory: fs.realpathSync(home) });
+  assert.equal(botCodexTurn(owner.id, other.id, false).tools, undefined);
+  for (const who of [lin, owner]) {
+    const tools = botCodexTurn(who.id, bot.id, true).tools;
+    assert.deepEqual(tools, { webSearch: true, terminal: false, edit: false, directory: undefined });
+  }
+  const updated = { ...payload, revision: 1, webSearch: "private", terminal: false, edit: true };
+  await request(owner, "PATCH", settings, updated);
+  assert.throws(active.check, { status: 409 });
+  await assert.rejects(request(owner, "PATCH", settings, updated), { status: 409 });
+  assert.equal(botCodexTurn(lin.id, bot.id, false).tools, undefined);
+  assert.equal(botCodexTurn(owner.id, bot.id, true).tools, undefined);
+  await updateBotProfile(owner.id, bot.id, { revision: 1, engine: "pi" });
+  assert.equal((await request(owner, "GET", extensions)).codex, null);
+  await updateBotProfile(owner.id, bot.id, { revision: 2, engine: "codex" });
+  assert.equal((await request(owner, "GET", extensions)).codex.edit, true);
+  const { transferBot } = await import("../src/core/web-bots.js");
+  transferBot(owner.id, bot.id, lin.id);
+  assert.equal(botCodexTurn(lin.id, bot.id, false).tools, undefined);
+  await assert.rejects(request(lin, "PATCH", settings, payload), { status: 403 });
+});
+
+test("Bot 能力清单按本机引擎过滤，私聊授权和失效版本在运行时生效", async t => {
+  const { appServer } = await import("../src/agents/codex/app-server.js");
+  const { botCodexTurn } = await import("../src/core/web-bot-codex-tools.js");
+  const { claudeTurn } = await import("../src/core/web-bot-claude-tools.js");
+  const bot = createBot(owner.id, "能力选择");
+  await updateBotProfile(owner.id, bot.id, { revision: 0, engine: "codex" });
+  const url = "/api/bots/" + bot.id;
+  t.mock.method(appServer, "call", async (method: string) => {
+    assert.equal(method, "experimentalFeature/list");
+    return { data: ["image_generation", "multi_agent", "multi_agent_v2", "view_image"].map(name => ({ name, stage: "stable" })), nextCursor: null };
+  });
+  const { options } = await request(owner, "GET", url + "/codex-tools");
+  assert.equal(options.find((o: {id: string}) => o.id === "image_generation").available, true);
+  assert.equal(options.find((o: {id: string}) => o.id === "computer_use").available, false);
+  assert.equal(options.find((o: {id: string}) => o.id === "multi_agent").available, false);
+  const grants = { revision: 0, webSearch: "off", terminal: false, edit: false };
+  await assert.rejects(request(owner, "PATCH", url + "/codex-tools", { ...grants, extra: ["computer_use"] }), { status: 400 });
+  await request(owner, "PATCH", url + "/codex-tools", { ...grants, extra: ["image_generation"] });
+  assert.deepEqual(botCodexTurn(owner.id, bot.id, false).tools?.extra, ["image_generation"]);
+  assert.equal(botCodexTurn(owner.id, bot.id, true).tools, undefined);
+  await updateBotProfile(owner.id, bot.id, { revision: 1, engine: "claude" });
+  await request(owner, "PATCH", url + "/claude-tools", { revision: 0, settings: { WebFetch: "private", WebSearch: "members" } });
+  assert.deepEqual(claudeTurn(owner.id, bot.id, false).names, ["WebSearch", "WebFetch"]);
+  const shared = claudeTurn(owner.id, bot.id, true);
+  assert.deepEqual(shared.names, ["WebSearch"]);
+  await request(owner, "PATCH", url + "/claude-tools", { revision: 1, settings: { WebFetch: "off", WebSearch: "off" } });
+  assert.throws(shared.check, { status: 409 });
 });

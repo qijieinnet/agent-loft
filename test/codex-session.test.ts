@@ -992,3 +992,62 @@ test("Bot 通过临时 Codex thread 发送文字和图片，隔离工具并记�
   assert.equal(used[0]?.cacheRead, 5);
   take("thread/unsubscribe").resolve({});
 });
+
+test("Bot 的原生搜索和本机工具分别下发，未确认目录沙箱时不会启动工具轮次", async t => {
+  calls.length = 0;
+  t.mock.method(appServer, "call", (method: string, params: unknown) =>
+    new Promise((resolve, reject) => calls.push({ method, params, resolve, reject })));
+  const driver = new CodexDriver();
+  for (const mode of ["search", "read", "edit", "unsupported", "revoked"]) {
+    let dispatched = 0, revoked = false;
+    const local = mode !== "search", directory = local ? "/srv/bot-fixture" : undefined;
+    const reply = driver.reply({ system: "测试", prompt: "测试", signal: AbortSignal.timeout(5000), codexTools: {
+      webSearch: !local, terminal: mode === "read" || mode === "revoked", edit: mode === "edit" || mode === "unsupported", directory,
+      checkAccess() { if (revoked) throw new Error("测试撤销"); }, beforeTurn() { dispatched++; },
+    } });
+    const rejected = mode === "unsupported" ? assert.rejects(reply, /权限配置/) : undefined;
+    take("config/read").resolve({ config: { mcp_servers: { private: {} } } });
+    await tick();
+    const startCall = take("thread/start");
+    const start = startCall.params;
+    assert.equal(start.config.web_search, local ? "disabled" : "live");
+    assert.equal(start.config["mcp_servers.private.enabled"], false);
+    assert.equal(start.config["features.shell_tool"], mode === "read" || mode === "revoked");
+    assert.equal(start.config.include_apply_patch_tool, mode === "edit" || mode === "unsupported");
+    if (local) {
+      assert.equal(start.sandbox, undefined);
+      const policy = start.config["permissions." + start.permissions];
+      assert.equal(policy.filesystem[directory!], mode === "read" || mode === "revoked" ? "read" : "write");
+      assert.equal(policy.network.enabled, false);
+      assert.equal(start.config.shell_environment_policy.inherit, "none");
+    }
+    const threadId = "bot-native-" + mode;
+    // Resolve the start with the profile actually acknowledged by the server.
+    startCall.resolve({ thread: { id: threadId }, model: "test",
+      ...(mode !== "unsupported" ? { activePermissionProfile: { id: start.permissions } } : {}) });
+    await tick();
+    if (rejected) {
+      await rejected;
+      assert.equal(dispatched, 0);
+      assert.ok(!calls.some(c => c.method === "turn/start"));
+    } else {
+      const turn = take("turn/start");
+      assert.equal(dispatched, 1);
+      assert.equal(turn.params.permissions, start.permissions);
+      assert.equal(turn.params.cwd, directory);
+      if (mode === "revoked") {
+        revoked = true;
+        const denied = assert.rejects(reply, /测试撤销/);
+        notify("item/started", { threadId, item: { type: "commandExecution" } });
+        turn.resolve({ turn: { id: mode } });
+        await denied;
+        assert.equal(take("turn/interrupt").params.turnId, mode);
+      } else {
+        turn.resolve({ turn: { id: mode } });
+        notify("turn/completed", { threadId, turn: { status: "completed" } });
+        await reply;
+      }
+    }
+    take("thread/unsubscribe").resolve({});
+  }
+});

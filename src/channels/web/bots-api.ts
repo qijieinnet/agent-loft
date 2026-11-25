@@ -1,3 +1,9 @@
+import { saveClaudeSettings } from "../../core/web-bot-claude-tools.js";
+import { nativeCatalog } from "../../core/web-bot-native-catalog.js";
+import { botSkillSources, importBotSkill } from "../../core/web-bot-skill-files.js";
+import { callImage, decideToolCall, threadCalls } from "../../core/web-bot-calls.js";
+import { saveBotCodexSettings } from "../../core/web-bot-codex-tools.js";
+import { discoverBotTools, listBotExtensions, removeBotExtension, saveBotExtension, saveToolGrants } from "../../core/web-bot-extensions.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { acceptInvite, createBot, createInvite, getBot, getBotMessage, getBotThread, listBots, listMessages, removeMember, deleteOwnedBot, leaveBot, transferBot, renameBot, startTurn, stopSharing, WebBotError, type BotImage } from "../../core/web-bots.js";
 import { runBotTurn } from "../../core/web-bot-reply.js";
@@ -62,8 +68,9 @@ async function threads(req: IncomingMessage, res: ServerResponse, url: URL, user
     if (hasOlder) rows.shift();
     const credits = rows.length ? delegationCredits(user.id,threadId,rows[0]!.id,rows[rows.length-1]!.id) : new Map<number,string>();
     const retries = rows.length ? retryableBotMessages(user.id, threadId, rows[0]!.id, rows[rows.length - 1]!.id) : new Set<number>();
+    const calls = rows.length ? threadCalls(user.id, threadId, rows[0]!.id, rows.at(-1)!.id) : new Map();
     const messages = rows.map(({ images, ...message }) => ({
-      ...message, image: images.length > 0, canRetry: retries.has(message.id), ...(credits.has(message.id) ? { delegatedBy: credits.get(message.id) } : {}),
+      ...message, ...(calls.has(message.id) ? { calls: calls.get(message.id) } : {}), image: images.length > 0, canRetry: retries.has(message.id), ...(credits.has(message.id) ? { delegatedBy: credits.get(message.id) } : {}),
     }));
     sendJson(res, 200, { messages, pending: messages.some(m => m.status === "pending"), nextBefore: hasOlder ? messages[0]!.id : null, reminders: listBotReminders(user.id, threadId) });
     return;
@@ -87,6 +94,56 @@ export async function handleBotsApi(req: IncomingMessage, res: ServerResponse, u
   const p = url.pathname;
   const method = req.method;
   try {
+    const generated = /^\/api\/bots\/threads\/([\w-]+)\/calls\/([\w-]+)\/image$/.exec(p);
+    if (generated && method === "GET") {
+      const data = callImage(user.id, generated[1]!, generated[2]!);
+      const { default: sharp } = await import("sharp");
+      const bytes = await sharp(data, { limitInputPixels: 60000000 }).png().toBuffer();
+      getBotThread(user.id, generated[1]!);
+      res.writeHead(200, { "Content-Type": "image/png", "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" });
+      res.end(bytes);
+      return;
+    }
+    const decision = /^\/api\/bots\/threads\/([\w-]+)\/calls\/([\w-]+)\/(approve|deny)$/.exec(p);
+    if (decision && method === "POST") {
+      decideToolCall(user.id, decision[1]!, decision[2]!, decision[3] === "approve");
+      return sendJson(res, 200, { ok: true });
+    }
+    const claudeTools = /^\/api\/bots\/([\w-]+)\/claude-tools$/.exec(p);
+    if (claudeTools && method === "PATCH") return sendJson(res, 200, saveClaudeSettings(user.id, claudeTools[1]!, await bodyOf(req, 4096)));
+    const codexTools = /^\/api\/bots\/([\w-]+)\/codex-tools$/.exec(p);
+    if (codexTools) {
+      const bot = codexTools[1]!;
+      if (method === "GET") return sendJson(res, 200, await nativeCatalog(user.id, bot));
+      if (method !== "PATCH") throw new HttpError(405, "请求方式无效。");
+      const input = await bodyOf(req, 8192);
+      if (Array.isArray(input.extra) && input.extra.length) {
+        const { options } = await nativeCatalog(user.id, bot);
+        if (input.extra.some(id => !options.some(o => o.id === id && o.available))) throw new HttpError(400, "此版本不支持所选能力。");
+      }
+      return sendJson(res, 200, saveBotCodexSettings(user.id, bot, input));
+    }
+    const bundles = /^\/api\/bots\/([\w-]+)\/skill-packages$/.exec(p);
+    if (bundles) {
+      if (method === "GET") return sendJson(res, 200, { sources: await botSkillSources(user.id, bundles[1]!) });
+      if (method === "POST") return sendJson(res, 201, await importBotSkill(user.id, bundles[1]!, await bodyOf(req, 8 * 1024 * 1024)));
+      throw new HttpError(405, "请求方式无效。");
+    }
+    const extensions = /^\/api\/bots\/([\w-]+)\/extensions(?:\/([\w-]+)(?:\/(discover|grants))?)?$/.exec(p);
+    if (extensions) {
+      const [, bot, id, action] = extensions;
+      if (method === "GET" && !id) return sendJson(res, 200, listBotExtensions(user.id, bot!));
+      const body = await bodyOf(req, 400 * 1024);
+      if (method === "POST" && !id) return sendJson(res, 201, saveBotExtension(user.id, bot!, body));
+      if (id && !action && method === "PATCH") return sendJson(res, 200, saveBotExtension(user.id, bot!, body, id));
+      if (id && !action && method === "DELETE") {
+        removeBotExtension(user.id, bot!, id, body.revision);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (id && action === "discover" && method === "POST") return sendJson(res, 200, await discoverBotTools(user.id, bot!, id, body.revision));
+      if (id && action === "grants" && method === "PATCH") return sendJson(res, 200, saveToolGrants(user.id, bot!, id, body));
+      throw new HttpError(405, "请求方式无效。");
+    }
     const archive = /^\/api\/bots\/([\w-]+)\/archives(?:\/([\w-]+)(?:\/photos\/(\d+))?)?$/.exec(p);
     if (archive) {
       if (method !== "GET") throw new HttpError(405, "共享归档为只读。");

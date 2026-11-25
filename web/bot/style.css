@@ -114,6 +114,10 @@ button:disabled:is(.primary,.secondary) { opacity:.55; }
 .bubble img { display:block; max-width:min(100%,320px); max-height:285px; border-radius:9px; }
 .line.failed.assistant .bubble { color:var(--danger); }
 .line.failed .secondary { min-height:36px; border-radius:9px; font-size:.83rem; }
+.line .tool-call { display:grid; gap:6px; max-width:100%; min-width:0; padding:9px 12px; border:1px solid var(--line); border-radius:12px; overflow-wrap:anywhere; }
+.tool-call pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; max-height:16rem; overflow:auto; font-size:.85rem; }
+.tool-call > span { color:var(--muted); font-size:.8rem; }
+.tool-call .record-controls { display:flex; gap:8px; }
 .line.pending .who { color:var(--muted); font-weight:450; }
 .reply-text { min-width:0; max-width:100%; white-space:normal; }
 .reply-text p,.reply-text ul,.reply-text ol { margin:0 0 .65em; }

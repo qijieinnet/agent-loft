@@ -39,7 +39,7 @@ function nameOf(name: string) {
   if (typeof name !== "string" || !name.trim() || name.trim().length > 60) throw new WebBotError(400, "请输入 1 到 60 个字的名字。");
   return name.trim();
 }
-function requireOwner(userId: string, botId: string) {
+export function requireOwner(userId: string, botId: string) {
   activeUser(userId);
   if (!sql("SELECT 1 FROM web_bots WHERE id=? AND owner=?").get(botId, userId)) missing();
 }
@@ -258,6 +258,7 @@ export function getBotMessage(userId: string, threadId: string, messageId: numbe
 export function retryableBotMessages(userId: string, threadId: string, first: number, last: number): Set<number> {
   const { accessId } = getBotThread(userId, threadId);
   const rows = sql(`SELECT m.id FROM web_bot_messages m WHERE m.thread=? AND m.authorId=? AND m.authorAccess=?
+    AND NOT EXISTS (SELECT 1 FROM web_bot_tool_attempts WHERE message=m.id)
     AND m.id BETWEEN ? AND ? AND m.role='user' AND m.status='failed'
     AND NOT EXISTS (SELECT 1 FROM web_bot_messages r WHERE r.thread=m.thread AND r.authorId=m.authorId
       AND r.role='user' AND r.requestId='retry:' || m.id)`).all(threadId, userId, accessId, first, last);
@@ -268,7 +269,7 @@ export async function retryBotTurn(userId: string, threadId: string, id: number)
   const access = getBotThread(userId, threadId).accessId;
   const original = getBotMessage(userId, threadId, id);
   const owned = () => sql(`SELECT 1 FROM web_bot_messages WHERE id=? AND thread=? AND authorId=? AND authorAccess=?
-    AND role='user' AND status='failed'`).get(id, threadId, userId, access);
+    AND role='user' AND status='failed' AND NOT EXISTS (SELECT 1 FROM web_bot_tool_attempts WHERE message=web_bot_messages.id)`).get(id, threadId, userId, access);
   if (!original || !owned()) throw new WebBotError(404, "这条消息已不可重试。");
   const { sanitizeBotImage } = await import("./web-bot-photo.js");
   const images: BotImage[] = [];
@@ -292,9 +293,20 @@ export function appendBotNotice(userId: string, threadId: string, text: string):
   return addReply(threadId, text, "done", null);
 }
 
+export function toolAttemptNotice(messageId: number) {
+  return sql("SELECT 1 FROM web_bot_tool_attempts WHERE message=?").get(messageId)
+    ? "外部工具已收到或可能已收到请求，请先核对执行结果。" : "";
+}
+
+export function recordToolAttempt(messageId: number, fingerprint: string) {
+  const saved = sql(`INSERT OR IGNORE INTO web_bot_tool_attempts(message,fingerprint)
+    SELECT id,? FROM web_bot_messages WHERE id=? AND status='pending' AND worker=?`)
+    .run(fingerprint, messageId, process.pid);
+  if (!saved.changes) throw new WebBotError(409, "该工具调用已处理或本轮已结束。");
+}
 function failPending(row: Record<string, unknown>) {
   const changed = sql("UPDATE web_bot_messages SET status='failed',worker=NULL WHERE id=? AND status='pending'").run(Number(row.id)).changes;
-  if (changed) addReply(String(row.thread), "这次回复已中断，可以重新发送。", "failed", String(row.requestId));
+  if (changed) addReply(String(row.thread), "这次回复已中断。" + (toolAttemptNotice(Number(row.id)) || "可以重新发送。"), "failed", String(row.requestId));
 }
 function interruptTurns(where: string, parameters: string[]) {
   // where 是调用处编写的固定查询；参数独立绑定。

@@ -393,7 +393,21 @@ export type CompleteRequest = {
   timeoutMs?: number;
 };
 
+export type BotCodexTools = {
+  skillRoot?: string;
+  extra?: import("./web-bot-native-catalog.js").BotNativeOption[];
+  onTool?: (event: { id: string; name: string; completed: boolean; failed: boolean; detail: string; image?: Buffer }) => void;
+  webSearch: boolean;
+  terminal: boolean;
+  edit: boolean;
+  directory?: string;
+  checkAccess: () => void;
+  beforeTurn: () => void;
+};
+
 export type EngineReplyRequest = {
+  claudeTools?: { names: string[]; checkAccess: () => void; onTool: NonNullable<BotCodexTools["onTool"]> };
+  codexTools?: BotCodexTools;
   system: string;
   prompt: string;
   model?: string;

@@ -3,11 +3,14 @@ import { modelKey, modelRuntime } from "../agents/pi/sdk.js";
 import { config } from "./config.js";
 import { hub } from "./hub.js";
 import { recordUsage } from "./usage.js";
+import type { BotCodexTools, EngineReplyRequest } from "./types.js";
 import { getUser } from "./users.js";
 import { engineModels, pickBotModel, requireBotEngine, type BotProfile } from "./web-bot-profile.js";
 import { getBot, WebBotError } from "./web-bots.js";
 
 type BotRequest = {
+  claudeTools?: EngineReplyRequest["claudeTools"];
+  codexTools?: BotCodexTools;
   userId: string;
   botId: string;
   threadId: string;
@@ -36,7 +39,7 @@ export async function generateBotText(req: BotRequest): Promise<string> {
     if (profile.model && !engineModels(engine).includes(profile.model)) throw new WebBotError(503, "这个 Bot 的模型已停用，请重新选择。");
     const model = profile.model || config().agents[engine].defaultModel;
     const prompt = typeof content === "string" ? content : content.filter(b => b.type === "text").map(b => b.text).join("\n");
-    return driver.reply({ system, prompt, signal, ...(model ? { model } : {}), ...(image ? { image } : {}),
+    return driver.reply({ system, prompt, signal, ...(engine === "claude" && req.claudeTools ? { claudeTools: req.claudeTools } : {}), ...(engine === "codex" && req.codexTools ? { codexTools: req.codexTools } : {}), ...(model ? { model } : {}), ...(image ? { image } : {}),
       onUsage: (usage, actualModel) => recordUsage("bot:" + threadId, usage, false, { owner: userId, agent: engine, model: actualModel || model }),
     });
   }

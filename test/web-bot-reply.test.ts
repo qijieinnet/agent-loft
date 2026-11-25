@@ -263,3 +263,183 @@ test("照片只在发送当轮和明确指向前图的追问中交给模型", as
   }
   assert.deepEqual(seen, [true, false, true]);
 });
+
+test("Bot 聊天只使用当前 Bot 的技能和逐项授权的 MCP 工具，凭据与所有权隔离", async t => {
+  const { createServer } = await import("node:http");
+
+  const { extensionsForTurn, saveBotExtension, discoverBotTools, saveToolGrants, listBotExtensions } = await import("../src/core/web-bot-extensions.js");
+  const { transferBot } = await import("../src/core/web-bots.js");
+  const owner = createUser({ name: "tool-owner", role: "admin", password: "password-123" }).id;
+  const member = createUser({ name: "tool-member", password: "password-123" }).id;
+  const bot = listBots(owner)[0]!;
+  const other = createBot(owner, "其它助手");
+  acceptInvite(member, createInvite(owner, bot.id).token);
+  const token = "fixture-value-438";
+  const calls: string[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.headers.authorization !== "Bearer " + token) { res.writeHead(401).end(); return; }
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const msg = JSON.parse(Buffer.concat(chunks).toString());
+    if (msg.id === undefined) { res.writeHead(202).end(); return; }
+    let result;
+    if (msg.method === "initialize") result = { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "test", version: "1" } };
+    if (msg.method === "tools/list") result = { tools: ["read_status", "clear_status"].map(name => ({ name, inputSchema: { type: "object" } })) };
+    if (msg.method === "tools/call") {
+      calls.push(msg.params.name);
+      result = { content: [{ type: "text", text: "服务端结果-390 " + token }] };
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+  }).listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => server.once("listening", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const addr = server.address();
+  assert.ok(addr && typeof addr === "object");
+  const settings = { kind: "http", name: "状态", endpoint: "http://127.0.0.1:" + addr.port + "/mcp", secret: token };
+  const created = saveBotExtension(owner, bot.id, settings);
+  assert.doesNotMatch(JSON.stringify(created), new RegExp(token));
+  saveBotExtension(owner, bot.id, { kind: "skill", enabled: true, name: "备份格式", instructions: "本助手的格式标记-820" });
+  const found = await discoverBotTools(owner, bot.id, created.id, created.revision);
+  const grant = saveToolGrants(owner, bot.id, created.id, { revision: found.revision, grants: { read_status: "private" } });
+  assert.throws(() => listBotExtensions(member, bot.id));
+  assert.throws(() => saveToolGrants(owner, bot.id, created.id, { revision: found.revision, grants: {} }), { status: 409 });
+  assert.equal(extensionsForTurn(owner, bot.id, true).tools.length, 0);
+  assert.equal(extensionsForTurn(member, bot.id, false).tools.length, 0);
+  assert.deepEqual(extensionsForTurn(owner, other.id, false).skills, []);
+  assert.equal(extensionsForTurn(owner, other.id, false).tools.length, 0);
+  const request = { tool: { id: created.id, name: "read_status", args: {} } };
+  const response = ai.fauxAssistantMessage(JSON.stringify(request));
+  faux.setResponses([ctx => {
+    assert.match(JSON.stringify(ctx), /本助手的格式标记-820/);
+    assert.doesNotMatch(JSON.stringify(ctx), /clear_status|fixture-value-438/);
+    return response;
+  }, ctx => {
+    assert.match(JSON.stringify(ctx), /服务端结果-390/);
+    assert.doesNotMatch(JSON.stringify(ctx), /fixture-value-438/);
+    return ai.fauxAssistantMessage('{"text":"备份检查完成"}');
+  }]);
+  const pending = startTurn(owner, bot.privateThreadId, "mcp-call", "查看备份状态");
+  await runBotTurn(owner, bot.privateThreadId, pending.message, "mcp-call", "UTC");
+  assert.equal(listMessages(owner, bot.privateThreadId).at(-1)?.text, "备份检查完成");
+  assert.deepEqual(calls, ["read_status"]);
+  const ambiguous = startTurn(owner, bot.privateThreadId, "mcp-interrupted", "再查一次");
+  faux.setResponses([response, ai.fauxAssistantMessage('{"text":""}')]);
+  await runBotTurn(owner, bot.privateThreadId, ambiguous.message, "mcp-interrupted", "UTC");
+  assert.match(listMessages(owner, bot.privateThreadId).at(-1)!.text, /先核对执行结果/);
+  const { retryBotTurn } = await import("../src/core/web-bots.js");
+  await assert.rejects(retryBotTurn(owner, bot.privateThreadId, ambiguous.message.id), { status: 404 });
+  const snapshot = extensionsForTurn(owner, bot.id, false);
+  const shared = saveToolGrants(owner, bot.id, created.id, { revision: grant.revision, grants: { read_status: "members" } });
+  await assert.rejects(snapshot.call(created.id, "read_status", {}, AbortSignal.timeout(500), () => {}, () => {}), { status: 409 });
+  assert.equal(extensionsForTurn(member, bot.id, true).tools.length, 1);
+  await assert.rejects(extensionsForTurn(member, bot.id, true).call(created.id, "clear_status", {}, AbortSignal.timeout(500), () => {}, () => {}), { status: 403 });
+  const { threadCalls, decideToolCall } = await import("../src/core/web-bot-calls.js");
+  const { sql } = await import("../src/core/db.js");
+  const thread = listBots(member).find(b => b.id === bot.id)!.sharedThreadId!;
+  let ask = saveToolGrants(owner, bot.id, created.id, { revision: shared.revision, grants: { read_status: "ask-members" } });
+  for (const mode of ["approve", "deny", "expire", "revoke"]) {
+    const before = calls.length;
+    faux.setResponses([response, ai.fauxAssistantMessage('{"text":"完成"}')]);
+    const { message } = startTurn(member, thread, mode, "查状态");
+    const turn = runBotTurn(member, thread, message, mode, "UTC");
+    const logs = (who: string) => threadCalls(who, thread, message.id, message.id).get(message.id);
+    const deadline = Date.now() + 5000;
+    while (!logs(member)?.length && Date.now() < deadline) await new Promise(r => setTimeout(r, 20));
+    const card = logs(member)?.[0];
+    assert.ok(card);
+    const id = String(card.id);
+    assert.equal(card.status, "pending");
+    assert.equal(card.args, "{}");
+    assert.equal(logs(owner)![0]!.args, null);
+    assert.throws(() => decideToolCall(owner, thread, id, true), { status: 404 });
+    assert.throws(() => decideToolCall(member, other.privateThreadId, id, true));
+    assert.equal(calls.length, before);
+    if (mode === "expire") sql("UPDATE web_bot_calls SET expires=0 WHERE id=?").run(id);
+    else if (mode === "revoke") ask = saveToolGrants(owner, bot.id, created.id, { revision: ask.revision, grants: {} });
+    else {
+      decideToolCall(member, thread, id, mode === "approve");
+      assert.throws(() => decideToolCall(member, thread, id, true), { status: 409 });
+    }
+    await turn;
+    assert.equal(calls.length, before + (mode === "approve" ? 1 : 0));
+    assert.equal(logs(member)![0]!.status, { approve: "done", deny: "denied", expire: "expired", revoke: "cancelled" }[mode]);
+    assert.doesNotMatch(JSON.stringify(logs(member)), new RegExp(token));
+  }
+  const changed = saveBotExtension(owner, bot.id, { ...settings, endpoint: settings.endpoint + "2", secret: undefined, revision: ask.revision }, created.id);
+  assert.ok("hasSecret" in changed && !changed.hasSecret && changed.catalog.length === 0);
+  assert.deepEqual(calls, ["read_status", "read_status", "read_status"]);
+  transferBot(owner, bot.id, member);
+  assert.deepEqual(listBotExtensions(member, bot.id).entries.map(e => e.kind), ["skill"]);
+  assert.throws(() => saveBotExtension(member, bot.id, { kind: "stdio", name: "local", endpoint: "node" }), { status: 403 });
+  const intranet = saveBotExtension(member, bot.id, { ...settings, endpoint: "https://127.0.0.1/mcp" });
+  await assert.rejects(discoverBotTools(member, bot.id, intranet.id, intranet.revision), { status: 403 });
+});
+
+test("Codex 回复经过 Bot 独立的本机 MCP 授权，读到工具结果后完成同一轮回复", async t => {
+  const { hub } = await import("../src/core/hub.js");
+  const { CodexDriver } = await import("../src/agents/codex/driver.js");
+  const { updateBotProfile } = await import("../src/core/web-bot-profile.js");
+  const { saveBotExtension, discoverBotTools, saveToolGrants } = await import("../src/core/web-bot-extensions.js");
+  const user = createUser({ name: "codex-bot-tools", role: "admin", password: "password-123" }).id;
+  const bot = listBots(user)[0]!;
+  await updateBotProfile(user, bot.id, { revision: 0, engine: "codex" });
+  const script = `require("node:readline").createInterface({input:process.stdin}).on("line",line=>{
+    const msg=JSON.parse(line);
+    if(msg.id===undefined)return;
+    const result=msg.method==="initialize"?{protocolVersion:msg.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}:
+      msg.method==="tools/list"?{tools:[{name:"read",inputSchema:{type:"object"}}]}:
+      {content:[{type:"text",text:process.env.BOT_FIXTURE==="fixture-credential"?"fixture-output":"missing"}]};
+    console.log(JSON.stringify({jsonrpc:"2.0",id:msg.id,result}));
+  });`;
+  const entry = saveBotExtension(user, bot.id, { kind: "stdio", name: "local", endpoint: process.execPath, args: ["-e", script], secret: '{"BOT_FIXTURE":"fixture-credential"}' });
+  const found = await discoverBotTools(user, bot.id, entry.id, entry.revision);
+  saveToolGrants(user, bot.id, entry.id, { revision: found.revision, grants: { read: "private" } });
+  const driver = new CodexDriver();
+  hub.registerDriver(driver);
+  const mock = t.mock.method(driver, "reply", async (req: import("../src/core/types.js").EngineReplyRequest) => {
+    assert.doesNotMatch(req.prompt, /fixture-credential|process\.stdin/);
+    if (req.prompt.includes("fixture-output")) return '{"text":"本机状态已读取"}';
+    assert.match(req.prompt, /本轮可用工具/);
+    return JSON.stringify({ tool: { id: entry.id, name: "read", args: {} } });
+  });
+  const { message } = startTurn(user, bot.privateThreadId, "codex-tool", "读取状态");
+  await runBotTurn(user, bot.privateThreadId, message, "codex-tool", "UTC");
+  assert.equal(listMessages(user, bot.privateThreadId).at(-1)?.text, "本机状态已读取");
+  assert.equal(mock.mock.callCount(), 2);
+});
+
+test("完整技能包保留二进制与可执行脚本，模型可按路径读取且不同 Bot 隔离", async () => {
+  const { writeZip } = await import("../src/core/zip.js");
+  const { importBotSkill, mountBotSkills } = await import("../src/core/web-bot-skill-files.js");
+  const { extensionsForTurn, removeBotExtension } = await import("../src/core/web-bot-extensions.js");
+  const user = createUser({ name: "bundle-owner", password: "password-123" }).id;
+  const bot = listBots(user)[0]!, other = createBot(user, "other");
+  const manifest = { path: "guide/SKILL.md", data: Buffer.from("---\nname: guide\n---\n读取模板") };
+  const zip = (files: { path: string; data: Buffer }[]) => writeZip(files).toString("base64");
+  const entry = await importBotSkill(user, bot.id, { zip: zip([manifest,
+    { path: "guide/reference/a.txt", data: Buffer.from("包内参考-139") },
+    { path: "guide/scripts/sample.sh", data: Buffer.from("printf sample") },
+    { path: "guide/template.bin", data: Buffer.from([0,128,255]) }]) });
+  await assert.rejects(() => importBotSkill(user, bot.id, { zip: zip([manifest, { path: "guide/../outside", data: Buffer.alloc(0) }]) }));
+  const snapshot = extensionsForTurn(user, bot.id, false);
+  const mount = mountBotSkills(snapshot.skills)!;
+  try {
+    assert.deepEqual(fs.readFileSync(path.join(mount.root, entry.id, "template.bin")), Buffer.from([0,128,255]));
+    assert.equal(fs.readFileSync(path.join(mount.root, entry.id, "scripts/sample.sh"), "utf8"), "printf sample");
+  } finally { mount.close(); }
+  const response = ai.fauxAssistantMessage(JSON.stringify({ skillFile: { id: entry.id, path: "reference/a.txt" } }));
+  const { message } = startTurn(user, bot.privateThreadId, "bundle", "用模板");
+  faux.setResponses([response, ctx => {
+    assert.match(JSON.stringify(ctx), /包内参考-139/);
+    return ai.fauxAssistantMessage('{"text":"读到了"}');
+  }]);
+  await runBotTurn(user, bot.privateThreadId, message, "bundle", "UTC");
+  assert.equal(listMessages(user, bot.privateThreadId).at(-1)?.text, "读到了");
+  const denied = startTurn(user, other.privateThreadId, "foreign", "用模板");
+  faux.setResponses([response]);
+  await runBotTurn(user, other.privateThreadId, denied.message, "foreign", "UTC");
+  assert.equal(listMessages(user, other.privateThreadId).at(-1)?.status, "failed");
+  removeBotExtension(user, bot.id, entry.id, entry.revision);
+  assert.throws(snapshot.check);
+});

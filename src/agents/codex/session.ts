@@ -1,3 +1,4 @@
+import { CODEX_TOOL_CONFIG } from "./tool-config.js";
 // 一条会话 ↔ 一条 Codex thread。
 //
 // 所有会话共用同一个 app-server 进程，靠 threadId 区分。所以本模块除了 CodexSession
@@ -6,7 +7,7 @@ import { appServer } from "./app-server.js";
 import { refusalFor, UnsupportedRequest } from "./refusals.js";
 import { config } from "../../core/config.js";
 import { contextBlock, stripContext, VOICE_MARK } from "../../core/expert-prompt.js";
-import { ACCESS_LEVELS, type CodexTool, type ExpertAccess, type ExpertRuntime } from "../../core/experts.js";
+import { ACCESS_LEVELS, type ExpertAccess, type ExpertRuntime } from "../../core/experts.js";
 import { MEMORY_MCP_NAME, memoryMcpSpawn } from "../../core/memory-mcp.js";
 import { MEMOS_MCP_NAME, memosMcpSpawn, SKILLS_MCP_NAME, skillsMcpSpawn, TASK_TOOL_TIMEOUT_SEC, TASKS_MCP_NAME, tasksMcpSpawn } from "../../core/tasks-mcp.js";
 import type { PermissionLevel } from "../../core/permission.js";
@@ -126,15 +127,6 @@ export const CHAT_CONFIG: Record<string, unknown> = {
       "in_app_local_automation",
     ].map((f) => [`features.${f}`, false]),
   ),
-};
-
-/** 专家勾了的 Codex 自带能力在 CHAT_CONFIG 上打开哪些（core/experts.ts 的 CODEX_TOOLS） */
-const CODEX_TOOL_CONFIG: Record<CodexTool, Record<string, unknown>> = {
-  image_generation: { "features.image_generation": true },
-  multi_agent: { "features.multi_agent": true },
-  browser: { "features.browser_use": true, "features.in_app_browser": true },
-  computer_use: { "features.computer_use": true },
-  apps: { "features.plugins": true, "features.apps": true, include_apps_instructions: true },
 };
 
 /**

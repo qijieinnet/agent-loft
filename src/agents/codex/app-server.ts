@@ -14,6 +14,8 @@
 // 代价是单点故障，由下面的自动重连 + onRestart 兜住。
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
+import fs from "node:fs";
+import path from "node:path";
 import { config } from "../../core/config.js";
 import { agentEnvironment } from "../../core/agent-env.js";
 import type { Incoming, InitializeResult, RequestId } from "./protocol.js";
@@ -330,6 +332,29 @@ export class AppServer {
     this.stopping = false;
     await this.start();
     for (const handler of this.restartHandlers) handler(reason);
+  }
+
+  /** bwrap re-execs the native binary, including npm installs outside system runtime directories. */
+  linuxSandboxHelper(): string | undefined {
+    if (process.platform !== "linux" || !this.child?.pid) return;
+    const pid = this.child.pid;
+    const executable = (id: number) => {
+      try {
+        const binary = fs.readlinkSync(`/proc/${id}/exe`);
+        if (/^codex(?:-linux-sandbox|-.*linux.*)?$/.test(path.basename(binary))) return binary;
+      } catch { /* The server may have exited. */ }
+      return undefined;
+    };
+    const direct = executable(pid);
+    if (direct) return direct;
+    // Older npm launchers spawn the native executable rather than replacing the Node process.
+    try {
+      for (const child of fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim().split(/\s+/)) {
+        const binary = executable(Number(child));
+        if (binary) return binary;
+      }
+    } catch { /* No live native child. */ }
+    return undefined;
   }
 
   get running(): boolean {

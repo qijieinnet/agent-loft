@@ -36,6 +36,38 @@ export const webBotSchema = `
     WHERE t.private_user IS NULL AND t.id IS NOT b.shared_thread
       AND NOT EXISTS (SELECT 1 FROM web_bot_archives a WHERE a.thread=t.id);
   CREATE TABLE IF NOT EXISTS web_bot_images (message INTEGER PRIMARY KEY, content TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS web_bot_tool_attempts (
+    message INTEGER NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(message, fingerprint)
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_calls (
+    id TEXT PRIMARY KEY, message INTEGER NOT NULL, service TEXT NOT NULL, name TEXT NOT NULL,
+    status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', args TEXT, expires INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_calls_message ON web_bot_calls(message);
+  CREATE TRIGGER IF NOT EXISTS web_bot_calls_end AFTER UPDATE OF status ON web_bot_messages
+    WHEN OLD.status='pending' AND NEW.status<>'pending' BEGIN
+      UPDATE web_bot_calls SET args=NULL,status=CASE WHEN status='running' THEN 'unknown' ELSE 'cancelled' END
+        WHERE message=NEW.id AND status IN ('pending','approved','ready','running');
+    END;
+  CREATE TABLE IF NOT EXISTS web_bot_call_images(call TEXT PRIMARY KEY, data BLOB NOT NULL);
+  CREATE TRIGGER IF NOT EXISTS web_bot_call_image_delete AFTER DELETE ON web_bot_calls BEGIN
+    DELETE FROM web_bot_call_images WHERE call=OLD.id;
+  END;
+  CREATE TRIGGER IF NOT EXISTS web_bot_calls_delete AFTER DELETE ON web_bot_messages BEGIN
+    DELETE FROM web_bot_calls WHERE message=OLD.id;
+  END;
+  CREATE TABLE IF NOT EXISTS web_bot_claude_tools (bot TEXT PRIMARY KEY, revision INTEGER NOT NULL, settings TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS web_bot_codex_tools (bot TEXT PRIMARY KEY, revision INTEGER NOT NULL, settings TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS web_bot_extensions (
+    id TEXT PRIMARY KEY, bot TEXT NOT NULL, revision INTEGER NOT NULL, config TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_skill_files (
+    extension TEXT NOT NULL, path TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(extension,path)
+  );
+  CREATE TRIGGER IF NOT EXISTS web_bot_skill_delete AFTER DELETE ON web_bot_extensions BEGIN
+    DELETE FROM web_bot_skill_files WHERE extension=OLD.id;
+  END;
+  CREATE INDEX IF NOT EXISTS web_bot_extensions_bot ON web_bot_extensions(bot);
   CREATE TABLE IF NOT EXISTS web_bot_profiles (
     bot TEXT PRIMARY KEY, responsibility TEXT NOT NULL, style TEXT NOT NULL, model TEXT NOT NULL, engine TEXT NOT NULL DEFAULT 'pi',
     capabilities TEXT NOT NULL, revision INTEGER NOT NULL, remindersResumedAt INTEGER NOT NULL

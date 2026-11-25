@@ -18,6 +18,7 @@ import { newReminder } from "./reminder-form.js";
 import { action, chooseName, closePanel, divider, note, panel, panelError, run } from "./panel.js";
 import { replyText } from "./format.js";
 import { confirmBotChange, manageBot, openArchives } from "./lifecycle.js";
+import { openExtensions } from "./extensions.js";
 import { memoryEditor, openMemories, openProfile } from "./profile.js";
 import { delegationCard, delegationPath, openDelegations, showDelegation } from "./delegations.js";
 
@@ -402,6 +403,31 @@ function showMessage(message, bot, thread) {
       ),
     );
   }
+  const callStates = { pending: "等待确认", approved: "已同意", denied: "已拒绝", cancelled: "已取消", expired: "已过期",
+    ready: "准备调用", running: "执行中", done: "已完成", failed: "执行失败", unknown: "结果未确认" };
+  for (const call of message.calls || []) {
+    const card = h("div", { class: "tool-call" }, h("strong", {}, call.service + " · " + call.name), h("span", {}, callStates[call.status] || call.status));
+    if (call.image) {
+      const src = "/api/bots/threads/" + thread + "/calls/" + call.id + "/image";
+      card.append(h("a", { href: src, target: "_blank", rel: "noopener noreferrer" },
+        h("img", { src, alt: "Codex 生成的图片", loading: "lazy", width: 160 })));
+    }
+    if (call.detail) card.append(h("details", {}, h("summary", {}, "调用结果"), h("pre", {}, call.detail)));
+    if (call.args != null) {
+      const buttons = h("div", { class: "record-controls" });
+      for (const [decision, label] of [["approve", "允许这一次"], ["deny", "拒绝"]]) buttons.append(button(label, async () => {
+        for (const b of buttons.children) b.disabled = true;
+        try { await api("/api/bots/threads/" + thread + "/calls/" + call.id + "/" + decision, "POST", {}); }
+        catch (err) { if (state.thread === thread) status(err.message); }
+        finally {
+          if (state.thread === thread) await refreshThread(true);
+          for (const b of buttons.children) b.disabled = false;
+        }
+      }, "chip"));
+      card.append(h("pre", {}, call.args), buttons);
+    }
+    line.append(card);
+  }
   if (mine && message.canRetry) {
     const retry = button("重新发送", async () => {
       retry.disabled = true;
@@ -505,7 +531,7 @@ async function refreshThread(force = false) {
     const data = await api(threadPath(thread));
     if (current !== sequence || thread !== state.thread) return;
     const messages = data.messages || [],
-      signature = JSON.stringify([messages.map((m) => [m.id, m.status, m.text, m.delegatedBy]), data.pending]);
+      signature = JSON.stringify([messages.map((m) => [m.id, m.status, m.text, m.delegatedBy, m.calls]), data.pending]);
     state.pending = !!data.pending;
     resizeInput();
     if (force || delegationDirty || rendered !== signature || delegations.some((item) => ["queued", "running"].includes(item.status)))
@@ -823,6 +849,7 @@ function settings() {
     setting("Bot 资料", "spark", () => openProfile({ bot, owner, back: settings, onChange: (profile) => {
       if (state.bot?.id === bot.id) applyProfile(profile);
     } })),
+    owner && setting("技能与工具", "gear", () => openExtensions(bot, settings)),
     setting("待我确认", "outline", myDecisions),
     setting("记住的事", "bookmark", () => openMemories(memoryContext())),
     can("followups") && setting("跟进的事", "outline", () => followups(thread, bot)),

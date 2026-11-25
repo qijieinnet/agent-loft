@@ -25,6 +25,7 @@ function eraseThread(thread: string) {
   sql("DELETE FROM web_bot_deleted_turns WHERE at<?").run(today);
   sql(`INSERT INTO web_bot_deleted_turns(user,at) SELECT authorId,createdAt FROM web_bot_messages
     WHERE thread=? AND role='user' AND createdAt>=?`).run(thread, today);
+  sql("DELETE FROM web_bot_tool_attempts WHERE message IN (SELECT id FROM web_bot_messages WHERE thread=?)").run(thread);
   sql("DELETE FROM web_bot_images WHERE message IN (SELECT id FROM web_bot_messages WHERE thread=?)").run(thread);
   sql("DELETE FROM web_bot_messages WHERE thread=?").run(thread);
   sql("DELETE FROM web_bot_memories WHERE thread=?").run(thread);
@@ -49,12 +50,19 @@ function eraseThread(thread: string) {
 export function eraseBot(bot: string) {
   for (const row of sql("SELECT id FROM web_bot_threads WHERE bot=?").all(bot)) eraseThread(String(row.id));
   sql("DELETE FROM web_bot_members WHERE bot=?").run(bot);
+  sql("DELETE FROM web_bot_claude_tools WHERE bot=?").run(bot);
+  sql("DELETE FROM web_bot_codex_tools WHERE bot=?").run(bot);
+  sql("DELETE FROM web_bot_extensions WHERE bot=?").run(bot);
   sql("DELETE FROM web_bot_profiles WHERE bot=?").run(bot);
   sql("DELETE FROM web_bot_invites WHERE bot=?").run(bot);
   sql("DELETE FROM web_bots WHERE id=?").run(bot);
 }
 
 export function handOverBot(bot: string, successor: string) {
+  // Skills belong to the Bot. Executable commands and credentials were authorized by its previous owner.
+  sql("DELETE FROM web_bot_claude_tools WHERE bot=?").run(bot);
+  sql("DELETE FROM web_bot_codex_tools WHERE bot=?").run(bot);
+  sql("DELETE FROM web_bot_extensions WHERE bot=? AND json_extract(config,'$.kind') <> 'skill'").run(bot);
   // A transferred default no longer occupies the former owner's or successor's private default slot.
   sql("UPDATE web_bots SET owner=?,default_bot=0 WHERE id=?").run(successor, bot);
   // Permanently revoke links signed solely through the previous ownership, even if ownership later returns.

@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
+import { createServer } from "node:http";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import "tsx/esm";
@@ -26,6 +27,8 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     try {
       await browser?.close();
       await stopService?.();
+      const { appServer } = await fromPackage("src/agents/codex/app-server.ts");
+      await appServer.stop();
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -52,7 +55,11 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
       const blocks = context.messages[0].content,
         data = JSON.parse(blocks[0].text);
       seen.push({ data, hasPhoto: blocks.some((block) => block.type === "image") });
-      const reply = { text: "收到：" + data.latest.text };
+      let reply = { text: "收到：" + data.latest.text };
+      if (data.latest.text === "确认测试" && !blocks.some(b => b.text?.includes('"toolResult"'))) {
+        const catalog = JSON.parse(blocks.find(b => b.text?.startsWith("本轮可用工具")).text.split("\n")[1]);
+        reply = { tool: { id: catalog[0].id, name: "read_status", args: { phrase: "测试参数" } } };
+      }
       if (data.latest.text === "想安排一次周末野餐")
         reply.text = "可以从这份两人清单开始。\n\n**随身带好**\n- 饮用水和简单的食物\n- 野餐垫、纸巾和垃圾袋\n\n**出发前**\n1. 查看当天的天气\n2. 约好集合时间";
       if (data.latest.text.includes("提醒"))
@@ -226,6 +233,57 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   assert.equal(await owner.locator("dialog").isVisible(), false);
   await owner.setViewportSize({ width: 390, height: 844 });
   await owner.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" });
+  await open(owner, "对话设置");
+  await open(owner, "技能与工具");
+  await open(owner, "添加技能");
+  await owner.getByLabel("技能名称（必填）").fill("阅读通知");
+  await owner.getByLabel("技能说明（必填）").fill("先列出时间和地点。");
+  await open(owner, "保存");
+  await owner.getByRole("dialog").getByText("阅读通知", { exact: true }).waitFor();
+  await open(owner, "编辑技能");
+  await owner.getByLabel("在这个 Bot 的聊天中启用").uncheck();
+  await open(owner, "保存");
+  await owner.getByRole("dialog").getByText("已停用").waitFor();
+  await open(owner, "导入技能包");
+  const { writeZip } = await fromPackage("src/core/zip.ts");
+  const bundle = writeZip([{ path: "guide/SKILL.md", data: Buffer.from("---\nname: browser-guide\n---\n使用模板") },
+    { path: "guide/templates/note.txt", data: Buffer.from("测试") }]);
+  await owner.getByLabel("选择 ZIP 或 .skill 文件").setInputFiles({ name: "guide.skill", mimeType: "application/zip", buffer: bundle });
+  await open(owner, "保存");
+  await owner.getByText("1 个附带文件").click();
+  await owner.getByText("templates/note.txt", { exact: true }).waitFor();
+  let toolCount = 0;
+  const mcp = createServer(async (req, res) => {
+    if (req.method !== "POST") return res.writeHead(405).end();
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const msg = JSON.parse(Buffer.concat(chunks));
+    if (msg.id == null) return res.writeHead(202).end();
+    let result;
+    if (msg.method === "initialize") result = { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "browser", version: "1" } };
+    if (msg.method === "tools/list") result = { tools: [{ name: "read_status", inputSchema: { type: "object" } }] };
+    if (msg.method === "tools/call") { toolCount++; result = { content: [{ type: "text", text: "服务确认收到" }] }; }
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+  }).listen(0, "127.0.0.1");
+  await once(mcp, "listening");
+  t.after(() => { mcp.closeAllConnections(); mcp.close(); });
+  await open(owner, "添加 HTTP 连接");
+  await owner.getByLabel("连接名称（必填）").fill("测试连接");
+  await owner.getByLabel("Streamable HTTP 地址（必填）").fill("http://127.0.0.1:" + mcp.address().port + "/mcp");
+  await owner.getByLabel("Bearer 令牌（可选）").fill("browser-fixture");
+  await open(owner, "保存");
+  const listing = owner.waitForResponse(r => r.url().endsWith("/discover") && r.request().method() === "POST");
+  await open(owner, "读取工具列表");
+  const listed = await listing;
+  assert.ok(listed.ok(), JSON.stringify(await listed.json()));
+  await owner.getByRole("combobox", { name: /read_status/ }).selectOption("ask-private");
+  await open(owner, "保存");
+  await open(owner, "管理工具");
+  await open(owner, "编辑连接");
+  assert.equal(await owner.getByLabel("Bearer 令牌（可选）").inputValue(), "");
+  await open(owner, "取消");
+  await open(owner, "返回设置");
+  await open(owner, "关闭");
   for (const [page, size] of [[owner, "mobile"], [desk, "desktop"]]) {
     await open(page, "对话设置");
     await open(page, "Bot 资料");
@@ -238,6 +296,18 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
       await page.getByLabel("使用的引擎").selectOption("codex");
       await open(page, "保存资料");
       await page.getByRole("heading", { name: "对话设置" }).waitFor();
+      await open(page, "技能与工具");
+      await open(page, "Codex 自带工具");
+      await page.getByLabel("联网搜索").selectOption("members");
+      await page.getByLabel("执行终端命令").check();
+      await page.getByLabel("服务器工作目录", { exact: false }).fill(home);
+      await open(page, "保存");
+      await open(page, "Codex 自带工具");
+      assert.equal(await page.getByLabel("联网搜索").inputValue(), "members");
+      assert.equal(await page.getByLabel("执行终端命令").isChecked(), true);
+      assert.equal(await page.getByLabel("编辑文件").isChecked(), false);
+      await open(page, "取消");
+      await open(page, "返回设置");
       await open(page, "Bot 资料");
       await page.getByText("引擎、模型与能力", { exact: true }).click();
       assert.equal(await page.getByLabel("使用的引擎").inputValue(), "codex");
@@ -247,6 +317,17 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     }
     await open(page, "关闭");
   }
+  await owner.getByRole("textbox", { name: "消息", exact: true }).fill("确认测试");
+  await open(owner, "发送消息");
+  await owner.getByRole("button", { name: "允许这一次" }).waitFor();
+  await owner.reload();
+  await owner.locator(".tool-call pre").filter({ hasText: "测试参数" }).waitFor();
+  assert.equal(toolCount, 0);
+  await open(owner, "允许这一次");
+  await owner.locator("#messages").getByText("收到：确认测试", { exact: true }).waitFor();
+  assert.equal(toolCount, 1);
+  await owner.getByText("调用结果", { exact: true }).click();
+  await owner.getByText("服务确认收到", { exact: true }).waitFor();
   await owner.getByRole("textbox", { name: "消息", exact: true }).fill("请记住：清单按购买地点分组");
   await open(owner, "发送消息");
   await owner.getByLabel("记住的内容").waitFor();

@@ -381,7 +381,7 @@ function cleanVisibility(raw: unknown, sharedWith: unknown, owner: string): { vi
 }
 
 /** 包里的相对路径：统一成 /，不许绝对路径、..、空段；隐藏的 .git 之类丢掉 */
-function cleanRelPath(raw: string): string | null {
+export function cleanRelPath(raw: string): string | null {
   const p = raw.replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!p || p.startsWith("/") || /^[A-Za-z]:/.test(p)) throw new Error(`文件路径不合规：${raw}`);
   const parts = p.split("/");

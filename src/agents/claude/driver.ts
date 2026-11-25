@@ -4,6 +4,7 @@
 // 不再自己去扒 ~/.claude/projects 下的 jsonl —— 那是 CLI 的内部约定，SDK 才是公开接口。
 import {
   type SDKUserMessage,
+  type HookCallback,
   forkSession,
   getSessionInfo,
   getSessionMessages,
@@ -351,6 +352,21 @@ export class ClaudeDriver implements AgentDriver {
     const abort = new AbortController();
     const cancel = () => abort.abort();
     req.signal.addEventListener("abort", cancel, { once: true });
+    const native = req.claudeTools;
+    const onTool: HookCallback = async input => {
+      if (!native || (input.hook_event_name !== "PreToolUse" && input.hook_event_name !== "PostToolUse" && input.hook_event_name !== "PostToolUseFailure")) return {};
+      try { native.checkAccess(); }
+      catch {
+        cancel();
+        return { continue: false, stopReason: "本次工具授权已经失效。" };
+      }
+      if (!native.names.includes(input.tool_name)) return { continue: false, stopReason: "此工具未授权。" };
+      native.onTool({ id: input.tool_use_id, name: input.tool_name, completed: input.hook_event_name !== "PreToolUse",
+        failed: input.hook_event_name === "PostToolUseFailure", detail: input.hook_event_name === "PostToolUseFailure" ? "工具执行失败" :
+          input.hook_event_name === "PostToolUse" ? JSON.stringify(input.tool_response ?? "").slice(0, 1200) : "" });
+      return {};
+    };
+    const timer = native ? setInterval(() => { try { native.checkAccess(); } catch { cancel(); } }, 2000).unref() : undefined;
     try {
       const q = query({
         prompt: req.image ? withImage() : req.prompt,
@@ -359,7 +375,8 @@ export class ClaudeDriver implements AgentDriver {
           env: agentEnvironment(),
           ...(req.model ? { model: req.model } : {}),
           systemPrompt: req.system,
-          tools: [],
+          tools: native?.names ?? [],
+          ...(native ? { hooks: { PreToolUse: [{ hooks: [onTool] }], PostToolUse: [{ hooks: [onTool] }], PostToolUseFailure: [{ hooks: [onTool] }] } } : {}),
           settingSources: [],
           strictMcpConfig: true,
           mcpServers: {},
@@ -368,7 +385,10 @@ export class ClaudeDriver implements AgentDriver {
           maxTurns: 3,
           ...(schema ? { outputFormat: { type: "json_schema" as const, schema } } : {}),
           abortController: abort,
-          canUseTool: async () => ({ behavior: "deny", message: "后台整理不允许用工具" }),
+          canUseTool: async (name, input) => {
+            native?.checkAccess();
+            return native?.names.includes(name) ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "此工具未授权。" };
+          },
         },
       });
       for await (const m of q) {
@@ -382,6 +402,7 @@ export class ClaudeDriver implements AgentDriver {
       }
       throw new Error("后台调用没有结果");
     } finally {
+      clearInterval(timer);
       req.signal.removeEventListener("abort", cancel);
       abort.abort();
     }

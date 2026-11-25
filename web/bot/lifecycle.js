@@ -22,7 +22,7 @@ export function manageBot(bot, { owner, refresh, back }) {
   }
   const members = bot.members.filter(member => member.id !== bot.ownerId);
   const transfer = () => panel("选择新所有者", ...members.map(member => button(member.name, () =>
-    confirmBotChange("移交给 " + member.name + "？", "对方将可以管理成员、资料和当前共享对话。你会保留成员身份、自己的私聊及自己封存的共享归档。",
+    confirmBotChange("移交给 " + member.name + "？", "对方将可以管理成员、资料和当前共享对话。技能随 Bot 移交，原有的 MCP 连接和 Codex 工具授权会清除。你会保留成员身份、自己的私聊及自己封存的共享归档。",
       "确认移交", async () => {
         await api(path + "/owner", "POST", { userId:member.id });
         await refresh(bot.id);
