@@ -1,6 +1,7 @@
 import { nativeOptions, type BotNativeOption } from "./web-bot-native-catalog.js";
 import fs from "node:fs";
 import path from "node:path";
+import { config } from "./config.js";
 import { sql, transaction } from "./db.js";
 import { getUser } from "./users.js";
 import { getBotProfile, requireBotEngine } from "./web-bot-profile.js";
@@ -20,15 +21,21 @@ function read(bot: string): Settings {
   const row = sql("SELECT revision,settings FROM web_bot_codex_tools WHERE bot=?").get(bot);
   return row ? { ...JSON.parse(String(row.settings)), revision: Number(row.revision) } : { ...defaults };
 }
-function directory(value: unknown): string {
+function resolveDirectory(value: unknown): string {
   if (typeof value !== "string" || !path.isAbsolute(value) || value.length > 4096)
-    throw new WebBotError(400, "请填写服务器上已有目录的绝对路径。");
-  let real;
+    throw new WebBotError(400, "请选择服务器上已有的文件夹。");
   try {
-    real = fs.realpathSync(value);
+    const real = fs.realpathSync(value);
     if (!fs.statSync(real).isDirectory()) throw new Error();
+    return real;
   } catch { throw new WebBotError(400, "目录不存在或服务无法访问。"); }
-  if (real === path.parse(real).root || /[*?\[\]{}\x00-\x1f]/.test(real))
+}
+function selectableDirectory(real: string): boolean {
+  return real !== path.parse(real).root && !/[*?\[\]{}\x00-\x1f]/.test(real);
+}
+function directory(value: unknown): string {
+  const real = resolveDirectory(value);
+  if (!selectableDirectory(real))
     throw new WebBotError(400, "请选择具体的目录，路径不能含有通配符。");
   return real;
 }
@@ -36,6 +43,44 @@ function directory(value: unknown): string {
 export function botCodexSettings(user: string, bot: string) {
   requireOwner(user, bot);
   return getBotProfile(user, bot).engine === "codex" ? read(bot) : null;
+}
+
+function requireDirectoryAccess(user: string, bot: string) {
+  requireOwner(user, bot);
+  if (getUser(user)?.role !== "admin") throw new WebBotError(403, "本机工具需要管理员授权。");
+  if (getBotProfile(user, bot).engine !== "codex") throw new WebBotError(409, "请先在 Bot 资料中选择 Codex 引擎。");
+  requireBotEngine(user, "codex");
+}
+
+export async function listBotCodexDirectories(user: string, bot: string, target: string, offset: number) {
+  requireDirectoryAccess(user, bot);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new WebBotError(400, "目录页码无效。");
+  let current: string;
+  try {
+    current = resolveDirectory(target || config().workspaceRoot);
+  } catch (error) {
+    if (target) throw error;
+    current = resolveDirectory(path.parse(config().workspaceRoot).root);
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(current, { withFileTypes: true });
+  } catch {
+    throw new WebBotError(400, "无法读取此目录。");
+  }
+  const dirs: { name: string; path: string }[] = [];
+  for (const entry of entries) {
+    const child = path.join(current, entry.name);
+    const isDir = entry.isDirectory() || (entry.isSymbolicLink() &&
+      (await fs.promises.stat(child).catch(() => null))?.isDirectory());
+    if (isDir) dirs.push({ name: entry.name, path: child });
+  }
+  requireDirectoryAccess(user, bot);
+  dirs.sort((a, b) => a.name.localeCompare(b.name));
+  const end = offset + 100;
+  const parent = path.dirname(current);
+  return { path: current, parent: parent === current ? null : parent, selectable: selectableDirectory(current),
+    dirs: dirs.slice(offset, end), nextOffset: end < dirs.length ? end : null };
 }
 
 export function saveBotCodexSettings(user: string, bot: string, input: Record<string, unknown>) {

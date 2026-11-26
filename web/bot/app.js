@@ -15,7 +15,7 @@ import {
 import { releaseLocalPushDevices } from "./push-session.js";
 import { bindComposerActions } from "./composer-actions.js";
 import { newReminder } from "./reminder-form.js";
-import { action, chooseName, closePanel, divider, note, panel, panelError, run } from "./panel.js";
+import { action, chooseName, closePanel, divider, note, panel, panelError, run, settingsPanel } from "./panel.js";
 import { replyText } from "./format.js";
 import { confirmBotChange, manageBot, openArchives } from "./lifecycle.js";
 import { openExtensions } from "./extensions.js";
@@ -253,11 +253,11 @@ async function boot() {
     gate.hidden = true;
     chat.hidden = false;
     const startInList = compact.matches && !queryThread();
+    const params = new URLSearchParams(location.search);
     const opening = openThread(
       bot || fallback,
       bot ? desired : fallback.privateThreadId,
-      bot ? new URLSearchParams(location.search).get("message") : null,
-      bot ? new URLSearchParams(location.search).get("delegation") : null,
+      bot ? { message: params.get("message"), delegationId: params.get("delegation"), moveFocus: false } : undefined,
     );
     if (startInList) showConversationList();
     await opening;
@@ -303,7 +303,7 @@ function clearPhoto() {
   fileInput.value = "";
   paintPhoto();
 }
-async function openThread(bot, thread, message, delegationId) {
+async function openThread(bot, thread, { message, delegationId, moveFocus = true } = {}) {
   closeComposerActions();
   if (!bot || !thread) return;
   chat.dataset.pane = "thread";
@@ -362,7 +362,7 @@ async function openThread(bot, thread, message, delegationId) {
   if (state.thread !== thread) return;
   if (delegationId) {
     await openDelegationNotice(thread, delegationId);
-  } else if (message) await focusMessage(thread, message);
+  } else if (message) await focusMessage(thread, message, moveFocus);
 }
 function applyProfile(profile) {
   const bot = state.bot;
@@ -470,12 +470,14 @@ function schedulePoll() {
 function nearBottom() {
   return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
 }
-async function focusMessage(thread, message) {
+async function focusMessage(thread, message, moveFocus = true) {
   if (!/^\d+$/.test(String(message)) || !Number.isSafeInteger(Number(message))) return;
   const line = list.querySelector('[data-id="' + message + '"]');
   if (line) {
-    line.tabIndex = -1;
-    line.focus({ preventScroll: true });
+    if (moveFocus) {
+      line.tabIndex = -1;
+      line.focus({ preventScroll: true });
+    }
     line.scrollIntoView({ block: "center" });
   } else {
     try {
@@ -730,16 +732,16 @@ function showConversationList(focus = false) {
   closeComposerActions();
   closePanel();
   cleanURL();
-  if (focus) (byId("rail-list").querySelector('[aria-current="true"]') || byId("rail-search")).focus({preventScroll:true});
+  if (focus && compact.matches) byId("rail-title").focus({ preventScroll: true });
 }
-function chooseBot(bot, id) {
+function chooseBot(bot, id, keyboard) {
   if (listVisible()) history.pushState({ fromBotList: true }, "", location.href);
   if (state.thread === id) {
     chat.dataset.pane = "thread";
     cleanURL(id);
     scheduleRead();
   } else openThread(bot, id);
-  if (compact.matches) byId("choose").focus({preventScroll:true});
+  if (keyboard && compact.matches) scroll.focus({ preventScroll: true });
 }
 function previewTime(stamp) {
   const date = new Date(stamp), today = new Date();
@@ -759,7 +761,7 @@ function renderRail() {
         preview && h("time", { datetime: new Date(preview.createdAt).toISOString() }, previewTime(preview.createdAt)));
       const content = h("span", { class: "choice-name" }, heading,
         preview?.text && h("span", { class: "choice-preview" }, preview.text), h("small", {}, scope));
-      const row = button(content, () => chooseBot(bot,id), "bot-choice");
+      const row = button(content, event => chooseBot(bot, id, event.detail === 0), "bot-choice");
       row.prepend(avatar(bot));
       row.dataset.thread = id;
       if (id === state.thread) row.setAttribute("aria-current","true");
@@ -837,19 +839,26 @@ async function followups(thread, bot, startNew = false, initialId) {
 function setting(label, symbol, handler) {
   const control = action(h("span", {}, label), handler, "setting");
   control.setAttribute("aria-label", label);
-  control.prepend(icon(symbol));
+  const glyph = icon(symbol);
+  glyph.setAttribute("aria-hidden", "true");
+  control.prepend(glyph);
   control.append(h("span", { class: "disclose", "aria-hidden": "true" }, "›"));
   return control;
+}
+function settingsGroup(name, ...items) {
+  return h("section", { class: "settings-group" }, h("h3", {}, name), ...items);
 }
 function settings() {
   const bot = freshBot();
   if (!bot) return;
   const owner = bot.ownerId === state.user.id, thread = state.thread;
-  const controls = [
+  const configuration = [
     setting("Bot 资料", "spark", () => openProfile({ bot, owner, back: settings, onChange: (profile) => {
       if (state.bot?.id === bot.id) applyProfile(profile);
     } })),
     owner && setting("技能与工具", "gear", () => openExtensions(bot, settings)),
+  ];
+  const controls = [
     setting("待我确认", "outline", myDecisions),
     setting("记住的事", "bookmark", () => openMemories(memoryContext())),
     can("followups") && setting("跟进的事", "outline", () => followups(thread, bot)),
@@ -878,10 +887,16 @@ function settings() {
   const otherScope = bot.sharedThreadId && (thread === bot.sharedThreadId ?
     setting("打开我的私聊", "chat", () => openThread(bot, bot.privateThreadId)) :
     setting("打开成员共享对话", "chat", () => openThread(bot, bot.sharedThreadId)));
-  panel("对话设置", h("div", { class: "contact-detail" }, avatar(bot),
-      h("strong", {}, bot.name), h("small", {}, conversationScope(bot,thread))),
-    otherScope, h("div", { class: "settings-group" }, ...controls),
-    h("div", { class: "settings-group" }, ...manage), setting("最近通知", "chat", inbox), setting("账号和通知", "gear", accountPanel));
+  settingsPanel(h("div", { class: "settings-layout" },
+    h("div", { class: "settings-summary" },
+      h("div", { class: "contact-detail" }, avatar(bot),
+        h("strong", {}, bot.name), h("small", {}, conversationScope(bot, thread))),
+      otherScope),
+    h("div", { class: "settings-main" },
+      settingsGroup("Bot 配置", ...configuration),
+      settingsGroup("协作与记录", ...controls),
+      settingsGroup("成员与管理", ...manage)),
+    settingsGroup("通知", setting("最近通知", "chat", inbox), setting("账号和通知", "gear", accountPanel))), settings);
 }
 async function openDelegationNotice(thread, id) {
   const ctx = delegationContext(thread);
@@ -900,7 +915,7 @@ async function inbox() {
   return openBotInbox(async (id, message, delegationId) => {
     await refreshBots();
     const target = state.bots.find((b) => b.privateThreadId === id || b.sharedThreadId === id);
-    if (target) await openThread(target, id, message, delegationId);
+    if (target) await openThread(target, id, { message, delegationId });
     else status("这段对话已不可访问。");
   });
 }
@@ -1259,7 +1274,7 @@ if ("serviceWorker" in navigator) {
     refreshBots().then(async () => {
       const bot = state.bots.find(b => b.privateThreadId === thread || b.sharedThreadId === thread);
       if (!bot) { status("这段对话已不可访问。"); return; }
-      await openThread(bot, thread, message, delegationId);
+      await openThread(bot, thread, { message, delegationId });
     }).catch(async err => {
       if (err.status === 401) { setGate(); await boot(); }
       else status(err.message);

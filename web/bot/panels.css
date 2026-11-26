@@ -2,7 +2,7 @@
 #panel {
   --sheet-gutter: 26px;
   box-sizing: border-box;
-  width: min(460px, calc(100% - 40px));
+  width: min(540px, calc(100% - 40px));
   max-width: none;
   max-height: min(84vh, 770px);
   max-height: min(84dvh, 770px);
@@ -13,19 +13,25 @@
   color: var(--ink);
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 20px;
-  box-shadow: 0 16px 64px rgb(13 23 42 / 16%);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
 }
+
+#panel.editor-panel { width: min(640px, calc(100% - 40px)); }
+#panel.settings-panel { width: min(920px, calc(100% - 40px)); }
 
 #panel[open] {
   display: flex;
   flex-direction: column;
 }
 
+/* Focus starts on the dialog so no control is highlighted on open. */
+#panel:focus { outline: none; }
+
 #panel::backdrop {
   overflow: hidden;
   overscroll-behavior: contain;
-  background: rgb(17 24 39 / 32%);
+  background: var(--scrim);
 }
 
 #panel .sheet-head {
@@ -34,14 +40,14 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 20px calc(var(--sheet-gutter) - 6px) 15px var(--sheet-gutter);
-  border-bottom: 1px solid var(--line);
+  padding: 16px var(--sheet-gutter);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 #panel-title {
   margin: 0;
-  font-size: 1.18rem;
-  line-height: 1.45;
+  font-size: 1.25rem;
+  line-height: 1.35;
   font-weight: 650;
   letter-spacing: -.025em;
   overflow-wrap: anywhere;
@@ -53,10 +59,23 @@
   height: 36px;
   color: var(--muted);
   background: var(--subtle);
-  border-radius: 50%;
+  border-radius: var(--radius);
 }
 
 #panel-close svg { width: 17px; height: 17px; }
+
+.sheet-back {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 2px 6px;
+  margin-inline-start: -6px;
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: .8125rem;
+}
+.sheet-back svg { width: 14px; height: 14px; }
 
 #panel-body {
   display: flex;
@@ -66,7 +85,6 @@
   padding: 20px var(--sheet-gutter) 24px;
   overflow: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
   scroll-padding-block: 15px;
   overflow-wrap: anywhere;
 }
@@ -88,19 +106,24 @@
 
 #panel .help { text-wrap: pretty; }
 
-#panel .sheet-form,
 #panel .presets {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
+  display: grid;
+  gap: 8px;
 }
 
-#panel .presets { gap: 8px; }
 #panel .caption { font-weight: 550; }
-#panel .field { min-width: 0; }
-#panel .field :is(input, select, textarea) { max-width: 100%; }
-#panel .field textarea { resize: vertical; }
 #panel .primary, #panel .secondary { white-space: normal; }
+
+#panel-actions {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px var(--sheet-gutter);
+  border-top: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+#panel-actions button { min-width: 84px; }
 
 #panel .choice-name,
 #panel .record-summary {
@@ -121,11 +144,28 @@
 #panel .bot-choice .choice-name { overflow-wrap: anywhere; }
 #panel .handoff-card .record-summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-#panel .settings-group {
+.settings-layout,
+.settings-summary,
+.settings-main {
   display: grid;
-  padding-block-end: 8px;
-  border-bottom: 1px solid var(--line);
+  gap: 14px;
+  align-content: start;
+  min-width: 0;
 }
+
+.settings-group, .contact-detail {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--card-radius);
+  background: var(--panel);
+}
+.settings-group { align-self: start; }
+.settings-group h3 { padding: 4px 10px 6px; color: var(--muted); font-size: .8125rem; font-weight: 650; }
+.contact-detail { display: grid; justify-items: start; gap: 3px; padding: 18px; }
+.contact-detail .bot-avatar { width: 48px; height: 48px; margin-block-end: 6px; font-size: 1.25rem; }
+.contact-detail strong { font-size: 1.125rem; overflow-wrap: anywhere; }
+.contact-detail small { color: var(--muted); }
 
 #panel .row,
 #panel .bot-choice,
@@ -138,7 +178,7 @@
   gap: 12px;
   padding: 9px 10px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--radius);
   color: var(--ink);
   background: transparent;
   text-align: start;
@@ -150,7 +190,8 @@
 #panel .row > :first-child { min-width: 0; }
 #panel .row small { text-align: end; }
 #panel .bot-choice, #panel .handoff-card { min-height: 55px; }
-#panel .setting > svg, #panel .record-icon { color: var(--muted); }
+#panel .setting > [aria-hidden]:first-child { flex: none; color: var(--accent); }
+#panel .record-icon { color: var(--accent); }
 #panel .setting svg, #panel .record-icon svg { width: 18px; height: 18px; }
 #panel .disclose { margin-inline-start: auto; color: var(--muted); font-size: 1.12rem; }
 #panel .danger { color: var(--danger); }
@@ -195,22 +236,35 @@
 #panel .archive-sections .chip[aria-pressed=true] { color: var(--ink); background: var(--panel); box-shadow: 0 1px 3px rgb(15 23 42 / 14%); font-weight: 620; }
 #panel .empty-records { display: grid; justify-items: center; gap: 12px; padding: 25px 10px; text-align: center; }
 
-#panel .advanced { border-block: 1px solid var(--line); }
+#panel .advanced { padding-inline: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--subtle); }
 #panel .advanced[open] { padding-block-end: 12px; }
-#panel .advanced summary { min-height: 44px; padding-block: 12px; cursor: pointer; font-size: .9rem; font-weight: 565; }
+#panel .advanced summary { min-height: 44px; padding-block: 12px; cursor: pointer; font-size: .9rem; font-weight: 600; }
+#panel .advanced .field-pair { padding-block: 4px 8px; }
 #panel .advanced summary::marker, #panel .archive-photo summary::marker { color: var(--muted); }
 #panel .checks { min-inline-size: 0; margin: 16px 0 0; padding: 0; border: 0; }
 #panel .checks legend { margin-bottom: 3px; color: var(--muted); font-size: .8125rem; }
-#panel .check-row { display: flex; align-items: center; justify-content: space-between; min-height: 40px; gap: 9px; font-size: .9rem; cursor: pointer; }
-#panel .check-row input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent); }
+#panel .check-row { display: flex; align-items: center; justify-content: space-between; min-height: 44px; gap: 12px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--field-bg); font-size: .9rem; cursor: pointer; }
+#panel .check-row + .check-row { margin-block-start: 6px; }
+#panel .check-row input { flex: none; width: 18px; height: 18px; margin: 0; }
+#panel .folder-picker, #panel .folder-browser { display: grid; gap: 8px; min-width: 0; margin-block: 8px; }
+#panel .folder-label { font-size: .875rem; font-weight: 600; }
+#panel .folder-path { color: var(--muted); font-size: .85rem; overflow-wrap: anywhere; }
+#panel .folder-browser { padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--subtle); }
+#panel .folder-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#panel .folder-picker > button, #panel .folder-browser > button { justify-self: start; }
+#panel .folder-list { max-height: 14rem; overflow: auto; margin: 0; padding: 3px; list-style: none; background: var(--panel); border-radius: var(--radius); }
+#panel .folder-list:empty { display: none; }
+#panel .folder-name { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+#panel .folder-name > span { flex: none; color: var(--accent); }
 #panel .notification-message { padding: 0; list-style: none; }
 #panel-body > ol:not(.notification-message) { padding-inline-start: 1.4em; }
 #panel-body > ol:not(.notification-message) li + li { margin-block-start: 12px; }
 
-#panel-error { flex: none; margin: 0; padding: 10px var(--sheet-gutter) 16px; border-top: 1px solid var(--line); color: var(--danger); font-size: .85rem; }
+#panel-error { flex: none; margin: 0; padding: 10px var(--sheet-gutter); border-top: 1px solid var(--line-soft); background: var(--danger-soft); color: var(--danger); font-size: .85rem; overflow-wrap: anywhere; }
 
 @media (hover: hover) {
   #panel button:is(.setting, .bot-choice, .row, .handoff-card, .text-action):enabled:hover,
+  .sheet-back:hover,
   #panel-close:enabled:hover { color: var(--ink); background: var(--subtle); }
   #panel button.danger:enabled:hover { color: var(--danger); }
 }
@@ -220,8 +274,32 @@
   #panel :is(.chip, .text-action, .check-row, .archive-photo summary) { min-height: 44px; }
 }
 
+@media (min-width: 760px) {
+  .sheet-back { display: inline-flex; }
+  .sheet-form > :is(.primary, .secondary) { justify-self: end; }
+  .field-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-panel #panel-body { background: var(--rail); }
+  .settings-layout {
+    grid-template-columns: minmax(180px, 1fr) minmax(0, 3fr);
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "summary main" "notifications main";
+    gap: 18px;
+  }
+  .settings-summary { grid-area: summary; }
+  .settings-layout > .settings-group { grid-area: notifications; }
+  .settings-main { grid-area: main; }
+  .settings-main { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-main .settings-group:first-child {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 6px;
+  }
+  .settings-main .settings-group:first-child h3 { grid-column: 1 / -1; }
+}
+
 @media (max-width: 759px) {
-  #panel {
+  #panel, #panel.editor-panel, #panel.settings-panel {
     --sheet-gutter: 20px;
     inset: auto 0 var(--keyboard-inset, 0px);
     width: 100%;
@@ -239,7 +317,16 @@
     gap: 12px;
     padding: 18px max(var(--sheet-gutter), env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(var(--sheet-gutter), env(safe-area-inset-left));
   }
-  #panel-error { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  #panel-actions {
+    padding-inline: max(var(--sheet-gutter), env(safe-area-inset-left)) max(var(--sheet-gutter), env(safe-area-inset-right));
+    padding-block-end: max(12px, env(safe-area-inset-bottom));
+  }
+  #panel-actions button { flex: 1; min-width: 0; }
+  #panel-error {
+    padding-inline: max(var(--sheet-gutter), env(safe-area-inset-left)) max(var(--sheet-gutter), env(safe-area-inset-right));
+    padding-block-end: max(12px, env(safe-area-inset-bottom));
+  }
+  #panel-error:has(+ #panel-actions:not([hidden])) { padding-block-end: 10px; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -254,18 +341,6 @@
 }
 
 /* The composer keeps quick actions next to the conversation. */
-#compose, .welcome #compose {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.input-row, .welcome .input-row {
-  display: flex;
-  align-items: end;
-  gap: 8px;
-}
 #attach {
   width: 44px;
   height: 44px;
@@ -281,14 +356,13 @@
   align-items: end;
   gap: 3px;
   padding: 2px 3px 2px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-border);
   border-radius: 23px;
-  background: var(--bg);
+  background: var(--field-bg);
 }
-.compose-field:focus-within { border-color: var(--accent); }
-.compose-field #message, .welcome .compose-field #message { flex: 1; width: 0; min-height: 38px; padding: 8px 1px; }
-.compose-field #send { min-width: 36px; min-height: 36px; width: 36px; height: 36px; border-radius: 50%; color: var(--accent-ink); }
-.compose-field #send:disabled { visibility: hidden; }
+.compose-field:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (forced-colors: active) { .compose-field:focus-within { outline-color: Highlight; } }
+.compose-field #send { min-width: 38px; min-height: 38px; width: 38px; height: 38px; border-radius: 50%; }
 .compose-field #send svg { width: 21px; height: 21px; }
 #compose-actions {
   position: fixed;
@@ -301,10 +375,10 @@
   overflow: auto;
   padding: 5px;
   border: 1px solid var(--line);
-  border-radius: 17px;
+  border-radius: var(--card-radius);
   color: var(--ink);
   background: var(--panel);
-  box-shadow: 0 6px 28px rgb(18 21 28 / 14%);
+  box-shadow: var(--shadow);
 }
 @supports (position-anchor: --composer-add) and (bottom: calc(anchor(top) + 8px)) {
   #attach { anchor-name: --composer-add; }
@@ -318,43 +392,9 @@
   width: 100%;
   min-height: 46px;
   padding: 7px 12px;
-  border-radius: 12px;
+  border-radius: var(--radius);
   text-align: start;
 }
 #compose-actions button:focus-visible { outline-offset: -2px; }
 #compose-actions button svg { width: 21px; height: 21px; color: var(--muted); }
 @media (hover:hover) { #compose-actions button:hover { background: var(--subtle); } }
-
-#panel.form-panel { --sheet-gutter: 22px; }
-@media (min-width: 760px) { #panel.form-panel { width: min(420px, calc(100% - 32px)); } }
-#panel.form-panel .sheet-head {
-  display: grid;
-  grid-template-columns: minmax(0,1fr) auto minmax(0,1fr);
-  min-height: 62px;
-  gap: 5px;
-  padding: 8px max(15px,env(safe-area-inset-right)) 8px max(15px,env(safe-area-inset-left));
-}
-#panel.form-panel #panel-title { text-align: center; font-size: 1.04rem; }
-#panel.form-panel .sheet-head button { min-width: 44px; min-height: 44px; padding: 4px; color: var(--accent); }
-#panel .sheet-cancel { justify-self: start; }
-#panel .sheet-confirm { justify-self: end; font-weight: 600; }
-#panel .sheet-confirm:disabled { opacity: .65; color: var(--muted); }
-#reminder-text {
-  width: 100%;
-  min-height: 52px;
-  padding: 5px 0 12px;
-  border: 0;
-  border-radius: 0;
-  color: var(--ink);
-  background: transparent;
-  font-size: 1.18rem;
-}
-#reminder-text:focus-visible { outline-offset: 2px; }
-.date-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; min-height: 60px; border-top: 1px solid var(--line); }
-.date-control { position: relative; display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; }
-.date-value { padding: 6px 10px; border-radius: 8px; background: var(--subtle); font-variant-numeric: tabular-nums; font-size: .92rem; }
-.date-control input { position: absolute; inset: 0; min-width: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-.date-control input:focus-visible { position: relative; min-height: 44px; padding: 4px; opacity: 1; color: var(--ink); background: var(--subtle); font-size: 1rem; }
-.date-control:has(input:focus-visible) .date-value { display: none; }
-.reminder-form .help { margin-top: 8px; }
-@media (max-height: 450px) { #panel.form-panel .sheet-head { min-height: 50px; padding-block: 3px; } }

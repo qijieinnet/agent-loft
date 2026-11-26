@@ -2,7 +2,7 @@ import { saveClaudeSettings } from "../../core/web-bot-claude-tools.js";
 import { nativeCatalog } from "../../core/web-bot-native-catalog.js";
 import { botSkillSources, importBotSkill } from "../../core/web-bot-skill-files.js";
 import { callImage, decideToolCall, threadCalls } from "../../core/web-bot-calls.js";
-import { saveBotCodexSettings } from "../../core/web-bot-codex-tools.js";
+import { listBotCodexDirectories, saveBotCodexSettings } from "../../core/web-bot-codex-tools.js";
 import { discoverBotTools, listBotExtensions, removeBotExtension, saveBotExtension, saveToolGrants } from "../../core/web-bot-extensions.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { acceptInvite, createBot, createInvite, getBot, getBotMessage, getBotThread, listBots, listMessages, removeMember, deleteOwnedBot, leaveBot, transferBot, renameBot, startTurn, stopSharing, WebBotError, type BotImage } from "../../core/web-bots.js";
@@ -111,6 +111,12 @@ export async function handleBotsApi(req: IncomingMessage, res: ServerResponse, u
     }
     const claudeTools = /^\/api\/bots\/([\w-]+)\/claude-tools$/.exec(p);
     if (claudeTools && method === "PATCH") return sendJson(res, 200, saveClaudeSettings(user.id, claudeTools[1]!, await bodyOf(req, 4096)));
+    const codexDirectories = /^\/api\/bots\/([\w-]+)\/codex-tools\/directories$/.exec(p);
+    if (codexDirectories) {
+      if (method !== "GET") throw new HttpError(405, "请求方式无效。");
+      return sendJson(res, 200, await listBotCodexDirectories(user.id, codexDirectories[1]!,
+        url.searchParams.get("path") || "", Number(url.searchParams.get("offset"))));
+    }
     const codexTools = /^\/api\/bots\/([\w-]+)\/codex-tools$/.exec(p);
     if (codexTools) {
       const bot = codexTools[1]!;

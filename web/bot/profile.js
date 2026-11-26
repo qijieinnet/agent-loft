@@ -75,7 +75,8 @@ export async function openProfile({ bot, owner, onChange, back }) {
   }
   engine.addEventListener("change", () => { resetModels(); loadModels(); });
   const advanced = h("details", { class: "advanced" }, h("summary", {}, "引擎、模型与能力"),
-    field("使用的引擎", engine), field("使用的模型", model), modelStatus, h("fieldset", { class: "checks" }, h("legend", {}, "允许这个 Bot"), ...checks));
+    h("div", { class: "field-pair" }, field("使用的引擎", engine), field("使用的模型", model)),
+    modelStatus, h("fieldset", { class: "checks" }, h("legend", {}, "允许这个 Bot"), ...checks));
   modelStatus.hidden = true;
   advanced.addEventListener("toggle", () => { if (advanced.open) loadModels(); });
   const save = h("button", { type: "submit", class: "primary" }, "保存资料");
@@ -109,7 +110,7 @@ export async function openProfile({ bot, owner, onChange, back }) {
 export function memoryEditor(ctx, initial = "", afterSave) {
   const { shared, owner } = ctx;
   const suggest = shared && !owner;
-  const text = h("textarea", { id: "memory-text", maxlength: 420, required: true, rows: 4, autofocus: true,
+  const text = h("textarea", { id: "memory-text", maxlength: 420, required: true, rows: 4,
     placeholder: "想让它下次也记得什么？" }, initial);
   const save = h("button", { type: "submit", class: "primary" }, suggest ? "提交给所有者" : shared ? "保存共享记忆" : "保存私人记忆");
   const scope = shared

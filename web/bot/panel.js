@@ -2,10 +2,15 @@ import { byId, field, h, icon, button } from "./client.js";
 
 const dialog = byId("panel");
 let revision = 0;
+let returnToSettings;
 const title = byId("panel-title"),
   body = byId("panel-body"),
-  error = byId("panel-error");
-const close = byId("panel-close"), head = title.parentElement;
+  error = byId("panel-error"),
+  actions = byId("panel-actions");
+const close = byId("panel-close");
+const back = button("全部设置", () => returnToSettings?.(), "sheet-back");
+back.prepend(icon("back"));
+title.before(back);
 close.append(icon("x"));
 close.onclick = () => dialog.close();
 function syncViewport() {
@@ -35,30 +40,36 @@ export function currentPanel() {
 }
 export const note = (text) => h("p", { class: "help" }, text);
 export const divider = () => h("hr", { class: "divider" });
-function showPanel(name, content, formActions) {
+function showPanel(name, content, { formActions, overview } = {}) {
   revision++;
-  dialog.classList.toggle("form-panel", !!formActions);
-  head.replaceChildren(...(formActions ? [formActions.cancel, title, formActions.submit] : [title, close]));
+  if (overview || !dialog.open) returnToSettings = overview;
+  const nodes = content.filter(Boolean);
+  dialog.classList.toggle("settings-panel", !!overview);
+  dialog.classList.toggle("editor-panel", nodes.some(node => node.matches?.("form, .field")));
+  back.hidden = !returnToSettings || !!overview;
+  actions.replaceChildren(...(formActions || []));
+  actions.hidden = !formActions;
   title.textContent = name;
-  body.replaceChildren(...content.filter(Boolean));
+  body.replaceChildren(...nodes);
   error.textContent = "";
   error.hidden = true;
   syncViewport();
   if (!dialog.open) dialog.showModal();
-  else (formActions?.cancel || body.querySelector("[autofocus]") || close).focus();
+  if (document.activeElement !== dialog) dialog.focus({ preventScroll: true });
   body.scrollTop = 0;
   return currentPanel();
 }
 export function panel(name, ...content) {
   return showPanel(name, content);
 }
+export function settingsPanel(content, overview) {
+  return showPanel("对话设置", [content], { overview });
+}
 export function formPanel(name, form, submit, onCancel = closePanel) {
   form.id = "bot-panel-form";
   submit.setAttribute("form", form.id);
-  submit.className = "sheet-confirm";
-  const cancel = button("取消", onCancel, "sheet-cancel");
-  cancel.autofocus = true;
-  return showPanel(name, [form], { cancel, submit });
+  submit.classList.add("primary");
+  return showPanel(name, [form], { formActions: [button("取消", onCancel, "secondary"), submit] });
 }
 export function panelError(message) {
   error.textContent = message;

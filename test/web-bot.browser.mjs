@@ -1,7 +1,7 @@
 // node --import tsx --test test/web-bot.browser.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -76,9 +76,12 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   const { port } = reservation.address();
   await new Promise((resolve) => reservation.close(resolve));
   const cfg = config();
+  cfg.workspaceRoot = home;
   cfg.web.host = "127.0.0.1";
   cfg.web.port = port;
   saveConfig(cfg);
+  await mkdir(path.join(home, "Bot 工作文件夹"));
+  const workDirectory = await realpath(path.join(home, "Bot 工作文件夹"));
   const setupToken = ensureSetupToken();
   stopService = stopWeb;
   await startWeb();
@@ -106,6 +109,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   };
   await owner.goto(base + "/bot/");
   await owner.getByLabel("启动日志中的设置码").waitFor();
+  assert.equal(await owner.evaluate(() => document.activeElement === document.body), true);
   await shot(owner, "bot-mobile-setup");
   await owner.getByLabel("启动日志中的设置码").fill(setupToken);
   await owner.getByLabel("用户名", { exact: true }).fill("alice");
@@ -168,6 +172,9 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   desk.on("pageerror", (error) => errors.push(error.message));
   await desk.goto(privateURL);
   await desk.getByRole("heading", { name: "有什么想交给我？" }).waitFor();
+  for (const page of [owner, desk]) {
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+  }
   async function shot(page, filename) {
     const overflows = await page.evaluate(() =>
       [...document.querySelectorAll("html, #gate, #rail, #scroll, #compose, #compose-actions, dialog[open], dialog[open] #panel-body")]
@@ -213,21 +220,51 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     [document.documentElement, document.body, document.getElementById("chat"), document.getElementById("scroll")]
       .map(el => getComputedStyle(el).backgroundColor));
   const lightColors = await surfaceColors(owner);
+  const statusColors = page => page.evaluate(() => {
+    const theme = [...document.querySelectorAll('meta[name="theme-color"]')]
+      .find(meta => matchMedia(meta.media).matches).content;
+    const tint = document.createElement("span");
+    tint.style.color = theme;
+    return [getComputedStyle(document.body).backgroundColor, getComputedStyle(document.querySelector(".bar")).backgroundColor, tint.style.color];
+  });
+  const verifyStatusColors = async page => {
+    const [canvas, header, theme] = await statusColors(page);
+    assert.equal(canvas, header);
+    assert.equal(header, theme);
+  };
+  await verifyStatusColors(owner);
   await checkComposer(desk);
   const settingsButton = desk.getByRole("button", { name: "对话设置", exact: true });
   await settingsButton.focus();
   await desk.keyboard.press("Enter");
-  await desk.getByRole("dialog").waitFor();
-  assert.equal(await desk.evaluate(() => !!document.activeElement?.closest("dialog[open]")), true);
+  const settingsDialog = desk.getByRole("dialog", { name: "对话设置" });
+  await settingsDialog.waitFor();
+  assert.equal(await settingsDialog.evaluate(el => document.activeElement === el), true);
+  assert.equal(await settingsDialog.evaluate(el => getComputedStyle(el).outlineStyle), "none");
+  await desk.keyboard.press("Tab");
+  assert.equal(await settingsDialog.getByRole("button", { name: "关闭", exact: true })
+    .evaluate(el => el === document.activeElement && getComputedStyle(el).outlineStyle === "solid"), true);
+  const summary = await settingsDialog.locator(".settings-summary").boundingBox();
+  const groups = await settingsDialog.locator(".settings-main").boundingBox();
+  assert.ok(summary.x + summary.width < groups.x && summary.y === groups.y);
+  await shot(desk, "bot-desktop-settings");
+  await open(desk, "Bot 资料");
+  const editor = desk.getByRole("dialog", { name: "Bot 资料" });
+  await editor.waitFor();
+  assert.equal(await editor.evaluate(el => document.activeElement === el), true);
+  await open(desk, "全部设置");
+  await settingsDialog.waitFor();
   await desk.keyboard.press("Escape");
   assert.equal(await settingsButton.evaluate(el => document.activeElement === el), true);
   await owner.setViewportSize({ width: 320, height: 640 });
   await owner.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   assert.notDeepEqual(await surfaceColors(owner), lightColors, "深浅模式需要切换实际界面底色");
+  await verifyStatusColors(owner);
   await shot(owner, "bot-mobile-dark-welcome");
   await checkComposer(owner);
   await open(owner, "跟进一件事");
   await owner.getByRole("textbox", { name: "事情名称" }).waitFor();
+  assert.equal(await owner.locator("#panel").evaluate(el => document.activeElement === el), true);
   await shot(owner, "bot-mobile-dark-followup");
   await owner.keyboard.press("Escape");
   assert.equal(await owner.locator("dialog").isVisible(), false);
@@ -299,13 +336,27 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
       await open(page, "技能与工具");
       await open(page, "Codex 自带工具");
       await page.getByLabel("联网搜索").selectOption("members");
+      const picker = page.getByRole("group", { name: /服务器工作目录/ });
+      const choose = picker.getByRole("button", { name: "选择文件夹" });
+      assert.equal(await choose.isDisabled(), true);
       await page.getByLabel("执行终端命令").check();
-      await page.getByLabel("服务器工作目录", { exact: false }).fill(home);
+      await open(page, "保存");
+      await page.getByRole("alert").getByText("请先选择服务器工作目录。").waitFor();
+      assert.equal(await choose.evaluate(el => el === document.activeElement), true);
+      await page.keyboard.press("Enter");
+      await open(page, "Bot 工作文件夹");
+      await picker.getByText(workDirectory, { exact: true }).waitFor();
+      await open(page, "上一级");
+      await open(page, "Bot 工作文件夹");
+      await picker.getByText(workDirectory, { exact: true }).waitFor();
+      await open(page, "使用此文件夹");
+      assert.equal(await picker.getByRole("alert").isVisible(), false);
       await open(page, "保存");
       await open(page, "Codex 自带工具");
       assert.equal(await page.getByLabel("联网搜索").inputValue(), "members");
       assert.equal(await page.getByLabel("执行终端命令").isChecked(), true);
       assert.equal(await page.getByLabel("编辑文件").isChecked(), false);
+      await picker.getByText(workDirectory, { exact: true }).waitFor();
       await open(page, "取消");
       await open(page, "返回设置");
       await open(page, "Bot 资料");
@@ -377,15 +428,21 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     assert.ok(Math.abs(triggerBox.x - menuBox.x) <= 3 && gap >= 3 && gap <= 18,
       "添加菜单应紧贴按钮上方 " + JSON.stringify({ size, triggerBox, menuBox }));
     assert.equal(await menu.getByRole("menuitem", {name:"照片"}).isVisible(), true);
+    assert.equal(await trigger.evaluate(el => el === document.activeElement), true);
     await shot(page, "bot-" + size + "-add-menu");
     await page.keyboard.press("Escape");
     await menu.waitFor({state:"hidden"});
     assert.equal(await trigger.evaluate(el => el === document.activeElement), true);
+    await page.keyboard.press("ArrowUp");
+    await menu.waitFor();
+    await page.waitForFunction(() => document.activeElement.id === "choose-reminder");
+    await page.keyboard.press("Escape");
+    await menu.waitFor({state:"hidden"});
     await trigger.click();
     await menu.getByRole("menuitem", {name:"提醒"}).click();
     const panel = page.getByRole("dialog", {name:"新提醒"});
     await panel.waitFor();
-    assert.equal(await page.evaluate(() => document.activeElement.matches("input,textarea")), false);
+    assert.equal(await panel.evaluate(el => document.activeElement === el), true);
     await panel.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
     const bounds = await panel.boundingBox(), {width,height} = page.viewportSize();
     const geometry = JSON.stringify({bounds, width, height});
@@ -569,7 +626,9 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await open(owner, "返回");
   await open(owner, "管理 Bot");
   await open(owner, "删除这个 Bot");
-  assert.equal(await dialog.getByRole("button", { name: "返回", exact: true }).evaluate(el => el === document.activeElement), true);
+  assert.equal(await dialog.evaluate(el => el === document.activeElement), true);
+  await owner.keyboard.press("Enter");
+  assert.equal(await dialog.getByRole("button", { name: "永久删除 Bot", exact: true }).isVisible(), true);
   await open(owner, "永久删除 Bot");
   await owner.getByRole("heading", { name: "有什么想交给我？" }).waitFor();
   assert.notEqual(owner.url(), privateURL);

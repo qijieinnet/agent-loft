@@ -294,17 +294,28 @@ test("Bot 直接绑定引擎，旧资料迁移、逐 Bot 路由、共享授权�
 });
 
 test("Codex 自带工具按 Bot 和对话授权，切换引擎、撤销与移交后生效", async () => {
-  const { botCodexTurn } = await import("../src/core/web-bot-codex-tools.js");
+  const { botCodexTurn, listBotCodexDirectories } = await import("../src/core/web-bot-codex-tools.js");
   const bot = createBot(owner.id, "本机工具"), other = createBot(owner.id, "另一个 Codex");
   const settings = "/api/bots/" + bot.id + "/codex-tools";
+  const directoryListing = (folder: string) => settings + "/directories?path=" + encodeURIComponent(folder);
   const payload = { revision: 0, webSearch: "members", terminal: true, edit: false, directory: home };
   const extensions = "/api/bots/" + bot.id + "/extensions";
   assert.equal((await request(owner, "GET", extensions)).codex, null);
   await assert.rejects(request(owner, "PATCH", settings, payload), { status: 409 });
+  await assert.rejects(request(owner, "GET", directoryListing(home)), { status: 409 });
   await updateBotProfile(owner.id, bot.id, { revision: 0, engine: "codex" });
   assert.equal((await request(owner, "GET", extensions)).codex.webSearch, "off");
   acceptInvite(lin.id, createInvite(owner.id, bot.id).token);
   await assert.rejects(request(lin, "PATCH", settings, payload), { status: 404 });
+  await assert.rejects(request(lin, "GET", directoryListing(home)), { status: 404 });
+  const folder = path.join(home, "工作文件夹");
+  fs.mkdirSync(folder);
+  fs.writeFileSync(path.join(home, "普通文件.txt"), "");
+  const directories: Awaited<ReturnType<typeof listBotCodexDirectories>> = await request(owner, "GET", directoryListing(home));
+  assert.equal(directories.selectable, true);
+  assert.deepEqual(directories.dirs.find(entry => entry.name === "工作文件夹"), { name: "工作文件夹", path: fs.realpathSync(folder) });
+  assert.equal(directories.dirs.some(entry => entry.name === "普通文件.txt"), false);
+  assert.equal((await request(owner, "GET", directoryListing(path.parse(home).root))).selectable, false);
   await assert.rejects(request(owner, "PATCH", settings, { ...payload, directory: "/" }), { status: 400 });
   await request(owner, "PATCH", settings, payload);
   const active = botCodexTurn(owner.id, bot.id, false);
@@ -328,6 +339,7 @@ test("Codex 自带工具按 Bot 和对话授权，切换引擎、撤销与移交
   transferBot(owner.id, bot.id, lin.id);
   assert.equal(botCodexTurn(lin.id, bot.id, false).tools, undefined);
   await assert.rejects(request(lin, "PATCH", settings, payload), { status: 403 });
+  await assert.rejects(request(lin, "GET", directoryListing(home)), { status: 403 });
 });
 
 test("Bot 能力清单按本机引擎过滤，私聊授权和失效版本在运行时生效", async t => {

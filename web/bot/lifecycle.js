@@ -5,9 +5,7 @@ const botPath = (bot) => "/api/bots/" + encodeURIComponent(bot.id);
 const date = (time) => new Date(time).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 export function confirmBotChange(title, explanation, label, submit, back) {
-  const keep = button("返回", back, "secondary");
-  keep.autofocus = true;
-  panel(title, note(explanation), keep, action(label, submit, "row danger"));
+  panel(title, note(explanation), button("返回", back, "secondary"), action(label, submit, "row danger"));
 }
 
 export function manageBot(bot, { owner, refresh, back }) {

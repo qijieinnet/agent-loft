@@ -58,7 +58,7 @@ export async function openDelegations(ctx) {
   if (!ctx.live() || !valid()) return;
   function create() {
     const target = h("select", { id: "delegate-target", required: true }, ...targets.map((b) => h("option", { value: b.id }, b.name)));
-    const task = h("textarea", { id: "delegate-task", required: true, rows: 4, maxlength: 4000, autofocus: true,
+    const task = h("textarea", { id: "delegate-task", required: true, rows: 4, maxlength: 4000,
       placeholder: "写下希望对方完成的事，带上必要信息。" });
     const save = h("button", { type: "submit", class: "primary" }, "预览发送内容");
     let id = requestId();

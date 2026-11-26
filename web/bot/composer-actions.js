@@ -20,7 +20,7 @@ export function bindComposerActions(choosePhoto, chooseReminder) {
   function opened() {
     position();
     trigger.setAttribute("aria-expanded", "true");
-    (initialItem || visible()[0])?.focus({ preventScroll: true });
+    (initialItem || trigger).focus({ preventScroll: true });
     initialItem = null;
   }
   function close(restore = false) {
@@ -30,6 +30,9 @@ export function bindComposerActions(choosePhoto, chooseReminder) {
     trigger.setAttribute("aria-expanded", "false");
     if (restore) trigger.focus({ preventScroll: true });
   }
+  trigger.addEventListener("click", event => {
+    if (!isOpen() && event.detail === 0) initialItem ||= visible()[0];
+  });
   if (native) {
     menu.hidden = false;
     menu.addEventListener("toggle", () => {
@@ -46,6 +49,11 @@ export function bindComposerActions(choosePhoto, chooseReminder) {
     });
   }
   trigger.addEventListener("keydown", event => {
+    if (isOpen() && (event.key === "Escape" || event.key === "Tab")) {
+      if (event.key === "Escape") event.preventDefault();
+      close(true);
+      return;
+    }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
     const target = event.key === "ArrowDown" ? visible()[0] : visible().at(-1);

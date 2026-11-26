@@ -27,7 +27,7 @@ export async function openFollowups({ threadId, members, onChange, startNew = fa
     panel("跟进的事", ...rows, !rows.length && note("这里会留下进展，之后还能接着处理。"), button("新建跟进", create, "primary"));
   }
   function create() {
-    const title = h("input", { id: "follow-title", required: true, maxlength: "120", autofocus: true });
+    const title = h("input", { id: "follow-title", required: true, maxlength: "120" });
     const save = h("button", { type: "submit", class: "primary" }, "开始跟进");
     const id = requestId();
     panel(
@@ -117,7 +117,6 @@ export async function openFollowups({ threadId, members, onChange, startNew = fa
         rows: 3,
         maxlength: "500",
         required: kind !== "assign",
-        autofocus: true,
       });
       if (item.decisionExpired && kind === "ask") input.value = item.question || "";
       const select = h("select", { id: "progress-member" }, ...members.map((m) => h("option", { value: m.id }, m.name)));

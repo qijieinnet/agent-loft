@@ -1,5 +1,6 @@
 import { api, button, field, h } from "./client.js";
 import { action, currentPanel, formPanel, note, panel, run } from "./panel.js";
+import { directoryPicker } from "./directory-picker.js";
 
 const identifier = { autocapitalize: "none", autocorrect: "off", spellcheck: "false" };
 
@@ -17,7 +18,7 @@ export async function openExtensions(bot, back) {
       const here = currentPanel();
       run(save, async () => {
         const next = await onSave();
-        if (here()) await (next || list)();
+        if (next !== false && here()) await (next || list)();
       });
     } }, controls);
     formPanel(title, form, save, cancel);
@@ -153,12 +154,10 @@ export async function openExtensions(bot, back) {
     scope.value = codex.webSearch;
     const terminal = h("input", { type: "checkbox", name: "terminal", checked: canUseLocal && codex.terminal });
     const edit = h("input", { type: "checkbox", name: "edit", checked: canUseLocal && codex.edit });
-    const directory = h("input", { id: "codex-directory", name: "directory", value: codex.directory,
-      placeholder: "/srv/bot-files", maxlength: 4096, ...identifier });
-    function syncDirectory() {
-      directory.required = terminal.checked || edit.checked || extras.some(o => o.id === "view_image" && o.input.checked);
-      directory.disabled = !directory.required;
-    }
+    const directory = directoryPicker(url, codex.directory);
+    const needsDirectory = () => canUseLocal && (terminal.checked || edit.checked ||
+      extras.some(o => o.id === "view_image" && o.input.checked) || Boolean(error && codex.extra?.includes("view_image")));
+    const syncDirectory = () => directory.enabled(needsDirectory());
     terminal.onchange = edit.onchange = syncDirectory;
     for (const o of extras) o.input.onchange = syncDirectory;
     syncDirectory();
@@ -168,10 +167,10 @@ export async function openExtensions(bot, back) {
         note("浏览器、桌面和应用使用引擎账号现有的连接。实际可用性还取决于模型和宿主环境。")), canUseLocal && h("fieldset", { class: "checks" },
       h("legend", {}, "本机工具 · 仅所有者私聊"), h("label", { class: "check-row" }, "执行终端命令", terminal),
       h("label", { class: "check-row" }, "编辑文件", edit),
-      field("服务器工作目录（启用本机工具时必填）", directory),
-      note("填写已有目录的绝对路径。终端默认只读；启用文件编辑后可在此目录写入。"))], async () => {
-        await api("/api/bots/" + encodeURIComponent(bot.id) + "/codex-tools", "PATCH", {
-          revision: codex.revision, extra: error ? undefined : extras.filter(o => o.available && o.input.checked).map(o => o.id), webSearch: scope.value, terminal: terminal.checked, edit: edit.checked, directory: directory.value.trim(),
+      directory.node, note("终端默认只读；启用文件编辑后可在所选文件夹中写入。"))], async () => {
+        if (needsDirectory() && !directory.validate()) return false;
+        await api(url, "PATCH", {
+          revision: codex.revision, extra: error ? undefined : extras.filter(o => o.available && o.input.checked).map(o => o.id), webSearch: scope.value, terminal: terminal.checked, edit: edit.checked, directory: directory.value,
         });
     });
   }
