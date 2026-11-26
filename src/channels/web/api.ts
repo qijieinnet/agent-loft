@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { handleBotsApi } from "./bots-api.js";
 import { AGENT_IDS, config, listWorkspaceDirs, resolveWorkspacePath, saveConfig, type AppConfig } from "../../core/config.js";
 import { expandHomePath } from "../../core/paths.js";
 import { cleanCustomCommands } from "../../core/command-catalog.js";
@@ -99,10 +98,7 @@ import { canSeeConv, pushOwnedBy, sessionVisibleTo } from "./access.js";
 import { clampLimit, dirsOf, inDir, pageOf, parseCursor, recentPageOf, searchConvs } from "./conv-pages.js";
 import { clientIp, cookies, HttpError, isHttps, readBody, readJsonBody, SECURITY_HEADERS, sendJson, setServerTiming } from "./http.js";
 import { syncApi } from "./memory-sync-api.js";
-import { botApiAllowed, botDeployment, handleBotInbox, handleReminderApi, joinAsNewBotUser } from "./bot-access.js";
-import { handleBotEvent } from "./bot-followups-api.js";
 import { pushSessionId } from "./auth.js";
-import { browserPushEndpoint } from "./push.js";
 import { handleTasksApi } from "./tasks-api.js";
 import { handleMemosApi } from "./memos-api.js";
 import { handleLibraryApi } from "./library-api.js";
@@ -632,21 +628,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const method = req.method ?? "GET";
   const p = url.pathname;
   const ip = clientIp(req);
-  if (!botDeployment() && /^\/api\/(?:bots(?:\/|$)|bot-)/.test(p)) throw new HttpError(404, "请从 Bot 服务访问");
-  if (p.startsWith("/api/bot-events/")) return handleBotEvent(req, res, url);
+  if (/^\/api\/(?:bots(?:\/|$)|bot-)/.test(p)) throw new HttpError(404, "接口已移除");
   const user = currentUser(req);
-
-  if ((botDeployment() || user?.botOnly) && !botApiAllowed(p)) throw new HttpError(403, "此入口只提供 Bot 功能");
-  if (p === "/api/bot-join" && method === "POST") {
-    if (user) throw new HttpError(409, "请用当前账号接受邀请");
-    const body = await readJsonBody(req, 4096);
-    if (takeAttempt(ip)) throw new HttpError(429, "尝试次数过多，请稍后再试");
-    const joined = joinAsNewBotUser(body?.token, body?.name, body?.password);
-    clearAttempts(ip);
-    newSession(req, res, joined.user.id);
-    sendJson(res, 201, { bot: joined.bot });
-    return;
-  }
 
   if (p.startsWith("/api/memory-sync/v1/")) return syncApi(req,res,p);
 
@@ -656,7 +639,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       authed: !!user,
       needsSetup: needsSetup(),
       // 不止一个人能登录：登录页要填用户名
-      multiUser: listUsers().filter((u) => !u.disabled).length > 1,
+      multiUser: listUsers().filter((u) => !u.disabled && !u.botOnly).length > 1,
       ...(user ? { user: publicMe(user) } : {}),
     });
     return;
@@ -681,7 +664,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
     transaction(() => {
       const user = verifyLogin(typeof body.name === "string" ? body.name : undefined, String(body.password ?? ""));
-      if (!user) throw new HttpError(403, listUsers().filter((u) => !u.disabled).length > 1 ? "用户名或密码不对" : "密码不对");
+      if (!user) throw new HttpError(403, listUsers().filter((u) => !u.disabled && !u.botOnly).length > 1 ? "用户名或密码不对" : "密码不对");
       clearAttempts(ip);
       newSession(req, res, user.id);
     });
@@ -701,9 +684,6 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
 
   if (!user) throw new HttpError(401, "请先登录");
-  if (p === "/api/bot-inbox" || p === "/api/bot-inbox/read" || p === "/api/bot-inbox/test-device") return handleBotInbox(req, res, url, user.id, pushSessionId(cookies(req)[COOKIE]!));
-  if (p === "/api/bot-reminders" || p.startsWith("/api/bot-reminders/")) return handleReminderApi(req, res, url, user.id);
-  if (p === "/api/bots" || p.startsWith("/api/bots/")) return handleBotsApi(req, res, url, user);
   if (adminOnly(p) && !isAdmin(user)) throw new HttpError(403, "只有管理员能做这个操作");
   if (p === "/api/account/memory/sync" || p.startsWith("/api/account/memory/sync/")) return syncApi(req,res,p,user.id);
   const admin = isAdmin(user);
@@ -828,12 +808,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   // ----- 系统通知（Web Push） -----
   const pushPurpose = (value: unknown) => {
-    const botOnly = user.botOnly || botDeployment();
-    const purpose = value ?? (botOnly ? "bot" : "workbench");
-    if (purpose !== "bot" && purpose !== "workbench") throw new HttpError(400, "无效的通知入口");
-    if (!botDeployment() && purpose === "bot") throw new HttpError(403, "请从 Bot 服务开启通知");
-    if (botOnly && purpose !== "bot") throw new HttpError(403, "此入口只提供 Bot 通知");
-    return purpose;
+    if (value != null && value !== "workbench") throw new HttpError(400, "无效的通知入口");
+    return "workbench" as const;
   };
   if (p === "/api/push" && method === "GET") {
     sendJson(res, 200, { publicKey: vapidPublicKey(), subscriptions: listSubscriptions(pushOwnedBy(user.id), pushSessionId(cookies(req)[COOKIE]!), pushPurpose(url.searchParams.get("purpose"))) });
@@ -841,9 +817,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/push/subscribe" && method === "POST") {
     const body = await readJsonBody<{ subscription?: unknown; purpose?: unknown }>(req);
-    if (body.purpose == null && !user.botOnly && !botDeployment()) {
+    if (body.purpose == null) {
       // An open pre-Bot workbench tab sends its root page as a same-origin referrer.
-      // The old Bot preview suppresses referrers, so its ambiguous registration needs a refresh.
+      // Do not accept an ambiguous registration from a stale client.
       const referrer = req.headers.referer;
       const page = referrer && URL.canParse(referrer) ? new URL(referrer) : null;
       if (page?.pathname !== "/" || (req.headers["sec-fetch-site"] !== "same-origin" && page.host !== req.headers.host)) {
@@ -852,9 +828,6 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
     const purpose = pushPurpose(body.purpose);
     try {
-      if (purpose === "bot" && !browserPushEndpoint((body.subscription as { endpoint?: string } | undefined)?.endpoint)) {
-        throw new Error("这个浏览器的推送服务暂不支持");
-      }
       const record = addSubscription(body.subscription, String(req.headers["user-agent"] ?? ""), user.id, pushSessionId(cookies(req)[COOKIE]!), purpose);
       sendJson(res, 200, { ok: true, label: record.label });
     } catch (err) {
@@ -885,7 +858,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const mine = pushOwnedBy(user.id);
     const endpoint = String(body.endpoint ?? "");
     const ok = removeSubscription(endpoint, mine, purpose);
-    const retained = listSubscriptions(mine, undefined, purpose === "bot" ? "workbench" : "bot").some(s => s.endpoint === endpoint);
+    const retained = listSubscriptions(mine, undefined, "bot").some(s => s.endpoint === endpoint);
     sendJson(res, 200, { ok, retained });
     return;
   }
@@ -2102,8 +2075,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (!process.env.INVOCATION_ID) throw new HttpError(400, "当前不是以系统服务运行，重启后不会自动拉起。请在终端里手动重启。");
     sendJson(res, 200, { ok: true });
     setTimeout(() => {
-      if (process.env.AGENT_LOFT_MANAGED_PAIR && process.send) process.send({ type: "restart-services" });
-      else process.kill(process.pid, "SIGTERM");
+      process.kill(process.pid, "SIGTERM");
     }, 300);
     return;
   }

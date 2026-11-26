@@ -217,13 +217,12 @@ function describeUa(ua: string): string {
 }
 
 /** 同一个浏览器换了个账号登录再开通知：订阅归新账号 */
-export function addSubscription(sub: unknown, userAgent: string, userId?: string, sessionId?: string, purpose: PushPurpose = "workbench"): PushSubscriptionRecord {
+export function addSubscription(sub: unknown, userAgent: string, userId?: string, sessionId?: string, purpose: "workbench" = "workbench"): PushSubscriptionRecord {
   if (!validSubscription(sub)) throw new Error("订阅信息不完整");
   return transaction(() => {
     const s = load();
     const record: PushSubscriptionRecord = {
       purpose, endpoint: sub.endpoint,
-      ...(purpose === "bot" ? { scope: "/" as const } : {}),
       keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
       label: describeUa(userAgent),
       createdAt: Date.now(),
@@ -419,29 +418,6 @@ export function removeSubscriptionsOf(mine: OwnerFilter): void {
     s.subscriptions = s.subscriptions.filter((x) => !mine(x.userId));
     if (s.subscriptions.length !== before) persist();
   });
-}
-
-/** Browser push services used by Bot devices. Membership invites must not grant arbitrary HTTP destinations. */
-export function browserPushEndpoint(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && !url.port && !url.username && !url.password &&
-      (["fcm.googleapis.com", "push.apple.com", "updates.push.services.mozilla.com", "web.push.apple.com"].includes(url.hostname) ||
-        [".push.apple.com", ".push.services.mozilla.com", ".notify.windows.com"].some(suffix => url.hostname.endsWith(suffix)));
-  } catch { return false; }
-}
-
-export function botPushDevices(userId: string) {
-  return load().subscriptions.flatMap(s =>
-    s.purpose === "bot" && s.userId === userId && s.sessionId && !s.relay && browserPushEndpoint(s.endpoint) && activePushSession(s.sessionId, userId)
-      ? [{ endpoint: s.endpoint, sessionId: s.sessionId }] : []);
-}
-
-export async function sendBotPush(userId: string, endpoint: string, sessionId: string, payload: PushPayload): Promise<boolean> {
-  const sub = load().subscriptions.find(s => s.purpose === "bot" && s.userId === userId && s.endpoint === endpoint && s.sessionId === sessionId);
-  if (!sub || !activePushSession(sessionId, userId) || !browserPushEndpoint(endpoint)) return true;
-  return sendOne(sub, { ...payload, purpose: "bot" });
 }
 
 /** 按主人和设备筛选订阅，返回成功的数量。单个设备失败不影响别的。 */

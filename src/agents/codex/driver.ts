@@ -1,16 +1,11 @@
-import fs from "node:fs";
-import { nativeOptions } from "../../core/web-bot-native-catalog.js";
 // Codex 驱动：官方 `codex app-server`（Codex 桌面版和 IDE 插件走的那条路）。
 //
 // 不用 @openai/codex-sdk：它是 `codex exec --json` 的薄封装，没有任何审批回调。
 import { appServer } from "./app-server.js";
 import { describeRateLimits, readAccountKey, readRateLimits, toQuota } from "./account.js";
 import { diagnose } from "./errors.js";
-import { botChatConfig, CodexSession, summarize, codexTokenUsage } from "./session.js";
+import { isolatedCompletionConfig, CodexSession, summarize } from "./session.js";
 import os from "node:os";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { WebBotError } from "../../core/web-bots.js";
 import { config, onConfigChange } from "../../core/config.js";
 import { splitAttachmentNote } from "../../core/uploads.js";
 import { stripContext } from "../../core/expert-prompt.js";
@@ -19,7 +14,6 @@ import type {
   AgentEvents,
   AgentSession,
   CompleteRequest,
-  EngineReplyRequest,
   HistoryMessage,
   InteractionHost,
   ModelInfo,
@@ -314,57 +308,17 @@ export class CodexDriver implements AgentDriver {
    * 只读沙箱，思考程度 low，用 outputSchema 拿 JSON。
    */
   async complete(req: CompleteRequest): Promise<unknown> {
-    const text = await this.reply({
-      ...req, signal: AbortSignal.timeout(req.timeoutMs ?? 120_000),
-    }, req.schema);
-    return JSON.parse(text);
-  }
-
-  async reply(req: EngineReplyRequest, schema?: Record<string, unknown>): Promise<string> {
-    req.signal.throwIfAborted();
-    const tools = req.codexTools;
+    const signal = AbortSignal.timeout(req.timeoutMs ?? 120_000);
     const cwd = os.tmpdir();
-    const overrides: Record<string, unknown> = await botChatConfig(cwd);
-    if (tools?.webSearch) overrides.web_search = "live";
-    const extra = tools?.extra ?? [];
-    for (const id of extra) Object.assign(overrides, nativeOptions[id].flags);
-    overrides["features.multi_agent_v2"] = false;
-    overrides["agents.max_depth"] = 0;
-    let permissions: string | undefined;
-    if (tools && (tools.terminal || tools.edit || extra.length)) {
-      if ((tools.terminal || tools.edit || extra.includes("view_image")) && !tools.directory) throw new WebBotError(400, "请先设置 Codex 工作目录。");
-      permissions = "loft-bot-" + randomUUID();
-      const helper = appServer.linuxSandboxHelper();
-      const filesystem: Record<string,string> = { ":minimal": "read" };
-      if (helper) filesystem[helper] = "read";
-      if (tools.directory) filesystem[tools.directory] = tools.edit ? "write" : "read";
-      if (tools.skillRoot) filesystem[tools.skillRoot] = "read";
-      overrides["permissions." + permissions] = { filesystem, network: { enabled: false } };
-      const windowsRoot = process.env.SystemRoot || "C:\\Windows";
-      const env = process.platform === "win32" ? { SystemRoot: windowsRoot, PATH: path.join(windowsRoot, "System32") } : { PATH: "/usr/bin:/bin" };
-      Object.assign(overrides, {
-        "features.shell_tool": tools.terminal, "features.unified_exec": tools.terminal,
-        include_apply_patch_tool: tools.edit, "features.shell_snapshot": false, "features.shell_snapshot_v2": false,
-        allow_login_shell: false,
-        shell_environment_policy: { inherit: "none", set: env },
-      });
-    }
-    req.signal.throwIfAborted();
-    tools?.checkAccess();
-    // Start from neutral config roots. Only the tool turn enters the authorized directory.
-    const res = await appServer.call<{ thread: Thread; model: string; activePermissionProfile?: { id: string } }>("thread/start", {
+    const overrides = await isolatedCompletionConfig(cwd);
+    signal.throwIfAborted();
+    const res = await appServer.call<{ thread: Thread }>("thread/start", {
       cwd, ephemeral: true, ...(req.model ? { model: req.model } : {}),
-      approvalPolicy: "never", ...(permissions ? { permissions, runtimeWorkspaceRoots: tools?.directory ? [tools.directory] : [] } : { sandbox: "read-only" }),
-      baseInstructions: req.system, config: overrides,
+      approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: overrides,
     });
     const threadId = res.thread.id;
-    if (permissions && res.activePermissionProfile?.id !== permissions) {
-      void appServer.call("thread/unsubscribe", { threadId }).catch(() => {});
-      throw new WebBotError(503, "当前 Codex 没有应用指定目录的权限配置，请升级 Codex 后再使用本机工具。");
-    }
     let text = "";
     let turnId: string | undefined;
-    let total: Parameters<typeof codexTokenUsage>[0] | undefined;
     let unsubscribe = () => {};
     let onExit = () => {};
     let cancelRequested = false;
@@ -373,49 +327,16 @@ export class CodexDriver implements AgentDriver {
       if (turnId) void appServer.call("turn/interrupt", { threadId, turnId }).catch(() => {});
     };
     let onAbort = () => {};
-    let checkGrants = () => {};
     const done = new Promise<void>((resolve, reject) => {
       onAbort = () => {
         cancel();
-        reject(req.signal.reason);
-      };
-      checkGrants = () => {
-        if (!tools || cancelRequested) return;
-        try { tools.checkAccess(); } catch (err) { cancel(); reject(err); }
+        reject(signal.reason);
       };
       onExit = appServer.onExit(reason => reject(new Error(reason)));
       unsubscribe = appServer.onNotification((method, params) => {
-        const p = params as { threadId?: string; item?: { type?: string; id?: string; text?: string; phase?: string | null; tool?: string; server?: string;
-          status?: string; exitCode?: number; query?: string; savedPath?: string; changes?: unknown[]; failure?: unknown };
-          tokenUsage?: { total?: typeof total }; turn?: { status?: string; error?: { message?: string } } };
+        const p = params as { threadId?: string; item?: { type?: string; text?: string; phase?: string | null };
+          turn?: { status?: string; error?: { message?: string } } };
         if (p.threadId !== threadId) return;
-        if (method === "item/started") checkGrants();
-        const item = p.item;
-        if (tools?.onTool && !cancelRequested && item?.id && item.type && ["item/started","item/completed"].includes(method)) {
-          const names: Record<string,string> = { webSearch: "web_search", commandExecution: "exec_command", fileChange: "apply_patch",
-            imageView: "view_image", imageGeneration: "image_generation", collabAgentToolCall: item.tool || "multi_agent",
-            mcpToolCall: [item.server, item.tool].filter(Boolean).join(" / "), dynamicToolCall: item.tool || "dynamic_tool" };
-          if (Object.hasOwn(names, item.type)) try {
-            tools.checkAccess();
-            const completed = method === "item/completed";
-            let image: Buffer | undefined;
-            let detail = item.query || (item.exitCode != null ? "退出码 " + item.exitCode : item.changes ? item.changes.length + " 处文件变更" : "");
-            if (completed && item.type === "imageGeneration" && extra.includes("image_generation") && item.savedPath) {
-              try {
-                const home = config().agents.codex.home || process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-                const root = fs.realpathSync(path.join(home, "generated_images"));
-                const file = fs.realpathSync(item.savedPath);
-                if (!file.startsWith(root + path.sep) || !fs.statSync(file).isFile() || fs.statSync(file).size > 16 * 1024 * 1024)
-                  throw new Error();
-                image = fs.readFileSync(file);
-              } catch { detail = "无法读取本次生成的图片。"; }
-            }
-            tools.onTool({ id: threadId + "/" + item.id, name: names[item.type]!, completed,
-              failed: !!item.failure || ["failed","declined","cancelled"].includes(item.status || "") || !!item.exitCode,
-              detail, image });
-          } catch (err) { cancel(); reject(err); }
-        }
-        if (method === "thread/tokenUsage/updated" && p.tokenUsage?.total) total = p.tokenUsage.total;
         if (method === "item/completed" && p.item?.type === "agentMessage" && p.item.phase !== "commentary") text = p.item.text ?? text;
         if (method === "turn/completed") {
           if (p.turn?.status === "completed") resolve();
@@ -424,31 +345,22 @@ export class CodexDriver implements AgentDriver {
       });
     });
     done.catch(() => {});
-    // A long-running command may emit no further events after a grant is revoked by another process.
-    const grantTimer = tools ? setInterval(checkGrants, 2000).unref() : undefined;
-    req.signal.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
     try {
-      req.signal.throwIfAborted();
-      tools?.beforeTurn();
+      signal.throwIfAborted();
       const started = await appServer.call<{ turn: { id: string } }>("turn/start", {
-        threadId,
-        ...(permissions ? { permissions, cwd: tools!.directory } : {}),
-        input: [{ type: "text", text: req.prompt, text_elements: [] },
-          ...(req.images ?? (req.image ? [req.image] : [])).map(img => ({ type: "image", url: `data:${img.mimeType};base64,${img.data}` }))],
-        effort: "low",
-        ...(schema ? { outputSchema: schema } : {}),
+        threadId, input: [{ type: "text", text: req.prompt, text_elements: [] }],
+        effort: "low", outputSchema: req.schema,
       });
       turnId = started.turn.id;
-      if (cancelRequested || req.signal.aborted) cancel();
+      if (cancelRequested || signal.aborted) cancel();
       await done;
-      return text;
+      return JSON.parse(text);
     } finally {
-      clearInterval(grantTimer);
       unsubscribe();
       onExit();
-      req.signal.removeEventListener("abort", onAbort);
+      signal.removeEventListener("abort", onAbort);
       void appServer.call("thread/unsubscribe", { threadId }).catch(() => {});
-      if (total) req.onUsage?.(codexTokenUsage(total), res.model);
     }
   }
 

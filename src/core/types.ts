@@ -378,8 +378,6 @@ export interface AgentDriver {
    * 用最便宜的模型。不支持的 agent 不实现。
    */
   complete?(req: CompleteRequest): Promise<unknown>;
-  /** 按 Bot 提供的上下文独立回复，不加载工作台工具。 */
-  reply?(req: EngineReplyRequest): Promise<string>;
 }
 
 export type CompleteRequest = {
@@ -391,28 +389,4 @@ export type CompleteRequest = {
   model?: string;
   /** 超时，毫秒 */
   timeoutMs?: number;
-};
-
-export type BotCodexTools = {
-  skillRoot?: string;
-  extra?: import("./web-bot-native-catalog.js").BotNativeOption[];
-  onTool?: (event: { id: string; name: string; completed: boolean; failed: boolean; detail: string; image?: Buffer }) => void;
-  webSearch: boolean;
-  terminal: boolean;
-  edit: boolean;
-  directory?: string;
-  checkAccess: () => void;
-  beforeTurn: () => void;
-};
-
-export type EngineReplyRequest = {
-  claudeTools?: { names: string[]; checkAccess: () => void; onTool: NonNullable<BotCodexTools["onTool"]> };
-  codexTools?: BotCodexTools;
-  system: string;
-  prompt: string;
-  model?: string;
-  image?: { mimeType: string; data: string };
-  images?: { mimeType: string; data: string }[];
-  signal: AbortSignal;
-  onUsage?: (usage: TokenUsage, model: string) => void;
 };

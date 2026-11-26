@@ -26,7 +26,6 @@ import { listUsers } from "./core/users.js";
 import { startScheduler, stopScheduler } from "./core/scheduled.js";
 import { startTaskRunner, stopTaskRunner } from "./core/task-runner.js";
 import { startTasksBridge, stopTasksBridge } from "./core/tasks-bridge.js";
-import { botDeployment } from "./channels/web/bot-access.js";
 import { listening } from "./channels/web/listen.js";
 
 async function startDriver(id: "claude" | "codex" | "workbuddy" | "pi" | "dsh"): Promise<void> {
@@ -46,22 +45,6 @@ async function main(): Promise<void> {
 
   hub.registerDriver(new ClaudeDriver());
   hub.registerDriver(new CodexDriver());
-  if (botDeployment()) {
-    await startWeb();
-    if (!process.env.AGENT_LOFT_MANAGED_PAIR) startBackups();
-    let stopping = false;
-    const shutdown = () => {
-      if (stopping) return;
-      stopping = true;
-      setTimeout(() => process.exit(0), 8000).unref();
-      void stopWeb().finally(() => hub.shutdown()).finally(() => process.exit(0));
-    };
-    process.once("SIGTERM", shutdown);
-    process.once("SIGINT", shutdown);
-    await reportUpgradeHealth(true);
-    return;
-  }
-
   hub.registerDriver(new WorkBuddyDriver());
   hub.registerDriver(new PiDriver());
   hub.registerDriver(new DshDriver());
@@ -161,14 +144,14 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("exit", (code) => console.log(`[退出] agent-loft 结束，退出码 ${code}`));
   process.on("unhandledRejection", (err) => console.error("[未处理的异常]", err));
-  await reportUpgradeHealth(false);
+  await reportUpgradeHealth();
 }
 
-async function reportUpgradeHealth(bot: boolean): Promise<void> {
+async function reportUpgradeHealth(): Promise<void> {
   if (process.env.AGENT_LOFT_UPGRADE_TRIAL && process.send) {
     const { host, port } = listening() ?? config().web;
     try {
-      if (bot || config().web.enabled) await verifyUpgradeWeb(host, port, bot);
+      if (config().web.enabled) await verifyUpgradeWeb(host, port);
       process.send({ type: "upgrade-health", version: RUNNING_VERSION });
     } catch (err) {
       process.send({ type: "upgrade-health", error: String(err) });

@@ -15,7 +15,6 @@ import { EventEmitter } from "node:events";
 import { dataDir, fileStamp, readJson, writeJsonAtomic } from "../home.js";
 import { config } from "./config.js";
 import { transaction } from "./db.js";
-import { purgeBotAccount, recoverRemovedBotAccounts } from "./web-bot-retention.js";
 
 export type Role = "admin" | "member";
 export type ResourceKind = "experts" | "agents" | "servers";
@@ -30,9 +29,9 @@ export type User = {
   passwordHash: string;
   createdAt: number;
   disabled?: boolean;
-  /** 停用后递增；重新启用账号也要重新授权曾经等待它的 Bot 工作。 */
+  /** Legacy metadata retained on disk and not exposed in public user data. */
   botAccessRevision?: number;
-  /** 使用 Bot 邀请注册的账号只能访问 Bot，不授予原有工作台权限。 */
+  /** Legacy invite-only accounts must never gain workbench access on upgrade. */
   botOnly?: boolean;
   /** 成员能不能用远程控制（终端、桌面）。管理员一直能用，不看这个 */
   remote?: boolean;
@@ -224,7 +223,7 @@ function cleanPermissions(value: unknown, current: ResourcePermissions = {}): Re
  */
 export function legacyOwnerId(): string | undefined {
   return load()
-    .filter((u) => u.role === "admin" && !u.disabled)
+    .filter((u) => u.role === "admin" && !u.disabled && !u.botOnly)
     .sort((a, b) => a.createdAt - b.createdAt)[0]?.id;
 }
 
@@ -245,7 +244,7 @@ export function adminVisible(owner: string | undefined): boolean {
  * 校验登录。name 没给、并且只有一个能登录的用户时就是他 —— 单用户时登录页和以前一样只要密码。
  */
 export function verifyLogin(name: string | undefined, password: string): User | undefined {
-  const active = load(true).filter(u => !u.disabled);
+  const active = load(true).filter(u => !u.disabled && !u.botOnly);
   const user = name?.trim() ? active.find((u) => u.name.toLowerCase() === name.trim().toLowerCase()) : active.length === 1 ? active[0] : undefined;
   const ok = verifyPassword(password, user?.passwordHash ?? dummy());
   return ok ? user : undefined;
@@ -255,10 +254,10 @@ export function verifyLogin(name: string | undefined, password: string): User | 
 
 /** 改完之后至少还要有一个能登录的管理员 */
 function assertAdminLeft(list: User[]): void {
-  if (!list.some((u) => u.role === "admin" && !u.disabled)) throw new Error("至少要保留一个能登录的管理员");
+  if (!list.some((u) => u.role === "admin" && !u.disabled && !u.botOnly)) throw new Error("至少要保留一个能登录的管理员");
 }
 
-export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown; botOnly?: boolean }): PublicUser {
+export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown }): PublicUser {
   return transaction(() => {
     const list = load(true);
     const name = checkName(params.name);
@@ -270,7 +269,6 @@ export function createUser(params: { name: string; password: string; role?: Role
       role: params.role === "admin" ? "admin" : "member",
       passwordHash: hashPassword(params.password),
       createdAt: Date.now(),
-      ...(params.botOnly ? { botOnly: true } : {}),
       ...(params.remote === true ? { remote: true } : {}),
       ...(params.files === true ? { files: true } : {}),
       ...(params.gitRemote === true ? { gitRemote: true } : {}),
@@ -296,7 +294,6 @@ export function updateUser(
     }
     if (patch.role !== undefined) user.role = patch.role === "admin" ? "admin" : "member";
     if (patch.disabled !== undefined) {
-      if (patch.disabled && !user.disabled) user.botAccessRevision = (user.botAccessRevision ?? 0) + 1;
       if (patch.disabled) user.disabled = true;
       else delete user.disabled;
     }
@@ -325,12 +322,11 @@ export function updateUser(
 
 export function removeUser(id: string): PublicUser {
   const removed = transaction(() => {
-    const list = readBotAccounts();
+    const list = readAccountsFromDisk();
     const user = list.find((u) => u.id === id);
     if (!user) throw new Error("用户不存在");
     const rest = list.filter((u) => u.id !== id);
     assertAdminLeft(rest);
-    purgeBotAccount(id, rest);
     persistUsers(rest);
     return publicUser(user);
   });
@@ -339,19 +335,15 @@ export function removeUser(id: string): PublicUser {
 }
 
 /** Use the current on-disk account list, rather than an up-to-one-second-old process cache. */
-function readBotAccounts(): User[] {
+function readAccountsFromDisk(): User[] {
   if (!fs.existsSync(usersPath)) return [];
   const store = JSON.parse(fs.readFileSync(usersPath, "utf8")) as StoreShape;
   if (!Array.isArray(store?.users) || store.users.some(u =>
     !u || typeof u.id !== "string" || !u.id || typeof u.name !== "string" || !["admin","member"].includes(u.role))) {
-    throw new Error("账号清单无效，无法核对 Bot 归属。");
+    throw new Error("账号清单无效，无法校验账号。");
   }
   if (store.users.length) assertAdminLeft(store.users);
   return store.users;
-}
-
-export function recoverBotAccounts(): void {
-  recoverRemovedBotAccounts(readBotAccounts);
 }
 
 /** 测试用：换了 AGENT_LOFT_HOME 之后重新读 */

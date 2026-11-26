@@ -21,7 +21,7 @@ import { enforceTerminalAccess, killAllTerminals, terminalEvents, watchTerminalA
 import { RUNNING_VERSION } from "../../core/upgrade.js";
 import { RealtimeRelay, RELAY_RATE } from "../../core/realtime-relay.js";
 import type { RealtimeEvent, Settlement } from "../../core/types.js";
-import { getUser, isAdmin, legacyOwnerId, recoverBotAccounts, userEvents, type User } from "../../core/users.js";
+import { getUser, isAdmin, legacyOwnerId, userEvents, type User } from "../../core/users.js";
 import { currentUser, handleApi, takeUploads } from "./api.js";
 import { authEvents, ensureSetupToken, sessionUser } from "./auth.js";
 import { canSeeKey, sessionVisibleTo } from "./access.js";
@@ -29,15 +29,9 @@ import { cookies } from "./http.js";
 import { assetToken, parseVersioned, stampIndex } from "./assets.js";
 import { compressedFile, compressibleExt, MIN_SIZE, pickEncoding } from "./compress.js";
 import { COOKIE } from "./api.js";
-import { HttpError, isHttps, viaTrustedProxy, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
+import { HttpError, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 import { hasSubscriptions, pushToAll } from "./push.js";
 import { closeListener, listen, listening, rebind } from "./listen.js";
-import { serveBotVoice } from "./bot-voice.js";
-import { botDeployment } from "./bot-access.js";
-import { startBotDelegations, stopBotDelegations } from "../../core/web-bot-delegation-worker.js";
-import { startBotRoutines, stopBotRoutines } from "../../core/web-bot-routine-worker.js";
-import { startBotDelivery, stopBotDelivery } from "./bot-delivery.js";
-import { recoverPendingBotTurns } from "../../core/web-bots.js";
 import { closeTerminalClients, pingTerminalClients, recheckTerminalClients, upgradeTerminal } from "./terminal.js";
 import { closeMemoRooms } from "./memo-collab.js";
 import { closeDesktopClients, pingDesktopClients, recheckDesktopClients, upgradeDesktop } from "./desktop.js";
@@ -193,39 +187,10 @@ function serveIndex(req: http.IncomingMessage, res: http.ServerResponse, file: s
 }
 
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
-  if (botDeployment()) {
-    if (url.pathname === "/bot" || url.pathname === "/bot/") {
-      res.writeHead(302, { ...SECURITY_HEADERS, Location: "/" + url.search, "Cache-Control": "no-store" });
-      res.end();
-      return;
-    }
-    const asset = url.pathname === "/" ? "/index.html" : url.pathname;
-    const shared = ["/lib/dom.js", "/lib/loft-mark.js", "/lib/push-session.js", "/lib/push-worker.js", "/lib/rt-worklet.js", "/lib/voice-loopback.js"];
-    if (shared.includes(asset)) return serveFile(req, res, path.join(webRoot, asset));
-    if (/^\/[\w-]+\.(?:js|css|html|webmanifest)$/.test(asset) || /^\/icons\/[\w-]+\.(?:svg|png)$/.test(asset)) {
-      return serveFile(req, res, path.join(webRoot, "bot", asset));
-    }
+  // Retired links must not fall through to the workbench SPA.
+  if (/^\/(?:open-bot\/?$|bot(?:\/|$))/.test(url.pathname)) {
     res.writeHead(404, SECURITY_HEADERS);
     res.end();
-    return;
-  }
-
-  // 保留旧邀请与主屏幕入口的查询参数，页面和资源只从 Bot 服务提供。
-  if (["/open-bot", "/bot", "/bot/"].includes(url.pathname) || (url.pathname === "/" && currentUser(req)?.botOnly)) {
-    try {
-      const forwarded = viaTrustedProxy(req) && req.headers["x-forwarded-host"];
-      const host = typeof forwarded === "string" ? forwarded.split(",")[0]!.trim() : req.headers.host;
-      const publicOrigin = process.env.AGENT_LOFT_BOT_URL;
-      const target = new URL(publicOrigin || `${isHttps(req) ? "https" : "http"}://${host}`);
-      if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) throw new Error();
-      if (!publicOrigin) target.port = String(botPort());
-      const location = new URL("/", target);
-      location.search = url.search;
-      res.writeHead(302, { ...SECURITY_HEADERS, Location: location.href, "Cache-Control": "no-store" });
-      res.end();
-    } catch {
-      sendJson(res, 503, { error: "Bot 入口地址或端口配置无效" });
-    }
     return;
   }
   const versioned = parseVersioned(url.pathname);
@@ -724,12 +689,6 @@ let heartbeat: NodeJS.Timeout | null = null;
 let stopWatchingListen: (() => void) | null = null;
 let stopWatchingRemote: (() => void) | null = null;
 
-function botPort(): number {
-  const port = Number(process.env.AGENT_LOFT_BOT_PORT ?? 8810);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("AGENT_LOFT_BOT_PORT 必须在 1 到 65535 之间");
-  return port;
-}
-
 export async function startWeb(): Promise<void> {
   const { host, port } = config().web;
 
@@ -764,23 +723,6 @@ export async function startWeb(): Promise<void> {
       else res.end();
     });
   });
-
-  if (botDeployment()) {
-    const bindPort = botPort();
-    if (process.env.AGENT_LOFT_MANAGED_PAIR && config().web.enabled && bindPort === port) throw new Error("Bot 和系统需要使用不同的监听端口");
-    const bindHost = process.env.AGENT_LOFT_BOT_HOST || host;
-    closeBotVoice = serveBotVoice(server);
-    await listen(server, bindHost, bindPort);
-    ready(bindHost, bindPort);
-    if (!process.env.AGENT_LOFT_BOT_HOST) {
-      stopWatchingListen = onConfigChange((next) => {
-        if (listening()?.host !== next.web.host) {
-          rebind(next.web.host, bindPort).catch(err => console.error("[bot] 换监听地址失败:", err));
-        }
-      });
-    }
-    return;
-  }
 
   wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
@@ -887,14 +829,7 @@ export async function startWeb(): Promise<void> {
 }
 
 function ready(host: string, port: number): void {
-  if (botDeployment()) {
-    recoverBotAccounts();
-    recoverPendingBotTurns();
-    startBotDelivery();
-    startBotRoutines();
-    startBotDelegations();
-  }
-  console.log(`[${botDeployment() ? "bot" : "web"}] 已监听 http://${host}:${port}`);
+  console.log(`[web] 已监听 http://${host}:${port}`);
   const token = ensureSetupToken();
   if (token) {
     console.log("=".repeat(56));
@@ -909,20 +844,7 @@ function onRevoked(): void {
   recheckDesktopClients();
 }
 
-let closeBotVoice: (() => void) | undefined;
-
 export async function stopWeb(): Promise<void> {
-  if (botDeployment()) {
-    stopWatchingListen?.();
-    stopWatchingListen = null;
-    closeBotVoice?.();
-    closeBotVoice = undefined;
-    await stopBotRoutines();
-    await stopBotDelegations();
-    await stopBotDelivery();
-    await closeHttp();
-    return;
-  }
   closeMemoRooms();
   authEvents.off("revoked", onRevoked);
   hub.off("event", broadcastEvent);
