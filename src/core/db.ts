@@ -16,8 +16,6 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { dataDir, readJson } from "../home.js";
 
 import { syncSchema } from "./memory-sync-schema.js";
-import { webBotSchema } from "./web-bots-schema.js";
-import { webBotDelegationSchema } from "./web-bot-delegation-schema.js";
 
 export const dbPath = path.join(dataDir, "agent-loft.db");
 
@@ -270,23 +268,6 @@ export function database(): DatabaseSync {
   }
   opened.exec("CREATE INDEX IF NOT EXISTS history_source_order ON history(user_id,conv_key,coalesce(source_order,id))");
   opened.exec(syncSchema);
-  opened.exec(webBotSchema);
-  if (!opened.prepare("PRAGMA table_info(web_bot_profiles)").all().some(c => c.name === "engine")) {
-    try {
-      opened.exec("ALTER TABLE web_bot_profiles ADD COLUMN engine TEXT NOT NULL DEFAULT 'pi'");
-    } catch (err) {
-      if (!/duplicate column/i.test(String(err))) throw err;
-    }
-  }
-  // Older pending decisions have no trustworthy expiry. Require a fresh request before acting on them.
-  if (!opened.prepare("PRAGMA table_info(web_bot_followups)").all().some(c => c.name === "decisionExpiresAt")) {
-    try {
-      opened.exec("ALTER TABLE web_bot_followups ADD COLUMN decisionExpiresAt INTEGER");
-    } catch (err) {
-      if (!/duplicate column/i.test(String(err))) throw err;
-    }
-  }
-  opened.exec(webBotDelegationSchema);
   // 旧库的 footers 表还没有这一列（列表里每轮改动的摘要，JSON）。老版本读写时不看它，降级也没事
   const footerColumns = opened.prepare("PRAGMA table_info(footers)").all() as { name: string }[];
   if (!footerColumns.some((c) => c.name === "changes")) {

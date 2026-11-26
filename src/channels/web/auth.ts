@@ -207,7 +207,7 @@ export function sessionUser(token: string | undefined): User | undefined {
     });
   }
   const user = getUser(session?.userId);
-  return user && !user.disabled ? user : undefined;
+  return user && !user.disabled && !user.botOnly ? user : undefined;
 }
 
 export function destroySession(token: string | undefined): void {

@@ -9,7 +9,6 @@ function localUrl(value) {
     return url.origin !== "null" && url.origin === self.location.origin ? url : null;
   } catch { return null; }
 }
-const bot = self.loftBot === true;
 
 // An acknowledgement and a push may arrive together. Update the native badge
 // after the matching notification changes, in the same order as the events.
@@ -35,12 +34,12 @@ self.addEventListener("push", event => {
   update(event, async () => {
     // An obsolete endpoint can still have a payload in flight during migration.
     // Never show the other app's title or preview in this registration.
-    const matched = url && (data.purpose === "bot") === bot && url.pathname === "/";
-    await self.registration.showNotification(matched && data.title || (bot ? "我的 Bot" : "Agent Loft"), {
+    const matched = url && data.purpose !== "bot" && url.pathname === "/";
+    await self.registration.showNotification(matched && data.title || "Agent Loft", {
       body: matched ? data.body || "" : "打开应用查看通知",
       tag: matched ? data.tag : "subscription-updated",
-      icon: bot ? "/icons/app-192.png" : "/apple-touch-icon.png",
-      badge: bot ? "/icons/badge.png" : "/apple-touch-icon.png",
+      icon: "/apple-touch-icon.png",
+      badge: "/apple-touch-icon.png",
       data: { url: matched ? url.href : "/" },
     });
     await syncBadge();
@@ -60,20 +59,12 @@ self.addEventListener("message", event => {
     return;
   }
   const disabled = data.type === "notifications-disabled";
-  if (!disabled && data.type !== (bot ? "bot-notices-read" : "workbench-notices-read")) return;
-  if (bot && !disabled && typeof data.threadId !== "string") return;
+  if (!disabled && data.type !== "workbench-notices-read") return;
   update(event, async () => {
     const notices = await self.registration.getNotifications();
     for (const notice of notices) {
       const url = localUrl(notice.data?.url || "/");
       if (!url) continue;
-      if (bot && !disabled) {
-        if (url.searchParams.get("thread") !== data.threadId) continue;
-        const message = Number(url.searchParams.get("message"));
-        const readMessage = Number.isSafeInteger(data.through) && message > 0 && message <= data.through;
-        const readDelegation = data.delegationId && data.delegationId === url.searchParams.get("delegation");
-        if (!readMessage && !readDelegation) continue;
-      }
       notice.close();
     }
     await syncBadge();

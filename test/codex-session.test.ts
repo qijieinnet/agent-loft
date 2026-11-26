@@ -964,90 +964,29 @@ test("恢复 Codex 会话后按当前模型加速，关闭后下一轮恢复标�
   await disposeRunning(session);
 });
 
-test("Bot 通过临时 Codex thread 发送文字和图片，隔离工具并记录引擎用量", async (t) => {
+test("后台记忆整理仍使用无工具的临时 Codex thread，返回结构化结果", async t => {
   calls.length = 0;
   t.mock.method(appServer, "call", (method: string, params: unknown) =>
     new Promise((resolve, reject) => calls.push({ method, params, resolve, reject })));
-  const used: TokenUsage[] = [];
-  const answer = new CodexDriver().reply({ system: "按职责回复", prompt: "这是什么？", image: { mimeType: "image/png", data: "abc" },
-    signal: AbortSignal.timeout(5000), onUsage: usage => used.push(usage) });
+  const schema = { type: "object", properties: {}, additionalProperties: false };
+  const result = new CodexDriver().complete({ system: "整理记忆", prompt: "测试", schema, timeoutMs: 5000 });
   take("config/read").resolve({ config: { mcp_servers: { machine: {}, agent_loft_memory: {} } } });
   await tick();
   const start = take("thread/start");
   assert.equal(start.params.ephemeral, true);
+  assert.equal(start.params.sandbox, "read-only");
   assert.equal(start.params.config["mcp_servers.agent_loft_memory.enabled"], false);
   assert.equal(start.params.config["features.shell_tool"], false);
   assert.equal(start.params.config.web_search, "disabled");
-  const threadId = "bot-turn";
-  start.resolve({ thread: { id: threadId }, model: "fixture" });
+  const threadId = "completion-fixture";
+  start.resolve({ thread: { id: threadId } });
   await tick();
   const turn = take("turn/start");
-  assert.deepEqual(turn.params.input[1], { type: "image", url: "data:image/png;base64,abc" });
+  assert.deepEqual(turn.params.outputSchema, schema);
+  assert.equal(turn.params.effort, "low");
   turn.resolve({ turn: { id: "turn" } });
-  notify("thread/tokenUsage/updated", { threadId, tokenUsage: { total: { inputTokens: 12, cachedInputTokens: 5, outputTokens: 3 } } });
-  notify("item/completed", { threadId, item: { type: "agentMessage", text: "测试回复" } });
+  notify("item/completed", { threadId, item: { type: "agentMessage", text: "{}" } });
   notify("turn/completed", { threadId, turn: { status: "completed" } });
-  assert.equal(await answer, "测试回复");
-  assert.equal(used[0]?.input, 7);
-  assert.equal(used[0]?.cacheRead, 5);
+  assert.deepEqual(await result, {});
   take("thread/unsubscribe").resolve({});
-});
-
-test("Bot 的原生搜索和本机工具分别下发，未确认目录沙箱时不会启动工具轮次", async t => {
-  calls.length = 0;
-  t.mock.method(appServer, "call", (method: string, params: unknown) =>
-    new Promise((resolve, reject) => calls.push({ method, params, resolve, reject })));
-  const driver = new CodexDriver();
-  for (const mode of ["search", "read", "edit", "unsupported", "revoked"]) {
-    let dispatched = 0, revoked = false;
-    const local = mode !== "search", directory = local ? "/srv/bot-fixture" : undefined;
-    const reply = driver.reply({ system: "测试", prompt: "测试", signal: AbortSignal.timeout(5000), codexTools: {
-      webSearch: !local, terminal: mode === "read" || mode === "revoked", edit: mode === "edit" || mode === "unsupported", directory,
-      checkAccess() { if (revoked) throw new Error("测试撤销"); }, beforeTurn() { dispatched++; },
-    } });
-    const rejected = mode === "unsupported" ? assert.rejects(reply, /权限配置/) : undefined;
-    take("config/read").resolve({ config: { mcp_servers: { private: {} } } });
-    await tick();
-    const startCall = take("thread/start");
-    const start = startCall.params;
-    assert.equal(start.config.web_search, local ? "disabled" : "live");
-    assert.equal(start.config["mcp_servers.private.enabled"], false);
-    assert.equal(start.config["features.shell_tool"], mode === "read" || mode === "revoked");
-    assert.equal(start.config.include_apply_patch_tool, mode === "edit" || mode === "unsupported");
-    if (local) {
-      assert.equal(start.sandbox, undefined);
-      const policy = start.config["permissions." + start.permissions];
-      assert.equal(policy.filesystem[directory!], mode === "read" || mode === "revoked" ? "read" : "write");
-      assert.equal(policy.network.enabled, false);
-      assert.equal(start.config.shell_environment_policy.inherit, "none");
-    }
-    const threadId = "bot-native-" + mode;
-    // Resolve the start with the profile actually acknowledged by the server.
-    startCall.resolve({ thread: { id: threadId }, model: "test",
-      ...(mode !== "unsupported" ? { activePermissionProfile: { id: start.permissions } } : {}) });
-    await tick();
-    if (rejected) {
-      await rejected;
-      assert.equal(dispatched, 0);
-      assert.ok(!calls.some(c => c.method === "turn/start"));
-    } else {
-      const turn = take("turn/start");
-      assert.equal(dispatched, 1);
-      assert.equal(turn.params.permissions, start.permissions);
-      assert.equal(turn.params.cwd, directory);
-      if (mode === "revoked") {
-        revoked = true;
-        const denied = assert.rejects(reply, /测试撤销/);
-        notify("item/started", { threadId, item: { type: "commandExecution" } });
-        turn.resolve({ turn: { id: mode } });
-        await denied;
-        assert.equal(take("turn/interrupt").params.turnId, mode);
-      } else {
-        turn.resolve({ turn: { id: mode } });
-        notify("turn/completed", { threadId, turn: { status: "completed" } });
-        await reply;
-      }
-    }
-    take("thread/unsubscribe").resolve({});
-  }
 });

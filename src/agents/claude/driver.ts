@@ -3,8 +3,6 @@
 // 会话列表 / 历史全部走 SDK 自带的 listSessions / getSessionInfo / getSessionMessages，
 // 不再自己去扒 ~/.claude/projects 下的 jsonl —— 那是 CLI 的内部约定，SDK 才是公开接口。
 import {
-  type SDKUserMessage,
-  type HookCallback,
   forkSession,
   getSessionInfo,
   getSessionMessages,
@@ -22,7 +20,6 @@ import type {
   AgentEvents,
   AgentSession,
   CompleteRequest,
-  EngineReplyRequest,
   HistoryMessage,
   InteractionHost,
   ModelInfo,
@@ -335,77 +332,38 @@ export class ClaudeDriver implements AgentDriver {
    * 用结构化输出拿 JSON。跑在临时目录里，碰不到任何项目。
    */
   async complete(req: CompleteRequest): Promise<unknown> {
-    const text = await this.reply({ ...req, model: req.model || "haiku", signal: AbortSignal.timeout(req.timeoutMs ?? 120_000) }, req.schema);
-    return JSON.parse(text);
-  }
-
-  async reply(req: EngineReplyRequest, schema?: Record<string, unknown>): Promise<string> {
-    const images = req.images ?? (req.image ? [req.image] : []);
-    async function* withImage(): AsyncGenerator<SDKUserMessage> {
-      const blocks = images.map(({ data, mimeType }) => {
-        if (mimeType !== "image/jpeg" && mimeType !== "image/png" && mimeType !== "image/webp" && mimeType !== "image/gif")
-          throw new Error("图片格式无法识别");
-        return { type: "image", source: { type: "base64", media_type: mimeType, data } } as const;
-      });
-      yield { type: "user", message: { role: "user", content: [{ type: "text", text: req.prompt }, ...blocks] },
-        parent_tool_use_id: null, origin: { kind: "human" } };
-    }
-    req.signal.throwIfAborted();
+    const signal = AbortSignal.timeout(req.timeoutMs ?? 120_000);
     const abort = new AbortController();
     const cancel = () => abort.abort();
-    req.signal.addEventListener("abort", cancel, { once: true });
-    const native = req.claudeTools;
-    const onTool: HookCallback = async input => {
-      if (!native || (input.hook_event_name !== "PreToolUse" && input.hook_event_name !== "PostToolUse" && input.hook_event_name !== "PostToolUseFailure")) return {};
-      try { native.checkAccess(); }
-      catch {
-        cancel();
-        return { continue: false, stopReason: "本次工具授权已经失效。" };
-      }
-      if (!native.names.includes(input.tool_name)) return { continue: false, stopReason: "此工具未授权。" };
-      native.onTool({ id: input.tool_use_id, name: input.tool_name, completed: input.hook_event_name !== "PreToolUse",
-        failed: input.hook_event_name === "PostToolUseFailure", detail: input.hook_event_name === "PostToolUseFailure" ? "工具执行失败" :
-          input.hook_event_name === "PostToolUse" ? JSON.stringify(input.tool_response ?? "").slice(0, 1200) : "" });
-      return {};
-    };
-    const timer = native ? setInterval(() => { try { native.checkAccess(); } catch { cancel(); } }, 2000).unref() : undefined;
+    signal.addEventListener("abort", cancel, { once: true });
     try {
       const q = query({
-        prompt: images.length ? withImage() : req.prompt,
+        prompt: req.prompt,
         options: {
           cwd: os.tmpdir(),
           env: agentEnvironment(),
-          ...(req.model ? { model: req.model } : {}),
+          model: req.model || "haiku",
           systemPrompt: req.system,
-          tools: native?.names ?? [],
-          ...(native ? { hooks: { PreToolUse: [{ hooks: [onTool] }], PostToolUse: [{ hooks: [onTool] }], PostToolUseFailure: [{ hooks: [onTool] }] } } : {}),
+          tools: [],
           settingSources: [],
           strictMcpConfig: true,
           mcpServers: {},
           skills: [],
           persistSession: false,
           maxTurns: 3,
-          ...(schema ? { outputFormat: { type: "json_schema" as const, schema } } : {}),
+          outputFormat: { type: "json_schema", schema: req.schema },
           abortController: abort,
-          canUseTool: async (name, input) => {
-            native?.checkAccess();
-            return native?.names.includes(name) ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "此工具未授权。" };
-          },
+          canUseTool: async () => ({ behavior: "deny", message: "此工具未授权。" }),
         },
       });
       for await (const m of q) {
         if (m.type !== "result") continue;
         if (m.subtype !== "success" || m.is_error) throw new Error(`后台调用失败：${m.subtype}`);
-        for (const [model, usage] of Object.entries(m.modelUsage ?? {})) {
-          req.onUsage?.({ input: usage.inputTokens, cacheRead: usage.cacheReadInputTokens, cacheWrite: usage.cacheCreationInputTokens,
-            output: usage.outputTokens, costUsd: usage.costUSD }, model);
-        }
-        return schema && m.structured_output != null ? JSON.stringify(m.structured_output) : m.result;
+        return m.structured_output ?? JSON.parse(m.result);
       }
       throw new Error("后台调用没有结果");
     } finally {
-      clearInterval(timer);
-      req.signal.removeEventListener("abort", cancel);
+      signal.removeEventListener("abort", cancel);
       abort.abort();
     }
   }
