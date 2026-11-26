@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "loft-bot-delivery-"));
+process.env.AGENT_LOFT_WEB_MODE = "bot";
 process.env.AGENT_LOFT_HOME = home;
 const { loadConfig } = await import("../src/core/config.js");
 loadConfig();
@@ -157,13 +158,8 @@ test("每台设备分别重试；远程退出后该订阅不再投递", async ()
 
 test("独立 Bot 部署同样限制管理员的工作台接口", async () => {
   const token = createSession(owner, "test", "test");
-  process.env.AGENT_LOFT_WEB_MODE = "bot";
-  try {
-    await assert.rejects(route("/api/bootstrap", "GET", token), { status: 403 });
-    assert.equal((await route("/api/bots", "GET", token)).status, 200);
-  } finally {
-    delete process.env.AGENT_LOFT_WEB_MODE;
-  }
+  await assert.rejects(route("/api/bootstrap", "GET", token), { status: 403 });
+  assert.equal((await route("/api/bots", "GET", token)).status, 200);
 });
 
 test("锁屏自测只投递给主动申请的本次登录和设备，并保留锁屏时间", async () => {
@@ -208,6 +204,7 @@ test("同一账号可以分别开启两个入口；相同端点也只停止选�
   const keys = { p256dh:key.getPublicKey().toString("base64url"), auth:crypto.randomBytes(16).toString("base64url") };
   const device = (name: string) => "https://web.push.apple.com/surface-" + name;
   async function enable(purpose: string, name: string) {
+    process.env.AGENT_LOFT_WEB_MODE = purpose === "bot" ? "bot" : "system";
     const response = await route("/api/push/subscribe", "POST", session, {purpose, subscription:{endpoint:device(name),keys}});
     assert.equal(response.status, 200);
   }
@@ -215,7 +212,10 @@ test("同一账号可以分别开启两个入口；相同端点也只停止选�
   await enable("workbench", "desk");
   await enable("bot", "shared");
   await enable("workbench", "shared");
-  const visible = async (purpose:string) => (await route("/api/push?purpose=" + purpose,"GET",session)).json.subscriptions.map((s: {endpoint:string}) => s.endpoint).sort();
+  const visible = async (purpose:string) => {
+    process.env.AGENT_LOFT_WEB_MODE = purpose === "bot" ? "bot" : "system";
+    return (await route("/api/push?purpose=" + purpose,"GET",session)).json.subscriptions.map((s: {endpoint:string}) => s.endpoint).sort();
+  };
   assert.deepEqual(await visible("bot"), ["phone","shared"].map(device));
   assert.deepEqual(await visible("workbench"), ["desk","shared"].map(device));
   assert.deepEqual(botPushDevices(user).map(x => x.endpoint).sort(), ["phone","shared"].map(device));
@@ -229,6 +229,7 @@ test("同一账号可以分别开启两个入口；相同端点也只停止选�
     sent.length = 0;
     for (const endpoint of ["phone","desk","shared"].map(device)) await sendBotPush(user,endpoint,sid,{title:"Bot",body:"新消息"});
     assert.deepEqual(sent.sort(), ["phone","shared"].map(device));
+    process.env.AGENT_LOFT_WEB_MODE = "bot";
     const disabled = await route("/api/push/unsubscribe","POST",session,{purpose:"bot",endpoint:device("shared")});
     assert.equal(disabled.json.retained,true);
     sent.length = 0;
@@ -240,6 +241,7 @@ test("同一账号可以分别开启两个入口；相同端点也只停止选�
     await enable("workbench","shared");
     assert.equal((await route("/api/push/unsubscribe","POST",session,{purpose:"workbench",endpoint:device("shared")})).json.retained,true);
     assert.deepEqual(await visible("bot"), ["phone","shared"].map(device));
+    process.env.AGENT_LOFT_WEB_MODE = "system";
     const oldWorkbench = { subscription: { endpoint:device("legacy-tab"), keys } };
     await assert.rejects(route("/api/push/subscribe","POST",session,oldWorkbench), { status:400 });
     assert.equal((await route("/api/push/subscribe","POST",session,oldWorkbench,{

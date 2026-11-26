@@ -105,26 +105,28 @@ test("静态文件的缓存策略和接口耗时", { timeout: 20000 }, async (t)
 
   const page = await get(base, "/");
   await t.test("Bot 地址使用自己的页面、安装入口和资源", async () => {
-    const botPage = await get(base, "/bot/");
-    assert.equal(botPage.status, 200);
-    assert.match(botPage.body.toString(), /src="\/bot\/app\.js"/);
-    const manifest = await get(base, "/bot/manifest.webmanifest");
-    const app = JSON.parse(manifest.body.toString());
-    assert.equal(app.start_url, "/bot/");
-    assert.equal((await get(base, "/bot/app.js")).status, 200);
-    // Standalone deployments have a stricter static asset allowlist.
+    assert.equal((await get(base, "/bot/app.js")).status, 404);
+    assert.equal((await get(base, "/api/bots")).status, 404);
+    assert.equal((await get(base, "/open-bot")).headers.location, "http://127.0.0.1:8810/");
+    assert.equal((await get(base, "/bot/?invite=test")).headers.location, "http://127.0.0.1:8810/?invite=test");
     const mode = process.env.AGENT_LOFT_WEB_MODE;
     try {
       process.env.AGENT_LOFT_WEB_MODE = "bot";
+      const botPage = await get(base, "/");
+      assert.equal(botPage.status, 200);
+      assert.match(botPage.body.toString(), /src="\/app\.js"/);
+      const app = JSON.parse((await get(base, "/manifest.webmanifest")).body.toString());
+      assert.equal(app.start_url, "/");
+      assert.equal((await get(base, "/app.js")).status, 200);
       for (const icon of app.icons) {
-        assert.ok(icon.src.startsWith("/bot/icons/"));
+        assert.ok(icon.src.startsWith("/icons/"));
         const asset = await get(base, icon.src);
         assert.equal(asset.status, 200, icon.src);
         assert.equal(asset.headers["content-type"], icon.type);
         assert.equal(asset.body.readUInt32BE(16) + "x" + asset.body.readUInt32BE(20), icon.sizes);
       }
       for (const asset of ["mark.svg", "apple-touch.png", "badge.png"])
-        assert.equal((await get(base, "/bot/icons/" + asset)).status, 200, asset);
+        assert.equal((await get(base, "/icons/" + asset)).status, 200, asset);
       assert.equal((await get(base, "/views/messages.js")).status, 404);
     } finally {
       if (mode === undefined) delete process.env.AGENT_LOFT_WEB_MODE;

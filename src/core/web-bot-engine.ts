@@ -30,7 +30,7 @@ export function checkBotEngineAccess(userId: string, botId: string, profile: Bot
 
 export async function generateBotText(req: BotRequest): Promise<string> {
   const { userId, botId, threadId, profile, system, content, signal } = req;
-  const image = typeof content === "string" ? undefined : content.find(block => block.type === "image");
+  const images = typeof content === "string" ? [] : content.filter(block => block.type === "image");
   const { engine } = profile;
   if (engine !== "pi") {
     req.checkAccess();
@@ -39,12 +39,12 @@ export async function generateBotText(req: BotRequest): Promise<string> {
     if (profile.model && !engineModels(engine).includes(profile.model)) throw new WebBotError(503, "这个 Bot 的模型已停用，请重新选择。");
     const model = profile.model || config().agents[engine].defaultModel;
     const prompt = typeof content === "string" ? content : content.filter(b => b.type === "text").map(b => b.text).join("\n");
-    return driver.reply({ system, prompt, signal, ...(engine === "claude" && req.claudeTools ? { claudeTools: req.claudeTools } : {}), ...(engine === "codex" && req.codexTools ? { codexTools: req.codexTools } : {}), ...(model ? { model } : {}), ...(image ? { image } : {}),
+    return driver.reply({ system, prompt, signal, ...(engine === "claude" && req.claudeTools ? { claudeTools: req.claudeTools } : {}), ...(engine === "codex" && req.codexTools ? { codexTools: req.codexTools } : {}), ...(model ? { model } : {}), ...(images.length === 1 ? { image: images[0] } : images.length ? { images } : {}),
       onUsage: (usage, actualModel) => recordUsage("bot:" + threadId, usage, false, { owner: userId, agent: engine, model: actualModel || model }),
     });
   }
 
-  const model = await pickBotModel(userId, botId, !!image);
+  const model = await pickBotModel(userId, botId, images.length > 0);
   const rt = await modelRuntime();
   req.checkAccess();
   signal.throwIfAborted();

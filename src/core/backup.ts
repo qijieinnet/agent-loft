@@ -43,8 +43,10 @@ process.emitWarning = function (w, ...rest) {
 const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
 (async () => {
   const { source, target } = workerData;
-  const raw = target + ".tmp-db";
-  const gz = target + ".tmp";
+  // 分别启动的系统和 Bot 可以共用备份目录，各自完成校验后原子替换每日备份。
+  const temp = process.env.AGENT_LOFT_WEB_MODE === "bot" ? target + ".bot" : target;
+  const raw = temp + ".tmp-db";
+  const gz = temp + ".tmp";
   let result = { ok: true };
   try {
     // 上次备份到一半进程被杀留下的：VACUUM INTO 遇到已有的文件会报错，不清掉就再也备份不了

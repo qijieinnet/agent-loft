@@ -6,7 +6,7 @@ import { nativeOptions } from "../../core/web-bot-native-catalog.js";
 import { appServer } from "./app-server.js";
 import { describeRateLimits, readAccountKey, readRateLimits, toQuota } from "./account.js";
 import { diagnose } from "./errors.js";
-import { CHAT_CONFIG, CodexSession, summarize, codexTokenUsage } from "./session.js";
+import { botChatConfig, CodexSession, summarize, codexTokenUsage } from "./session.js";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -324,9 +324,8 @@ export class CodexDriver implements AgentDriver {
     req.signal.throwIfAborted();
     const tools = req.codexTools;
     const cwd = os.tmpdir();
-    const settings = await appServer.call<{ config: { mcp_servers?: Record<string, unknown> } }>("config/read", { cwd });
-    const off = Object.fromEntries(Object.keys(settings.config.mcp_servers ?? {}).map(name => [`mcp_servers.${name}.enabled`, false]));
-    const overrides: Record<string, unknown> = { ...CHAT_CONFIG, ...off, web_search: tools?.webSearch ? "live" : "disabled", project_doc_max_bytes: 0 };
+    const overrides: Record<string, unknown> = await botChatConfig(cwd);
+    if (tools?.webSearch) overrides.web_search = "live";
     const extra = tools?.extra ?? [];
     for (const id of extra) Object.assign(overrides, nativeOptions[id].flags);
     overrides["features.multi_agent_v2"] = false;
@@ -435,7 +434,7 @@ export class CodexDriver implements AgentDriver {
         threadId,
         ...(permissions ? { permissions, cwd: tools!.directory } : {}),
         input: [{ type: "text", text: req.prompt, text_elements: [] },
-          ...(req.image ? [{ type: "image", url: `data:${req.image.mimeType};base64,${req.image.data}` }] : [])],
+          ...(req.images ?? (req.image ? [req.image] : [])).map(img => ({ type: "image", url: `data:${img.mimeType};base64,${img.data}` }))],
         effort: "low",
         ...(schema ? { outputSchema: schema } : {}),
       });

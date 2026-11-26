@@ -1,5 +1,5 @@
 import { h, icon } from "../lib/dom.js";
-import { dismissLocalNotifications } from "./push-session.js";
+import { dismissLocalNotifications } from "../lib/push-session.js";
 
 export { h, icon };
 export const byId = (id) => document.getElementById(id);
@@ -48,8 +48,8 @@ export function pushSupport() {
 
 async function pushRegistration() {
   if (pushSupport()) return null;
-  const reg = await navigator.serviceWorker.getRegistration("/bot/");
-  return reg?.scope === new URL("/bot/", location.origin).href ? reg : null;
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  return reg?.scope === new URL("/", location.origin).href ? reg : null;
 }
 
 export async function deviceSubscribed() {
@@ -76,7 +76,7 @@ export async function enableDevice() {
     throw new Error(
       permission === "denied" ? "通知权限已关闭，请到浏览器或系统设置里打开。" : "暂时跳过，提醒仍然可以在对话里查看。",
     );
-  const registration = await navigator.serviceWorker.register("/bot/sw.js", { scope: "/bot/" });
+  const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   if (!registration.active) {
     // ready can resolve to the older root worker while scope control is changing.
     const worker = registration.installing || registration.waiting;
@@ -125,11 +125,11 @@ export function clearBotNotifications({ threadId, through, delegationId } = {}) 
   dismissLocalNotifications({ type: "bot-notices-read", threadId, through, delegationId }).catch(() => {});
 }
 
-function encoded(blob) {
+export function encoded(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve({ mimeType: blob.type, data: String(reader.result).split(",")[1] });
-    reader.onerror = () => reject(new Error("照片读取失败，请重新选择。"));
+    reader.onerror = () => reject(new Error("附件读取失败，请重新选择。"));
     reader.readAsDataURL(blob);
   });
 }

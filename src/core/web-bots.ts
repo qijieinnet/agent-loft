@@ -2,10 +2,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { sql, transaction } from "./db.js";
 import { clearRevokedActivities, eraseBot, handOverBot } from "./web-bot-retention.js";
-import { getUser, userEvents } from "./users.js";
+import { activeUsers, getUser, userEvents } from "./users.js";
 
 export class WebBotError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly retryLater = false) { super(message); }
 }
 
 export const BOT_CAPABILITIES = ["reminders", "followups", "delegation", "memory"] as const;
@@ -17,6 +17,7 @@ export type BotView = {
 };
 export type BotThread = { id: string; botId: string; scope: "private" | "shared"; accessId: string };
 export type BotImage = { name: string; mediaType: string; data: string; sanitized?: 1 };
+export type BotFile = { name: string; mediaType: string; data: Uint8Array; extracted?: string | null };
 export type BotMessage = {
   id: number; role: "user" | "assistant"; authorId: string | null; authorName: string | null;
   text: string; createdAt: number; images: (Omit<BotImage, "data"> & { data?: string })[];
@@ -89,14 +90,15 @@ export function listBots(userId: string): (BotView & { previews: Record<string, 
     if (!owner || owner.disabled) return [];
     const bot = getBot(userId, String(row.id));
     // Only the caller's private thread and the current shared thread may appear in their list.
-    const latest = sql(`SELECT thread, substr(text,1,120) AS text, createdAt, images <> '[]' AS hasPhoto
+    const latest = sql(`SELECT thread, substr(text,1,120) AS text, createdAt, images <> '[]' AS hasPhoto,
+      (SELECT f.name FROM web_bot_files f WHERE f.message=web_bot_messages.id ORDER BY f.slot LIMIT 1) AS fileName
       FROM web_bot_messages WHERE id IN (
         (SELECT id FROM web_bot_messages WHERE thread=? ORDER BY id DESC LIMIT 1),
         (SELECT id FROM web_bot_messages WHERE thread=? ORDER BY id DESC LIMIT 1))`)
       .all(bot.privateThreadId, bot.sharedThreadId);
     const previews: Record<string, ConversationPreview> = {};
     for (const item of latest) previews[String(item.thread)] = {
-      text: String(item.text) || (item.hasPhoto ? "照片" : ""), createdAt: Number(item.createdAt),
+      text: String(item.text) || (item.hasPhoto ? "照片" : String(item.fileName || "")), createdAt: Number(item.createdAt),
     };
     return [{ ...bot, previews }];
   });
@@ -244,6 +246,27 @@ export function listMessages(userId: string, threadId: string, limit = 100, befo
   return sql(`SELECT ${MESSAGE_FIELDS} FROM web_bot_messages WHERE thread=? AND id<? ORDER BY id DESC LIMIT ?`)
     .all(threadId, before ?? Number.MAX_SAFE_INTEGER, Math.min(limit, 200)).reverse().map(message);
 }
+export function searchBotMessages(userId: string, query: string, before = Number.MAX_SAFE_INTEGER) {
+  const term = query.trim();
+  if (!term || term.length > 160 || !Number.isSafeInteger(before) || before < 1) throw new WebBotError(400, "请输入 1 到 160 个字的搜索词。");
+  activeUser(userId);
+  const owners = activeUsers().map(user => user.id);
+  const rows = sql(`WITH visible AS (
+      SELECT t.id,b.name AS botName,t.private_user FROM web_bot_threads t
+      JOIN web_bots b ON b.id=t.bot JOIN web_bot_members m ON m.bot=b.id AND m.user=?
+      WHERE b.owner IN (SELECT value FROM json_each(?))
+        AND (t.private_user=m.user OR (t.private_user IS NULL AND t.id=b.shared_thread))
+    )
+    SELECT msg.id,msg.thread,msg.createdAt,v.botName,
+      CASE WHEN v.private_user IS NULL THEN 'shared' ELSE 'private' END AS scope,
+      substr(msg.text, max(1,instr(lower(msg.text),lower(?))-30), 200) AS excerpt
+    FROM visible v JOIN web_bot_messages msg ON msg.thread=v.id
+    WHERE msg.id<? AND instr(lower(msg.text),lower(?))>0 ORDER BY msg.id DESC LIMIT 31`)
+    .all(userId, JSON.stringify(owners), term, before, term);
+  const matches = rows.slice(0, 30);
+  return { matches, nextBefore: rows.length > matches.length ? matches.at(-1)!.id : null };
+}
+
 export function getBotMessage(userId: string, threadId: string, messageId: number): BotMessage | undefined {
   getBotThread(userId, threadId);
   const row = sql(`SELECT ${MESSAGE_FIELDS} FROM web_bot_messages WHERE thread=? AND id=?`).get(threadId, messageId);
@@ -259,7 +282,7 @@ export function retryableBotMessages(userId: string, threadId: string, first: nu
   const { accessId } = getBotThread(userId, threadId);
   const rows = sql(`SELECT m.id FROM web_bot_messages m WHERE m.thread=? AND m.authorId=? AND m.authorAccess=?
     AND NOT EXISTS (SELECT 1 FROM web_bot_tool_attempts WHERE message=m.id)
-    AND m.id BETWEEN ? AND ? AND m.role='user' AND m.status='failed'
+    AND m.id BETWEEN ? AND ? AND m.role='user' AND m.status='failed' AND m.requestId NOT LIKE 'routine:%' AND m.requestId NOT LIKE 'voice:%'
     AND NOT EXISTS (SELECT 1 FROM web_bot_messages r WHERE r.thread=m.thread AND r.authorId=m.authorId
       AND r.role='user' AND r.requestId='retry:' || m.id)`).all(threadId, userId, accessId, first, last);
   return new Set(rows.map(row => Number(row.id)));
@@ -269,7 +292,7 @@ export async function retryBotTurn(userId: string, threadId: string, id: number)
   const access = getBotThread(userId, threadId).accessId;
   const original = getBotMessage(userId, threadId, id);
   const owned = () => sql(`SELECT 1 FROM web_bot_messages WHERE id=? AND thread=? AND authorId=? AND authorAccess=?
-    AND role='user' AND status='failed' AND NOT EXISTS (SELECT 1 FROM web_bot_tool_attempts WHERE message=web_bot_messages.id)`).get(id, threadId, userId, access);
+    AND role='user' AND status='failed' AND requestId NOT LIKE 'routine:%' AND requestId NOT LIKE 'voice:%' AND NOT EXISTS (SELECT 1 FROM web_bot_tool_attempts WHERE message=web_bot_messages.id)`).get(id, threadId, userId, access);
   if (!original || !owned()) throw new WebBotError(404, "这条消息已不可重试。");
   const { sanitizeBotImage } = await import("./web-bot-photo.js");
   const images: BotImage[] = [];
@@ -279,7 +302,8 @@ export async function retryBotTurn(userId: string, threadId: string, id: number)
   }
   return transaction(() => {
     if (getBotThread(userId, threadId).accessId !== access || !owned()) throw new WebBotError(404, "这条消息已不可重试。");
-    return startTurn(userId, threadId, "retry:" + id, original.text, images);
+    const files = sql("SELECT name,mediaType,data,extracted FROM web_bot_files WHERE message=? ORDER BY slot").all(id) as BotFile[];
+    return startTurn(userId, threadId, "retry:" + id, original.text, images, files);
   });
 }
 
@@ -313,8 +337,9 @@ function interruptTurns(where: string, parameters: string[]) {
   const rows = sql(`SELECT id,thread,requestId FROM web_bot_messages WHERE status='pending' AND ${where}`).all(...parameters);
   for (const row of rows) failPending(row);
 }
+export const botTurnTimeoutMs = 20 * 60_000;
 function stillRunning(pid: number, created: number): boolean {
-  if (Date.now() - created >= 20 * 60_000) return false;
+  if (Date.now() - created >= botTurnTimeoutMs) return false;
   if (pid === process.pid) return true;
   try { process.kill(pid, 0); return true; }
   catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
@@ -333,7 +358,7 @@ export function recoverPendingBotTurns(threadId?: string): void {
 /** 调用者持有写事务；普通轮次和委派尝试共用每人额度与并发配额。 */
 export function requireBotTurnCapacity(userId: string, createdAt = Date.now()): void {
   const pending = sql("SELECT count(*) AS total, count(*) FILTER (WHERE actor=?) AS mine FROM (SELECT authorId AS actor FROM web_bot_messages WHERE status='pending' UNION ALL SELECT actor FROM web_bot_delegations WHERE status IN ('queued','running'))").get(userId)!;
-  if (Number(pending.total) >= 8 || Number(pending.mine) >= 2) throw new WebBotError(429, "正在处理的消息较多，请稍后再发。");
+  if (Number(pending.total) >= 8 || Number(pending.mine) >= 2) throw new WebBotError(429, "正在处理的消息较多，请稍后再发。", true);
   // 额度跟着发起人，不能靠换 Bot、话题、设备时区或并发请求绕开。重复 requestId 已在上面返回。
   const rawLimit = process.env.AGENT_LOFT_BOT_DAILY_TURNS?.trim();
   const configuredLimit = rawLimit && /^\d+$/.test(rawLimit) ? Number(rawLimit) : NaN;
@@ -344,12 +369,15 @@ export function requireBotTurnCapacity(userId: string, createdAt = Date.now()): 
     if (Number(used?.n) >= limit) throw new WebBotError(429, "你今天的 Bot 消息额度已用完，请明天再试。");
   }
 }
-export function startTurn(userId: string, threadId: string, requestId: string, text: string, images: BotImage[] = []): { message: BotMessage; started: boolean } {
+export function startTurn(userId: string, threadId: string, requestId: string, text: string, images: BotImage[] = [], files: BotFile[] = []): { message: BotMessage; started: boolean } {
   return transaction(() => {
     const { accessId } = getBotThread(userId, threadId);
     if (typeof requestId !== "string" || !requestId.trim() || requestId.length > 128) throw new WebBotError(400, "消息标识无效，请重试。");
-    if (typeof text !== "string" || text.length > 12_000 || (!text.trim() && !images.length)) throw new WebBotError(400, "请输入不超过 12000 字的消息或选择图片。");
-    if (images.length > 1 || images.some(i => typeof i.data !== "string" || i.data.length > 4 * 1024 * 1024)) throw new WebBotError(413, "每次可发送一张不超过 3 MB 的图片。");
+    if (typeof text !== "string" || text.length > 12_000 || (!text.trim() && !images.length && !files.length)) throw new WebBotError(400, "请输入不超过 12000 字的消息或添加附件。");
+    if (images.length + files.length > 6 || images.some(i => typeof i.data !== "string" || i.data.length > 4 * 1024 * 1024)) throw new WebBotError(413, "每条最多 6 个附件，每张图片最多 3 MB。");
+    const bytes = files.reduce((sum, f) => sum + f.data.byteLength, 0) + images.reduce((sum, i) => sum + Buffer.byteLength(i.data!, "base64"), 0);
+    if (files.some(f => f.data.byteLength > 8 * 1024 * 1024) || bytes > 18 * 1024 * 1024)
+      throw new WebBotError(413, "单个文件最多 8 MB，附件合计最多 18 MB。");
     recoverPendingBotTurns();
     const existing = sql(`SELECT ${MESSAGE_FIELDS} FROM web_bot_messages WHERE thread=? AND authorId=? AND requestId=? AND role='user'`).get(threadId, userId, requestId);
     if (existing) return { message: message(existing), started: false };
@@ -360,6 +388,8 @@ export function startTurn(userId: string, threadId: string, requestId: string, t
     const row = sql(`INSERT INTO web_bot_messages (thread,role,authorId,authorAccess,authorName,text,createdAt,images,status,requestId,worker)
       VALUES (?,'user',?,?,?,?,?,?,'pending',?,?) RETURNING ${MESSAGE_FIELDS}`)
       .get(threadId, userId, accessId, activeUser(userId).name, text, createdAt, JSON.stringify(meta), requestId, process.pid)!;
+    files.forEach((file, slot) => sql("INSERT INTO web_bot_files(message,slot,name,mediaType,data,extracted) VALUES(?,?,?,?,?,?)")
+      .run(Number(row.id), slot, file.name, file.mediaType, file.data, file.extracted ?? null));
     hasStartedBotWork = true;
     if (images.length) sql("INSERT INTO web_bot_images (message,content) VALUES (?,?)").run(Number(row.id), JSON.stringify(images));
     return { message: message(row), started: true };

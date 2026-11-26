@@ -1,6 +1,6 @@
 {
   "name": "agent-loft",
-  "version": "0.2.143",
+  "version": "0.2.144",
   "type": "module",
   "description": "多个 agent 的工作台：把本机 Claude Code / Codex 放到一处统一管理，用飞书和 Web 页面随时驱动——会话、审批、模型切换都共用",
   "keywords": [
@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "start": "node bin/cli.js start",
-    "dev": "AGENT_LOFT_HOME=./.dev tsx watch src/main.ts",
+    "dev": "AGENT_LOFT_HOME=./.dev tsx watch --include 'src/**/*.ts' bin/cli.js start",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "build:editor": "node scripts/build-editor.mjs",
@@ -52,6 +52,7 @@
     "@earendil-works/pi-ai": "1.5.0",
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@highlightjs/cdn-assets": "^11.12.0",
+    "@js-temporal/polyfill": "^0.5.1",
     "@larksuiteoapi/node-sdk": "^1.73.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@novnc/novnc": "^1.7.0",

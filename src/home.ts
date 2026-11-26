@@ -34,6 +34,12 @@ export function writeJsonAtomic(file: string, value: unknown, mode = 0o600): voi
   fs.renameSync(tmp, file);
 }
 
+/** 同一毫秒内多次原子替换也能让其他进程的 JSON 缓存失效。 */
+export function fileStamp(file: string): string {
+  const stat = fs.statSync(file, { throwIfNoEntry: false, bigint: true });
+  return stat ? stat.ino + ":" + stat.mtimeNs : "";
+}
+
 export function readJson<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as T;

@@ -27,5 +27,5 @@ export async function sanitizeBotImage(image: BotImage): Promise<BotImage> {
 
 /** Reattach an earlier photo only when the user refers to it, not merely because it is in the same thread. */
 export function refersToPreviousPhoto(text: string): boolean {
-  return /(?:这张|那张|刚才的?|之前的?|上(?:一)?张|前面(?:的)?)(?:照片|图片|图像|截图|图(?!书))|(?:图中|图里|照片上|图片上|截图上)的?|(?:this|that|previous|last|above|attached)\s+(?:image|photo|picture|screenshot)\b|\bin the (?:image|photo|picture|screenshot)\b/i.test(text);
+  return /(?:这几张|那几张|这组|上组|上一组|这些|这张|那张|刚才的?|之前的?|上(?:一)?张|前面(?:的)?)(?:照片|图片|图像|截图|图(?!书))|(?:图中|图里|照片上|图片上|截图上)的?|(?:this|that|previous|last|above|attached)\s+(?:images?|photos?|pictures?|screenshots?)\b|\bin the (?:images?|photos?|pictures?|screenshots?)\b/i.test(text);
 }

@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import sharp from "sharp";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "bot-lifecycle-test-"));
+process.env.AGENT_LOFT_WEB_MODE = "bot";
 process.env.AGENT_LOFT_HOME = home;
 const { loadConfig } = await import("../src/core/config.js");
 loadConfig();
@@ -103,7 +104,9 @@ test("管理员删号清除私人内容及待发任务，共享 Bot 交给现有
   const st=session(admin.id), departed=session(a);
   const other = session(b);
   for (const token of [departed, other]) sql("INSERT INTO bot_device_reads VALUES (?,?,?,?)").run(pushSessionId(token),shared,1,Date.now());
-  await route(st,"/api/users/"+a,"DELETE");
+  process.env.AGENT_LOFT_WEB_MODE = "system";
+  try { await route(st,"/api/users/"+a,"DELETE"); }
+  finally { process.env.AGENT_LOFT_WEB_MODE = "bot"; }
   assert.equal(users.getUser(a),undefined);
   assert.equal(bots.getBot(b,bot.id).ownerId,b);
   assert.equal(bots.getBot(b,bot.id).isDefault,false);

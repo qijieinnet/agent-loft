@@ -340,13 +340,15 @@ export class ClaudeDriver implements AgentDriver {
   }
 
   async reply(req: EngineReplyRequest, schema?: Record<string, unknown>): Promise<string> {
+    const images = req.images ?? (req.image ? [req.image] : []);
     async function* withImage(): AsyncGenerator<SDKUserMessage> {
-      const { data, mimeType } = req.image!;
-      if (mimeType !== "image/jpeg" && mimeType !== "image/png" && mimeType !== "image/webp" && mimeType !== "image/gif")
-        throw new Error("图片格式无法识别");
-      yield { type: "user", message: { role: "user", content: [
-        { type: "text", text: req.prompt }, { type: "image", source: { type: "base64", media_type: mimeType, data } },
-      ] }, parent_tool_use_id: null, origin: { kind: "human" } };
+      const blocks = images.map(({ data, mimeType }) => {
+        if (mimeType !== "image/jpeg" && mimeType !== "image/png" && mimeType !== "image/webp" && mimeType !== "image/gif")
+          throw new Error("图片格式无法识别");
+        return { type: "image", source: { type: "base64", media_type: mimeType, data } } as const;
+      });
+      yield { type: "user", message: { role: "user", content: [{ type: "text", text: req.prompt }, ...blocks] },
+        parent_tool_use_id: null, origin: { kind: "human" } };
     }
     req.signal.throwIfAborted();
     const abort = new AbortController();
@@ -369,7 +371,7 @@ export class ClaudeDriver implements AgentDriver {
     const timer = native ? setInterval(() => { try { native.checkAccess(); } catch { cancel(); } }, 2000).unref() : undefined;
     try {
       const q = query({
-        prompt: req.image ? withImage() : req.prompt,
+        prompt: images.length ? withImage() : req.prompt,
         options: {
           cwd: os.tmpdir(),
           env: agentEnvironment(),

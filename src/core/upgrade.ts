@@ -199,7 +199,10 @@ export async function upgrade(): Promise<{ from: string; to: string; restarting:
     const restarting = !!info.service;
     if (restarting) {
       console.log(`[升级] 已准备 ${version}，重启后验证`);
-      setTimeout(() => process.exit(0), 1500).unref();
+      setTimeout(() => {
+        if (process.env.AGENT_LOFT_MANAGED_PAIR && process.send) process.send({ type: "restart-services" });
+        else process.exit(0);
+      }, 1500).unref();
     }
     return { from: RUNNING_VERSION, to: version, restarting, output: output.slice(-2000) };
   } catch (err) {

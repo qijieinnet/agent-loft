@@ -64,12 +64,15 @@ export async function deliverBotNotices(now = Date.now()): Promise<void> {
         .get(row.userId, row.threadId, row.accessId, row.eventId, row.kind)?.seen;
       let done = row.expiresAt <= now || !!read || !!alreadyOpened || !hasBotAccess(row);
       if (!done) {
+        const query = new URLSearchParams({ thread: row.threadId });
+        if (delegationId) query.set("delegation", delegationId);
+        else if (row.messageId) query.set("message", String(row.messageId));
         done = await sendBotPush(row.userId, row.endpoint, row.sessionId, {
           title: "我的 Bot",
           body:
             delegationId ? "有一项协作未完成，点此查看。" : row.kind === "test" ? "本机通知测试成功，点此返回对话。" : row.kind === "reminder" ? "你有一条到时提醒" : row.kind === "followup" ? "你跟进的事情有了更新" : "你有一条新回复",
           tag: "bot:" + row.kind + ":" + row.threadId + ":" + row.eventId,
-          url: "/bot/?thread=" + encodeURIComponent(row.threadId) + (delegationId ? "&delegation=" + delegationId : row.messageId ? "&message=" + row.messageId : ""),
+          url: "/?" + query,
         }).catch(() => false);
       }
       if (done || row.attempts >= 7) sql("DELETE FROM bot_notice_devices WHERE id=?").run(row.id);

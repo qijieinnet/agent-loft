@@ -9,11 +9,15 @@ import {
   field,
   h,
   icon,
-  photoPayload,
+  encoded, photoPayload,
   requestId,
 } from "./client.js";
-import { releaseLocalPushDevices } from "./push-session.js";
+import { releaseLocalPushDevices } from "../lib/push-session.js";
+import { fileLinks, voiceInput, stopVoiceInput } from "./attachments.js";
+import { startBotCall, stopBotCall } from "./voice-call.js";
 import { bindComposerActions } from "./composer-actions.js";
+import { newRoutine, openRoutines, routineDraft } from "./routines.js";
+import { searchHistory } from "./history-search.js";
 import { newReminder } from "./reminder-form.js";
 import { action, chooseName, closePanel, divider, note, panel, panelError, run, settingsPanel } from "./panel.js";
 import { replyText } from "./format.js";
@@ -46,7 +50,7 @@ let view = 0,
   nextBefore = null,
   earliestLoaded = null;
 function newDraft() {
-  return { text: "", image: null, requestId: null, sending: false, photoVersion: 0, readingPhoto: false };
+  return { text: "", attachments: [], requestId: null, sending: false, photoVersion: 0, readingPhoto: false };
 }
 // Drafts belong to this authenticated tab. Switching scope keeps them separate and logging out clears them.
 const drafts = new Map();
@@ -58,7 +62,7 @@ let invite =
   new URLSearchParams(location.hash.slice(1)).get("invite") || new URLSearchParams(location.search).get("invite");
 const threadPath = (id) => "/api/bots/threads/" + encodeURIComponent(id) + "/messages";
 const botPath = (id) => "/api/bots/" + encodeURIComponent(id);
-const mark = () => h("img", { class: "mark", src: "/bot/icons/mark.svg", alt: "" });
+const mark = () => h("img", { class: "mark", src: "/icons/mark.svg", alt: "" });
 function status(text = "") {
   const node = byId("status");
   node.classList.remove("success");
@@ -90,7 +94,7 @@ function queryThread() {
   return new URLSearchParams(location.search).get("thread");
 }
 function cleanURL(thread, message, delegationId) {
-  const url = new URL("/bot/", location.origin);
+  const url = new URL("/", location.origin);
   if (thread) url.searchParams.set("thread", thread);
   if (message) url.searchParams.set("message", message);
   if (delegationId) url.searchParams.set("delegation", delegationId);
@@ -98,6 +102,8 @@ function cleanURL(thread, message, delegationId) {
 }
 function setGate(...children) {
   closeComposerActions();
+  stopBotCall();
+  stopVoiceInput();
   clearTimeout(timer);
   view++;
   state.bot = null;
@@ -283,33 +289,38 @@ async function refreshBots() {
 function resizeInput() {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 142) + "px";
-  send.disabled = draft.sending || state.pending || draft.readingPhoto || (!input.value.trim() && !draft.image);
+  send.disabled = draft.sending || state.pending || draft.readingPhoto || (!input.value.trim() && !draft.attachments.length);
 }
 function paintPhoto() {
   const preview = byId("preview");
   preview.replaceChildren();
-  preview.hidden = !draft.image;
-  if (draft.image) {
-    const remove = button(icon("x"), () => { draft.requestId = null; clearPhoto(); }, "icon-button");
-    remove.setAttribute("aria-label", "移除照片");
-    preview.append(h("img", { alt: "待发送的照片", src: "data:" + draft.image.mimeType + ";base64," + draft.image.data }), remove);
+  preview.hidden = !draft.attachments.length;
+  for (const [i, item] of draft.attachments.entries()) {
+    const remove = button(icon("x"), () => { if (draft.sending) return; draft.attachments.splice(i, 1); draft.requestId = null; paintPhoto(); }, "icon-button");
+    remove.setAttribute("aria-label", item.photo ? "移除照片" : "移除" + item.name);
+    remove.disabled = draft.sending;
+    preview.append(h("span", { class: "draft-attachment" }, item.photo
+      ? h("img", { alt: "待发送的照片", src: "data:" + item.mimeType + ";base64," + item.data })
+      : h("span", {}, item.name), remove));
   }
   resizeInput();
 }
 function clearPhoto() {
   draft.photoVersion++;
-  draft.image = null;
+  draft.attachments = [];
   draft.readingPhoto = false;
   fileInput.value = "";
   paintPhoto();
 }
 async function openThread(bot, thread, { message, delegationId, moveFocus = true } = {}) {
   closeComposerActions();
+  stopBotCall();
+  stopVoiceInput();
   if (!bot || !thread) return;
   chat.dataset.pane = "thread";
   if (state.thread) {
     draft.text = input.value;
-    if (!draft.text && !draft.image && !draft.readingPhoto && !draft.sending) drafts.delete(state.thread);
+    if (!draft.text && !draft.attachments.length && !draft.readingPhoto && !draft.sending) drafts.delete(state.thread);
   }
   draft = drafts.get(thread) || newDraft();
   drafts.set(thread, draft);
@@ -318,6 +329,7 @@ async function openThread(bot, thread, { message, delegationId, moveFocus = true
   view++;
   sequence++;
   state.bot = bot;
+  byId("choose-call").hidden = true;
   state.thread = thread;
   state.pending = false;
   state.reminders = [];
@@ -367,6 +379,8 @@ async function openThread(bot, thread, { message, delegationId, moveFocus = true
 function applyProfile(profile) {
   const bot = state.bot;
   if (!bot) return;
+  byId("choose-call").hidden = profile.engine !== "codex";
+  if (profile.engine !== "codex") stopBotCall();
   bot.capabilities = profile.capabilities;
   if (freshBot()) freshBot().capabilities = profile.capabilities;
   const purpose = byId("purpose");
@@ -381,6 +395,7 @@ function showWelcome(visible) {
 }
 function updateStarters() {
   byId("start-reminder").hidden = !can("reminders");
+  byId("choose-routine").hidden = !can("reminders");
   byId("choose-reminder").hidden = !can("reminders");
   byId("start-follow").hidden = !can("followups");
 }
@@ -393,8 +408,8 @@ function showMessage(message, bot, thread) {
     "data-id": message.id,
   });
   const bubble = h("div", { class: "bubble" });
-  if (message.image || message.images?.length) {
-    const path = threadPath(thread) + "/" + encodeURIComponent(message.id) + "/image";
+  for (let i = 0; i < (message.imageCount ?? (message.image ? 1 : 0)); i++) {
+    const path = threadPath(thread) + "/" + encodeURIComponent(message.id) + "/image" + (i ? "?index=" + i : "");
     bubble.append(
       h(
         "a",
@@ -403,6 +418,7 @@ function showMessage(message, bot, thread) {
       ),
     );
   }
+  bubble.append(...fileLinks(message.files, threadPath(thread) + "/" + message.id));
   const callStates = { pending: "等待确认", approved: "已同意", denied: "已拒绝", cancelled: "已取消", expired: "已过期",
     ready: "准备调用", running: "执行中", done: "已完成", failed: "执行失败", unknown: "结果未确认" };
   for (const call of message.calls || []) {
@@ -441,6 +457,21 @@ function showMessage(message, bot, thread) {
     line.append(retry);
   }
   if (message.text) bubble.append(message.role === "assistant" ? replyText(message.text) : h("div", { class: "message-text" }, message.text));
+  if (message.sources?.length) {
+    const refs = h("ul", { class: "reply-sources", "aria-label": "引用的原消息" });
+    for (const source of message.sources) {
+      const href = "/?" + new URLSearchParams({ thread, message: String(source.id) });
+      const link = h("a", { href }, "查看原消息 · " + source.excerpt);
+      link.onclick = event => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || state.thread !== thread) return;
+        event.preventDefault();
+        closePanel();
+        focusMessage(thread, source.id);
+      };
+      refs.append(h("li", {}, link));
+    }
+    bubble.append(refs);
+  }
   if (message.role === "assistant" && message.requestId == null && message.text?.startsWith("跟进「")) {
     bubble.append(button("查看跟进", () => followups(thread, bot).catch((err) => status(err.message)), "secondary"));
   }
@@ -542,7 +573,7 @@ async function refreshThread(force = false) {
       const latest = messages.at(-1), currentBot = freshBot();
       if (latest && currentBot) {
         currentBot.previews ??= {};
-        currentBot.previews[thread] = { text: latest.text.slice(0,120) || (latest.images?.length || latest.image ? "照片" : ""), createdAt: latest.createdAt };
+        currentBot.previews[thread] = { text: latest.text.slice(0,120) || (latest.images?.length || latest.image ? "照片" : latest.files?.[0]?.name || ""), createdAt: latest.createdAt };
         renderRail();
       }
       const pinned = force || !rendered || nearBottom();
@@ -641,8 +672,8 @@ byId("compose").onsubmit = async (e) => {
   const thread = state.thread,
     captured = view;
   const submittedDraft = draft;
-  const text = input.value.trim(), image = draft.image;
-  const remember = !image && /^(?:请|帮我)?记住[\s：:，,]*(.+)$/su.exec(text);
+  const text = input.value.trim(), attachments = draft.attachments;
+  const remember = !attachments.length && /^(?:请|帮我)?记住[\s：:，,]*(.+)$/su.exec(text);
   if (remember) {
     if (!can("memory")) { status("这个 Bot 已关闭记忆，可以在 Bot 资料中查看能力设置。"); return; }
     memoryEditor(memoryContext(), remember[1].trim(), () => {
@@ -656,21 +687,32 @@ byId("compose").onsubmit = async (e) => {
     });
     return;
   }
+  const routine = !attachments.length && routineDraft(text);
+  if (routine) {
+    if (!can("reminders")) { status("这个 Bot 已关闭提醒能力。"); return; }
+    newRoutine(state.bot.privateThreadId, routine, () => {
+      if (view !== captured || input.value.trim() !== text) return;
+      input.value = draft.text = "";
+      draft.requestId = null;
+      resizeInput();
+    });
+    return;
+  }
   // Keep the same id if a network failure hides an already accepted result.
   draft.requestId ||= requestId();
   const id = draft.requestId;
   draft.sending = true;
-  resizeInput();
+  paintPhoto();
   status();
   try {
     await api(threadPath(thread), "POST", {
       text,
       requestId: id,
-      ...(image ? { image } : {}),
+      images: attachments.filter(item => item.photo), files: attachments.filter(item => !item.photo),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
     if (submittedDraft.requestId === id) {
-      submittedDraft.image = null;
+      submittedDraft.attachments = [];
       submittedDraft.text = "";
       submittedDraft.requestId = null;
       if (draft === submittedDraft) { input.value = ""; clearPhoto(); }
@@ -686,7 +728,7 @@ byId("compose").onsubmit = async (e) => {
   } finally {
     submittedDraft.sending = false;
     if (draft === submittedDraft) {
-      resizeInput();
+      paintPhoto();
     }
   }
 };
@@ -701,27 +743,51 @@ input.onkeydown = (e) => {
     if (!send.disabled) byId("compose").requestSubmit();
   }
 };
-fileInput.onchange = async () => {
-  const file = fileInput.files[0];
-  if (!file) return;
+async function addAttachments(files, photo = false) {
   const ownerDraft = draft;
+  if (!files.length || ownerDraft.readingPhoto || ownerDraft.sending) return;
   const version = ++ownerDraft.photoVersion;
   ownerDraft.readingPhoto = true;
-  ownerDraft.requestId = null;
   resizeInput();
-  status();
   try {
-    const image = await photoPayload(file);
-    if (version === ownerDraft.photoVersion) ownerDraft.image = image;
+    if (ownerDraft.attachments.length + files.length > 6) throw new Error("每条消息最多 6 个附件。");
+    const batch = [];
+    for (const file of files) {
+      if (!photo && file.size > 8 * 1024 * 1024) throw new Error("每个文件或录音最多 8 MB。");
+      batch.push({ ...await (photo ? photoPayload(file) : encoded(file)), photo, name: file.name });
+    }
+    if (version !== ownerDraft.photoVersion) return;
+    if ([...ownerDraft.attachments, ...batch].reduce((total, f) => total + f.data.length, 0) > 24 * 1024 * 1024)
+      throw new Error("单条消息的附件合计最多 18 MB。");
+    ownerDraft.attachments.push(...batch);
+    ownerDraft.requestId = null;
+    if (ownerDraft === draft) status();
   } catch (err) {
-    if (ownerDraft === draft && version === draft.photoVersion) status(err.message);
+    if (ownerDraft === draft && version === ownerDraft.photoVersion) status(err.message);
   } finally {
     if (version === ownerDraft.photoVersion) {
       ownerDraft.readingPhoto = false;
       if (ownerDraft === draft) paintPhoto();
     }
   }
+}
+for (const control of [fileInput, byId("documents"), byId("audio-file")]) control.onchange = () => {
+  const files = Array.from(control.files);
+  control.value = "";
+  addAttachments(files, control === fileInput);
 };
+function startVoiceInput() {
+  const owner = draft;
+  voiceInput({
+    appendFile: file => { if (draft === owner) return addAttachments([file]); },
+    chooseAudio: () => byId("audio-file").click(),
+    appendText: text => {
+      if (draft !== owner) return;
+      input.value += (input.value ? " " : "") + text;
+      input.dispatchEvent(new Event("input"));
+    },
+  });
+}
 
 function conversationScope(bot, id) {
   if (id !== bot.sharedThreadId) return "仅你可见";
@@ -730,6 +796,8 @@ function conversationScope(bot, id) {
 function showConversationList(focus = false) {
   chat.dataset.pane = "list";
   closeComposerActions();
+  stopBotCall();
+  stopVoiceInput();
   closePanel();
   cleanURL();
   if (focus && compact.matches) byId("rail-title").focus({ preventScroll: true });
@@ -863,6 +931,7 @@ function settings() {
     setting("记住的事", "bookmark", () => openMemories(memoryContext())),
     can("followups") && setting("跟进的事", "outline", () => followups(thread, bot)),
     setting("请其他 Bot 帮忙", "handoff", () => openDelegations(delegationContext())),
+    setting("周期任务", "clock", () => openRoutines(bot.privateThreadId, can("reminders"))),
     can("reminders") && setting("查看我的提醒", "clock", remindersPanel),
   ];
   const manage = [];
@@ -951,7 +1020,7 @@ function invitePanel(bot) {
         const { token } = await api(botPath(bot.id) + "/invites", "POST", {});
         await refreshBots();
         state.bot = freshBot();
-        const url = new URL("/bot/", location.origin);
+        const url = new URL("/", location.origin);
         url.hash = "invite=" + encodeURIComponent(token);
         const link = h("input", { id: "invite-link", type: "url", readonly: true, value: url.href });
         const copy = action(
@@ -1201,6 +1270,19 @@ byId("choose").onclick = () => {
   }
 };
 byId("rail-search").oninput = renderRail;
+byId("history-search").onsubmit = async event => {
+  event.preventDefault();
+  const term = byId("rail-search").value.trim();
+  if (!term) return;
+  await searchHistory(term, async (thread, message, live) => {
+    await refreshBots();
+    if (!live()) return;
+    const bot = state.bots.find(b => b.privateThreadId === thread || b.sharedThreadId === thread);
+    if (!bot) throw new Error("这段对话已不可访问。");
+    byId("rail-search").value = "";
+    await openThread(bot, thread, { message });
+  });
+};
 byId("search-glyph").append(icon("search"));
 byId("manage").onclick = settings;
 byId("rail-add").append(icon("edit"));
@@ -1219,7 +1301,14 @@ byId("start-photo").prepend(icon("library"));
 byId("start-photo").onclick = () => fileInput.click();
 byId("start-reminder").prepend(icon("clock"));
 byId("start-reminder").onclick = startReminder;
-const closeComposerActions = bindComposerActions(() => fileInput.click(), startReminder);
+const closeComposerActions = bindComposerActions(() => fileInput.click(), startReminder, () => openRoutines(state.bot.privateThreadId), () => byId("documents").click(), startVoiceInput, () => {
+  const thread = state.thread;
+  if (!thread) return;
+  stopVoiceInput();
+  startBotCall(thread, state.bot.name, thread === state.bot.sharedThreadId, reason => {
+    if (state.thread === thread) { status(reason); void refreshThread(true); }
+  });
+});
 send.append(icon("send"));
 window.addEventListener("popstate", () => {
   if (!state.user || chat.hidden) return;
@@ -1263,11 +1352,11 @@ window.addEventListener("online", () => {
   if (state.thread) refreshThread();
 });
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/bot/sw.js", { scope: "/bot/" }).catch(() => {});
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
   navigator.serviceWorker.addEventListener("message", (e) => {
     if (e.data?.type !== "open") return;
     const url = new URL(e.data.url, location.origin);
-    if (url.origin !== location.origin || url.pathname !== "/bot/") return;
+    if (url.origin !== location.origin || url.pathname !== "/") return;
     const thread = url.searchParams.get("thread");
     const message = url.searchParams.get("message"), delegationId = url.searchParams.get("delegation");
     // Navigate inside this authenticated tab so that an incoming notice can't discard another thread's draft.

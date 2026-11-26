@@ -29,11 +29,13 @@ import { cookies } from "./http.js";
 import { assetToken, parseVersioned, stampIndex } from "./assets.js";
 import { compressedFile, compressibleExt, MIN_SIZE, pickEncoding } from "./compress.js";
 import { COOKIE } from "./api.js";
-import { HttpError, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
+import { HttpError, isHttps, viaTrustedProxy, pageHeaders, sameOrigin, SECURITY_HEADERS, sendJson } from "./http.js";
 import { hasSubscriptions, pushToAll } from "./push.js";
 import { closeListener, listen, listening, rebind } from "./listen.js";
+import { serveBotVoice } from "./bot-voice.js";
 import { botDeployment } from "./bot-access.js";
 import { startBotDelegations, stopBotDelegations } from "../../core/web-bot-delegation-worker.js";
+import { startBotRoutines, stopBotRoutines } from "../../core/web-bot-routine-worker.js";
 import { startBotDelivery, stopBotDelivery } from "./bot-delivery.js";
 import { recoverPendingBotTurns } from "../../core/web-bots.js";
 import { closeTerminalClients, pingTerminalClients, recheckTerminalClients, upgradeTerminal } from "./terminal.js";
@@ -191,16 +193,39 @@ function serveIndex(req: http.IncomingMessage, res: http.ServerResponse, file: s
 }
 
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
-  if (url.pathname === "/bot" || (url.pathname === "/" && (botDeployment() || currentUser(req)?.botOnly))) {
-    res.writeHead(302, { ...SECURITY_HEADERS, Location: "/bot/" + url.search, "Cache-Control": "no-store" });
+  if (botDeployment()) {
+    if (url.pathname === "/bot" || url.pathname === "/bot/") {
+      res.writeHead(302, { ...SECURITY_HEADERS, Location: "/" + url.search, "Cache-Control": "no-store" });
+      res.end();
+      return;
+    }
+    const asset = url.pathname === "/" ? "/index.html" : url.pathname;
+    const shared = ["/lib/dom.js", "/lib/loft-mark.js", "/lib/push-session.js", "/lib/push-worker.js", "/lib/rt-worklet.js", "/lib/voice-loopback.js"];
+    if (shared.includes(asset)) return serveFile(req, res, path.join(webRoot, asset));
+    if (/^\/[\w-]+\.(?:js|css|html|webmanifest)$/.test(asset) || /^\/icons\/[\w-]+\.(?:svg|png)$/.test(asset)) {
+      return serveFile(req, res, path.join(webRoot, "bot", asset));
+    }
+    res.writeHead(404, SECURITY_HEADERS);
     res.end();
     return;
   }
-  if (botDeployment() && !/^\/bot\/(?:[\w-]+\.(?:js|css|html|webmanifest))?$/.test(url.pathname) &&
-    !/^\/bot\/icons\/[\w-]+\.(?:svg|png)$/.test(url.pathname) &&
-    !["/sw.js", "/icon.svg", "/icon-maskable.svg", "/apple-touch-icon.png", "/lib/dom.js", "/lib/loft-mark.js"].includes(url.pathname)) {
-    res.writeHead(404, SECURITY_HEADERS);
-    res.end();
+
+  // 保留旧邀请与主屏幕入口的查询参数，页面和资源只从 Bot 服务提供。
+  if (["/open-bot", "/bot", "/bot/"].includes(url.pathname) || (url.pathname === "/" && currentUser(req)?.botOnly)) {
+    try {
+      const forwarded = viaTrustedProxy(req) && req.headers["x-forwarded-host"];
+      const host = typeof forwarded === "string" ? forwarded.split(",")[0]!.trim() : req.headers.host;
+      const publicOrigin = process.env.AGENT_LOFT_BOT_URL;
+      const target = new URL(publicOrigin || `${isHttps(req) ? "https" : "http"}://${host}`);
+      if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) throw new Error();
+      if (!publicOrigin) target.port = String(botPort());
+      const location = new URL("/", target);
+      location.search = url.search;
+      res.writeHead(302, { ...SECURITY_HEADERS, Location: location.href, "Cache-Control": "no-store" });
+      res.end();
+    } catch {
+      sendJson(res, 503, { error: "Bot 入口地址或端口配置无效" });
+    }
     return;
   }
   const versioned = parseVersioned(url.pathname);
@@ -258,11 +283,15 @@ function servePath(req: http.IncomingMessage, res: http.ServerResponse, pathname
     res.end("bad request");
     return;
   }
-  if (rel === "/bot/") rel = "/bot/index.html";
-  else if (rel === "/" || !path.extname(rel)) rel = "/index.html"; // 单页应用
+  if (rel === "/" || !path.extname(rel)) rel = "/index.html"; // 单页应用
   const file = path.resolve(webRoot, `.${rel}`);
   if (!file.startsWith(webRoot + path.sep)) {
     res.writeHead(403);
+    res.end();
+    return;
+  }
+  if (file.startsWith(path.join(webRoot, "bot") + path.sep)) {
+    res.writeHead(404, SECURITY_HEADERS);
     res.end();
     return;
   }
@@ -695,6 +724,12 @@ let heartbeat: NodeJS.Timeout | null = null;
 let stopWatchingListen: (() => void) | null = null;
 let stopWatchingRemote: (() => void) | null = null;
 
+function botPort(): number {
+  const port = Number(process.env.AGENT_LOFT_BOT_PORT ?? 8810);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("AGENT_LOFT_BOT_PORT 必须在 1 到 65535 之间");
+  return port;
+}
+
 export async function startWeb(): Promise<void> {
   const { host, port } = config().web;
 
@@ -731,12 +766,19 @@ export async function startWeb(): Promise<void> {
   });
 
   if (botDeployment()) {
-    const bindPort = Number(process.env.AGENT_LOFT_BOT_PORT ?? port);
-    if (!Number.isInteger(bindPort) || bindPort < 1 || bindPort > 65535) throw new Error("AGENT_LOFT_BOT_PORT 必须在 1 到 65535 之间");
+    const bindPort = botPort();
+    if (process.env.AGENT_LOFT_MANAGED_PAIR && config().web.enabled && bindPort === port) throw new Error("Bot 和系统需要使用不同的监听端口");
     const bindHost = process.env.AGENT_LOFT_BOT_HOST || host;
-    server.on("upgrade", (_req, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"));
+    closeBotVoice = serveBotVoice(server);
     await listen(server, bindHost, bindPort);
     ready(bindHost, bindPort);
+    if (!process.env.AGENT_LOFT_BOT_HOST) {
+      stopWatchingListen = onConfigChange((next) => {
+        if (listening()?.host !== next.web.host) {
+          rebind(next.web.host, bindPort).catch(err => console.error("[bot] 换监听地址失败:", err));
+        }
+      });
+    }
     return;
   }
 
@@ -845,11 +887,14 @@ export async function startWeb(): Promise<void> {
 }
 
 function ready(host: string, port: number): void {
-  recoverBotAccounts();
-  recoverPendingBotTurns();
-  startBotDelivery();
-  startBotDelegations();
-  console.log(`[web] 已监听 http://${host}:${port}`);
+  if (botDeployment()) {
+    recoverBotAccounts();
+    recoverPendingBotTurns();
+    startBotDelivery();
+    startBotRoutines();
+    startBotDelegations();
+  }
+  console.log(`[${botDeployment() ? "bot" : "web"}] 已监听 http://${host}:${port}`);
   const token = ensureSetupToken();
   if (token) {
     console.log("=".repeat(56));
@@ -864,10 +909,17 @@ function onRevoked(): void {
   recheckDesktopClients();
 }
 
+let closeBotVoice: (() => void) | undefined;
+
 export async function stopWeb(): Promise<void> {
-  await stopBotDelegations();
-  await stopBotDelivery();
   if (botDeployment()) {
+    stopWatchingListen?.();
+    stopWatchingListen = null;
+    closeBotVoice?.();
+    closeBotVoice = undefined;
+    await stopBotRoutines();
+    await stopBotDelegations();
+    await stopBotDelivery();
     await closeHttp();
     return;
   }

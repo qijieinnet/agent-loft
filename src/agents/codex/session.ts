@@ -129,6 +129,14 @@ export const CHAT_CONFIG: Record<string, unknown> = {
   ),
 };
 
+/** Both typed Bot replies and live calls start with the same tool restrictions. */
+export async function botChatConfig(cwd: string) {
+  const { config } = await appServer.call<{ config: { mcp_servers?: Record<string, unknown> } }>("config/read", { cwd });
+  const disabledServers = Object.fromEntries(Object.keys(config.mcp_servers ?? {}).map(name => [`mcp_servers.${name}.enabled`, false]));
+  return { ...CHAT_CONFIG, ...disabledServers, web_search: "disabled", project_doc_max_bytes: 0,
+    "features.multi_agent_v2": false, "agents.max_depth": 0 };
+}
+
 /**
  * 按权限在 CHAT_CONFIG 上打开的东西。能读文件就要 shell（Codex 读文件也是跑命令，沙箱只读管着它改不了）；
  * 能改文件再给 apply_patch。

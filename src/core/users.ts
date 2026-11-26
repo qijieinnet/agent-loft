@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { dataDir, readJson, writeJsonAtomic } from "../home.js";
+import { dataDir, fileStamp, readJson, writeJsonAtomic } from "../home.js";
 import { config } from "./config.js";
 import { transaction } from "./db.js";
 import { purgeBotAccount, recoverRemovedBotAccounts } from "./web-bot-retention.js";
@@ -52,30 +52,22 @@ const usersPath = path.join(dataDir, "users.json");
 export const userEvents = new EventEmitter<{ changed: [accessChanged: boolean] }>();
 
 let cache: User[] | null = null;
-let loadedMtime = 0;
-
-function mtimeOf(file: string): number {
-  try {
-    return fs.statSync(file).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
+let loadedStamp = "";
 
 /** 上次看文件有没有变的时间：广播事件时每个连接都要查归属，别每次都 stat 一下 */
 let checkedAt = 0;
 const RECHECK_MS = 1000;
 
-function load(): User[] {
+function load(fresh = false): User[] {
   // 终端里 agent-loft user … 会改这个文件：变了就重新读（最多晚 1 秒发现）
   const now = Date.now();
-  if (cache && cache.length > 0 && now - checkedAt < RECHECK_MS) return cache;
+  if (!fresh && cache && cache.length > 0 && now - checkedAt < RECHECK_MS) return cache;
   checkedAt = now;
-  const mtime = mtimeOf(usersPath);
-  if (!cache || mtime !== loadedMtime) {
+  const stamp = fileStamp(usersPath);
+  if (fresh || !cache || stamp !== loadedStamp) {
     const raw = readJson<StoreShape>(usersPath, { users: [] });
     cache = Array.isArray(raw.users) ? raw.users.filter((u) => u && typeof u.id === "string" && typeof u.name === "string") : [];
-    loadedMtime = mtime;
+    loadedStamp = stamp;
   }
   migrateLegacy(cache);
   return cache;
@@ -84,7 +76,7 @@ function load(): User[] {
 function persistUsers(list: User[]): void {
   writeJsonAtomic(usersPath, { users: list });
   cache = list;
-  loadedMtime = mtimeOf(usersPath);
+  loadedStamp = fileStamp(usersPath);
 }
 
 function save(list: User[], accessChanged = true): void {
@@ -105,10 +97,17 @@ function migrateLegacy(list: User[]): void {
     return;
   }
   if (!legacy) return;
-  list.push({ id: newId(), name: "admin", role: "admin", passwordHash: legacy, createdAt: Date.now() });
-  writeJsonAtomic(usersPath, { users: list });
-  loadedMtime = mtimeOf(usersPath);
-  console.log("[用户] 已把原来的登录密码迁移为管理员账号 admin");
+  transaction(() => {
+    const existing = readJson<StoreShape>(usersPath, { users: [] }).users;
+    if (existing?.length) {
+      list.push(...existing);
+      return;
+    }
+    list.push({ id: newId(), name: "admin", role: "admin", passwordHash: legacy, createdAt: Date.now() });
+    writeJsonAtomic(usersPath, { users: list });
+    loadedStamp = fileStamp(usersPath);
+    console.log("[用户] 已把原来的登录密码迁移为管理员账号 admin");
+  });
 }
 
 function newId(): string {
@@ -246,7 +245,7 @@ export function adminVisible(owner: string | undefined): boolean {
  * 校验登录。name 没给、并且只有一个能登录的用户时就是他 —— 单用户时登录页和以前一样只要密码。
  */
 export function verifyLogin(name: string | undefined, password: string): User | undefined {
-  const active = activeUsers();
+  const active = load(true).filter(u => !u.disabled);
   const user = name?.trim() ? active.find((u) => u.name.toLowerCase() === name.trim().toLowerCase()) : active.length === 1 ? active[0] : undefined;
   const ok = verifyPassword(password, user?.passwordHash ?? dummy());
   return ok ? user : undefined;
@@ -260,64 +259,68 @@ function assertAdminLeft(list: User[]): void {
 }
 
 export function createUser(params: { name: string; password: string; role?: Role; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown; botOnly?: boolean }): PublicUser {
-  const list = load();
-  const name = checkName(params.name);
-  if (list.some((u) => u.name.toLowerCase() === name.toLowerCase())) throw new Error(`用户名「${name}」已经有人用了`);
-  checkPassword(params.password);
-  const user: User = {
-    id: newId(),
-    name,
-    role: params.role === "admin" ? "admin" : "member",
-    passwordHash: hashPassword(params.password),
-    createdAt: Date.now(),
-    ...(params.botOnly ? { botOnly: true } : {}),
-    ...(params.remote === true ? { remote: true } : {}),
-    ...(params.files === true ? { files: true } : {}),
-    ...(params.gitRemote === true ? { gitRemote: true } : {}),
-    ...(params.permissions !== undefined ? { permissions: cleanPermissions(params.permissions) } : {}),
-  };
-  save([...list, user]);
-  return publicUser(user);
+  return transaction(() => {
+    const list = load(true);
+    const name = checkName(params.name);
+    if (list.some((u) => u.name.toLowerCase() === name.toLowerCase())) throw new Error(`用户名「${name}」已经有人用了`);
+    checkPassword(params.password);
+    const user: User = {
+      id: newId(),
+      name,
+      role: params.role === "admin" ? "admin" : "member",
+      passwordHash: hashPassword(params.password),
+      createdAt: Date.now(),
+      ...(params.botOnly ? { botOnly: true } : {}),
+      ...(params.remote === true ? { remote: true } : {}),
+      ...(params.files === true ? { files: true } : {}),
+      ...(params.gitRemote === true ? { gitRemote: true } : {}),
+      ...(params.permissions !== undefined ? { permissions: cleanPermissions(params.permissions) } : {}),
+    };
+    save([...list, user]);
+    return publicUser(user);
+  });
 }
 
 export function updateUser(
   id: string,
   patch: { name?: string; role?: Role; disabled?: boolean; password?: string; remote?: boolean; files?: boolean; gitRemote?: boolean; permissions?: unknown },
 ): PublicUser {
-  const list = load().map((u) => ({ ...u }));
-  const user = list.find((u) => u.id === id);
-  if (!user) throw new Error("用户不存在");
-  if (patch.name !== undefined) {
-    const name = checkName(patch.name);
-    if (list.some((u) => u.id !== id && u.name.toLowerCase() === name.toLowerCase())) throw new Error(`用户名「${name}」已经有人用了`);
-    user.name = name;
-  }
-  if (patch.role !== undefined) user.role = patch.role === "admin" ? "admin" : "member";
-  if (patch.disabled !== undefined) {
-    if (patch.disabled && !user.disabled) user.botAccessRevision = (user.botAccessRevision ?? 0) + 1;
-    if (patch.disabled) user.disabled = true;
-    else delete user.disabled;
-  }
-  if (patch.remote !== undefined) {
-    if (patch.remote) user.remote = true;
-    else delete user.remote;
-  }
-  if (patch.files !== undefined) {
-    if (patch.files) user.files = true;
-    else delete user.files;
-  }
-  if (patch.gitRemote !== undefined) {
-    if (patch.gitRemote) user.gitRemote = true;
-    else delete user.gitRemote;
-  }
-  if (patch.permissions !== undefined) user.permissions = cleanPermissions(patch.permissions, user.permissions);
-  if (patch.password !== undefined) {
-    checkPassword(patch.password);
-    user.passwordHash = hashPassword(patch.password);
-  }
-  assertAdminLeft(list);
-  save(list, patch.permissions !== undefined || patch.role !== undefined || patch.disabled !== undefined);
-  return publicUser(user);
+  return transaction(() => {
+    const list = load(true).map((u) => ({ ...u }));
+    const user = list.find((u) => u.id === id);
+    if (!user) throw new Error("用户不存在");
+    if (patch.name !== undefined) {
+      const name = checkName(patch.name);
+      if (list.some((u) => u.id !== id && u.name.toLowerCase() === name.toLowerCase())) throw new Error(`用户名「${name}」已经有人用了`);
+      user.name = name;
+    }
+    if (patch.role !== undefined) user.role = patch.role === "admin" ? "admin" : "member";
+    if (patch.disabled !== undefined) {
+      if (patch.disabled && !user.disabled) user.botAccessRevision = (user.botAccessRevision ?? 0) + 1;
+      if (patch.disabled) user.disabled = true;
+      else delete user.disabled;
+    }
+    if (patch.remote !== undefined) {
+      if (patch.remote) user.remote = true;
+      else delete user.remote;
+    }
+    if (patch.files !== undefined) {
+      if (patch.files) user.files = true;
+      else delete user.files;
+    }
+    if (patch.gitRemote !== undefined) {
+      if (patch.gitRemote) user.gitRemote = true;
+      else delete user.gitRemote;
+    }
+    if (patch.permissions !== undefined) user.permissions = cleanPermissions(patch.permissions, user.permissions);
+    if (patch.password !== undefined) {
+      checkPassword(patch.password);
+      user.passwordHash = hashPassword(patch.password);
+    }
+    assertAdminLeft(list);
+    save(list, patch.permissions !== undefined || patch.role !== undefined || patch.disabled !== undefined);
+    return publicUser(user);
+  });
 }
 
 export function removeUser(id: string): PublicUser {
@@ -354,6 +357,6 @@ export function recoverBotAccounts(): void {
 /** 测试用：换了 AGENT_LOFT_HOME 之后重新读 */
 export function resetUsersForTest(): void {
   cache = null;
-  loadedMtime = 0;
+  loadedStamp = "";
   checkedAt = 0;
 }

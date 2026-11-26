@@ -2,7 +2,7 @@ import { byId, icon } from "./client.js";
 
 // Native popovers stay above the chat (including on iOS). Older browsers keep the same
 // actions, keyboard controls and anchor using a fixed-position menu.
-export function bindComposerActions(choosePhoto, chooseReminder) {
+export function bindComposerActions(choosePhoto, chooseReminder, chooseRoutine, chooseFile, chooseVoice, chooseCall) {
   const trigger = byId("attach"), menu = byId("compose-actions");
   const items = [...menu.querySelectorAll('[role="menuitem"]')];
   const native = typeof menu.showPopover === "function";
@@ -74,7 +74,7 @@ export function bindComposerActions(choosePhoto, chooseReminder) {
   window.addEventListener("resize", position);
   window.visualViewport?.addEventListener("resize", position);
   trigger.append(icon("plus"));
-  for (const [item, symbol, action] of [[items[0], "library", choosePhoto], [items[1], "clock", chooseReminder]]) {
+  for (const [item, symbol, action] of [[items[0], "library", choosePhoto], [byId("choose-file"), "library", chooseFile], [byId("choose-voice"), "mic", chooseVoice], [byId("choose-call"), "mic", chooseCall], [byId("choose-routine"), "clock", chooseRoutine], [byId("choose-reminder"), "clock", chooseReminder]]) {
     item.prepend(icon(symbol));
     item.onclick = () => { close(true); action(); };
   }

@@ -3,18 +3,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const script = readFileSync(new URL("../web/sw.js", import.meta.url), "utf8");
-const origin = "https://loft.test";
+const script = readFileSync(new URL("../web/lib/push-worker.js", import.meta.url), "utf8");
+const botOrigin = "https://loft.test:8810";
+const systemOrigin = "https://loft.test";
 type Notice = { title:string; data:{url:string}; close:()=>void };
 
-function worker(scope: string) {
+function worker(origin: string) {
   const notices = new Map<string,Notice>();
   const listeners = new Map<string,(event:Record<string,unknown>)=>void>();
   let badge = 0;
   const self = {
-    location:{origin}, addEventListener:(kind:string,fn:(e:Record<string,unknown>)=>void) => listeners.set(kind,fn),
+    loftBot: origin === botOrigin, location:{origin}, addEventListener:(kind:string,fn:(e:Record<string,unknown>)=>void) => listeners.set(kind,fn),
     registration:{
-      scope:origin+scope, getNotifications: async () => [...notices.values()],
+      scope:origin+"/", getNotifications: async () => [...notices.values()],
       showNotification: async (title:string,body:{tag:string;data:{url:string}}) => {
         notices.set(body.tag,{title,data:body.data,close:()=>{notices.delete(body.tag);}});
       },
@@ -29,43 +30,43 @@ function worker(scope: string) {
   }
   return {
     notices, badge:()=>badge,
-    push:(tag:string,url:string)=>dispatch("push",{data:{json:()=>({title:tag,body:"通知",tag,url})}}),
-    read:(page:string,data:object)=>dispatch("message",{source:{url:origin+page},data}),
+    push:(tag:string,url:string,purpose = origin === botOrigin ? "bot" : "workbench")=>dispatch("push",{data:{json:()=>({title:tag,body:"通知",tag,url,purpose})}}),
+    read:(page:string,data:object)=>dispatch("message",{source:{url:new URL(page, origin).href},data}),
   };
 }
 
 test("两个通知注册分别计数；Bot 只清已读消息或点开的失败协作", async () => {
-  const bot = worker("/bot/");
-  const workbench = worker("/");
+  const bot = worker(botOrigin);
+  const workbench = worker(systemOrigin);
   const botRead = {type:"bot-notices-read",threadId:"A",through:6};
   const workbenchRead = {type:"workbench-notices-read"};
   await workbench.push("workbench notice","/#chat");
-  await bot.push("a5","/bot/?thread=A&message=5");
-  await bot.push("a7","/bot/?thread=A&message=7");
-  await bot.push("b1","/bot/?thread=B&message=1");
-  await bot.push("task","/bot/?thread=A&delegation=assist");
+  await bot.push("a5","/?thread=A&message=5");
+  await bot.push("a7","/?thread=A&message=7");
+  await bot.push("b1","/?thread=B&message=1");
+  await bot.push("task","/?thread=A&delegation=assist");
   assert.equal(bot.badge(),4);
   await bot.read("/",workbenchRead);
   assert.equal(bot.badge(),4);
-  await bot.read("/",botRead);
+  await bot.read(systemOrigin,botRead);
   assert.equal(bot.badge(),4);
-  await bot.read("/bot/",botRead);
+  await bot.read("/",botRead);
   assert.deepEqual([...bot.notices.keys()],["a7","b1","task"]);
   assert.equal(bot.badge(),3);
-  await workbench.read("/bot/",botRead);
+  await workbench.read(botOrigin,botRead);
   assert.equal(workbench.badge(),1);
   await workbench.read("/",workbenchRead);
   assert.equal(workbench.badge(),0);
-  await bot.read("/bot/",{type:"bot-notices-read",threadId:"A",delegationId:"assist"});
+  await bot.read("/",{type:"bot-notices-read",threadId:"A",delegationId:"assist"});
   assert.deepEqual([...bot.notices.keys()],["a7","b1"]);
-  await bot.push("private preview","/#workbench");
+  await bot.push("private preview","/#workbench", "workbench");
   assert.equal([...bot.notices.values()].some(n=>n.title==="private preview"), false);
   await workbench.push("second workbench", "/");
-  await workbench.read("/bot/", {type:"notifications-disabled"});
+  await workbench.read(botOrigin, {type:"notifications-disabled"});
   assert.equal(workbench.notices.size, 1);
-  await bot.read("/bot/", {type:"notifications-disabled"});
+  await bot.read("/", {type:"notifications-disabled"});
   assert.equal(bot.notices.size, 0);
-  await bot.push("before sign-out", "/bot/?thread=C&message=9");
+  await bot.push("before sign-out", "/?thread=C&message=9");
   await bot.read("/", {type:"session-ended"});
   assert.equal(bot.notices.size, 0);
   assert.equal(bot.badge(), 0);

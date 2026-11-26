@@ -59,7 +59,7 @@ export async function dropPushSub() {
     await dropRelayPush();
     return [];
   }
-  const { releaseLocalPushDevices } = await import("../bot/push-session.js");
+  const { releaseLocalPushDevices } = await import("./push-session.js");
   return releaseLocalPushDevices();
 }
 
@@ -67,7 +67,7 @@ export async function disableWorkbenchPush(endpoint, localSubscription) {
   const { retained } = await api("/api/push/unsubscribe", { method: "POST", body: { endpoint, purpose: "workbench" } });
   if (localSubscription?.endpoint === endpoint) {
     if (!retained) await localSubscription.unsubscribe().catch(() => {});
-    const { dismissLocalNotifications } = await import("../bot/push-session.js");
+    const { dismissLocalNotifications } = await import("./push-session.js");
     await dismissLocalNotifications({ type: "notifications-disabled" });
   }
 }

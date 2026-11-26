@@ -12,7 +12,7 @@ if (process.env.AGENT_LOFT_UPGRADE_TRIAL && process.connected) {
 }
 
 const COMMANDS = {
-  start: "../src/main.ts",
+  start: "./start.js",
   import: "../src/cli/import.ts",
   pair: "../src/cli/pair.ts",
   passwd: "../src/cli/passwd.ts",
@@ -24,7 +24,9 @@ const COMMANDS = {
 const USAGE = `agent-loft —— 用飞书 / Web 驱动本机的 Claude Code 和 Codex
 
 用法：
-  agent-loft start            启动（默认命令）
+  agent-loft start            同时启动系统和 Bot（默认命令）
+  agent-loft start system     只启动系统
+  agent-loft start bot        只启动 Bot
   agent-loft import           从旧的 feishu-claude-bridge / feishu-codex-bridge 导入配置和会话
   agent-loft pair ...         配对管理：list | approve <配对码> | revoke <机器人id> <open_id>
   agent-loft passwd           重置 Web 登录密码（--user 名字 指定用户，默认是管理员）
@@ -66,7 +68,10 @@ async function runCommand() {
 
   if (!hasReleases) register();
   try {
-    await import(new URL(target, import.meta.url).href);
+    if (command === "start") {
+      const { startServices } = await import(new URL(target, import.meta.url).href);
+      await startServices(rest);
+    } else await import(new URL(target, import.meta.url).href);
   } catch (err) {
     if (process.env.AGENT_LOFT_DEBUG || process.env.IM_AGENT_DEBUG) throw err;
     process.stderr.write(`${err instanceof Error ? err.message : err}\n`);

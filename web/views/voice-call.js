@@ -1,3 +1,4 @@
+import { appleAudio, loopback } from "../lib/voice-loopback.js";
 import { h, icon, toast } from "../lib/dom.js";
 import { desktop, S, ui } from "../state.js";
 import { WS } from "../lib/ws.js";
@@ -19,8 +20,7 @@ const supported = !desktop && !!window.AudioWorkletNode && !!navigator.mediaDevi
  * 回复的声音直接从 AudioContext 放出来，iOS / Safari 的回声消除照样管得到；Chrome 等的回声消除只认 WebRTC 放出来的声音，
  * 不绕一下模型会听到自己说话、自己打断自己：在本页里用一对 RTCPeerConnection 环回一下，再交给 <audio> 放
  */
-const ua = navigator.userAgent;
-const appleAudio = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) || (/Safari\//.test(ua) && !/Chrome|Chromium|Edg|OPR|Firefox/.test(ua));
+
 
 const call = {
   /** idle / connecting / live */
@@ -632,33 +632,6 @@ function loadWorklet(ctx) {
     workletLoaded.set(ctx, p);
   }
   return p;
-}
-
-/** 本页里一对 RTCPeerConnection 把声音环回一下，让浏览器的回声消除认得它（见 appleAudio） */
-async function loopback(stream) {
-  const a = new RTCPeerConnection();
-  const b = new RTCPeerConnection();
-  const close = () => {
-    a.close();
-    b.close();
-  };
-  try {
-    a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {});
-    b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {});
-    const got = new Promise((resolve, reject) => {
-      b.ontrack = (e) => resolve(e.streams[0] ?? new MediaStream([e.track]));
-      setTimeout(() => reject(new Error("环回超时")), 3000);
-    });
-    for (const t of stream.getTracks()) a.addTrack(t, stream);
-    await a.setLocalDescription(await a.createOffer());
-    await b.setRemoteDescription(a.localDescription);
-    await b.setLocalDescription(await b.createAnswer());
-    await a.setRemoteDescription(b.localDescription);
-    return { stream: await got, close };
-  } catch (err) {
-    close();
-    throw err;
-  }
 }
 
 /** 服务器转来的回复声音（WebSocket 二进制帧：24kHz 16 位 PCM） */

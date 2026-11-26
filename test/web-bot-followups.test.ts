@@ -8,6 +8,7 @@ import { once } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "loft-followups-"));
+process.env.AGENT_LOFT_WEB_MODE = "bot";
 process.env.AGENT_LOFT_HOME = home;
 const db = await import("../src/core/db.js");
 const users = await import("../src/core/users.js");

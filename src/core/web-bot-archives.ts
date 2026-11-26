@@ -1,3 +1,4 @@
+import { filesInPage } from "./web-bot-files.js";
 import { sql } from "./db.js";
 import { getBot, WebBotError, type BotImage } from "./web-bots.js";
 
@@ -25,7 +26,7 @@ export function readBotArchive(user: string, bot: string, thread: string, sectio
   switch (section) {
     case "messages":
       statement = sql(`SELECT id AS cursor,createdAt AS at,coalesce(authorName,'Bot') AS label,text,
-        json_array_length(images)>0 AS image FROM web_bot_messages WHERE thread=? AND id<? ORDER BY id DESC LIMIT 41`);
+        json_array_length(images) AS image FROM web_bot_messages WHERE thread=? AND id<? ORDER BY id DESC LIMIT 41`);
       break;
     case "memories":
       statement = sql(`SELECT rowid AS cursor,createdAt AS at,'共享记忆' AS label,text FROM web_bot_memories
@@ -40,13 +41,19 @@ export function readBotArchive(user: string, bot: string, thread: string, sectio
   }
   const rows = statement.all(thread, before);
   const items = rows.slice(0,40);
+  if (section === "messages" && items.length) {
+    const files = filesInPage(thread, Number(items.at(-1)!.cursor), Number(items[0]!.cursor));
+    return { items: items.map(item => ({ ...item, files: files.get(Number(item.cursor)) })), nextBefore: rows.length > items.length ? Number(items.at(-1)?.cursor) : null };
+  }
   return { items, nextBefore: rows.length > items.length ? Number(items.at(-1)?.cursor) : null };
 }
 
-export function readArchivedPhoto(user: string, bot: string, thread: string, message: number): BotImage {
+export function readArchivedPhoto(user: string, bot: string, thread: string, message: number, index = 0): BotImage {
   requireBotArchive(user, bot, thread);
   const row = sql(`SELECT i.content FROM web_bot_images i JOIN web_bot_messages m ON m.id=i.message
     WHERE m.thread=? AND m.id=?`).get(thread, message);
   if (!row) throw new WebBotError(404, "找不到归档内的照片。");
-  return (JSON.parse(String(row.content)) as BotImage[])[0]!;
+  const image = (JSON.parse(String(row.content)) as BotImage[])[index];
+  if (!image) throw new WebBotError(404, "找不到归档内的照片。");
+  return image;
 }

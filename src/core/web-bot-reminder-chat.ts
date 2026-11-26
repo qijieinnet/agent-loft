@@ -1,7 +1,7 @@
 // A model may propose an operation. The user's message and the currently stored reminders determine consent.
 import { listBotReminders, type ReminderAction } from "./web-bot-reminders.js";
 
-export const recurrenceNotice = "目前只支持一次性提醒。请告诉我下一次要提醒的日期和时间。";
+export const recurrenceNotice = "请打开「周期任务」，确认重复时间、内容和通知方式后启用。";
 const reminderWord = /提醒|闹钟|通知我|叫我|\bremind(?:er(?:s)?)?\b|\balarm\b/i;
 const periodicPatterns = [
   /每(?:隔|逢|次|日|天|晚|早|夜|年|季|分钟|个?(?:工作日|周末|月|星期|礼拜|周|小时)|[一二两三四五六七八九十\d]+.{0,4}(?:天|周|日|小时|分钟|月))/,

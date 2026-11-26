@@ -3,7 +3,7 @@ import { sql, transaction } from "./db.js";
 
 type RemainingAccount = { id: string; disabled?: boolean };
 
-const deliveryTables = ["bot_reminders", "bot_reminder_actions", "bot_inbox", "bot_notice_events", "bot_notice_devices"] as const;
+const deliveryTables = ["web_bot_routines", "bot_reminders", "bot_reminder_actions", "bot_inbox", "bot_notice_events", "bot_notice_devices"] as const;
 
 /** End outstanding deliveries and authorizations when a member leaves or the owner closes sharing. */
 export function clearRevokedActivities(bot: string, owner: string, removedMember?: string) {

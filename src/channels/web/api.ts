@@ -31,6 +31,7 @@ import {
   type User,
 } from "../../core/users.js";
 import type { AttachmentInfo, SavedAttachment } from "../../core/types.js";
+import { transaction } from "../../core/db.js";
 import { dailyUsage } from "../../core/usage.js";
 import { localUsage } from "../../core/local-usage.js";
 import { builtinAgentDefaults } from "../../core/builtin-agents.js";
@@ -631,6 +632,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const method = req.method ?? "GET";
   const p = url.pathname;
   const ip = clientIp(req);
+  if (!botDeployment() && /^\/api\/(?:bots(?:\/|$)|bot-)/.test(p)) throw new HttpError(404, "请从 Bot 服务访问");
   if (p.startsWith("/api/bot-events/")) return handleBotEvent(req, res, url);
   const user = currentUser(req);
 
@@ -677,10 +679,12 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const body = await readJsonBody<{ name?: string; password?: string }>(req);
     const left = takeAttempt(ip);
     if (left) throw new HttpError(429, `尝试次数太多，请 ${Math.ceil(left / 60000)} 分钟后再试`);
-    const user = verifyLogin(typeof body.name === "string" ? body.name : undefined, String(body.password ?? ""));
-    if (!user) throw new HttpError(403, listUsers().filter((u) => !u.disabled).length > 1 ? "用户名或密码不对" : "密码不对");
-    clearAttempts(ip);
-    newSession(req, res, user.id);
+    transaction(() => {
+      const user = verifyLogin(typeof body.name === "string" ? body.name : undefined, String(body.password ?? ""));
+      if (!user) throw new HttpError(403, listUsers().filter((u) => !u.disabled).length > 1 ? "用户名或密码不对" : "密码不对");
+      clearAttempts(ip);
+      newSession(req, res, user.id);
+    });
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -827,6 +831,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const botOnly = user.botOnly || botDeployment();
     const purpose = value ?? (botOnly ? "bot" : "workbench");
     if (purpose !== "bot" && purpose !== "workbench") throw new HttpError(400, "无效的通知入口");
+    if (!botDeployment() && purpose === "bot") throw new HttpError(403, "请从 Bot 服务开启通知");
     if (botOnly && purpose !== "bot") throw new HttpError(403, "此入口只提供 Bot 通知");
     return purpose;
   };
@@ -2096,7 +2101,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (p === "/api/system/restart" && method === "POST") {
     if (!process.env.INVOCATION_ID) throw new HttpError(400, "当前不是以系统服务运行，重启后不会自动拉起。请在终端里手动重启。");
     sendJson(res, 200, { ok: true });
-    setTimeout(() => process.kill(process.pid, "SIGTERM"), 300);
+    setTimeout(() => {
+      if (process.env.AGENT_LOFT_MANAGED_PAIR && process.send) process.send({ type: "restart-services" });
+      else process.kill(process.pid, "SIGTERM");
+    }, 300);
     return;
   }
 

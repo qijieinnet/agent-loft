@@ -7,6 +7,7 @@ import path from "node:path";
 import net from "node:net";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import "tsx/esm";
 
@@ -54,7 +55,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
       }
       const blocks = context.messages[0].content,
         data = JSON.parse(blocks[0].text);
-      seen.push({ data, hasPhoto: blocks.some((block) => block.type === "image") });
+      seen.push({ data, hasPhoto: blocks.some(block => block.type === "image"), imageCount: blocks.filter(block => block.type === "image").length, attachmentText: blocks.find(block => block.text?.startsWith("以下附件"))?.text });
       let reply = { text: "收到：" + data.latest.text };
       if (data.latest.text === "确认测试" && !blocks.some(b => b.text?.includes('"toolResult"'))) {
         const catalog = JSON.parse(blocks.find(b => b.text?.startsWith("本轮可用工具")).text.split("\n")[1]);
@@ -62,6 +63,11 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
       }
       if (data.latest.text === "想安排一次周末野餐")
         reply.text = "可以从这份两人清单开始。\n\n**随身带好**\n- 饮用水和简单的食物\n- 野餐垫、纸巾和垃圾袋\n\n**出发前**\n1. 查看当天的天气\n2. 约好集合时间";
+      if (data.latest.text === "之前为什么准备野餐垫？") {
+        const lookup = blocks.find(b => b.text?.startsWith('{"historySearch":'));
+        const source = lookup && JSON.parse(lookup.text).results.find(m => m.text.includes("两人清单"));
+        reply = source ? { text: "当时在准备两人野餐。", sources: [source.id] } : { historySearch: { query: "两人清单" } };
+      }
       if (data.latest.text.includes("提醒"))
         reply.reminder = { kind: "create", text: "带水壶", dueAt: new Date(Date.now() + 3600000).toISOString() };
       return {
@@ -78,7 +84,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   const cfg = config();
   cfg.workspaceRoot = home;
   cfg.web.host = "127.0.0.1";
-  cfg.web.port = port;
+  process.env.AGENT_LOFT_BOT_PORT = String(port);
   saveConfig(cfg);
   await mkdir(path.join(home, "Bot 工作文件夹"));
   const workDirectory = await realpath(path.join(home, "Bot 工作文件夹"));
@@ -87,6 +93,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await startWeb();
   browser = await chromium.launch({
     headless: true,
+    args: ["--use-fake-device-for-media-stream"],
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
       ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
       : {}),
@@ -107,7 +114,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
       .first()
       .waitFor();
   };
-  await owner.goto(base + "/bot/");
+  await owner.goto(base + "/");
   await owner.getByLabel("启动日志中的设置码").waitFor();
   assert.equal(await owner.evaluate(() => document.activeElement === document.body), true);
   await shot(owner, "bot-mobile-setup");
@@ -118,40 +125,20 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await owner.locator("#rail-list .bot-choice").filter({ hasText: "我的助手" }).click();
   await owner.getByRole("heading", { name: "有什么想交给我？" }).waitFor();
   const privateURL = owner.url();
-  // Real browser registrations must isolate native notifications under the same origin.
+  // Native notifications belong to the root registration of the Bot origin.
   await context.grantPermissions(["notifications"], { origin: base });
   const scope = await owner.evaluate(async () => new URL((await navigator.serviceWorker.ready).scope).pathname);
-  assert.equal(scope, "/bot/");
+  assert.equal(scope, "/");
   await owner.evaluate(async () => {
     const bot = await navigator.serviceWorker.ready;
-    await navigator.serviceWorker.register("/sw.js", { scope: "/" });
-    const desk = await navigator.serviceWorker.getRegistration("/");
-    if (!desk.active) {
-      const pending = desk.installing || desk.waiting;
-      await new Promise((resolve, reject) => {
-        function changed() {
-          if (pending.state === "activated") resolve();
-          if (pending.state === "redundant") reject(Error("workbench worker unavailable"));
-        }
-        pending.addEventListener("statechange", changed);
-        changed();
-      });
-    }
-    await bot.showNotification("合成的 Bot 通知", {tag:"bot-fixture",data:{url:"/bot/?thread=fixture&message=1"}});
-    await desk.showNotification("合成的工作台通知", {tag:"workbench-fixture",data:{url:"/#fixture"}});
-    const { clearBotNotifications } = await import("/bot/client.js");
+    await bot.showNotification("合成的 Bot 通知", {tag:"bot-fixture",data:{url:"/?thread=fixture&message=1"}});
+    const { clearBotNotifications } = await import("/client.js");
     clearBotNotifications({threadId:"fixture",through:1});
   });
   await owner.waitForFunction(async () => {
-    const bot = await navigator.serviceWorker.getRegistration("/bot/");
+    const bot = await navigator.serviceWorker.getRegistration("/");
     return (await bot.getNotifications({tag:"bot-fixture"})).length === 0;
   });
-  assert.equal(await owner.evaluate(async () => {
-    const desk = await navigator.serviceWorker.getRegistration("/");
-    const notifications = await desk.getNotifications({tag:"workbench-fixture"});
-    notifications.forEach(n => n.close());
-    return notifications.length;
-  }), 1);
   await open(owner, "返回对话列表");
   const search = owner.getByRole("searchbox", { name: "搜索对话" });
   await search.fill("不存在的名字");
@@ -294,6 +281,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     if (req.method !== "POST") return res.writeHead(405).end();
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
+    if (req.url === "/transcribe") return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ text: "录音样本转写" }));
     const msg = JSON.parse(Buffer.concat(chunks));
     if (msg.id == null) return res.writeHead(202).end();
     let result;
@@ -303,6 +291,7 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
   }).listen(0, "127.0.0.1");
   await once(mcp, "listening");
+  process.env.AGENT_LOFT_BOT_TRANSCRIPTION_URL = "http://127.0.0.1:" + mcp.address().port + "/transcribe";
   t.after(() => { mcp.closeAllConnections(); mcp.close(); });
   await open(owner, "添加 HTTP 连接");
   await owner.getByLabel("连接名称（必填）").fill("测试连接");
@@ -483,6 +472,90 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
     "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVQImWNgcFkFQhAKABduA7lrxR6YAAAAAElFTkSuQmCC",
     "base64",
   );
+  await owner.locator("#photo").setInputFiles(["第一页.png", "第二页.png"].map(name => ({ name, mimeType: "image/png", buffer: png })));
+  await owner.locator("#preview img").nth(1).waitFor();
+  await owner.locator("#documents").setInputFiles({ name: "清单.csv", mimeType: "text/csv", buffer: Buffer.from("物品,数量\n水壶,2") });
+  await owner.locator("#preview").getByText("清单.csv", { exact: true }).waitFor();
+  await write(owner, "比较两张照片和清单");
+  assert.equal(seen.at(-1).imageCount, 2);
+  assert.match(seen.at(-1).attachmentText, /水壶,2/);
+  const downloadUrl = await owner.getByRole("link", { name: "清单.csv" }).getAttribute("href");
+  assert.match(await (await owner.request.get(base + downloadUrl)).text(), /水壶,2/);
+  await write(owner, "刚才的表格里写了什么？");
+  assert.match(seen.at(-1).attachmentText, /水壶,2/);
+  await context.grantPermissions(["microphone"], { origin: base });
+  await open(owner, "添加");
+  await owner.getByRole("menuitem", { name: "语音", exact: true }).click();
+  await open(owner, "开始录音");
+  await owner.getByText("正在录音，最多 3 分钟。完成后可随消息发送。").waitFor();
+  // MediaRecorder emits its first nonempty chunk after the 500 ms timeslice.
+  await owner.waitForTimeout(750);
+  await open(owner, "完成录音");
+  await owner.locator("#preview").getByText(/语音消息[.]/).waitFor();
+  await open(owner, "发送消息");
+  await owner.locator("#messages audio").waitFor({ state: "attached" });
+  await owner.getByText("转写文字", { exact: true }).click();
+  await owner.locator("#messages").getByText("录音样本转写", { exact: true }).waitFor();
+  assert.match(seen.at(-1).attachmentText, /录音样本转写/);
+  const audioUrl = await owner.locator("#messages audio").getAttribute("src");
+  const audioHeader = await owner.request.get(base + audioUrl, { headers: { Range: "bytes=0-3" } });
+  assert.equal(audioHeader.status(), 206);
+  assert.equal((await audioHeader.body()).length, 4);
+  await write(owner, "刚才的表格有几行？");
+  assert.match(seen.at(-1).attachmentText, /水壶,2/);
+  assert.doesNotMatch(seen.at(-1).attachmentText, /录音样本转写/);
+  // Toggle the actual Bot profile. Only the upstream voice socket is simulated in this browser test.
+  const voiceUser = (await (await owner.request.get(base + "/api/me")).json()).user;
+  const cards = (await (await owner.request.get(base + "/api/bots")).json()).bots;
+  const myBot = cards.find(b => b.privateThreadId === new URL(privateURL).searchParams.get("thread"));
+  const { updateBotProfile, getBotProfile } = await fromPackage("src/core/web-bot-profile.ts");
+  const original = getBotProfile(voiceUser.id, myBot.id);
+  const voiceProfile = await updateBotProfile(voiceUser.id, myBot.id, { revision: original.revision, engine: "codex" });
+  let resolveFrame, resolveEnd;
+  const micFrame = new Promise(resolve => { resolveFrame = resolve; });
+  const callEnded = new Promise(resolve => { resolveEnd = resolve; });
+  await owner.routeWebSocket("**/ws/bot-voice/*", route => {
+    route.send(JSON.stringify({ type: "ready" }));
+    route.onMessage(data => {
+      if (!Buffer.isBuffer(data) || data.length !== 960) return;
+      route.send(data);
+      route.send(JSON.stringify({ type: "caption", role: "assistant", text: "通话测试字幕", final: true }));
+      resolveFrame();
+    });
+    route.onClose(() => resolveEnd());
+  });
+  await owner.reload();
+  await owner.locator("#choose-call:not([hidden])").waitFor({state:"attached"});
+  await open(owner, "添加");
+  await owner.getByRole("menuitem", {name:"实时通话"}).click();
+  const call = owner.getByRole("dialog", {name:/实时通话/});
+  await call.getByText("已接通，可以说话了。").waitFor();
+  await micFrame;
+  await call.getByText(/通话测试字幕/).waitFor();
+  await open(owner, "静音");
+  assert.equal(await call.getByRole("button",{name:"静音"}).getAttribute("aria-pressed"), "true");
+  await open(owner, "挂断");
+  await callEnded;
+  await call.waitFor({state:"hidden"});
+  await owner.evaluate(() => {
+    const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async constraints => {
+      const stream = await original(constraints);
+      window.testCallMic = stream.getAudioTracks()[0];
+      return stream;
+    };
+  });
+  const leftCall = new Promise(resolve => { resolveEnd = resolve; });
+  await open(owner, "添加");
+  await owner.getByRole("menuitem", {name:"实时通话"}).click();
+  await call.getByText("已接通，可以说话了。").waitFor();
+  await owner.evaluate(url => navigator.serviceWorker.dispatchEvent(new MessageEvent("message", {data:{type:"open", url}})), secondURL);
+  await owner.waitForURL(secondURL);
+  await leftCall;
+  assert.equal(await owner.evaluate(() => window.testCallMic.readyState), "ended");
+  await updateBotProfile(voiceUser.id, myBot.id, { revision: voiceProfile.revision, engine: original.engine, model: original.model });
+  await owner.goto(privateURL);
+  await owner.getByRole("textbox",{name:"消息",exact:true}).waitFor();
   await owner.locator("#photo").setInputFiles({ name: "notice.png", mimeType: "image/png", buffer: png });
   await owner.getByRole("img", { name: "待发送的照片" }).waitFor();
   await write(owner, "看这张通知，提醒我带水壶");
@@ -496,6 +569,71 @@ test("手机 Bot 首次设置、照片和提醒、链接邀请、私聊和共享
   await owner.getByRole("dialog").getByRole("button", { name: /带水壶/ }).click();
   await open(owner, "取消这个提醒");
   await owner.locator("#messages").getByText("已取消提醒：带水壶",{exact:true}).waitFor();
+  // The Bot-only server runs confirmed schedules even when the workbench is absent.
+  const command = "每周一早上 9 点检查备份，异常才提醒我";
+  await owner.locator("#message").fill(command);
+  await open(owner, "发送消息");
+  const confirmRoutine = owner.getByRole("dialog", { name: "确认周期任务" });
+  await confirmRoutine.waitFor();
+  assert.equal(await confirmRoutine.getByLabel("当地时间").inputValue(), "09:00");
+  assert.equal(await confirmRoutine.getByLabel("周一", { exact: true }).isChecked(), true);
+  assert.equal(await confirmRoutine.getByLabel("通知方式").inputValue(), "smart");
+  const thread = new URL(privateURL).searchParams.get("thread");
+  const routinesUrl = base + "/api/bots/threads/" + thread + "/routines";
+  const routines = async () => (await (await owner.request.get(routinesUrl)).json()).tasks;
+  assert.equal((await routines()).length, 0);
+  await open(owner, "确认启用");
+  const routineList = owner.getByRole("dialog", { name: "周期任务", exact: true });
+  await routineList.getByText(/下次执行/).waitFor();
+  await open(owner, "暂停任务");
+  await routineList.getByText("已暂停").waitFor();
+  await open(owner, "编辑任务");
+  const edit = owner.getByRole("dialog", { name: "编辑周期任务" });
+  await edit.getByLabel("当地时间").fill("10:30");
+  await edit.getByLabel("周三", { exact: true }).check();
+  await open(owner, "保存更改");
+  await routineList.getByText("已暂停").waitFor();
+  const [edited] = await routines();
+  assert.deepEqual(edited.timing, { kind: "weekly", time: "10:30", days: [1, 3] });
+  await open(owner, "立即执行一次");
+  await open(owner, "确认执行");
+  const runHistory = owner.getByRole("dialog", { name: "执行记录" });
+  await runHistory.getByText(/手动执行 · 已完成/).waitFor();
+  assert.equal((await routines())[0].nextAt, null);
+  await open(owner, "返回周期任务");
+  await open(owner, "恢复任务");
+  await routineList.getByText(/下次执行/).waitFor();
+  const [task] = await routines();
+  const { sql } = await fromPackage("src/core/db.ts");
+  sql("UPDATE web_bot_routines SET nextAt=? WHERE id=?").run(Date.now() - 1, task.id);
+  let lastRun;
+  const deadline = Date.now() + 15000;
+  do {
+    const { runs } = await (await owner.request.get(routinesUrl + "/" + task.id)).json();
+    lastRun = runs.find(r => !r.manual);
+    if (lastRun && lastRun.status !== "running") break;
+    await delay(250);
+  } while (Date.now() < deadline);
+  assert.equal(lastRun?.status, "done", JSON.stringify(lastRun));
+  assert.match(lastRun.result, /收到：检查备份/);
+  await open(owner, "执行记录");
+  try {
+    await owner.getByRole("dialog", { name: "执行记录" }).locator("section").filter({ hasText: "定时执行" }).getByText(lastRun.result, { exact: true }).waitFor({ timeout: 5000 });
+  } catch (error) {
+    throw new Error("执行记录未显示：" + JSON.stringify({ panel: await owner.locator("#panel").textContent(), errors }), { cause: error });
+  }
+  await open(owner, "关闭");
+  await open(owner, "返回对话列表");
+  await search.fill("已取消提醒：带水壶");
+  await search.press("Enter");
+  await owner.locator(".history-match").filter({ hasText: "已取消提醒：带水壶" }).click();
+  await owner.waitForFunction(() => document.activeElement?.matches("#messages [data-id]"));
+  assert.equal(await owner.evaluate(() => document.activeElement.textContent.includes("已取消提醒：带水壶")), true);
+  await write(owner, "之前为什么准备野餐垫？", "当时在准备两人野餐。");
+  const reference = owner.getByRole("link", { name: /查看原消息 · .*两人清单/ });
+  const citedId = new URL(await reference.getAttribute("href"), base).searchParams.get("message");
+  await reference.click();
+  await owner.waitForFunction(id => document.activeElement?.dataset.id === id, citedId);
   // A notification can open a different thread while text and a photo are still being composed.
   const composer = owner.getByRole("textbox", {name:"消息", exact:true});
   const preview = owner.getByRole("img", {name:"待发送的照片"});

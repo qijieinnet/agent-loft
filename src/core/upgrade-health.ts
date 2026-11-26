@@ -11,8 +11,8 @@ export async function verifyUpgradeWeb(host: string, port: number, bot = false):
     }
     return res;
   }
-  const html = await (await get(bot ? "/bot/" : "/", /text\/html/)).text();
-  for (const [file, type] of [["app.js", /javascript/], [bot ? "bot/style.css" : "css/base.css", /text\/css/]] as const) {
+  const html = await (await get("/", /text\/html/)).text();
+  for (const [file, type] of [["app.js", /javascript/], [bot ? "style.css" : "css/base.css", /text\/css/]] as const) {
     const asset = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)].find(([, url]) => url?.endsWith("/" + file))?.[1];
     if (!asset || !(await (await get(asset, type)).text()).trim()) throw new Error(`网页资源缺失：${file}`);
   }

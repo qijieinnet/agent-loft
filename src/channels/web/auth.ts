@@ -13,7 +13,7 @@ import path from "node:path";
 import { config, saveConfig } from "../../core/config.js";
 import { sql, transaction } from "../../core/db.js";
 import { createUser, getUser, hasUsers, legacyOwnerId, updateUser, userEvents, type PublicUser, type User } from "../../core/users.js";
-import { dataDir, readJson, writeJsonAtomic } from "../../home.js";
+import { dataDir, fileStamp, readJson, writeJsonAtomic } from "../../home.js";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -34,15 +34,7 @@ export type WebSession = {
 };
 
 let sessions: Record<string, WebSession> | null = null;
-let loadedMtime = 0;
-
-function mtimeOf(file: string): number {
-  try {
-    return fs.statSync(file).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
+let loadedStamp = "";
 
 function forgetSession(store: Record<string, WebSession>, id: string): void {
   if (!store[id]) return;
@@ -53,13 +45,19 @@ function forgetSession(store: Record<string, WebSession>, id: string): void {
   delete store[id];
 }
 
-function loadSessions(): Record<string, WebSession> {
+function readSessions(): Record<string, WebSession> {
   // 终端里 agent-loft passwd 会清空登录态：文件变了就重新读，让被踢的设备立刻失效
-  const mtime = mtimeOf(sessionsPath);
-  if (!sessions || mtime !== loadedMtime) {
+  const stamp = fileStamp(sessionsPath);
+  if (!sessions || stamp !== loadedStamp) {
     sessions = readJson<Record<string, WebSession>>(sessionsPath, {});
-    loadedMtime = mtime;
+    loadedStamp = stamp;
   }
+  return sessions;
+}
+
+// 调用者持有 SQLite 写锁。旧登录态补归属、清理过期设备和 JSON 改写一起串行执行。
+function loadSessions(): Record<string, WebSession> {
+  const sessions = readSessions();
   const now = Date.now();
   let stamped = false;
   for (const [id, s] of Object.entries(sessions)) {
@@ -82,7 +80,7 @@ function loadSessions(): Record<string, WebSession> {
 
 function saveSessions(): void {
   writeJsonAtomic(sessionsPath, sessions ?? {});
-  loadedMtime = mtimeOf(sessionsPath);
+  loadedStamp = fileStamp(sessionsPath);
 }
 
 function sha256(value: string): string {
@@ -94,7 +92,8 @@ export function pushSessionId(token: string): string {
 }
 
 export function activePushSession(id: string, userId: string): boolean {
-  const session = loadSessions()[id];
+  let session = readSessions()[id];
+  if (session && !session.userId) session = transaction(() => loadSessions()[id]);
   return !!session && session.expiresAt > Date.now() && ownerOf(session) === userId;
 }
 
@@ -114,30 +113,34 @@ export function needsSetup(): boolean {
  * 之前残留的登录态全部作废：否则它们没记用户，会被当成升级前的登录态认给这个新管理员。
  */
 export function setupFirstAdmin(name: string, password: string): PublicUser {
-  if (hasUsers()) throw new Error("已经设置过了");
-  const old = loadSessions();
-  const user = createUser({ name: name.trim() || "admin", password, role: "admin" });
-  for (const id of Object.keys(old)) forgetSession(old, id);
-  sessions = {};
-  saveSessions();
-  fs.rmSync(setupTokenPath, { force: true });
-  authEvents.emit("revoked");
-  return user;
+  return transaction(() => {
+    if (hasUsers()) throw new Error("已经设置过了");
+    const old = loadSessions();
+    const user = createUser({ name: name.trim() || "admin", password, role: "admin" });
+    for (const id of Object.keys(old)) forgetSession(old, id);
+    sessions = {};
+    saveSessions();
+    fs.rmSync(setupTokenPath, { force: true });
+    authEvents.emit("revoked");
+    return user;
+  });
 }
 
 /** 一个用户都没有时生成（或沿用）一次性设置码，打印到日志里。 */
 export function ensureSetupToken(): string | null {
-  if (hasUsers()) return null;
-  try {
-    const existing = fs.readFileSync(setupTokenPath, "utf8").trim();
-    if (existing) return existing;
-  } catch {
-    // 没有就新建
-  }
-  const token = crypto.randomBytes(6).toString("hex").toUpperCase();
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(setupTokenPath, token, { mode: 0o600 });
-  return token;
+  return transaction(() => {
+    if (hasUsers()) return null;
+    try {
+      const existing = fs.readFileSync(setupTokenPath, "utf8").trim();
+      if (existing) return existing;
+    } catch {
+      // 没有就新建
+    }
+    const token = crypto.randomBytes(6).toString("hex").toUpperCase();
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(setupTokenPath, token, { mode: 0o600 });
+    return token;
+  });
 }
 
 export function checkSetupToken(token: string): boolean {
@@ -176,66 +179,83 @@ export function patchUser(userId: string, patch: Parameters<typeof updateUser>[1
 // ---------- 登录态 ----------
 
 export function createSession(userId: string, ip: string, userAgent: string): string {
-  const token = crypto.randomBytes(32).toString("base64url");
-  const now = Date.now();
-  loadSessions()[sha256(token)] = { userId, createdAt: now, expiresAt: now + SESSION_TTL_MS, lastSeen: now, ip, userAgent };
-  saveSessions();
-  return token;
+  return transaction(() => {
+    const token = crypto.randomBytes(32).toString("base64url");
+    const now = Date.now();
+    loadSessions()[sha256(token)] = { userId, createdAt: now, expiresAt: now + SESSION_TTL_MS, lastSeen: now, ip, userAgent };
+    saveSessions();
+    return token;
+  });
 }
 
 /** 登录态对应的用户。用户被停用、删掉了也算无效 */
 export function sessionUser(token: string | undefined): User | undefined {
   if (!token || !hasUsers()) return undefined;
-  const s = loadSessions()[sha256(token)];
-  if (!s) return undefined;
-  const user = getUser(ownerOf(s));
-  if (!user || user.disabled) return undefined;
+  const id = sha256(token);
   const now = Date.now();
-  if (now - s.lastSeen > 60_000) {
-    s.lastSeen = now;
-    saveSessions();
+  let session = readSessions()[id];
+  if (!session || session.expiresAt <= now) return undefined;
+  if (!session.userId || now - session.lastSeen > 60_000) {
+    session = transaction(() => {
+      // 加锁后重读，另一服务可能刚踢掉这台设备。
+      const current = loadSessions()[id];
+      if (current && now - current.lastSeen > 60_000) {
+        current.lastSeen = now;
+        saveSessions();
+      }
+      return current;
+    });
   }
-  return user;
+  const user = getUser(session?.userId);
+  return user && !user.disabled ? user : undefined;
 }
 
 export function destroySession(token: string | undefined): void {
   if (!token) return;
-  forgetSession(loadSessions(), sha256(token));
-  saveSessions();
-  authEvents.emit("revoked");
+  return transaction(() => {
+    forgetSession(loadSessions(), sha256(token));
+    saveSessions();
+    authEvents.emit("revoked");
+  });
 }
 
 export type SessionView = WebSession & { id: string; userId?: string; userName?: string };
 
 /** 已登录的设备。给了 userId 就只列这个用户的 */
 export function listSessions(userId?: string): SessionView[] {
-  return Object.entries(loadSessions())
-    .filter(([, s]) => !userId || ownerOf(s) === userId)
-    .map(([id, s]) => {
-      const owner = ownerOf(s);
-      const name = getUser(owner)?.name;
-      return { ...s, id: id.slice(0, 12), ...(owner ? { userId: owner } : {}), ...(name ? { userName: name } : {}) };
-    });
+  return transaction(() => {
+    return Object.entries(loadSessions())
+      .filter(([, s]) => !userId || ownerOf(s) === userId)
+      .map(([id, s]) => {
+        const owner = ownerOf(s);
+        const name = getUser(owner)?.name;
+        return { ...s, id: id.slice(0, 12), ...(owner ? { userId: owner } : {}), ...(name ? { userName: name } : {}) };
+      });
+  });
 }
 
 /** 踢掉一个设备。给了 userId 就只能踢这个用户自己的 */
 export function revokeSession(idPrefix: string, userId?: string): boolean {
   if (!idPrefix) return false;
-  const all = loadSessions();
-  const hit = Object.keys(all).find((id) => id.startsWith(idPrefix) && (!userId || ownerOf(all[id]!) === userId));
-  if (!hit) return false;
-  forgetSession(all, hit);
-  saveSessions();
-  authEvents.emit("revoked");
-  return true;
+  return transaction(() => {
+    const all = loadSessions();
+    const hit = Object.keys(all).find((id) => id.startsWith(idPrefix) && (!userId || ownerOf(all[id]!) === userId));
+    if (!hit) return false;
+    forgetSession(all, hit);
+    saveSessions();
+    authEvents.emit("revoked");
+    return true;
+  });
 }
 
 /** 某个用户的所有设备下线 */
 export function revokeUserSessions(userId: string): void {
-  const all = loadSessions();
-  for (const [id, s] of Object.entries(all)) if (ownerOf(s) === userId) forgetSession(all, id);
-  saveSessions();
-  authEvents.emit("revoked");
+  transaction(() => {
+    const all = loadSessions();
+    for (const [id, s] of Object.entries(all)) if (ownerOf(s) === userId) forgetSession(all, id);
+    saveSessions();
+    authEvents.emit("revoked");
+  });
 }
 
 // ---------- 防爆破 ----------

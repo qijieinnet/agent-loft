@@ -78,6 +78,48 @@ export const webBotSchema = `
   );
   CREATE INDEX IF NOT EXISTS web_bot_memories_thread ON web_bot_memories(thread,createdAt,id);
 
+  CREATE TABLE IF NOT EXISTS web_bot_routines (
+    id TEXT PRIMARY KEY, userId TEXT NOT NULL, threadId TEXT NOT NULL, accessId TEXT NOT NULL,
+    mode TEXT NOT NULL, prompt TEXT NOT NULL, schedule TEXT NOT NULL, timezone TEXT NOT NULL,
+    smart INTEGER NOT NULL, nextAt INTEGER, revision INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_routines_due ON web_bot_routines(nextAt) WHERE nextAt IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS web_bot_routines_user ON web_bot_routines(userId,threadId);
+  CREATE TABLE IF NOT EXISTS web_bot_routine_runs (
+    routine TEXT NOT NULL, dueAt INTEGER NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL DEFAULT '',
+    messageId INTEGER, PRIMARY KEY(routine,dueAt)
+  );
+  CREATE TABLE IF NOT EXISTS web_bot_routine_manual (
+    routine TEXT NOT NULL, requestId TEXT NOT NULL, dueAt INTEGER NOT NULL,
+    PRIMARY KEY(routine,requestId), UNIQUE(routine,dueAt)
+  );
+  CREATE TRIGGER IF NOT EXISTS web_bot_manual_delete AFTER DELETE ON web_bot_routines BEGIN
+    DELETE FROM web_bot_routine_manual WHERE routine=OLD.id;
+  END;
+  CREATE TABLE IF NOT EXISTS web_bot_files (
+    message INTEGER NOT NULL, slot INTEGER NOT NULL, name TEXT NOT NULL, mediaType TEXT NOT NULL,
+    data BLOB NOT NULL, extracted TEXT, PRIMARY KEY(message,slot)
+  );
+  CREATE TRIGGER IF NOT EXISTS web_bot_files_delete AFTER DELETE ON web_bot_messages BEGIN
+    DELETE FROM web_bot_files WHERE message=OLD.id;
+  END;
+  CREATE TABLE IF NOT EXISTS web_bot_message_sources (
+    reply INTEGER NOT NULL, source INTEGER NOT NULL, PRIMARY KEY(reply,source)
+  );
+  CREATE INDEX IF NOT EXISTS web_bot_message_sources_source ON web_bot_message_sources(source);
+  CREATE TRIGGER IF NOT EXISTS web_bot_sources_delete AFTER DELETE ON web_bot_messages BEGIN
+    DELETE FROM web_bot_message_sources WHERE reply=OLD.id OR source=OLD.id;
+  END;
+  CREATE INDEX IF NOT EXISTS web_bot_routine_running ON web_bot_routine_runs(messageId) WHERE status='running';
+  CREATE TRIGGER IF NOT EXISTS web_bot_routine_access AFTER UPDATE OF access_id ON web_bot_members
+  WHEN OLD.access_id<>NEW.access_id BEGIN
+    DELETE FROM web_bot_routines WHERE userId=OLD.user AND accessId=OLD.access_id
+      AND threadId IN (SELECT id FROM web_bot_threads WHERE bot=OLD.bot);
+  END;
+  CREATE TRIGGER IF NOT EXISTS web_bot_routine_delete AFTER DELETE ON web_bot_routines BEGIN
+    DELETE FROM web_bot_routine_runs WHERE routine=OLD.id;
+  END;
+
   CREATE TABLE IF NOT EXISTS web_bot_followups (
     id TEXT PRIMARY KEY, thread TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL,
     creatorId TEXT NOT NULL, creatorAccess TEXT NOT NULL, assigneeId TEXT NOT NULL, assigneeAccess TEXT NOT NULL,

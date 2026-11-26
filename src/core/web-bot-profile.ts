@@ -189,6 +189,9 @@ export async function updateBotProfile(userId: string, botId: string, input: Rec
       sql(`DELETE FROM web_bot_followup_hooks WHERE followup IN (SELECT f.id FROM web_bot_followups f
         JOIN web_bot_threads t ON f.thread=t.id WHERE t.bot=?)`).run(botId);
     }
+    if (before.capabilities.includes("reminders") && !capabilities.includes("reminders")) {
+      sql("UPDATE web_bot_routines SET nextAt=NULL,revision=revision+1 WHERE threadId IN (SELECT id FROM web_bot_threads WHERE bot=?)").run(botId);
+    }
     for (const [capability, kind] of [
       ["followups", "followup"],
       ["reminders", "reminder"],

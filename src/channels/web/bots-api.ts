@@ -5,7 +5,12 @@ import { callImage, decideToolCall, threadCalls } from "../../core/web-bot-calls
 import { listBotCodexDirectories, saveBotCodexSettings } from "../../core/web-bot-codex-tools.js";
 import { discoverBotTools, listBotExtensions, removeBotExtension, saveBotExtension, saveToolGrants } from "../../core/web-bot-extensions.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { acceptInvite, createBot, createInvite, getBot, getBotMessage, getBotThread, listBots, listMessages, removeMember, deleteOwnedBot, leaveBot, transferBot, renameBot, startTurn, stopSharing, WebBotError, type BotImage } from "../../core/web-bots.js";
+import { sql } from "../../core/db.js";
+import { filesInPage, parseBotFile } from "../../core/web-bot-files.js";
+import { messageSources } from "../../core/web-bot-history.js";
+import { runRoutineNow } from "../../core/web-bot-routine-worker.js";
+import { editRoutine, createRoutine, changeRoutine, listRoutines, routineHistory } from "../../core/web-bot-routines.js";
+import { searchBotMessages, acceptInvite, createBot, createInvite, getBot, getBotMessage, getBotThread, listBots, listMessages, removeMember, deleteOwnedBot, leaveBot, transferBot, renameBot, startTurn, stopSharing, WebBotError, type BotImage } from "../../core/web-bots.js";
 import { runBotTurn } from "../../core/web-bot-reply.js";
 import { listBotReminders } from "../../core/web-bot-reminders.js";
 import { sanitizeBotImage } from "../../core/web-bot-photo.js";
@@ -26,14 +31,13 @@ async function bodyOf(req: IncomingMessage, limit?: number) {
   return body;
 }
 
-async function photo(value: unknown): Promise<BotImage[]> {
-  if (value == null) return [];
-  if (typeof value !== "object" || !("data" in value) || typeof value.data !== "string") throw new HttpError(400, "照片格式不对，请重新选择。");
+async function photo(value: unknown): Promise<BotImage> {
+  if (!value || typeof value !== "object" || !("data" in value) || typeof value.data !== "string") throw new HttpError(400, "照片格式不对，请重新选择。");
   if (value.data.length > MAX_PHOTO * 4 / 3) throw new HttpError(413, "请选择小于 3 MB 的照片。");
   if (!value.data || value.data.length % 4 !== 0 || /[^a-zA-Z0-9+/=]/.test(value.data)) throw new HttpError(400, "照片数据不完整。");
   const content = Buffer.from(value.data, "base64");
   if (content.toString("base64") !== value.data) throw new HttpError(400, "照片数据不完整。");
-  return [await sanitizeBotImage({ name: "照片", mediaType: "", data: value.data })];
+  return sanitizeBotImage({ name: "照片", mediaType: "", data: value.data });
 }
 
 function localZone(value: unknown) {
@@ -50,9 +54,41 @@ function positiveInteger(value: string) {
   return n;
 }
 
+function photoIndex(url: URL) {
+  const index = url.searchParams.get("index") ?? "0";
+  if (!/^[0-5]$/.test(index)) throw new HttpError(400, "照片序号无效。");
+  return Number(index);
+}
+
+function download(req: IncomingMessage, res: ServerResponse, thread: string, message: number, slot: number) {
+  const file = sql(`SELECT f.name,f.mediaType,f.data FROM web_bot_files f JOIN web_bot_messages m ON m.id=f.message
+    WHERE m.thread=? AND f.message=? AND f.slot=?`).get(thread, message, slot);
+  if (!file) throw new HttpError(404, "附件不存在。");
+  const type = String(file.mediaType);
+  const bytes = Buffer.from(file.data as Uint8Array);
+  const headers = { "Content-Type": type, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox; default-src 'none'", "Content-Disposition": (type.startsWith("audio/") ? "inline" : "attachment") +
+      "; filename*=UTF-8''" + encodeURIComponent(String(file.name)).replace(/'/g, "%27") };
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers?.range || "");
+  if (range && (range[1] || range[2])) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, bytes.length - Number(range[2]));
+    const end = range[1] && range[2] ? Math.min(bytes.length - 1, Number(range[2])) : bytes.length - 1;
+    if (start > end) {
+      res.writeHead(416, { ...headers, "Content-Range": "bytes */" + bytes.length });
+      res.end();
+      return;
+    }
+    res.writeHead(206, { ...headers, "Content-Length": end - start + 1, "Content-Range": `bytes ${start}-${end}/${bytes.length}` });
+    res.end(bytes.subarray(start, end + 1));
+    return;
+  }
+  res.writeHead(200, { ...headers, "Content-Length": bytes.length });
+  res.end(bytes);
+}
+
 async function threads(req: IncomingMessage, res: ServerResponse, url: URL, user: User, threadId: string, imageId?: string) {
   if (req.method === "GET" && imageId) {
-    const item = getBotMessage(user.id, threadId, positiveInteger(imageId))?.images[0];
+    const item = getBotMessage(user.id, threadId, positiveInteger(imageId))?.images[photoIndex(url)];
     if (!item?.data) throw new HttpError(404, "找不到这张照片。");
     const safe = await sanitizeBotImage({ ...item, data: item.data });
     getBotThread(user.id, threadId);
@@ -69,20 +105,29 @@ async function threads(req: IncomingMessage, res: ServerResponse, url: URL, user
     const credits = rows.length ? delegationCredits(user.id,threadId,rows[0]!.id,rows[rows.length-1]!.id) : new Map<number,string>();
     const retries = rows.length ? retryableBotMessages(user.id, threadId, rows[0]!.id, rows[rows.length - 1]!.id) : new Set<number>();
     const calls = rows.length ? threadCalls(user.id, threadId, rows[0]!.id, rows.at(-1)!.id) : new Map();
+    const sources = rows.length ? messageSources(threadId, rows[0]!.id, rows.at(-1)!.id) : new Map();
+    const files = rows.length ? filesInPage(threadId, rows[0]!.id, rows.at(-1)!.id) : new Map();
     const messages = rows.map(({ images, ...message }) => ({
-      ...message, ...(calls.has(message.id) ? { calls: calls.get(message.id) } : {}), image: images.length > 0, canRetry: retries.has(message.id), ...(credits.has(message.id) ? { delegatedBy: credits.get(message.id) } : {}),
+      ...message, imageCount: images.length, ...(files.has(message.id) ? { files: files.get(message.id) } : {}), ...(sources.has(message.id) ? { sources: sources.get(message.id) } : {}), ...(calls.has(message.id) ? { calls: calls.get(message.id) } : {}), image: images.length > 0, canRetry: retries.has(message.id), ...(credits.has(message.id) ? { delegatedBy: credits.get(message.id) } : {}),
     }));
     sendJson(res, 200, { messages, pending: messages.some(m => m.status === "pending"), nextBefore: hasOlder ? messages[0]!.id : null, reminders: listBotReminders(user.id, threadId) });
     return;
   }
   if (!imageId && req.method === "POST") {
-    getBotThread(user.id, threadId);
-    const body = await bodyOf(req, MAX_PHOTO * 4 / 3 + 64 * 1024);
+    const access = getBotThread(user.id, threadId).accessId;
+    const body = await bodyOf(req, 24 * 1024 * 1024 + 65536);
     const timezone = localZone(body.timezone);
     if (typeof body.requestId !== "string" || typeof (body.text ?? "") !== "string") throw new HttpError(400, "消息格式无效，请重新发送。");
     const requestId = body.requestId;
-    if (requestId.startsWith("retry:")) throw new HttpError(400, "消息标识无效。");
-    const { message, started } = startTurn(user.id, threadId, requestId, (body.text as string | undefined) ?? "", await photo(body.image));
+    if (/^(retry|routine|voice):/.test(requestId)) throw new HttpError(400, "消息标识无效。");
+    const incoming = body.images ?? (body.image ? [body.image] : []), attachments = body.files ?? [];
+    if (!Array.isArray(incoming) || !Array.isArray(attachments) || incoming.length + attachments.length > 6 ||
+      (body.images != null && body.image != null)) throw new HttpError(400, "每条消息最多 6 个附件。");
+    const images: BotImage[] = [];
+    for (const value of incoming) images.push(await photo(value));
+    const files = attachments.map(parseBotFile);
+    if (getBotThread(user.id, threadId).accessId !== access) throw new HttpError(403, "对话权限已变更。");
+    const { message, started } = startTurn(user.id, threadId, requestId, (body.text as string | undefined) ?? "", images, files);
     if (started) void runBotTurn(user.id, threadId, message, requestId, timezone).catch(() => console.error("[bot] 暂时无法保存回复状态"));
     sendJson(res, 202, { ok: true, messageId: message.id });
     return;
@@ -94,6 +139,24 @@ export async function handleBotsApi(req: IncomingMessage, res: ServerResponse, u
   const p = url.pathname;
   const method = req.method;
   try {
+    if (p === "/api/bots/search" && method === "GET") {
+      const before = url.searchParams.get("before");
+      return sendJson(res, 200, searchBotMessages(user.id, url.searchParams.get("q") || "", before == null ? undefined : positiveInteger(before)));
+    }
+    const routine = /^\/api\/bots\/threads\/([\w-]+)\/routines(?:\/([a-f0-9-]+))?$/i.exec(p);
+    if (routine) {
+      const [, thread, id] = routine;
+      if (method === "GET") return sendJson(res, 200, id ? { runs: routineHistory(user.id, thread!, id) } : { tasks: listRoutines(user.id, thread!) });
+      if (method === "POST") {
+        const body = await bodyOf(req, 20000);
+        if (id && body.action === "run") return sendJson(res, 202, runRoutineNow(user.id, thread!, id, body.requestId, body.revision));
+        if (id && body.action === "edit") editRoutine(user.id, thread!, id, body);
+        else if (id) changeRoutine(user.id, thread!, id, body.action);
+        else createRoutine(user.id, thread!, body);
+        return sendJson(res, 200, { ok: true });
+      }
+      throw new HttpError(405, "请求方式无效。");
+    }
     const generated = /^\/api\/bots\/threads\/([\w-]+)\/calls\/([\w-]+)\/image$/.exec(p);
     if (generated && method === "GET") {
       const data = callImage(user.id, generated[1]!, generated[2]!);
@@ -150,13 +213,20 @@ export async function handleBotsApi(req: IncomingMessage, res: ServerResponse, u
       if (id && action === "grants" && method === "PATCH") return sendJson(res, 200, saveToolGrants(user.id, bot!, id, body));
       throw new HttpError(405, "请求方式无效。");
     }
+    const attachment = /^\/api\/bots\/(?:threads\/([\w-]+)\/messages|([\w-]+)\/archives\/([\w-]+))\/(\d+)\/files\/([0-5])$/.exec(p);
+    if (attachment && method === "GET") {
+      const [, thread, bot, archived, msg, slot] = attachment;
+      if (thread) getBotThread(user.id, thread);
+      else requireBotArchive(user.id, bot!, archived!);
+      return download(req, res, thread || archived!, positiveInteger(msg!), Number(slot));
+    }
     const archive = /^\/api\/bots\/([\w-]+)\/archives(?:\/([\w-]+)(?:\/photos\/(\d+))?)?$/.exec(p);
     if (archive) {
       if (method !== "GET") throw new HttpError(405, "共享归档为只读。");
       const [, botId, threadId, messageId] = archive;
       if (!threadId) return sendJson(res, 200, { archives: listBotArchives(user.id, botId!) });
       if (messageId) {
-        const photo = await sanitizeBotImage(readArchivedPhoto(user.id, botId!, threadId, positiveInteger(messageId)));
+        const photo = await sanitizeBotImage(readArchivedPhoto(user.id, botId!, threadId, positiveInteger(messageId), photoIndex(url)));
         requireBotArchive(user.id, botId!, threadId);
         const file = Buffer.from(photo.data, "base64");
         res.writeHead(200, { "Content-Type": photo.mediaType, "Content-Length": file.length, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store" });

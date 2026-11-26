@@ -48,8 +48,14 @@ async function main(): Promise<void> {
   hub.registerDriver(new CodexDriver());
   if (botDeployment()) {
     await startWeb();
-    startBackups();
-    const shutdown = () => { void stopWeb().finally(() => hub.shutdown()).finally(() => process.exit(0)); };
+    if (!process.env.AGENT_LOFT_MANAGED_PAIR) startBackups();
+    let stopping = false;
+    const shutdown = () => {
+      if (stopping) return;
+      stopping = true;
+      setTimeout(() => process.exit(0), 8000).unref();
+      void stopWeb().finally(() => hub.shutdown()).finally(() => process.exit(0));
+    };
     process.once("SIGTERM", shutdown);
     process.once("SIGINT", shutdown);
     await reportUpgradeHealth(true);
@@ -162,7 +168,7 @@ async function reportUpgradeHealth(bot: boolean): Promise<void> {
   if (process.env.AGENT_LOFT_UPGRADE_TRIAL && process.send) {
     const { host, port } = listening() ?? config().web;
     try {
-      await verifyUpgradeWeb(host, port, bot);
+      if (bot || config().web.enabled) await verifyUpgradeWeb(host, port, bot);
       process.send({ type: "upgrade-health", version: RUNNING_VERSION });
     } catch (err) {
       process.send({ type: "upgrade-health", error: String(err) });
@@ -170,4 +176,4 @@ async function reportUpgradeHealth(bot: boolean): Promise<void> {
   }
 }
 
-void main();
+await main();

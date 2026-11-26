@@ -241,7 +241,7 @@ test("周期性请求与模型输出中的重复设置均不会降级成单次�
     faux.setResponses([ai.fauxAssistantMessage(JSON.stringify({text:"已安排", reminder}))]);
     await runBotTurn(actor, thread, turn.message, key, "Asia/Hong_Kong");
     assert.equal(listBotReminders(actor, thread).length, 0);
-    assert.match(listMessages(actor, thread).at(-1)!.text, /只支持一次性提醒/);
+    assert.match(listMessages(actor, thread).at(-1)!.text, /周期任务/);
   }
   assert.throws(() => parseBotReply(JSON.stringify({text:"",reminder:{kind:"create",dueAt,text:"看书",extra:true}})));
 });
@@ -442,4 +442,61 @@ test("完整技能包保留二进制与可执行脚本，模型可按路径读�
   assert.equal(listMessages(user, other.privateThreadId).at(-1)?.status, "failed");
   removeBotExtension(user, bot.id, entry.id, entry.revision);
   assert.throws(snapshot.check);
+});
+
+test("周期执行沿用 Bot 引擎，正常静默保留结果，异常和执行失败通知一次", async () => {
+  const { createRoutine, routineHistory } = await import("../src/core/web-bot-routines.js");
+  const { runDueRoutines } = await import("../src/core/web-bot-routine-worker.js");
+  const { sql } = await import("../src/core/db.js");
+  const { id: user } = createUser({ name: "routine-user", password: "password-123" });
+  const { privateThreadId: thread } = listBots(user)[0]!;
+  const id = "12".repeat(16), prompt = "检查昨天的备份";
+  createRoutine(user, thread, { id, prompt, mode: "run", smart: true, schedule: { kind: "daily", time: "09:00" }, timezone: "Asia/Hong_Kong" });
+  const now = Date.now();
+  for (const [i, result] of [
+    { raw: '{"text":"备份正常","notify":false}', status: "quiet", notified: false },
+    { raw: '{"text":"昨天备份失败","notify":true}', status: "done", notified: true },
+    { raw: '结果无效', status: "failed", notified: true },
+  ].entries()) {
+    const due = now - 10000 + i;
+    sql("UPDATE web_bot_routines SET nextAt=? WHERE id=?").run(due, id);
+    faux.setResponses([ctx => {
+      assert.match(JSON.stringify(ctx), new RegExp(prompt));
+      return ai.fauxAssistantMessage(result.raw);
+    }]);
+    await Promise.all([runDueRoutines(now), runDueRoutines(now)]);
+    assert.deepEqual(routineHistory(user, thread, id).map(r => r.status)[0], result.status);
+    assert.equal(routineHistory(user, thread, id).length, i + 1);
+    const event = sql("SELECT count(*) AS n FROM bot_inbox WHERE eventId=?").get("routine:" + id + ":" + due);
+    assert.equal(event?.n, Number(result.notified));
+  }
+});
+
+test("Bot 可主动检索窗口外的旧消息并引用原文，共享检索不含成员私聊或伪造来源", async () => {
+  const { appendBotNotice } = await import("../src/core/web-bots.js");
+  const { messageSources, recallMessages } = await import("../src/core/web-bot-history.js");
+  const user = createUser({ name: "recall-owner", password: "password-123" }).id;
+  const member = createUser({ name: "recall-member", password: "password-123" }).id;
+  const bot = listBots(user)[0]!;
+  const joined = acceptInvite(member, createInvite(user, bot.id).token), thread = joined.sharedThreadId!;
+  const secret = appendBotNotice(member, joined.privateThreadId, "备份原因：私聊限定密语");
+  const hit = appendBotNotice(user, thread, "调整备份以避开夜间带宽高峰");
+  for (let i = 0; i < 26; i++) appendBotNotice(user, thread, "后续记录" + i);
+  const { message } = startTurn(member, thread, "recall", "上个月为什么把备份提醒改成每天？");
+  faux.setResponses([ctx => {
+    assert.doesNotMatch(JSON.stringify(ctx), /夜间带宽高峰|私聊限定密语/);
+    return ai.fauxAssistantMessage('{"historySearch":{"query":"备份"}}');
+  }, ctx => {
+    assert.match(JSON.stringify(ctx), /夜间带宽高峰/);
+    assert.doesNotMatch(JSON.stringify(ctx), /私聊限定密语/);
+    return ai.fauxAssistantMessage(JSON.stringify({ text: "为了避开带宽高峰。", sources: [hit.id, secret.id, hit.id] }));
+  }]);
+  await runBotTurn(member, thread, message, "recall", "Asia/Hong_Kong");
+  const reply = listMessages(member, thread).at(-1)!;
+  assert.equal(reply.text, "为了避开带宽高峰。");
+  assert.deepEqual(messageSources(thread, reply.id, reply.id).get(reply.id)?.map(s => s.id), [hit.id]);
+  assert.deepEqual(recallMessages(member, thread, message.id, { query: "备份", until: "2000-01-01T00:00:00Z" }), []);
+  assert.throws(() => recallMessages(member, thread, message.id, { thread: joined.privateThreadId, query: "备份" }));
+  removeMember(user, bot.id, member);
+  assert.throws(() => recallMessages(member, thread, message.id, { query: "备份" }));
 });

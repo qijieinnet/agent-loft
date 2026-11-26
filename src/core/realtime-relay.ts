@@ -118,14 +118,16 @@ export class RealtimeRelay {
   /** 建好连接对象和 offer（ICE 候选收齐了写在里面），offer 交给 Codex 去 OpenAI 建通话 */
   static async create(): Promise<{ relay: RealtimeRelay; offer: string }> {
     const relay = new RealtimeRelay();
-    await relay.pc.setLocalDescription(await relay.pc.createOffer());
-    await relay.gathered(1500);
-    const offer = relay.pc.localDescription?.sdp;
-    if (!offer) {
+    try {
+      await relay.pc.setLocalDescription(await relay.pc.createOffer());
+      await relay.gathered(1500);
+      const offer = relay.pc.localDescription?.sdp;
+      if (!offer) throw new Error("没能建立语音连接");
+      return { relay, offer };
+    } catch (err) {
       relay.close();
-      throw new Error("没能建立语音连接");
+      throw err;
     }
-    return { relay, offer };
   }
 
   /** OpenAI 的 answer 回来了：连上 */

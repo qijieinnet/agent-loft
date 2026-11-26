@@ -412,6 +412,7 @@ export type EngineReplyRequest = {
   prompt: string;
   model?: string;
   image?: { mimeType: string; data: string };
+  images?: { mimeType: string; data: string }[];
   signal: AbortSignal;
   onUsage?: (usage: TokenUsage, model: string) => void;
 };

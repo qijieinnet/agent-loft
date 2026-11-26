@@ -1,3 +1,4 @@
+import { fileLinks } from "./attachments.js";
 import { api, button, h } from "./client.js";
 import { action, currentPanel, note, panel } from "./panel.js";
 
@@ -62,8 +63,9 @@ async function viewArchive(path, id, section, back, pages = [null]) {
       h("header", {class:"record-summary"}, h("strong", {},item.label),
         h("small", {}, (item.actor ? item.actor + " · " : "") + date(item.at))),
       h("p", {},item.text),
+      ...fileLinks(item.files, url + "/" + item.cursor),
       !!item.image && h("details", {class:"archive-photo"}, h("summary", {}, "查看照片"),
-        h("img", {src:url + "/photos/" + item.cursor, alt:"共享归档中的照片", loading:"lazy"})))),
+        Array.from({ length: item.image }, (_, i) => h("img", {src:url + "/photos/" + item.cursor + "?index=" + i, alt:"共享归档中的照片", loading:"lazy"}))))),
     !items.length && note("这里没有" + sections[section] + "。"),
     pages.length > 1 && action("查看较新的记录", () => viewArchive(path, id, section, back, pages.slice(0,-1))),
     nextBefore && action("查看更早的记录", () => viewArchive(path, id, section, back, [...pages, nextBefore])),

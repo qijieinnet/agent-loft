@@ -398,3 +398,9 @@
 #compose-actions button:focus-visible { outline-offset: -2px; }
 #compose-actions button svg { width: 21px; height: 21px; color: var(--muted); }
 @media (hover:hover) { #compose-actions button:hover { background: var(--subtle); } }
+
+.routine-days { display: flex; flex-wrap: wrap; gap: .4rem 1rem; border: 0; padding: 0; margin: 0; }
+.routine-days label { display: inline-flex; align-items: center; gap: .35rem; min-height: 44px; }
+.routine-days input[type="checkbox"] { width: auto; min-height: auto; }
+
+.call-caption { white-space:pre-wrap; overflow-wrap:anywhere; max-height:30vh; overflow:auto; }
