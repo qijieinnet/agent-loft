@@ -29,6 +29,25 @@ export async function doAction(action, value, extra = {}, { quiet = false } = {}
   }
 }
 
+let creatingConversation = false;
+
+export async function newConversationFrom(key) {
+  if (creatingConversation || key !== S.current || S.view) return;
+  creatingConversation = true;
+  const token = S.loadToken;
+  closeMenu();
+  try {
+    const info = await api("/api/conversations", { method: "POST", body: { inheritFrom: key } });
+    S.convs.set(info.key, info);
+    if (S.current === key && S.loadToken === token && !S.view) await openConversation(info.key);
+    else renderSidebar();
+  } catch (err) {
+    toast(`新建会话失败：${err.message}`);
+  } finally {
+    creatingConversation = false;
+  }
+}
+
 /** 分叉成一条新对话（anchor 给了就到那条回复为止），然后切过去。原对话不动 */
 export async function forkConversation(anchor, key = S.current) {
   if (!key) return;

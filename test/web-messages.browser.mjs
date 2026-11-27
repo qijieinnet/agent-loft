@@ -688,7 +688,7 @@ test("输入框权限用盾牌颜色区分，计划模式和选中项使用亮�
   });
   assert.equal(await trigger.textContent(), "");
   assert.equal(await trigger.locator("svg").count(), 1);
-  assert.equal(await shield.evaluate((el) => getComputedStyle(el).width), "22px");
+  assert.equal(await shield.evaluate((el) => getComputedStyle(el).width), "18px");
   assert.equal(await trigger.getAttribute("aria-label"), "权限：自动改文件");
   const [grayR, grayG, grayB] = await shieldColor();
   assert.equal(grayR, grayG);

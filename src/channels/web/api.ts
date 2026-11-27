@@ -9,7 +9,7 @@ import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
-import { agentBinding, conversationLabels, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
+import { agentBinding, conversationLabels, ensureConversation, expertIdOf, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
 import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import { mentions, resolveReplyFile } from "../../core/reply-files.js";
@@ -1009,25 +1009,38 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/conversations" && method === "POST") {
     // expert：新对话页上选的专家（内置的 claude / codex，或者自己的、共享的专家 id）。agent 是以前的叫法
-    const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string }>(req);
+    const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string; inheritFrom?: string }>(req);
+    const source = typeof body.inheritFrom === "string" ? getConversation(body.inheritFrom) : undefined;
+    if (body.inheritFrom !== undefined && (!source || !visible(source))) throw new HttpError(404, "会话不存在");
     const enabled = hub.enabledAgents().map((d) => d.id);
-    const wanted = body.expert ?? body.agent;
+    const wanted = source ? expertIdOf(source) : body.expert ?? body.agent;
     if (wanted && !canUseExpert(user.id, wanted)) throw new HttpError(400, "这个专家或 Agent 不存在、已取消共享或未获授权");
     const expertId = wanted || hub.expertChoices(user.id, enabled)[0]?.id;
     if (!expertId) throw new HttpError(400, "没有可用的 agent");
     const custom = isBuiltin(expertId) ? undefined : getExpert(expertId);
     const agent = custom ? custom.engine : expertId;
     if (!enabled.includes(agent)) throw new HttpError(400, `${hub.label(agent)} 没有启用，用不了这个专家`);
-    // 新对话发第一条消息前在页面上选的工作目录；和 /cd 一样只能在工作区之内。没选就用专家默认的
+    if (source && source.agent !== agent) throw new HttpError(400, "专家已更换引擎，无法沿用原会话配置");
+    // 沿用原会话或新对话页选的工作目录，没选就用专家默认的。和 /cd 一样只能在工作区之内。
     let cwd: string | undefined;
-    const rawCwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : custom?.cwd;
+    const rawCwd = source?.cwd ?? (typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : custom?.cwd);
     if (rawCwd) {
       const resolved = resolveWorkspacePath(rawCwd);
       if (!resolved) throw new HttpError(400, `目录必须存在，且在 ${config().workspaceRoot} 之内`);
       cwd = resolved;
     }
+    const inherited = source ? hub.info(source.key) : undefined;
+    const settings = inherited && {
+      model: inherited.model ?? inherited.runtimeModel,
+      effort: inherited.effort ?? inherited.runtimeEffort,
+      fastModel: inherited.fastModel,
+      permission: inherited.permission,
+      plan: inherited.plan,
+    };
     const key = `web:${crypto.randomBytes(6).toString("hex")}`;
-    hub.ensure({ key, channel: "web", channelId: "web", defaultAgent: agent, ...(custom ? { expert: custom.id } : {}), ...(cwd ? { cwd } : {}), owner: user.id });
+    ensureConversation({
+      key, channel: "web", channelId: "web", agent, expert: custom?.id, cwd, owner: user.id, settings,
+    });
     sendJson(res, 200, hub.info(key));
     return;
   }

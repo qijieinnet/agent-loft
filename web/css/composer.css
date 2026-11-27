@@ -523,27 +523,22 @@ textarea.sending {
   display: grid;
 }
 
-.composer .perm-pill svg {
-  width: 22px;
-  height: 22px;
-}
-
 .perm-plan-mark {
   position: absolute;
-  inset-inline-end: -4px;
-  inset-block-end: -4px;
+  inset-inline-end: -3px;
+  inset-block-end: -3px;
   display: grid;
   place-items: center;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--bg-input);
   color: var(--fg);
 }
 
 .composer .perm-plan-mark svg {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
 }
 
 .popover.perm-pop {

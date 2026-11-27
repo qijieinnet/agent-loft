@@ -43,6 +43,10 @@
     color: var(--fg);
   }
 
+  .top-actions .conv-expert-icon {
+    touch-action: manipulation;
+  }
+
   .top-title .conv-name {
     font-size: 16px;
     font-weight: 600;

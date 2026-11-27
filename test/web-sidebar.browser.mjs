@@ -157,6 +157,50 @@ async function fixture(t, { mobile = false, colorScheme = "light", feishu = fals
 
 const groupOrder = (page) => page.locator(".conv-list .proj-row").evaluateAll((rows) => rows.map((row) => row.dataset.group));
 
+test("触屏头像单击查看信息，双击沿用当前配置打开新会话", async (t) => {
+  const source = {
+    key: "web:1", channel: "web", channelId: "web", agent: "codex", title: "项目会话", cwd: "/workspace/project", activeAt: 1, busy: false,
+    expert: { id: "e_project", name: "项目专家" }, model: "gpt-6.1-sol", effort: "high", fastModel: "gpt-6.1-sol", permission: "edit", permissionMax: "full", plan: true,
+  };
+  const { page } = await fixture(t, { mobile: true, bootstrap: { conversations: [source] } });
+  await page.locator(".scrim").tap({ position: { x: 375, y: 300 } });
+  const avatar = page.getByRole("button", { name: "专家：项目专家" });
+  const card = page.locator(".expert-card");
+  const newChat = card.getByRole("button", { name: "沿用配置新建会话" });
+  const requests = [];
+  const created = { ...source, key: "web:new", title: undefined, activeAt: 2 };
+  await page.route("**/api/conversations", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ json: created });
+  });
+  await page.route("**/api/conversations/web%3Anew/history", (route) => route.fulfill({
+    json: { info: created, allowedAgents: [], messages: [], live: [], pending: [], seq: 0 },
+  }));
+
+  await avatar.tap();
+  await card.waitFor({ state: "visible" });
+  assert.deepEqual(requests, []);
+  await page.locator(".messages").tap({ position: { x: 30, y: 460 } });
+  await card.waitFor({ state: "detached" });
+  await avatar.press("Enter");
+  assert.equal(await newChat.evaluate((el) => el === document.activeElement), true);
+  await newChat.press("Escape");
+
+  const { x, y, width, height } = await avatar.boundingBox();
+  const tap = () => page.touchscreen.tap(x + width / 2, y + height / 2);
+  await tap();
+  await page.evaluate(async () => (await import("/views/topbar.js")).renderTopbar());
+  await tap();
+  await page.waitForFunction(() => S.current === "web:new" && ui.msgInner.querySelector(".empty"));
+  assert.deepEqual(requests, [{ inheritFrom: source.key }]);
+  assert.equal(await card.count(), 0);
+  assert.equal(await page.locator(".model-pill .model-name").textContent(), "gpt-6.1 sol");
+  assert.equal(await page.locator(".model-pill .sub").textContent(), "高");
+  assert.equal(await page.locator(".model-pill .fast-mark").count(), 1);
+  assert.equal(await page.locator(".perm-pill.plan").getAttribute("data-permission"), "edit");
+  assert.equal(await page.locator(".conv-list .recent[data-key=\"web:new\"]").count(), 1);
+});
+
 for (const colorScheme of ["light", "dark"]) {
   test(`触屏 ${colorScheme}：折叠项目首次显示和重开侧栏时，运行及待处理图标不与新建按钮重叠`, async (t) => {
     const conv = { key: "web:1", channel: "web", channelId: "web", agent: "claude", title: "当前会话", cwd: "/workspace", activeAt: 1, busy: false };

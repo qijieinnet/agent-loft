@@ -209,10 +209,12 @@ export function ensureConversation(params: {
   owner?: string;
   cwd?: string;
   assistant?: Conversation["assistant"];
+  settings?: Pick<AgentBinding, "model" | "effort" | "fastModel"> & Pick<Conversation, "permission" | "plan">;
 }): Conversation {
   const existing = getConversation(params.key);
   if (existing) return existing;
   const now = Date.now();
+  const { permission, plan, ...binding } = params.settings ?? {};
   const conv: Conversation = {
     key: params.key,
     channel: params.channel,
@@ -222,7 +224,9 @@ export function ensureConversation(params: {
     cwd: params.cwd ?? config().workspaceRoot,
     ...(params.cwd && params.cwd !== config().workspaceRoot ? { cwdExplicit: true } : {}),
     ...(params.assistant ? { assistant: params.assistant } : {}),
-    perAgent: {},
+    perAgent: params.settings ? { [params.agent]: binding } : {},
+    ...(permission ? { permission } : {}),
+    ...(plan ? { plan } : {}),
     activeAt: now,
     createdAt: now,
     ...(params.title ? { title: params.title } : {}),

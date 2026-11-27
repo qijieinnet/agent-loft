@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
+import type { ConversationInfo } from "../src/core/hub.js";
 import type { AgentDriver, AgentEvents } from "../src/core/types.js";
 import type { PublicUser } from "../src/core/users.js";
 
@@ -15,6 +16,7 @@ loadConfig();
 const users = await import("../src/core/users.js");
 const experts = await import("../src/core/experts.js");
 const { hub } = await import("../src/core/hub.js");
+const { getConversation, updateAgentBinding, updateConversation } = await import("../src/core/store.js");
 const auth = await import("../src/channels/web/auth.js");
 const { startWeb, stopWeb } = await import("../src/channels/web/server.js");
 const tasks = await import("../src/core/tasks.js");
@@ -134,6 +136,32 @@ test("HTTP 与运行时：按成员过滤资源，阻止越权、旧会话和任
     assert.deepEqual(hub.expertChoices(member.id, ["claude", "codex"]).map((e) => e.id), ["codex", shared.id, lead.id, own.id]);
   });
 
+  await t.test("沿用当前会话配置新建：权限照常校验，Agent 上下文独立", async () => {
+    const expert = experts.createExpert(admin.id, { name: "项目专家", engine: "codex", access: "exec" });
+    const cwd = fs.mkdtempSync(path.join(home, "project-"));
+    const source = "web:source";
+    hub.ensure({ key: source, channel: "web", channelId: "web", defaultAgent: "codex", expert: expert.id, cwd, owner: admin.id, title: "原会话" });
+    const settings = { model: "gpt-6.1-sol", effort: "high", fastModel: "gpt-6.1-sol" };
+    updateAgentBinding(source, "codex", { ...settings, sessionId: "old-context" });
+    updateConversation(source, { permission: "full", plan: true });
+    const body = { inheritFrom: source };
+    assert.equal((await call("/api/conversations", "POST", body)).status, 404);
+    const sessionsBefore = states.length;
+    const response = await call("/api/conversations", "POST", body, adminCookie);
+    assert.equal(response.status, 200);
+    const info = await response.json() as ConversationInfo;
+    assert.notEqual(info.key, source);
+    assert.equal(info.cwd, cwd);
+    assert.equal(info.expert.id, expert.id);
+    assert.equal(info.permission, "full");
+    assert.equal(info.plan, true);
+    assert.equal(info.title, undefined);
+    const created = getConversation(info.key)!;
+    assert.deepEqual(created.perAgent, { codex: settings });
+    assert.equal(getConversation(source)?.perAgent.codex?.sessionId, "old-context");
+    assert.equal(states.length, sessionsBefore);
+  });
+
   await t.test("撤权立即阻止复用运行中的会话，保留历史；任务在执行时重新校验", async () => {
     const conv = await (await call("/api/conversations", "POST", { expert: "codex" })).json() as { key: string };
     hub.send(conv.key, { text: "running", attachments: [] }, { channel: "web", channelId: "web" });
@@ -146,6 +174,7 @@ test("HTTP 与运行时：按成员过滤资源，阻止越权、旧会话和任
     assert.throws(() => hub.session(conv.key), /未获授权/);
     assert.throws(() => hub.session(sharedConv.key), /未获授权/);
     assert.equal((await call(`/api/conversations/${encodeURIComponent(conv.key)}/history`)).status, 200);
+    assert.equal((await call("/api/conversations", "POST", { inheritFrom: conv.key })).status, 400);
     assert.equal((await call("/api/conversations", "POST", {})).status, 200, "仍可默认选择自己的专家");
     const data = await (await call("/api/experts/brief")).json() as { builtin: unknown[]; servers: unknown };
     assert.deepEqual(data.builtin, []);

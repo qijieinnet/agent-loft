@@ -8,7 +8,7 @@ import { convExpert, expertChoices, expertIcon, findExpert } from "./experts.js"
 import { closeMenu, modal, placePopover, showMenu, showPopover, submenuButton } from "../lib/overlay.js";
 import { openConversation } from "./messages.js";
 import { openSchedule } from "./schedule.js";
-import { changeCwd, deleteConv, doAction, forkConversation, handoffConversation, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
+import { changeCwd, deleteConv, doAction, forkConversation, handoffConversation, newConversationFrom, openPermissionPicker, renameConv, switchAgent } from "./conv-actions.js";
 import { capOfAccess, defaultPermissionFor, minPermission, permissionsUpTo, PERMISSIONS } from "../lib/permission.js";
 import { canSeeChanges, syncWorkspace, toggleWorkspace, workspaceButtons, workspaceStats } from "./workspace-entry.js";
 import { syncCall } from "./voice-call.js";
@@ -54,6 +54,29 @@ const ENGINE_LABEL = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy",
 const HOVER_OPEN_MS = 250;
 const HOVER_CLOSE_MS = 200;
 const hoverCard = { timer: 0, pinned: false };
+const DOUBLE_TAP_MS = 320;
+const mobileTopbar = matchMedia("(max-width: 768px)");
+let avatarTap = null;
+
+function cancelAvatarTap() {
+  clearTimeout(avatarTap?.timer);
+  avatarTap = null;
+}
+
+document.addEventListener("pointerdown", (e) => {
+  if (avatarTap && !e.target.closest?.(".topbar .conv-expert-icon")) cancelAvatarTap();
+}, true);
+
+function toggleExpertCard(anchor, key, keyboard) {
+  if (!anchor?.isConnected || S.current !== key || S.view) return;
+  // 已经是悬停弹出来的：点一下就钉住，不随鼠标离开收起
+  if (ui.menu?.dataset.for === "expert-info" && !hoverCard.pinned) {
+    hoverCard.pinned = true;
+    return;
+  }
+  if (ui.menu?.dataset.for === "expert-info") return closeMenu();
+  openExpertCard(anchor, key, true, keyboard);
+}
 
 function expertAvatarButton(c) {
   const btn = h(
@@ -61,15 +84,20 @@ function expertAvatarButton(c) {
     {
       class: "conv-expert-icon",
       "aria-label": `专家：${c.expert?.name ?? agentLabel(c.agent)}`,
-      onclick: () => {
+      onclick: (e) => {
         clearTimeout(hoverCard.timer);
-        // 已经是悬停弹出来的：点一下就钉住，不随鼠标离开收起
-        if (ui.menu?.dataset.for === "expert-info" && !hoverCard.pinned) {
-          hoverCard.pinned = true;
-          return;
+        const doubleTap = avatarTap?.key === c.key;
+        cancelAvatarTap();
+        if (mobileTopbar.matches && !desktop && (e.detail > 0 || e.pointerType === "touch")) {
+          if (doubleTap) return void newConversationFrom(c.key);
+          // 顶栏可能在两次点击之间因会话状态更新而重绘，按会话识别双击。
+          avatarTap = { key: c.key, timer: setTimeout(() => {
+            avatarTap = null;
+            toggleExpertCard(ui.topbar.querySelector(".conv-expert-icon"), c.key, false);
+          }, DOUBLE_TAP_MS) };
+        } else {
+          toggleExpertCard(btn, c.key, e.detail === 0);
         }
-        if (ui.menu?.dataset.for === "expert-info") return closeMenu();
-        openExpertCard(btn, c.key, true);
       },
       onpointerenter: (e) => {
         if (e.pointerType !== "mouse") return;
@@ -94,7 +122,7 @@ function scheduleCardClose() {
 }
 
 /** 专家信息卡：头像、名字、说明，引擎、模型、权限、工作目录，以及本会话 Token 用量。 */
-function openExpertCard(anchor, key, pinned) {
+function openExpertCard(anchor, key, pinned, keyboard = false) {
   const c = S.convs.get(key);
   if (!c || !anchor.isConnected) return;
   const pop = showPopover(anchor, { place: "below", align: "left" });
@@ -121,6 +149,9 @@ function openExpertCard(anchor, key, pinned) {
   const model = modelName(c.agent, c.runtimeModel || c.model);
   const effort = c.runtimeEffort || c.effort;
   const row = (label, ...value) => h("div", { class: "ec-row" }, h("span", { class: "ec-label" }, label), h("span", { class: "ec-value" }, ...value));
+  const newChat = mobileTopbar.matches && !desktop
+    ? h("button", { class: "pop-item", type: "button", onclick: () => void newConversationFrom(key) }, icon("plus"), "沿用配置新建会话")
+    : null;
   fill(
     pop,
     h(
@@ -144,8 +175,15 @@ function openExpertCard(anchor, key, pinned) {
       access === "web" ? null : row("工作目录", h("span", { class: "ec-cwd", title: c.cwd }, c.cwd)),
     ),
     renderUsage(),
+    newChat,
   );
   placePopover(pop, anchor);
+  if (newChat) {
+    pop.onMenuClose = () => {
+      if (pop.contains(document.activeElement)) anchor.focus({ preventScroll: true });
+    };
+    if (keyboard) newChat.focus({ preventScroll: true });
+  }
 }
 
 /** 右上角「更多」只放当前对话的操作；设置从侧边栏进入。 */
