@@ -50,6 +50,8 @@ function makeWorkspace(t: test.TestContext): { root: string; project: string; pl
   fs.mkdirSync(emptyRepo, { recursive: true });
   git(emptyRepo, "init");
   git(project, "init");
+  git(project, "config", "user.name", "tester");
+  git(project, "config", "user.email", "tester@example.test");
   fs.writeFileSync(path.join(project, "README.md"), "# demo\n");
   fs.writeFileSync(path.join(project, "src/index.ts"), "export const v = 1;\n");
   git(project, "add", "-A");
