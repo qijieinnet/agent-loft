@@ -423,6 +423,7 @@ export function listWorkspaceDirs(input: string): WorkspaceDirListing | null {
   }
   const dirs: { name: string; hidden: boolean }[] = [];
   for (const entry of entries) {
+    if (entry.name === ".agent-loft-worktrees" && resolved === root) continue;
     const ok = entry.isDirectory() || (entry.isSymbolicLink() && resolveWorkspacePath(path.join(resolved, entry.name)) !== null);
     if (ok) dirs.push({ name: entry.name, hidden: entry.name.startsWith(".") });
   }

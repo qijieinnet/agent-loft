@@ -626,6 +626,11 @@ button.conv-group:hover {
   color: var(--fg-faint);
 }
 
+.conv-item .wt-mark {
+  color: color-mix(in srgb, var(--accent, #2563eb) 75%, var(--fg-soft));
+  opacity: 0.9;
+}
+
 .conv-item .fork-mark {
   color: var(--fg-soft);
 }

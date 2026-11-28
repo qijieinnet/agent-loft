@@ -218,6 +218,10 @@ function forkNote(c) {
   return `\n${c.handoff ? "交接自" : "分叉自"}「${parent ? convTitle(parent) : "已删除的对话"}」`;
 }
 
+export function projectDirOf(c) {
+  return c?.worktree?.projectCwd ?? c?.cwd ?? "";
+}
+
 export function convTitle(c) {
   if (!c) return "新对话";
   if (c.title) return c.title;
@@ -573,10 +577,11 @@ export function renderSidebar() {
       {
         class: `conv-item${cls}${c.key === S.current && !S.view && !ui.settings ? " active" : ""}`,
         "data-key": c.key,
-        title: `${convTitle(c)}${forkNote(c)}\n${detail}\n双击重命名，右键更多操作`,
+        title: `${convTitle(c)}${forkNote(c)}${c.worktree ? `\n隔离工作树：${c.worktree.branch}` : ""}\n${detail}\n双击重命名，右键更多操作`,
         onclick: () => open(c.key),
       },
       orphan ? h("span", { class: "brand-icon lead fork-mark", html: ICON.fork }) : null,
+      c.worktree && !orphan ? h("span", { class: "brand-icon lead wt-mark", title: `隔离工作树：${c.worktree.branch}`, html: ICON.fork }) : null,
       h("span", { class: "title" }, convTitle(c)),
       fold ? caret(fold.folded, fold.toggle) : null,
       convExpertMark(c),
@@ -699,17 +704,19 @@ export function renderSidebar() {
     if (btn) recentRows.push(h("div", { class: "sub-more recent-more" }, btn));
   }
 
-  // ---- Web 会话按工作目录分组，目录按用户排的顺序（见 orderSidebarGroups） ----
+  // ---- Web 会话按所属项目目录分组（隔离工作树归入原项目目录），目录按用户排的顺序（见 orderSidebarGroups） ----
   const byDir = new Map();
   for (const c of webConvs) {
-    if (!byDir.has(c.cwd)) byDir.set(c.cwd, []);
-    byDir.get(c.cwd).push(c);
+    const dir = projectDirOf(c);
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir).push(c);
   }
   // 切到某个会话时，把它所在的目录展开一次（之后用户可以自己收起）
   if (cur?.channel === "web" && cur.key !== autoOpenedFor) {
     autoOpenedFor = cur.key;
-    if (!sideState.open.includes(cur.cwd)) {
-      sideState.open.push(cur.cwd);
+    const curDir = projectDirOf(cur);
+    if (!sideState.open.includes(curDir)) {
+      sideState.open.push(curDir);
       localStorage.setItem("aim.side", JSON.stringify(sideState));
     }
   }
@@ -756,7 +763,7 @@ export function renderSidebar() {
                     const data = await api(`/api/conversations/page?${q}`);
                     for (const c of data.conversations) S.convs.set(c.key, c);
                     latest = [...S.convs.values()]
-                      .filter((c) => !c.hidden && c.channel === "web" && c.cwd === dir)
+                      .filter((c) => !c.hidden && c.channel === "web" && projectDirOf(c) === dir)
                       .sort((a, b) => b.activeAt - a.activeAt)[0];
                   }
                   S.draftCwd = dir === S.workspaceRoot ? null : dir;

@@ -102,12 +102,13 @@ export function openSearch() {
       ...results.map(({ conv, snippet }, i) => {
         // 本地有就用本地的（标题是最新的）
         const c = S.convs.get(conv.key) ?? conv;
-        const where = c.channel === "feishu" ? "飞书" : c.channel === "weixin" ? "微信" : baseName(c.cwd);
+        const proj = c.worktree?.projectCwd ?? c.cwd;
+        const where = c.channel === "feishu" ? "飞书" : c.channel === "weixin" ? "微信" : c.worktree ? `${baseName(proj)} · ${c.worktree.branch}` : baseName(proj);
         return h(
           "button",
           {
             class: `search-hit${i === st.sel ? " sel" : ""}`,
-            title: `${convTitle(c)}\n${c.cwd}`,
+            title: `${convTitle(c)}\n${proj}${c.worktree ? `\n隔离工作树：${c.worktree.branch}` : ""}`,
             onclick: () => open(c),
             onpointermove: () => {
               if (st.sel !== i) select(i, false);

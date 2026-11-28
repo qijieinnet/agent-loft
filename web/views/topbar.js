@@ -172,7 +172,8 @@ function openExpertCard(anchor, key, pinned, keyboard = false) {
       row("引擎", agentLabel(c.agent)),
       row("模型", [model ?? "默认", effort ? ` · ${effort}` : ""].join("")),
       row("能力", abilities),
-      access === "web" ? null : row("工作目录", h("span", { class: "ec-cwd", title: c.cwd }, c.cwd)),
+      access === "web" ? null : row("工作目录", h("span", { class: "ec-cwd", title: c.worktree?.projectCwd ?? c.cwd }, c.worktree?.projectCwd ?? c.cwd)),
+      c.worktree ? row("隔离工作树", h("span", { class: "ec-cwd", title: c.worktree.root }, `${c.worktree.branch}${c.worktree.baseBranch ? ` ← ${c.worktree.baseBranch}` : ""}`)) : null,
     ),
     renderUsage(),
     newChat,
@@ -571,13 +572,14 @@ function withTasks(fn) {
   return import("./tasks.js").then(fn, (err) => toast(`定时任务页加载失败，刷新页面再试：${err.message}`));
 }
 
-/** 「交接给」：列出除当前之外能用的智能体和专家。没有别的可选就不显示 */
+/** 「交接给」：列出除当前之外能用的智能体和专家；开通工作区时还支持交接到隔离工作树（允许同专家并发）。 */
 function handoffItem(c) {
   const current = convExpert(c).id;
-  const targets = expertChoices().filter((e) => e.id !== current);
-  if (!targets.length) return [];
-  return [
-    {
+  const allTargets = expertChoices();
+  const targets = allTargets.filter((e) => e.id !== current);
+  const items = [];
+  if (targets.length) {
+    items.push({
       id: "handoff",
       label: "交接给",
       icon: "handoff",
@@ -591,8 +593,26 @@ function handoffItem(c) {
           await handoffConversation(e, c.key);
         },
       })),
-    },
-  ];
+    });
+  }
+  if (canSeeChanges() && allTargets.length && c.channel === "web") {
+    items.push({
+      id: "handoff-worktree",
+      label: "交接到隔离工作树",
+      icon: "fork",
+      disabled: !c.canHandoff,
+      disabledReason: "这条对话还没有可以交接的内容",
+      children: allTargets.map((e) => ({
+        label: e.name,
+        leading: expertIcon(e),
+        onclick: async () => {
+          if (ui.settings && !(await ui.settings.close())) return;
+          await handoffConversation(e, c.key, { worktree: true });
+        },
+      })),
+    });
+  }
+  return items;
 }
 
 /** 顶栏和侧栏共用的会话操作，显示条件和行为保持一致。 */

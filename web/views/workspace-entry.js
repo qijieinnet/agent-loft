@@ -39,19 +39,27 @@ export const workspaceStats = h("span", { class: "ws-stat top-file-stat", hidden
 
 function renderChip() {
   const s = git.status;
+  const c = S.current ? S.convs.get(S.current) : null;
+  const wt = c?.worktree;
   const stats = s?.repo ? s.stats : null;
   workspaceStats.hidden = !stats || !(stats.added || stats.removed);
   addedCount.textContent = `+${stats?.added ?? 0}`;
   removedCount.textContent = `−${stats?.removed ?? 0}`;
   workspaceStats.title = `新增 ${stats?.added ?? 0} 行，删除 ${stats?.removed ?? 0} 行`;
   chip.hidden = !s?.repo;
+  chip.classList.toggle("is-worktree", !!wt);
   if (!s?.repo) return;
   const name = s.branch ?? s.head ?? "未知";
   chipText.textContent = name;
   chipCount.textContent = s.files.length ? String(s.files.length) : "";
   chipCount.hidden = !s.files.length;
   const sync = [s.ahead ? `领先 ${s.ahead}` : "", s.behind ? `落后 ${s.behind}` : ""].filter(Boolean).join("，");
-  chip.title = [s.branch ? `当前分支：${s.branch}` : `分离头指针：${s.head}`, sync, s.files.length ? `${s.files.length} 个文件有改动` : "没有改动"].filter(Boolean).join("\n");
+  chip.title = [
+    wt ? `隔离工作树${wt.baseBranch ? `（基于 ${wt.baseBranch}）` : ""}` : "",
+    s.branch ? `当前分支：${s.branch}` : `分离头指针：${s.head}`,
+    sync,
+    s.files.length ? `${s.files.length} 个文件有改动` : "没有改动",
+  ].filter(Boolean).join("\n");
 }
 
 /** 顶栏的分支标记。每次重画顶栏用的是同一个元素，状态不用重新画 */

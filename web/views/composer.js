@@ -219,20 +219,31 @@ export async function ensureConversation() {
   if (S.current) return S.current;
   if (!S.draftAgent) throw new Error("没有可用的 agent");
   let info;
+  const worktree = S.draftWorktree
+    ? S.draftWorktreeBranch.trim() || S.draftWorktreeBase.trim()
+      ? {
+          ...(S.draftWorktreeBranch.trim() ? { branch: S.draftWorktreeBranch.trim() } : {}),
+          ...(S.draftWorktreeBase.trim() ? { baseBranch: S.draftWorktreeBase.trim() } : {}),
+        }
+      : true
+    : undefined;
   try {
     info = await api("/api/conversations", {
       method: "POST",
-      body: { expert: S.draftExpert ?? S.draftAgent, cwd: S.draftCwd ?? undefined },
+      body: { expert: S.draftExpert ?? S.draftAgent, cwd: S.draftCwd ?? undefined, ...(worktree ? { worktree } : {}) },
     });
   } catch (err) {
     // 选的目录没了（被删、或工作区改了）：退回根目录，让用户重新确认
-    if (err.status === 400 && S.draftCwd) {
+    if (err.status === 400 && S.draftCwd && !worktree) {
       S.draftCwd = null;
       renderEmpty();
     }
     throw err;
   }
   S.draftCwdPicked = false;
+  S.draftWorktree = false;
+  S.draftWorktreeBranch = "";
+  S.draftWorktreeBase = "";
   // 新对话里选过模型 / 思考程度：建好会话后先切过去再发消息
   // 权限只对这一条新对话有效，不留给下一条（不放进按专家记住的 draftPick）
   const pick = { ...draftPick(), fastModel: S.draftFastModel, permission: S.draftPermission, plan: S.draftPlan ? "on" : null };

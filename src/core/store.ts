@@ -3,6 +3,7 @@
 // 一个 conversation 是「一个聊天上下文」：飞书的一个私聊 / 群 / 话题，或者 Web 上
 // 的一条对话。它记着用哪个专家（core/experts.ts）和它的引擎（agent）、在哪个目录，以及 agent 的会话 id
 // 和模型。专家定了就不换：飞书里换专家等于开新会话（见 hub.setExpert）。
+import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import { sql, transaction } from "./db.js";
@@ -34,6 +35,22 @@ export type AgentBinding = {
   parked?: { sessionId?: string; forkFrom?: string };
   /** 独立运行的任务结果：聊天的会话不知道它们，下一条聊天消息时带给 agent，带完就清 */
   taskResults?: { title: string; text: string; at: number }[];
+};
+
+/** 隔离 Git 工作树信息：会话在独立 worktree 中运行，避免并发修改同一仓库时互相覆盖。 */
+export type WorktreeInfo = {
+  /** 主仓库根目录（用于合并、对比和清理） */
+  repoRoot: string;
+  /** 原始项目工作目录（侧栏归组用；若从仓库子目录创建，保留该子目录路径） */
+  projectCwd: string;
+  /** worktree 根目录（位于 <workspaceRoot>/.agent-loft-worktrees/...） */
+  root: string;
+  /** 创建时新建的分支名（如 aloft/wt-a1b2c3） */
+  branch: string;
+  /** 基于哪个分支创建（分离头指针时为空） */
+  baseBranch?: string;
+  /** 创建时的基线提交 hash */
+  baseCommit: string;
 };
 
 export type Conversation = {
@@ -88,6 +105,8 @@ export type Conversation = {
   boundOpenId?: string;
   /** 定时任务的专用对话：是哪个任务的（见 core/tasks.ts）。任务删了就清掉 */
   taskId?: string;
+  /** 隔离 Git 工作树（见 core/worktree.ts）：会话在独立目录和分支里跑，侧栏仍归到 projectCwd 下 */
+  worktree?: WorktreeInfo;
 };
 
 type StoreShape = Record<string, Conversation>;
@@ -172,14 +191,30 @@ function insideRoot(dir: string): boolean {
   return dir === root || (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+/** 会话归属的项目目录：隔离工作树会话按原项目目录归组，普通会话就是 cwd。 */
+export function projectDirOf(conv: Pick<Conversation, "cwd" | "worktree">): string {
+  return conv.worktree?.projectCwd ?? conv.cwd;
+}
+
 /** 目录跟随配置：没显式指定过的跟着 workspaceRoot 走，显式指定的只在越界时回退。 */
 function reconcileCwd(conv: Conversation): Conversation {
   const root = config().workspaceRoot;
+  // 隔离工作树目录被外部删掉时，平滑回退到原项目目录并解绑 worktree，保留对话记录。
+  if (conv.worktree && !fs.existsSync(conv.cwd)) {
+    const fallback = insideRoot(conv.worktree.projectCwd) && fs.existsSync(conv.worktree.projectCwd) ? conv.worktree.projectCwd : root;
+    console.warn(`[store] 隔离工作树 ${conv.cwd} 已不存在，会话 ${conv.key} 回退为 ${fallback}`);
+    conv.cwd = fallback;
+    conv.cwdExplicit = fallback !== root;
+    delete conv.worktree;
+    persist();
+    return conv;
+  }
   const needsReset = conv.cwdExplicit ? !insideRoot(conv.cwd) : conv.cwd !== root;
   if (!needsReset) return conv;
   console.warn(`[store] 会话 ${conv.key} 的工作目录由 ${conv.cwd} 重置为 ${root}`);
   conv.cwd = root;
   conv.cwdExplicit = false;
+  delete conv.worktree;
   // 目录变了，旧会话的上下文已经没意义
   for (const binding of Object.values(conv.perAgent)) {
     delete binding.sessionId;
@@ -208,6 +243,7 @@ export function ensureConversation(params: {
   title?: string;
   owner?: string;
   cwd?: string;
+  worktree?: WorktreeInfo;
   assistant?: Conversation["assistant"];
   settings?: Pick<AgentBinding, "model" | "effort" | "fastModel"> & Pick<Conversation, "permission" | "plan">;
 }): Conversation {
@@ -223,6 +259,7 @@ export function ensureConversation(params: {
     ...(params.expert ? { expert: params.expert } : {}),
     cwd: params.cwd ?? config().workspaceRoot,
     ...(params.cwd && params.cwd !== config().workspaceRoot ? { cwdExplicit: true } : {}),
+    ...(params.worktree ? { worktree: params.worktree } : {}),
     ...(params.assistant ? { assistant: params.assistant } : {}),
     perAgent: params.settings ? { [params.agent]: binding } : {},
     ...(permission ? { permission } : {}),
@@ -240,7 +277,10 @@ export function ensureConversation(params: {
 export function updateConversation(key: string, patch: Partial<Conversation>): Conversation {
   const conv = getConversation(key);
   if (!conv) throw new Error(`会话不存在：${key}`);
-  Object.assign(conv, patch);
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) delete (conv as Record<string, unknown>)[k];
+    else (conv as Record<string, unknown>)[k] = v;
+  }
   persist();
   return conv;
 }

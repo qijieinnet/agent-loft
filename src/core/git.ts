@@ -13,6 +13,7 @@
 //   - 不抢索引锁（GIT_OPTIONAL_LOCKS=0）：面板在后台刷新，不能和正在干活的 agent 抢。
 //
 // 路径都相对仓库根目录。
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -585,17 +586,55 @@ export async function treeFileDiff(root: string, before: string, after: string, 
 
 const SNAPSHOT_REF = "refs/agent-loft/t/";
 
+/**
+ * 快照引用的前缀：主仓库沿用 refs/agent-loft/t/，链接工作树按目录哈希隔离到 refs/agent-loft/wt/<hash>/，
+ * 免得一个工作树清理旧快照时把主仓库或其他并发工作树的快照引用一起删掉。
+ */
+function snapshotRefPrefix(root: string): string {
+  try {
+    const dotGit = path.join(root, ".git");
+    if (fs.lstatSync(dotGit, { throwIfNoEntry: false })?.isFile()) {
+      const real = fs.realpathSync(root);
+      const hash = crypto.createHash("sha256").update(real).digest("hex").slice(0, 12);
+      return `refs/agent-loft/wt/${hash}/`;
+    }
+  } catch {
+    // 读不到时回退到主仓库前缀
+  }
+  return SNAPSHOT_REF;
+}
+
 /** 只留这些 tree 的引用，其余的删掉，让 git gc 能回收。引用不是分支，不会出现在 git branch、git log 里 */
 export async function keepTrees(root: string, trees: Iterable<string>): Promise<void> {
+  const prefix = snapshotRefPrefix(root);
   const want = new Set(trees);
-  const refs = await run(root, ["for-each-ref", "--format=%(objectname)", SNAPSHOT_REF], 4 * 1024 * 1024);
+  const refs = await run(root, ["for-each-ref", "--format=%(objectname)", prefix], 4 * 1024 * 1024);
   if (refs.code !== 0) return;
   const have = new Set(refs.stdout.split("\n").filter(Boolean));
   const commands: string[] = [];
-  for (const tree of have) if (!want.has(tree)) commands.push(`delete ${SNAPSHOT_REF}${tree}`);
-  for (const tree of want) if (!have.has(tree)) commands.push(`create ${SNAPSHOT_REF}${tree} ${tree}`);
+  for (const tree of have) if (!want.has(tree)) commands.push(`delete ${prefix}${tree}`);
+  for (const tree of want) if (!have.has(tree)) commands.push(`create ${prefix}${tree} ${tree}`);
   // 更新引用会触发 reference-transaction 钩子，一定要带上关钩子的配置
   if (commands.length) await run(root, [...(await safeArgs(root)), "update-ref", "--stdin"], 64 * 1024, { input: `${commands.join("\n")}\n` });
+}
+
+/** 清理指定工作树在主仓库中留下的所有快照引用（删除 worktree 前/后调用）。 */
+export async function clearWorktreeSnapshotRefs(repoRoot: string, worktreeRoot: string): Promise<void> {
+  let real = path.resolve(worktreeRoot);
+  try {
+    real = fs.realpathSync(worktreeRoot);
+  } catch {
+    // 目录已删时按原路径计算
+  }
+  const hash = crypto.createHash("sha256").update(real).digest("hex").slice(0, 12);
+  const prefix = `refs/agent-loft/wt/${hash}/`;
+  const refs = await run(repoRoot, ["for-each-ref", "--format=%(refname)", prefix], 4 * 1024 * 1024);
+  if (refs.code !== 0) return;
+  const commands = refs.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((ref) => `delete ${ref}`);
+  if (commands.length) await run(repoRoot, [...(await safeArgs(repoRoot)), "update-ref", "--stdin"], 64 * 1024, { input: `${commands.join("\n")}\n` });
 }
 
 // ---------- 提交历史 ----------
@@ -662,6 +701,7 @@ function explain(stderr: string, fallback: string): string {
   if (/index\.lock|another git process/i.test(text)) return "另一个 git 进程正在操作这个仓库（可能是 agent），稍后再试";
   if (/would be overwritten|commit your changes or stash/i.test(text)) return "有没提交的改动会被覆盖，git 拒绝了。先提交或丢弃这些改动";
   if (/please tell me who you are|empty ident|unable to auto-detect email/i.test(text)) return "git 还没配置用户名和邮箱，先在终端里设置 user.name 和 user.email";
+  if (/already used by worktree|already checked out at/i.test(text)) return "这个分支正在另一个工作树里使用，不能同时在两个工作树里检出";
   if (/already exists/i.test(text)) return "这个分支已经存在了";
   if (/not a valid branch name|is not a valid/i.test(text)) return "分支名不合法";
   return text || fallback;
@@ -790,6 +830,15 @@ async function hooksDir(root: string): Promise<string> {
 }
 
 const BRANCH_NAME = /^[^\s~^:?*[\\-][^\s~^:?*[\\]*$/;
+
+export const gitInternal = {
+  run,
+  safeArgs,
+  assertWritable,
+  repoConfig,
+  explain,
+  BRANCH_NAME,
+};
 
 /** 切换分支。git 发现有没提交的改动会被覆盖时会拒绝，不会丢东西。remote：切到远程分支，建一个跟踪它的本地分支 */
 export async function gitSwitch(root: string, branch: unknown): Promise<void> {

@@ -26,6 +26,7 @@ import {
   getConversation,
   isExpired,
   listConversations,
+  projectDirOf,
   putConversation,
   recordSessionOwner,
   touchConversation,
@@ -33,8 +34,10 @@ import {
   updateConversation,
   type AgentBinding,
   type Conversation,
+  type WorktreeInfo,
   requestedPermission,
 } from "./store.js";
+import { createWorktree, type CreateWorktreeOptions } from "./worktree.js";
 import { formatDateTime } from "./task-schedule.js";
 import { attachmentInfo, ensureUploadsDir, KIND_LABEL } from "./uploads.js";
 import { memoAccessEvents, memoSources, hasWritableMemo } from "./memo-sources.js";
@@ -207,6 +210,8 @@ export type ConversationInfo = {
   /** 当前上下文已闲置过期；直接发消息会自动换新，打开历史本身不会续期。 */
   idleExpired: boolean;
   createdAt: number;
+  /** 隔离 Git 工作树信息（仅在独立 worktree 中运行的会话有） */
+  worktree?: WorktreeInfo;
   hidden?: boolean;
   /** 从哪条对话分叉出来的 */
   forkOf?: string;
@@ -732,6 +737,7 @@ class Hub extends EventEmitter<{
       activeAt: conv.activeAt,
       idleExpired: !!(binding.sessionId || binding.forkFrom) && isExpired(conv),
       createdAt: conv.createdAt,
+      ...(conv.worktree ? { worktree: conv.worktree } : {}),
       ...(conv.hidden ? { hidden: true } : {}),
       ...(conv.forkOf ? { forkOf: conv.forkOf } : {}),
       ...(this.drivers.get(conv.agent)?.forkAt ? { canFork: true } : {}),
@@ -1054,14 +1060,20 @@ class Hub extends EventEmitter<{
 
   /** 这个仓库里有没有别的会话正在跑（key 是 null 时不排除任何会话） */
   busyInRepo(key: string | null, root: string): boolean {
-    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    let realRoot = root;
+    try {
+      realRoot = fs.realpathSync(root);
+    } catch {
+      // 目录不存在时按原值比对
+    }
+    const prefix = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
     for (const [other, count] of this.inflight) {
       if (other === key || count <= 0) continue;
       const cwd = getConversation(other)?.cwd;
       if (!cwd) continue;
       try {
         const real = fs.realpathSync(cwd);
-        if (real === root || real.startsWith(prefix)) return true;
+        if (real === realRoot || real.startsWith(prefix)) return true;
       } catch {
         // 目录没了
       }
@@ -2218,9 +2230,32 @@ class Hub extends EventEmitter<{
       Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
     );
     const next = this.nextWeixinConversation(conv);
-    updateConversation(next.key, { cwd: resolved, cwdExplicit: true, perAgent });
+    updateConversation(next.key, { cwd: resolved, cwdExplicit: true, worktree: undefined, perAgent });
     this.emitEvent(next.key, { type: "meta" });
     return `工作目录已切换到 ${resolved}，下条消息将开新会话。`;
+  }
+
+  /**
+   * 隔离工作树被清理或合并清理后，把会话切回原项目目录并清掉绑定在旧 worktree 路径上的会话 id，
+   * 避免后续发消息或刷新工作区面板指向已经删除的目录。
+   */
+  async detachWorktree(key: string, note: string): Promise<void> {
+    const conv = getConversation(key);
+    if (!conv?.worktree) return;
+    const projectCwd = conv.worktree.projectCwd;
+    const fallback = resolveWorkspacePath(projectCwd) ?? config().workspaceRoot;
+    await this.drop(key, note);
+    const perAgent = Object.fromEntries(
+      Object.entries(conv.perAgent).map(([a, b]) => [a, { ...b, sessionId: undefined, forkFrom: undefined }]),
+    );
+    updateConversation(key, {
+      cwd: fallback,
+      cwdExplicit: fallback !== config().workspaceRoot,
+      worktree: undefined,
+      perAgent,
+    });
+    this.emitEvent(key, { type: "notice", text: note });
+    this.emitEvent(key, { type: "meta" });
   }
 
   private async statusNow(key: string): Promise<string> {
@@ -2242,6 +2277,7 @@ class Hub extends EventEmitter<{
       `Agent：${driver.label}`,
       `会话：${agentBinding(conv).sessionId ?? "(尚未建立)"}`,
       `目录：${conv.cwd}`,
+      ...(conv.worktree ? [`隔离工作树：${conv.worktree.branch}（原项目：${conv.worktree.projectCwd}）`] : []),
       `模型：${runtime.model ?? "默认"}`,
       ...(runtime.effort ? [`思考程度：${runtime.effort}`] : []),
       `权限：${PERMISSION_LABEL[this.permissionOf(conv)]}${conv.plan ? "，计划模式" : ""}（/permission、/planmode 切换）`,
@@ -2348,19 +2384,19 @@ class Hub extends EventEmitter<{
   async handoffConversation(
     key: string,
     target: { agent: string; expert?: string; label: string },
-    opts: { owner?: string; stop?: boolean } = {},
+    opts: { owner?: string; stop?: boolean; worktree?: boolean | CreateWorktreeOptions } = {},
   ): Promise<string> {
     const conv = getConversation(key);
     if (!conv) throw new Error(`会话不存在：${key}`);
     if (this.rewinding.has(key)) throw new Error("会话正在回退，请稍后再交接");
-    if (expertIdOf(conv) === (target.expert ?? target.agent)) throw new Error(`这条对话已经是 ${target.label} 了`);
+    if (expertIdOf(conv) === (target.expert ?? target.agent) && !opts.worktree) throw new Error(`这条对话已经是 ${target.label} 了`);
     this.requireDriver(target.agent);
     const busy = this.isBusy(key) || (this.waitingSends.get(key) ?? 0) > 0;
-    if (busy && !opts.stop) throw new Error("这条对话还在回复，请确认停止后再交接");
+    if (busy && !opts.stop && !opts.worktree) throw new Error("这条对话还在回复，请确认停止后再交接");
 
     // 先读后停会漏掉最后的输出，先停后读又拿不到排队的消息：停之前记下，停完再读记录
     const work = busy ? this.unfinishedWork(key) : undefined;
-    if (busy) await withTimeout(this.stop(key), "停止当前回复");
+    if (busy && opts.stop) await withTimeout(this.stop(key), "停止当前回复");
 
     const binding = agentBinding(conv);
     const chat = binding.parked ?? binding;
@@ -2368,6 +2404,14 @@ class Hub extends EventEmitter<{
     // /fork 之后还没发消息：内容还在被分叉的会话里
     if (!messages.length && chat.forkFrom) messages = await withTimeout(this.requireDriver(conv.agent).readHistory(chat.forkFrom, conv.cwd), "读取对话记录");
     if (!messages.length && !work?.unfinished.text.trim()) throw new Error("这条对话还没有可以交接的内容");
+
+    let targetCwd = conv.cwd;
+    let targetWorktree: WorktreeInfo | undefined;
+    if (opts.worktree) {
+      const created = await createWorktree(projectDirOf(conv), typeof opts.worktree === "object" ? opts.worktree : {});
+      targetCwd = created.cwd;
+      targetWorktree = created.worktree;
+    }
 
     const title = conv.title ?? "会话";
     const from = this.label(conv.agent);
@@ -2384,10 +2428,11 @@ class Hub extends EventEmitter<{
       ...(owner ? { owner } : {}),
     });
     updateConversation(newKey, {
-      title: `${title} · 交接`.slice(0, 80),
-      // 任务的文件在原来的目录里：不用专家默认的目录
-      cwd: conv.cwd,
-      ...(conv.cwdExplicit ? { cwdExplicit: true } : {}),
+      title: `${title} · ${targetWorktree ? "工作树" : "交接"}`.slice(0, 80),
+      // 任务的文件在原来的目录里（或者新建的隔离工作树里）：不用专家默认的目录
+      cwd: targetCwd,
+      ...(targetWorktree || conv.cwdExplicit ? { cwdExplicit: true } : {}),
+      ...(targetWorktree ? { worktree: targetWorktree } : {}),
       // 和分叉一样，「完全允许」不跟过去
       ...carriedPermission(conv),
       forkOf: key,
@@ -2401,8 +2446,8 @@ class Hub extends EventEmitter<{
       ...(git ? { git } : {}),
     });
     this.emitEvent(newKey, { type: "meta" });
-    this.send(newKey, { text: `${handoffMessage(title, from)}\n\n${wrapContext(context)}`, attachments: [] }, { channel: "web", channelId: "web", name: "交接" });
-    this.emitEvent(key, { type: "notice", text: `已交接给 ${target.label}，在新对话里继续。这条对话保留，还可以接着用。` });
+    this.send(newKey, { text: `${handoffMessage(title, from)}\n\n${wrapContext(context)}`, attachments: [] }, { channel: "web", channelId: "web", name: targetWorktree ? "隔离工作树交接" : "交接" });
+    this.emitEvent(key, { type: "notice", text: targetWorktree ? `已交接给 ${target.label}（隔离工作树 ${targetWorktree.branch}），在新对话里继续。这条对话保留，互不干扰。` : `已交接给 ${target.label}，在新对话里继续。这条对话保留，还可以接着用。` });
     return newKey;
   }
 

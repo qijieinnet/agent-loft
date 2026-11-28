@@ -12,8 +12,9 @@
 // 快照是 git 对象，靠 refs/agent-loft/t/ 下的引用留着。每个仓库只留最近 KEEP_PER_REPO 轮，
 // 更早的引用删掉，等 git gc 回收；那些轮次的摘要还在（存在脚注里），只是看不了具体内容了。
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { sql, transaction } from "./db.js";
-import { differingPaths, diffTrees, findRepo, GitError, keepTrees, restoreFromTree, snapshotTree, treeFileDiff, type GitDiff } from "./git.js";
+import { clearWorktreeSnapshotRefs, differingPaths, diffTrees, findRepo, GitError, keepTrees, restoreFromTree, snapshotTree, treeFileDiff, type GitDiff } from "./git.js";
 import type { TurnChanges } from "./types.js";
 
 /** 拍「开始」这张最多等这么久：消息不能因为仓库太大发不出去。超时这一轮就没有改动卡片 */
@@ -176,4 +177,25 @@ export async function revertTurn(root: string, id: string, direction: "undo" | "
   if (state.state === "diverged" && !force) throw new GitError(409, "这些文件之后又被改过了", { conflict: "diverged", files: state.diverged });
   await restoreFromTree(root, direction === "undo" ? row.b : row.a, files);
   return (await inspect(row)).state;
+}
+
+/** 清理已删除工作树的轮次快照记录和 Git 引用。 */
+export async function clearTurnSnapshots(repoRoot: string, worktreeRoot: string): Promise<void> {
+  baselines.forEach((b, k) => {
+    if (b.root === worktreeRoot) baselines.delete(k);
+  });
+  try {
+    let real = worktreeRoot;
+    try {
+      real = fs.realpathSync(worktreeRoot);
+    } catch {
+      // 目录可能已经删除
+    }
+    transaction(() => {
+      sql("DELETE FROM turn_changes WHERE root = ? OR root = ?").run(worktreeRoot, real);
+    });
+  } catch {
+    // 清理快照记录失败不阻断工作树删除
+  }
+  await clearWorktreeSnapshotRefs(repoRoot, worktreeRoot).catch(() => {});
 }

@@ -15,6 +15,8 @@ import { editableName, fmtSize, renderFileView, textPreview } from "./file-previ
 import { renderDiff } from "./diff-view.js";
 import { createEditor } from "./file-editor.js";
 import { git, refreshGit, rememberOpen } from "./workspace-entry.js";
+import { renderTopbar } from "./topbar.js";
+import { renderSidebar } from "./sidebar.js";
 
 const WIDTH_KEY = "aim.wsW";
 const MODE_KEY = "aim.wsDiffMode";
@@ -38,6 +40,9 @@ const P = {
   /** 提交历史：{ commits, more, error }，切到页签时才拉 */
   log: null,
   /** 详情页的内容：diff 接口的结果 */
+  /** 隔离工作树状态：{ worktree, list }，仅 worktree 会话拉取 */
+  wt: null,
+  wtLoading: false,
   diff: null,
   diffError: null,
   diffMode: localStorage.getItem(MODE_KEY) === "split" ? "split" : "unified",
@@ -171,6 +176,8 @@ export function syncPanel() {
     P.detail = null;
     P.diff = null;
     P.log = null;
+    P.wt = null;
+    P.wtLoading = false;
     // 写给上一个仓库的提交说明，不能留着提交到这一个
     if (commitUi.message) commitUi.message.value = "";
     if (P.open) {
@@ -197,6 +204,8 @@ async function reloadTree() {
 document.addEventListener("aim:git", () => {
   if (!P.open || !usable()) return;
   void reloadTree();
+  if (S.convs.get(S.current)?.worktree) void loadWorktree();
+  else P.wt = null;
   if (P.tab === "log" && !git.status?.repo) P.tab = "changes";
   renderTabs();
   // 某一轮、某个提交的 diff 是定死的，不用重新拿
@@ -727,6 +736,212 @@ async function commit() {
   updateCommitButton();
 }
 
+let wtBusy = false;
+
+async function loadWorktree() {
+  const id = P.id;
+  if (!S.current || !S.convs.get(S.current)?.worktree) {
+    P.wt = null;
+    return;
+  }
+  P.wtLoading = true;
+  try {
+    const data = await api(`${base()}/git-worktree`);
+    if (id !== P.id) return;
+    P.wt = data.worktree ?? null;
+  } catch {
+    if (id !== P.id) return;
+    P.wt = null;
+  } finally {
+    if (id === P.id) P.wtLoading = false;
+  }
+  if (P.open && !P.detail && P.tab === "changes") renderChanges();
+}
+
+function openWorktreeMergeModal(wt) {
+  let mode = "merge";
+  const msgInput = h("input", {
+    class: "rename-input",
+    placeholder: `Merge ${wt.currentBranch ?? wt.branch} into ${wt.mainBranch}`,
+    maxlength: "200",
+    spellcheck: "false",
+  });
+  const msgWrap = h("div", { class: "ws-wt-field" }, h("label", { class: "ws-wt-label" }, "提交说明（可选）"), msgInput);
+  const cleanupBox = h("input", { type: "checkbox", checked: true });
+  const modeMerge = h("input", { type: "radio", name: "wt-merge-mode", value: "merge", checked: true });
+  const modeSquash = h("input", { type: "radio", name: "wt-merge-mode", value: "squash" });
+  const syncMode = () => {
+    mode = modeSquash.checked ? "squash" : "merge";
+    msgWrap.querySelector(".ws-wt-label").textContent = mode === "squash" ? "压缩提交说明" : "合并提交说明（留空使用默认）";
+  };
+  modeMerge.onchange = syncMode;
+  modeSquash.onchange = syncMode;
+
+  const ok = h("button", { class: "btn primary" }, `合并到 ${wt.mainBranch}`);
+  const close = modal({
+    title: "合并隔离工作树",
+    body: h(
+      "div",
+      { class: "modal-body ws-wt-modal" },
+      h("div", { class: "muted" }, `将分支 ${wt.currentBranch ?? wt.branch} 的 ${wt.ahead} 个提交合并回主仓库分支 ${wt.mainBranch}。如遇冲突将自动中止，不会破坏主仓库。`),
+      h(
+        "div",
+        { class: "ws-wt-radios" },
+        h("label", { class: "check" }, modeMerge, "普通合并（Merge，保留提交记录）"),
+        h("label", { class: "check" }, modeSquash, "压缩合并（Squash，合成一条提交）"),
+      ),
+      msgWrap,
+      h("label", { class: "check" }, cleanupBox, "合并后清理隔离工作树并删除临时分支"),
+    ),
+    foot: h("div", { class: "modal-foot" }, h("button", { class: "btn ghost", onclick: () => close() }, "取消"), ok),
+  });
+  ok.onclick = async () => {
+    if (wtBusy) return;
+    wtBusy = true;
+    ok.disabled = true;
+    ok.textContent = "合并中…";
+    try {
+      const res = await api(`${base()}/git-worktree-merge`, {
+        method: "POST",
+        body: { mode, message: msgInput.value.trim() || undefined, cleanup: cleanupBox.checked, deleteBranch: cleanupBox.checked },
+      });
+      if (res.info) S.convs.set(res.info.key, res.info);
+      close();
+      toast(res.merged ? `已合并到 ${wt.mainBranch}（${res.short ?? ""}）${res.cleaned ? "并清理工作树" : ""}` : res.note ?? "无需合并");
+      P.wt = null;
+      P.log = null;
+      renderTopbar();
+      renderSidebar();
+      await refreshGit();
+    } catch (err) {
+      ok.disabled = false;
+      ok.textContent = `合并到 ${wt.mainBranch}`;
+      toast(err.message);
+    } finally {
+      wtBusy = false;
+    }
+  };
+}
+
+async function cleanupWorktree(wt) {
+  if (wtBusy) return;
+  const choice = await confirmDialog({
+    title: "清理隔离工作树？",
+    sub: `${wt.branch} · ${wt.root}`,
+    message: wt.dirty
+      ? `这个工作树里有 ${wt.changedFiles} 个未提交改动。清理后将切回原项目目录；如需丢弃未提交改动请选择强制清理。`
+      : "清理后将删除这个隔离工作树目录，当前对话会切回原项目目录（后续消息开启新会话）。",
+    confirmText: wt.dirty ? "强制清理并删分支" : "清理并删分支",
+    altText: wt.dirty ? "强制清理（保留分支）" : "仅清理目录（保留分支）",
+    danger: true,
+  });
+  if (!choice) return;
+  const deleteBranch = choice === true;
+  const force = !!wt.dirty;
+  wtBusy = true;
+  renderChanges();
+  try {
+    const res = await api(`${base()}/git-worktree-remove`, {
+      method: "POST",
+      body: { force, deleteBranch },
+    });
+    if (res.info) S.convs.set(res.info.key, res.info);
+    P.wt = null;
+    P.log = null;
+    toast(`已清理隔离工作树${res.branchDeleted ? "并删除分支" : ""}`);
+    renderTopbar();
+    renderSidebar();
+    await refreshGit();
+  } catch (err) {
+    if (!force && err.status === 409 && err.data?.conflict === "dirty") {
+      const sure = await confirmDialog({
+        title: "工作树有未提交改动",
+        message: `${err.message}。确定要强制清理并丢弃这些改动吗？`,
+        confirmText: "强制清理",
+        danger: true,
+      });
+      if (sure) {
+        try {
+          const res2 = await api(`${base()}/git-worktree-remove`, {
+            method: "POST",
+            body: { force: true, deleteBranch },
+          });
+          if (res2.info) S.convs.set(res2.info.key, res2.info);
+          P.wt = null;
+          P.log = null;
+          toast("已强制清理隔离工作树");
+          renderTopbar();
+          renderSidebar();
+          await refreshGit();
+        } catch (err2) {
+          toast(err2.message);
+        }
+      }
+    } else {
+      toast(err.message);
+    }
+  } finally {
+    wtBusy = false;
+    if (P.open && !P.detail && P.tab === "changes") renderChanges();
+  }
+}
+
+function worktreeBar() {
+  const c = S.current ? S.convs.get(S.current) : null;
+  if (!c?.worktree) return null;
+  if (!P.wt && !P.wtLoading) void loadWorktree();
+  const wt = P.wt;
+  const metaParts = [];
+  if (wt) {
+    if (wt.mainBranch) metaParts.push(`主分支 ${wt.mainBranch}`);
+    if (wt.ahead) metaParts.push(`领先 ${wt.ahead} 提交`);
+    if (wt.behind) metaParts.push(`落后 ${wt.behind} 提交`);
+    if (!wt.ahead && !wt.behind) metaParts.push("与主分支同步");
+  } else {
+    metaParts.push(c.worktree.baseBranch ? `基于 ${c.worktree.baseBranch}` : "隔离工作树");
+  }
+  const canMerge = !!wt && wt.exists && !wt.dirty && !wt.mainDirty && !!wt.mainBranch && wt.ahead > 0 && !wtBusy;
+  const mergeTip = !wt
+    ? "正在读取工作树状态…"
+    : !wt.exists
+      ? "隔离工作树目录已不存在"
+      : wt.dirty
+        ? "工作树还有未提交改动，请先提交或丢弃"
+        : wt.mainDirty
+          ? "主仓库有未提交改动，请先处理后再合并"
+          : !wt.mainBranch
+            ? "主仓库当前处于分离头指针状态"
+            : wt.ahead === 0
+              ? "没有领先于主分支的新提交"
+              : `合并 ${wt.ahead} 个提交到 ${wt.mainBranch}`;
+  return h(
+    "div",
+    { class: "ws-wt-bar" },
+    h(
+      "div",
+      { class: "ws-wt-info" },
+      h("span", { class: "ws-wt-badge" }, icon("fork"), "隔离工作树"),
+      h("span", { class: "ws-wt-meta" }, metaParts.join(" · ")),
+      wt?.diffStats ? h("span", { class: "ws-stat" }, h("span", { class: "ws-add" }, `+${wt.diffStats.added}`), h("span", { class: "ws-del" }, `−${wt.diffStats.removed}`)) : null,
+    ),
+    wt?.mainDirty ? h("div", { class: "ws-wt-warn" }, "主仓库有未提交改动，合并前需先清理") : null,
+    h(
+      "div",
+      { class: "ws-wt-acts" },
+      h(
+        "button",
+        { class: "btn small primary", disabled: !canMerge, title: mergeTip, onclick: () => wt && openWorktreeMergeModal(wt) },
+        wt?.mainBranch ? `合并回 ${wt.mainBranch}` : "合并回主分支",
+      ),
+      h(
+        "button",
+        { class: "btn small", disabled: !wt || wtBusy, title: "清理隔离工作树并切回原项目目录", onclick: () => wt && void cleanupWorktree(wt) },
+        "清理工作树",
+      ),
+    ),
+  );
+}
+
 function renderChanges() {
   const s = git.status;
   if (!s) return fill(ui.wsBody, loading());
@@ -744,7 +959,7 @@ function renderChanges() {
   const untracked = s.files.filter((f) => f.unstaged === "untracked");
   commitUi.stagedCount = staged.length;
   updateCommitButton();
-  fill(ui.wsBranchSlot, branchBar(s), syncBar(s));
+  fill(ui.wsBranchSlot, branchBar(s), syncBar(s), worktreeBar());
 
   const paths = (files) => files.filter((f) => !f.sensitive).map((f) => f.path);
   const stageAll = (files) => (paths(files).length ? { title: "全部暂存", icon: "plus", onclick: () => void gitAct("git-stage", { paths: paths(files) }) } : null);

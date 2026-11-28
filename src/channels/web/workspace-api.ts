@@ -26,6 +26,7 @@ import {
   gitUnstage,
 } from "../../core/git.js";
 import { hub } from "../../core/hub.js";
+import { listRepoWorktrees, mergeWorktree, removeWorktree, worktreeStatus } from "../../core/worktree.js";
 import { revertTurn, turnFileDiff, turnState } from "../../core/turn-changes.js";
 import { listConversations, type Conversation } from "../../core/store.js";
 import { canUseFiles, canUseGitRemote, type User } from "../../core/users.js";
@@ -60,6 +61,7 @@ const ROUTES: Record<string, string> = {
   "git-log": "GET",
   "git-commit-files": "GET",
   "git-commit-diff": "GET",
+  "git-worktree": "GET",
   "git-stage": "POST",
   "git-unstage": "POST",
   "git-discard": "POST",
@@ -70,6 +72,8 @@ const ROUTES: Record<string, string> = {
   "git-pull": "POST",
   "git-push": "POST",
   "git-turn-revert": "POST",
+  "git-worktree-merge": "POST",
+  "git-worktree-remove": "POST",
   "workspace-save": "POST",
   "workspace-new": "POST",
   "workspace-rename": "POST",
@@ -190,6 +194,54 @@ export async function handleWorkspaceApi(req: IncomingMessage, res: ServerRespon
     if (!file || (sub === "workspace-html" && !/\.html?$/i.test(file))) throw new HttpError(404, "文件不存在，或者不能查看");
     if (sub === "workspace-html") serveHtmlFile(res, file);
     else serveReplyFile(req, res, file, { stat: url.searchParams.get("stat") === "1", download: url.searchParams.get("download") === "1" });
+    return true;
+  }
+
+  if (sub === "git-worktree") {
+    const wt = conv.worktree ? await gitOp(() => worktreeStatus(conv.worktree!)) : null;
+    const list = await listRepoWorktrees(cwd).catch(() => []);
+    sendJson(res, 200, { worktree: wt, list });
+    return true;
+  }
+  if (sub === "git-worktree-merge") {
+    if (!conv.worktree) throw new HttpError(400, "当前会话不是隔离工作树会话");
+    const wt = conv.worktree;
+    const body = await readJsonBody<{ mode?: unknown; message?: unknown; cleanup?: unknown; deleteBranch?: unknown }>(req);
+    await gitAction(res, async () => {
+      assertIdle(wt.root);
+      assertIdle(wt.repoRoot);
+      const mode = body.mode === "squash" ? "squash" : "merge";
+      const cleanup = body.cleanup === true;
+      const deleteBranch = body.deleteBranch !== false;
+      const result = await mergeWorktree(wt, {
+        mode,
+        ...(typeof body.message === "string" ? { message: body.message } : {}),
+        cleanup,
+        deleteBranch,
+      });
+      if (result.cleaned) {
+        const note = result.merged
+          ? `已${mode === "squash" ? "压缩" : ""}合并分支 ${wt.branch} 到主分支（${result.short ?? ""}）并清理隔离工作树，当前对话已切换回原项目目录。`
+          : `已清理隔离工作树 ${wt.branch}，当前对话已切换回原项目目录。`;
+        await hub.detachWorktree(conv.key, note);
+      }
+      return { ...result, info: hub.info(conv.key) };
+    });
+    return true;
+  }
+  if (sub === "git-worktree-remove") {
+    if (!conv.worktree) throw new HttpError(400, "当前会话不是隔离工作树会话");
+    const wt = conv.worktree;
+    const body = await readJsonBody<{ force?: unknown; deleteBranch?: unknown }>(req);
+    await gitAction(res, async () => {
+      assertIdle(wt.root);
+      const result = await removeWorktree(wt, { force: body.force === true, deleteBranch: body.deleteBranch === true });
+      await hub.detachWorktree(
+        conv.key,
+        `已清理隔离工作树（分支 ${wt.branch}${result.branchDeleted ? " 已删除" : " 仍保留"}），当前对话已切换回原项目目录，后续消息将开启新会话。`,
+      );
+      return { ...result, info: hub.info(conv.key) };
+    });
     return true;
   }
 

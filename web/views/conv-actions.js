@@ -65,9 +65,9 @@ export async function forkConversation(anchor, key = S.current) {
 }
 
 /** 交接：另开一条新对话，由 expert 带着之前的记录接着做，然后切过去。原对话保留 */
-export async function handoffConversation(expert, key = S.current) {
+export async function handoffConversation(expert, key = S.current, { worktree = false } = {}) {
   const busy = S.convs.get(key)?.busy;
-  if (busy) {
+  if (busy && !worktree) {
     const ok = await confirmDialog({
       title: `停止并交接给 ${expert.name}？`,
       message: "这条对话还在回复。交接前要先停止它和排队中的消息，免得两个智能体同时改同一个目录。",
@@ -78,10 +78,10 @@ export async function handoffConversation(expert, key = S.current) {
   try {
     const res = await api(`/api/conversations/${encodeURIComponent(key)}/handoff`, {
       method: "POST",
-      body: { expert: expert.id, stop: !!busy },
+      body: { expert: expert.id, stop: !!busy && !worktree, ...(worktree ? { worktree: true } : {}) },
     });
     S.convs.set(res.info.key, res.info);
-    toast(`已交接给 ${expert.name}，原对话保留`);
+    toast(worktree ? `已交接给 ${expert.name}（隔离工作树 ${res.info.worktree?.branch ?? ""}），原对话不受影响` : `已交接给 ${expert.name}，原对话保留`);
     await openConversation(res.info.key);
   } catch (err) {
     toast(err.message);
@@ -469,7 +469,7 @@ export function renameConv(key = S.current) {
       "div",
       { class: "dialog" },
       h("h3", {}, "重命名会话"),
-      h("p", { class: "dialog-sub" }, agentIcon(c.agent), h("span", {}, `${agentLabel(c.agent)} · ${baseName(c.cwd)}`)),
+      h("p", { class: "dialog-sub" }, agentIcon(c.agent), h("span", {}, `${agentLabel(c.agent)} · ${baseName(c.worktree?.projectCwd ?? c.cwd)}`)),
       input,
       h("div", { class: "dialog-foot" }, cancel, save),
     ),
@@ -483,20 +483,54 @@ export function renameConv(key = S.current) {
 export async function deleteConv(key = S.current) {
   if (!key) return;
   const c = S.convs.get(key);
-  const sure = await confirmDialog({
-    title: "删除会话？",
-    sub: c ? [agentIcon(c.agent), h("span", {}, `${convTitle(c)} · ${baseName(c.cwd)}`)] : null,
-    message: "会话中的附件和资料库文件会一并删除，包括复用到其他会话的副本，无法恢复。agent 那边的会话记录仍会保留。",
-    confirmText: "删除",
-    danger: true,
-  });
-  if (!sure) return;
-  try {
-    await api(`/api/conversations/${encodeURIComponent(key)}`, { method: "DELETE" });
+  const wt = c?.worktree;
+  let wtParam = "";
+  if (wt && S.user?.files) {
+    const choice = await confirmDialog({
+      title: "删除会话？",
+      sub: [agentIcon(c.agent), h("span", {}, `${convTitle(c)} · 隔离工作树 ${wt.branch}`)],
+      message: "这条会话使用了独立的 Git Worktree。可以一并清理隔离工作树和临时分支，也可以仅删除会话记录。",
+      confirmText: "删除并清理工作树",
+      altText: "仅删除会话",
+      danger: true,
+    });
+    if (!choice) return;
+    wtParam = choice === "alt" ? "?worktree=keep" : "?worktree=remove";
+  } else {
+    const sure = await confirmDialog({
+      title: "删除会话？",
+      sub: c ? [agentIcon(c.agent), h("span", {}, `${convTitle(c)} · ${baseName(c.cwd)}`)] : null,
+      message: "会话中的附件和资料库文件会一并删除，包括复用到其他会话的副本，无法恢复。agent 那边的会话记录仍会保留。",
+      confirmText: "删除",
+      danger: true,
+    });
+    if (!sure) return;
+  }
+  const doDelete = async (query) => {
+    await api(`/api/conversations/${encodeURIComponent(key)}${query}`, { method: "DELETE" });
     if (c) c.hidden = true;
     if (key === S.current) newDraft();
     else renderSidebar();
+  };
+  try {
+    await doDelete(wtParam);
   } catch (err) {
+    if (wtParam === "?worktree=remove" && err.status === 409 && err.data?.conflict === "dirty") {
+      const choice = await confirmDialog({
+        title: "隔离工作树有未提交的改动",
+        message: `${err.message}。强制清理会永久丢弃工作树里的未提交修改。`,
+        confirmText: "强制清理并删除",
+        altText: "仅删除会话",
+        danger: true,
+      });
+      if (!choice) return;
+      try {
+        await doDelete(choice === "alt" ? "?worktree=keep" : "?worktree=force");
+      } catch (err2) {
+        toast(err2.message);
+      }
+      return;
+    }
     toast(err.message);
   }
 }

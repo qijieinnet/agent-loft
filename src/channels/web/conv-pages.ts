@@ -10,10 +10,12 @@ export type Cursor = { at: number; key: string };
 export type Page = { conversations: ConversationInfo[]; next: Cursor | null };
 type Tree = { root: ConversationInfo; convs: ConversationInfo[]; at: number };
 
+/** 项目归属目录：隔离工作树会话仍归到原项目目录，不单独多出一个目录分组 */
+export const projectDirOf = (c: Pick<ConversationInfo, "cwd" | "worktree">): string => c.worktree?.projectCwd ?? c.cwd;
 /** 最近：所有 Web 会话（IM 渠道在侧栏单独分组） */
 export const inRecent = (c: ConversationInfo): boolean => c.channel === "web";
-/** 项目：Web 会话按工作目录分组 */
-export const inDir = (dir: string) => (c: ConversationInfo): boolean => c.channel === "web" && c.cwd === dir;
+/** 项目：Web 会话按所属项目目录分组 */
+export const inDir = (dir: string) => (c: ConversationInfo): boolean => c.channel === "web" && projectDirOf(c) === dir;
 
 /** 按分叉关系成树：父对话也在这一组里的挂到下面，其余的是根。父链绕回自己（数据坏了）就当根 */
 export function forkTrees(list: ConversationInfo[]): Tree[] {
@@ -63,7 +65,10 @@ export function recentPageOf(list: ConversationInfo[], before: Cursor | null, li
 /** 项目目录：每个目录最近的活跃时间（目录行本身要全部显示，会话再按需拉） */
 export function dirsOf(list: ConversationInfo[]): { dir: string; at: number }[] {
   const at = new Map<string, number>();
-  for (const c of list) if (c.channel === "web") at.set(c.cwd, Math.max(at.get(c.cwd) ?? 0, c.activeAt));
+  for (const c of list) if (c.channel === "web") {
+    const dir = projectDirOf(c);
+    at.set(dir, Math.max(at.get(dir) ?? 0, c.activeAt));
+  }
   return [...at].map(([dir, t]) => ({ dir, at: t })).sort((a, b) => b.at - a.at);
 }
 
@@ -96,7 +101,9 @@ export function searchConvs(
   const byTitle = list
     .map((c) => {
       const title = (c.title ?? "").toLowerCase();
-      const hay = `${title} ${c.cwd.split(/[\\/]/).filter(Boolean).pop() ?? ""}`.toLowerCase();
+      const projName = projectDirOf(c).split(/[\\/]/).filter(Boolean).pop() ?? "";
+      const branch = c.worktree?.branch ?? "";
+      const hay = `${title} ${projName} ${branch}`.toLowerCase();
       if (!words.every((w) => hay.includes(w))) return null;
       return { c, rank: title.includes(q) ? 2 : 1 };
     })

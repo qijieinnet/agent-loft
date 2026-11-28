@@ -25,6 +25,10 @@ export const S = {
   draftCwd: null,
   /** 这个新对话的目录是自己选的：换专家时不再改成专家的默认目录。建好会话后清掉 */
   draftCwdPicked: false,
+  /** 新对话是否开启 Git Worktree 并发隔离（建好会话后自动重置） */
+  draftWorktree: false,
+  draftWorktreeBranch: "",
+  draftWorktreeBase: "",
   items: [],
   turnAi: null,
   seq: new Map(),

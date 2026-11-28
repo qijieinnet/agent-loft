@@ -9,7 +9,9 @@ import { cleanCustomCommands } from "../../core/command-catalog.js";
 import { hub } from "../../core/hub.js";
 import { interactions } from "../../core/interactions.js";
 import { approve, listApproved, listPending, revoke } from "../../core/pairing.js";
-import { agentBinding, conversationLabels, ensureConversation, expertIdOf, getConversation, listConversations, touchConversation, updateConversation } from "../../core/store.js";
+import { agentBinding, conversationLabels, ensureConversation, expertIdOf, getConversation, listConversations, projectDirOf, touchConversation, updateConversation } from "../../core/store.js";
+import { GitError } from "../../core/git.js";
+import { createWorktree, probeWorktree, removeWorktree, type CreateWorktreeOptions } from "../../core/worktree.js";
 import { addScheduled, clearScheduled, removeScheduled } from "../../core/scheduled.js";
 import { resolveUploadFile, saveBuffer, sniff, uploadKeyOf } from "../../core/uploads.js";
 import { mentions, resolveReplyFile } from "../../core/reply-files.js";
@@ -882,6 +884,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if ((p === "/api/remote" || p.startsWith("/api/desktop/")) && (await handleDesktopApi(req, res, p, user))) return;
 
   // ----- 工作区目录 -----
+  if (p === "/api/dirs/git" && method === "GET") {
+    if (!canUseFiles(user)) {
+      sendJson(res, 200, { eligible: false });
+      return;
+    }
+    const raw = url.searchParams.get("path") ?? "";
+    const resolved = resolveWorkspacePath(raw || ".");
+    if (!resolved) {
+      sendJson(res, 200, { eligible: false, reason: `目录不存在，或不在 ${config().workspaceRoot} 之内` });
+      return;
+    }
+    sendJson(res, 200, await probeWorktree(resolved));
+    return;
+  }
   if (p === "/api/dirs" && method === "GET") {
     const listing = listWorkspaceDirs(url.searchParams.get("path") ?? "");
     if (!listing) throw new HttpError(404, `目录不存在，或不在 ${config().workspaceRoot} 之内`);
@@ -918,7 +934,12 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     // 不把「删除链接」变成删除它指向的整个项目；工作区根目录本身可以是链接。
     if (target !== path.resolve(config().workspaceRoot, body.path)) throw new HttpError(400, "请从实际项目目录删除，不能通过符号链接删除项目");
     const within = (dir: string) => dir === target || dir.startsWith(target + path.sep);
-    const affected = () => listConversations().filter((c) => within(resolveWorkspacePath(c.cwd) ?? c.cwd));
+    const affected = () => listConversations().filter((c) => {
+      const cwd = resolveWorkspacePath(c.cwd) ?? c.cwd;
+      const proj = resolveWorkspacePath(projectDirOf(c)) ?? projectDirOf(c);
+      const repo = c.worktree?.repoRoot ? (resolveWorkspacePath(c.worktree.repoRoot) ?? c.worktree.repoRoot) : "";
+      return within(cwd) || within(proj) || (repo !== "" && within(repo));
+    });
     const convs = affected();
     if (convs.some((c) => !visible(c))) throw new HttpError(403, "此目录下有其他用户的会话，不能删除项目");
     const realTarget = fs.realpathSync(target);
@@ -938,6 +959,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const now = fs.statSync(target);
     if (identity.dev !== now.dev || identity.ino !== now.ino) {
       throw new HttpError(409, "项目内容已变化，请重新确认后删除");
+    }
+    for (const c of convs) {
+      if (c.worktree) {
+        const wt = c.worktree;
+        updateConversation(c.key, { cwd: wt.projectCwd, worktree: undefined });
+        await removeWorktree(wt, { force: true, deleteBranch: false }).catch(() => {});
+      }
     }
     try {
       fs.rmSync(target, { recursive: true });
@@ -1009,7 +1037,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   }
   if (p === "/api/conversations" && method === "POST") {
     // expert：新对话页上选的专家（内置的 claude / codex，或者自己的、共享的专家 id）。agent 是以前的叫法
-    const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string; inheritFrom?: string }>(req);
+    const body = await readJsonBody<{ expert?: string; agent?: string; cwd?: string; inheritFrom?: string; worktree?: boolean | CreateWorktreeOptions }>(req);
     const source = typeof body.inheritFrom === "string" ? getConversation(body.inheritFrom) : undefined;
     if (body.inheritFrom !== undefined && (!source || !visible(source))) throw new HttpError(404, "会话不存在");
     const enabled = hub.enabledAgents().map((d) => d.id);
@@ -1023,11 +1051,33 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (source && source.agent !== agent) throw new HttpError(400, "专家已更换引擎，无法沿用原会话配置");
     // 沿用原会话或新对话页选的工作目录，没选就用专家默认的。和 /cd 一样只能在工作区之内。
     let cwd: string | undefined;
-    const rawCwd = source?.cwd ?? (typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : custom?.cwd);
+    const rawCwd = (source ? projectDirOf(source) : undefined) ?? (typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : custom?.cwd);
     if (rawCwd) {
       const resolved = resolveWorkspacePath(rawCwd);
       if (!resolved) throw new HttpError(400, `目录必须存在，且在 ${config().workspaceRoot} 之内`);
       cwd = resolved;
+    }
+    let worktree;
+    if (body.worktree) {
+      if (!canUseFiles(user)) throw new HttpError(403, "你没有使用工作区面板和隔离工作树的权限，找管理员在 设置 → 管理 → 成员 里开通");
+      const wtOpts: CreateWorktreeOptions =
+        typeof body.worktree === "object" && body.worktree !== null
+          ? {
+              ...(typeof body.worktree.branch === "string" ? { branch: body.worktree.branch } : {}),
+              ...(typeof body.worktree.baseBranch === "string" ? { baseBranch: body.worktree.baseBranch } : {}),
+            }
+          : {};
+      try {
+        const created = await createWorktree(cwd ?? config().workspaceRoot, wtOpts);
+        cwd = created.cwd;
+        worktree = created.worktree;
+      } catch (err) {
+        if (err instanceof GitError) {
+          sendJson(res, err.status, { error: err.message, ...err.extra });
+          return;
+        }
+        throw err;
+      }
     }
     const inherited = source ? hub.info(source.key) : undefined;
     const settings = inherited && {
@@ -1039,7 +1089,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     };
     const key = `web:${crypto.randomBytes(6).toString("hex")}`;
     ensureConversation({
-      key, channel: "web", channelId: "web", agent, expert: custom?.id, cwd, owner: user.id, settings,
+      key, channel: "web", channelId: "web", agent, expert: custom?.id, cwd, ...(worktree ? { worktree } : {}), owner: user.id, settings,
     });
     sendJson(res, 200, hub.info(key));
     return;
@@ -1096,7 +1146,24 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
     if (!sub && method === "DELETE") {
       // agent 侧的文字记录保留；托管附件和资料库文件立即清理，恢复会话也不会恢复文件。
-      await hub.drop(key, "会话已删除");
+      const wtMode = url.searchParams.get("worktree");
+      if ((wtMode === "remove" || wtMode === "force") && conv.worktree) {
+        if (!canUseFiles(user)) throw new HttpError(403, "你没有清理隔离工作树的权限");
+        await hub.drop(key, "会话已删除");
+        const wt = conv.worktree;
+        try {
+          await removeWorktree(wt, { force: wtMode === "force", deleteBranch: true });
+        } catch (err) {
+          if (err instanceof GitError) {
+            sendJson(res, err.status, { error: err.message, ...err.extra });
+            return;
+          }
+          throw err;
+        }
+        updateConversation(key, { cwd: resolveWorkspacePath(wt.projectCwd) ?? config().workspaceRoot, worktree: undefined });
+      } else {
+        await hub.drop(key, "会话已删除");
+      }
       hideConversation(key);
       sendJson(res, 200, { ok: true });
       return;
@@ -1243,21 +1310,36 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     }
     if (sub === "handoff" && method === "POST") {
       // 交接给别的智能体：expert 是内置的 claude / codex，或者自己的、共享的专家 id
-      const body = await readJsonBody<{ expert?: unknown; stop?: unknown }>(req);
+      const body = await readJsonBody<{ expert?: unknown; stop?: unknown; worktree?: boolean | CreateWorktreeOptions }>(req);
       if (conv.hidden) throw new HttpError(404, "会话已删除");
       const expertId = typeof body.expert === "string" ? body.expert : "";
       if (!expertId || !canUseExpert(user.id, expertId)) throw new HttpError(400, "这个专家或 Agent 不存在、已取消共享或未获授权");
+      if (body.worktree && !canUseFiles(user)) throw new HttpError(403, "你没有使用工作区面板和隔离工作树的权限，找管理员在 设置 → 管理 → 成员 里开通");
       const custom = isBuiltin(expertId) ? undefined : getExpert(expertId);
       const agent = custom ? custom.engine : expertId;
       if (!hub.enabledAgents().some((d) => d.id === agent)) throw new HttpError(400, `${hub.label(agent)} 没有启用，用不了这个专家`);
-      const newKey = await hub.handoffConversation(
-        key,
-        { agent, ...(custom ? { expert: custom.id } : {}), label: custom ? custom.name : hub.label(agent) },
-        { owner: user.id, stop: body.stop === true },
-      ).catch((err: unknown) => {
+      const wtOpt: boolean | CreateWorktreeOptions | undefined = body.worktree
+        ? typeof body.worktree === "object" && body.worktree !== null
+          ? {
+              ...(typeof body.worktree.branch === "string" ? { branch: body.worktree.branch } : {}),
+              ...(typeof body.worktree.baseBranch === "string" ? { baseBranch: body.worktree.baseBranch } : {}),
+            }
+          : true
+        : undefined;
+      try {
+        const newKey = await hub.handoffConversation(
+          key,
+          { agent, ...(custom ? { expert: custom.id } : {}), label: custom ? custom.name : hub.label(agent) },
+          { owner: user.id, stop: body.stop === true, ...(wtOpt ? { worktree: wtOpt } : {}) },
+        );
+        sendJson(res, 200, { info: hub.info(newKey) });
+      } catch (err) {
+        if (err instanceof GitError) {
+          sendJson(res, err.status, { error: err.message, ...err.extra });
+          return;
+        }
         throw new HttpError(400, err instanceof Error ? err.message : String(err));
-      });
-      sendJson(res, 200, { info: hub.info(newKey) });
+      }
       return;
     }
     if (sub === "feishu" && method === "POST") {

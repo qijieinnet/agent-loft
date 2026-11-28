@@ -72,11 +72,14 @@ export function latestConversation(channel) {
 export function newDraft({ inheritLatest = false } = {}) {
   historyLoadedKey = null;
   S.draftFastModel = null;
+  S.draftWorktree = false;
+  S.draftWorktreeBranch = "";
+  S.draftWorktreeBase = "";
   if (inheritLatest) {
     const latest = latestConversation();
     if (latest) {
-      // 目录和专家一起继承，根目录也显式保留，避免创建时退回专家的默认目录。
-      S.draftCwd = latest.cwd || S.workspaceRoot || null;
+      // 目录和专家一起继承，根目录也显式保留，避免创建时退回专家的默认目录；隔离工作树会话继承原项目目录。
+      S.draftCwd = latest.worktree?.projectCwd || latest.cwd || S.workspaceRoot || null;
       S.draftCwdPicked = true;
       setDraftExpert(latest.expert?.id ?? latest.agent);
     }
@@ -105,6 +108,69 @@ export function newDraft({ inheritLatest = false } = {}) {
   preloadCommands();
 }
 
+/** 探测新对话当前选中的目录是否支持开启隔离工作树（按目录缓存，避免重复请求） */
+let wtProbeSeq = 0;
+const wtProbeCache = new Map();
+
+function buildWorktreeControls(cwd, probe) {
+  if (!probe?.eligible) {
+    S.draftWorktree = false;
+    return null;
+  }
+  const active = !!S.draftWorktree;
+  const toggle = h(
+    "button",
+    {
+      type: "button",
+      class: `hero-wt-toggle${active ? " on" : ""}`,
+      "aria-pressed": String(active),
+      title: active ? "将在独立的 Git Worktree 和新分支中运行，避免并发会话互相覆盖文件" : "开启后将在独立的 Git Worktree 和新分支中运行，互不干扰",
+      onclick: () => {
+        S.draftWorktree = !S.draftWorktree;
+        if (!S.draftWorktree) {
+          S.draftWorktreeBranch = "";
+          S.draftWorktreeBase = "";
+        }
+        renderEmpty();
+      },
+    },
+    icon("fork"),
+    h("span", {}, active ? "隔离工作树 · 已开启" : "使用隔离工作树"),
+  );
+  if (!active) return h("div", { class: "hero-wt" }, toggle);
+
+  const branches = probe.branches ?? [];
+  const baseSelect = branches.length
+    ? h(
+        "select",
+        {
+          class: "hero-wt-select",
+          "aria-label": "基线分支",
+          title: "基于哪个分支创建隔离工作树",
+          onchange: (e) => {
+            S.draftWorktreeBase = e.target.value;
+          },
+        },
+        h("option", { value: "", selected: !S.draftWorktreeBase }, `基于当前（${probe.branch ?? probe.head ?? "HEAD"}）`),
+        ...branches.map((b) => h("option", { value: b, selected: S.draftWorktreeBase === b }, b)),
+      )
+    : null;
+  const branchInput = h("input", {
+    class: "hero-wt-input",
+    type: "text",
+    value: S.draftWorktreeBranch,
+    placeholder: "分支名（留空自动生成）",
+    "aria-label": "隔离工作树分支名",
+    maxlength: "80",
+    spellcheck: "false",
+    autocomplete: "off",
+    oninput: (e) => {
+      S.draftWorktreeBranch = e.target.value;
+    },
+  });
+  return h("div", { class: "hero-wt on" }, toggle, h("div", { class: "hero-wt-opts" }, baseSelect, branchInput));
+}
+
 export function renderEmpty() {
   const enabled = usableAgents();
   const cwd = S.draftCwd ?? S.workspaceRoot ?? "";
@@ -127,6 +193,8 @@ export function renderEmpty() {
     const blank = text.indexOf("___");
     if (blank >= 0) ui.input.setSelectionRange(blank, blank + 3);
   };
+  const allowWt = !!enabled.length && !!S.user?.files && (!custom || expert.access !== "web") && !!cwd;
+  const wtSlot = allowWt ? h("div", { class: "hero-wt-slot" }) : null;
   fill(ui.msgInner,
     h(
       "div",
@@ -138,6 +206,7 @@ export function renderEmpty() {
           ? [
               expert.welcome ? h("h2", {}, expert.welcome) : expert.access === "web" ? h("h2", {}, `我是${expert.name}，有什么可以帮你？`) : dirTitle,
               expert.welcome && expert.access !== "web" ? h("div", { class: "hero-sub" }, "工作目录：", h("button", { class: "hero-dir", title: `${cwd}\n点击切换工作目录`, onclick: () => changeCwd() }, baseName(cwd) || "工作区")) : null,
+              wtSlot,
               expert.quickPrompts?.length
                 ? h(
                     "div",
@@ -146,9 +215,24 @@ export function renderEmpty() {
                   )
                 : null,
             ]
-          : dirTitle,
+          : [dirTitle, wtSlot],
     ),
   );
+  if (wtSlot) {
+    const cached = wtProbeCache.get(cwd);
+    if (cached && Date.now() - cached.at < 15_000) {
+      fill(wtSlot, buildWorktreeControls(cwd, cached.data));
+    } else {
+      const seq = ++wtProbeSeq;
+      void api(`/api/dirs/git?path=${encodeURIComponent(cwd)}`)
+        .then((data) => {
+          wtProbeCache.set(cwd, { data, at: Date.now() });
+          if (seq !== wtProbeSeq || S.current || !wtSlot.isConnected) return;
+          fill(wtSlot, buildWorktreeControls(cwd, data));
+        })
+        .catch(() => {});
+    }
+  }
   renderContext();
 }
 

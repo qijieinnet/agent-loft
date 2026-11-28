@@ -31,6 +31,12 @@
   flex-shrink: 0;
 }
 
+.top-git.is-worktree {
+  border-color: color-mix(in srgb, var(--accent, #2563eb) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent, #2563eb) 8%, transparent);
+  color: var(--fg);
+}
+
 .top-git-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -985,4 +991,77 @@ button.ws-row:hover {
   font-weight: 400;
   text-align: right;
   user-select: none;
+}
+
+/* ---------- 隔离工作树（Worktree）条与合并弹窗 ---------- */
+
+.ws-wt-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent, #2563eb) 6%, var(--bg-soft));
+  font-size: 12px;
+}
+
+.ws-wt-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ws-wt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #2563eb) 14%, transparent);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.ws-wt-badge svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ws-wt-meta {
+  color: var(--fg-soft);
+}
+
+.ws-wt-warn {
+  color: var(--warn, #d97706);
+  font-size: 11.5px;
+}
+
+.ws-wt-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ws-wt-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ws-wt-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ws-wt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-wt-label {
+  font-size: 12.5px;
+  color: var(--fg-soft);
 }
